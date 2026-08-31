@@ -1,0 +1,541 @@
+/* Visual language transplanted from the 03-核心对话版 POC (the client-seen
+   prototype): green primary, soft grey canvas, card conversation, lead-first
+   answers. Four views: chat / history / report / login (plan 6.1). */
+
+:root {
+  --ink: #15201d;
+  --muted: #697470;
+  --line: #e3e7e4;
+  --soft: #f4f6f4;
+  --green: #0f6b54;
+  --green-dark: #084c3c;
+  --green-soft: #e8f3ee;
+  --gold-soft: #fbf3df;
+}
+
+* { box-sizing: border-box; }
+html { background: #f1f3f1; }
+body {
+  margin: 0;
+  color: var(--ink);
+  background: #f1f3f1;
+  font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+}
+button, textarea, input { font: inherit; }
+button { color: inherit; cursor: pointer; }
+
+/* ── shell ─────────────────────────────────────────── */
+/* The page itself never scrolls: the app is one viewport tall and the
+   message list is the only scrolling region. Otherwise long conversations
+   push the composer off-screen and new-message scrolling fights the body
+   scroll (visible as jitter). */
+.appShell { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+.topbar {
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px;
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.brand { display: flex; align-items: center; gap: 12px; }
+.brandMark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  color: #fff;
+  background: linear-gradient(145deg, #11745b, #084b3b);
+  font-size: 15px;
+  font-weight: 800;
+}
+.brand strong { font-size: 16px; letter-spacing: .01em; }
+.brand small { display: block; font-size: 11px; color: var(--muted); }
+.topMeta { display: flex; align-items: center; gap: 14px; }
+.demoBanner {
+  font-size: 11px;
+  color: #8a6d1a;
+  background: var(--gold-soft);
+  border: 1px solid #eedfa8;
+  border-radius: 8px;
+  padding: 5px 10px;
+}
+.navTabs { display: flex; gap: 4px; }
+.navTabs button {
+  border: 0;
+  background: transparent;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.navTabs button.active { background: var(--green-soft); color: var(--green-dark); font-weight: 600; }
+.logoutButton { border: 0; background: transparent; color: var(--muted); font-size: 12px; }
+
+/* ── conversation card ─────────────────────────────── */
+.workspace {
+  width: min(980px, calc(100% - 40px));
+  margin: 16px auto;
+  flex: 1;
+  min-height: 0; /* flex child must be allowed to shrink below content */
+  display: flex;
+}
+.conversation {
+  flex: 1;
+  min-height: 0;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 6px 22px rgba(25, 50, 42, .035);
+  padding: 20px clamp(22px, 4vw, 44px) 18px;
+  display: flex;
+  flex-direction: column;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+/* Files dragged over the card: green ring + soft tint, clear on drop/leave. */
+.conversation.dragOver {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px var(--green-soft), 0 6px 22px rgba(25, 50, 42, .05);
+}
+.conversationHeader { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding-bottom: 14px; }
+.chatTitle { flex: none; }
+.eyebrow { color: var(--green); font-size: 11px; font-weight: 700; letter-spacing: .09em; }
+h1 { margin: 2px 0 0; font-size: clamp(20px, 2.2vw, 26px); letter-spacing: -.03em; }
+
+/* identity / preference panel (plan 6.2: session-level options) */
+.prefsPanel {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px;
+  border: 1px solid #dce7e1;
+  border-radius: 9px;
+  background: #f5faf7;
+  font-size: 12px;
+  color: #4f615b;
+  white-space: nowrap;
+  flex: none;
+}
+.chatHeaderTools { display: flex; gap: 10px; align-items: center; flex: none; }
+.sessionSelect {
+  max-width: 170px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.newChatButton {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 6px 12px;
+  white-space: nowrap;
+}
+.newChatButton:hover { color: var(--green-dark); border-color: var(--green); }
+.prefsPanel label { display: flex; align-items: center; gap: 5px; }
+.prefsNote { font-size: 10px; color: #8a6d1a; background: var(--gold-soft); border-radius: 6px; padding: 2px 6px; }
+.prefsPanel select {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 12px;
+  padding: 3px 6px;
+}
+
+.messages {
+  flex: 1;
+  min-height: 0; /* the one and only scroll region */
+  margin-top: 12px;
+  padding-top: 14px;
+  border-top: 1px solid #edf0ee;
+  overflow-y: auto;
+  overscroll-behavior: contain; /* wheel at the edge must not bubble to the page */
+}
+.userMessage, .assistantMessage { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 12px; }
+.userMessage { margin-bottom: 20px; }
+.avatar { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+.userAvatar { background: #e9ecea; color: #51605b; }
+.agentAvatar { background: var(--green); color: #fff; }
+.userMessage span { display: block; margin: 1px 0 5px; color: var(--green); font-size: 11px; font-weight: 800; }
+.userMessage p {
+  display: inline-block;
+  margin: 0;
+  padding: 10px 13px;
+  border-radius: 4px 11px 11px 11px;
+  background: #f0f2f1;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.answerBody { min-width: 0; }
+.answerMeta { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 24px; }
+.answerMeta strong { color: var(--green); font-size: 12px; }
+.answerMeta span { color: #628175; font-size: 10px; }
+.thinking {
+  margin: 10px 0;
+  font-size: 12px;
+  color: var(--muted);
+  border-left: 3px solid var(--line);
+  padding-left: 10px;
+}
+
+/* Plan 6.2: tool progress as live process lines while the answer streams. */
+.toolProgress { margin: 8px 0; display: flex; flex-direction: column; gap: 3px; }
+.toolProgressLine { font-size: 12px; color: var(--muted); }
+.toolProgressLine:last-child { color: var(--green-dark); font-weight: 600; }
+
+/* markdown answer body */
+.answerText { font-size: 15px; line-height: 1.7; }
+.answerText table { border-collapse: collapse; margin: 12px 0; width: 100%; font-size: 13px; }
+.answerText th, .answerText td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; }
+.answerText th { background: var(--soft); font-weight: 600; }
+/* Sortable table headers (plan 6.2): the faint ⇅ mark advertises the sort;
+   the active column shows ▲/▼ in green. The mark is always present with a
+   fixed width, so toggling sort never reflows the column widths. */
+.answerText th.sortableTh { cursor: pointer; user-select: none; }
+.answerText th.sortableTh:hover { background: var(--green-soft); color: var(--green-dark); }
+.answerText th .sortMark {
+  display: inline-block;
+  width: 14px;
+  margin-left: 4px;
+  text-align: center;
+  font-size: 10px;
+  color: #c4cec9;
+}
+.answerText th .sortMark.active { color: var(--green); }
+.answerText h2, .answerText h3 { font-size: 16px; margin: 16px 0 6px; }
+.answerText h2 { border-left: 3px solid var(--green); padding-left: 8px; }
+.answerText p { margin: 8px 0; }
+.answerText strong { color: var(--green-dark); }
+.answerText ul, .answerText ol { margin: 8px 0; padding-left: 20px; }
+.answerText hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+
+/* data chart from tool results (P0-3 simple visualisation) */
+.dataChart { margin: 14px 0 4px; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: #fcfdfc; }
+.dataChartHead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.dataChartTitle { font-size: 12px; color: var(--green); font-weight: 600; }
+.dataChartKinds { display: flex; gap: 2px; background: var(--soft); border-radius: 8px; padding: 2px; }
+.dataChartKinds button {
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 4px 10px;
+  border-radius: 6px;
+  transition: all .15s ease;
+}
+.dataChartKinds button:hover { color: var(--green-dark); }
+.dataChartKinds button.active { background: #fff; color: var(--green-dark); font-weight: 600; box-shadow: 0 1px 3px rgba(25, 50, 42, .1); }
+.dataChartTools { display: flex; gap: 8px; align-items: center; }
+.downloadChart {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 7px;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 4px 9px;
+}
+.downloadChart:hover { color: var(--green-dark); border-color: var(--green); }
+.groupedBars svg, .lineChart svg { width: 100%; height: auto; display: block; }
+.groupedBars, .lineChart { display: flex; gap: 16px; align-items: center; }
+.groupedBars > svg, .lineChart > svg { flex: 1; min-width: 0; }
+/* One grid owns all rows, so every label column (and therefore every bar's
+   left edge) shares a single width — per-row grids used to size the label
+   column independently and bars started at different x positions. */
+.dataChartBars {
+  display: grid;
+  grid-template-columns: max-content minmax(120px, 1fr) 48px;
+  gap: 6px 12px;
+  align-items: center;
+}
+.dataBarRow { display: contents; font-size: 12px; }
+.dataBarLabel {
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Cap the shared column: one pathological 60-char label must not squeeze
+     the bars out of every other row. Longer labels ellipsise. */
+  max-width: 240px;
+}
+.dataBarTrack { height: 12px; background: var(--soft); border-radius: 6px; overflow: hidden; }
+.dataBarFill { display: block; height: 100%; background: var(--green); border-radius: 6px; transition: width .3s ease; }
+.dataBarValue { text-align: right; color: var(--green-dark); font-weight: 600; }
+.dataChartDonut { display: flex; gap: 30px; align-items: center; }
+.dataChartDonut svg { width: 150px; height: 150px; flex: none; }
+/* The legend fills the space right of the chart and wraps into as many
+   columns as the card width allows — long series no longer stack into one
+   tall column. */
+.dataChartLegend {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  width: max-content;
+}
+/* Pie-only: the legend owns the wide space right of the pie. Line and
+   grouped-bar charts keep their full-width plots and a compact legend. */
+.dataChartDonut .dataChartLegend {
+  flex: 1;
+  width: auto;
+  /* Few entries: one clean column (4 items must not scatter into 4 columns).
+     The .folded variant (added by the component beyond 6 items) re-enables
+     the column flow. */
+  grid-template-columns: 1fr;
+  gap: 6px 28px;
+}
+.dataChartDonut .dataChartLegend.folded {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+/* Compact within an entry, roomier between entries: the label, value and
+   percent hug each other, while the grid gap separates neighbouring rows
+   and columns. justify-content:start is load-bearing — the grid default
+   (stretch) hands the row's spare width to the two `auto` tracks, pushing
+   the value and percent far away from the label. */
+.dataLegendRow {
+  display: grid;
+  grid-template-columns: 10px auto auto 44px;
+  justify-content: start;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+}
+.dataLegendRow span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dataLegendRow i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.dataLegendRow b { color: var(--green-dark); }
+.dataLegendRow small { color: var(--muted); text-align: right; }
+
+/* citation / evidence collapse (plan 6.2: 答案可核查) */
+.citations { margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 8px; }
+.citations summary { cursor: pointer; font-size: 12px; color: var(--green); list-style: none; }
+.citations pre {
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--soft);
+  border-radius: 8px;
+  padding: 10px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.composer { margin-top: 18px; display: flex; gap: 10px; align-items: flex-end; }
+/* The attach + send buttons stack in one column right of the textarea:
+   the column is as tall as the two-line textarea, each button one row. */
+.composerButtons { display: flex; flex-direction: column; gap: 8px; flex: none; align-self: stretch; }
+/* Attach takes the larger share: the send button stays compact. */
+.attachButton { flex: 1.4; }
+.sendButton { flex: 1; }
+.attachButton {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 10px;
+  padding: 4px 13px;
+  font-size: 15px;
+  line-height: 1;
+}
+.attachButton:hover { border-color: var(--green); color: var(--green-dark); }
+.attachButton:disabled { opacity: 0.5; cursor: not-allowed; }
+.attachChips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.attachChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  font-size: 11.5px;
+  color: var(--green-dark);
+  background: var(--green-soft);
+  border: 1px solid #cfe5da;
+  border-radius: 7px;
+  padding: 3px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachChipRemove {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 0 2px;
+  line-height: 1;
+}
+.attachChipRemove:hover { color: #b0433a; }
+.userAttachments { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; }
+.userAttachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 240px;
+  font-size: 11.5px;
+  color: var(--green-dark);
+  background: #e6efe9;
+  border-radius: 7px;
+  padding: 4px 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer textarea {
+  flex: 1;
+  resize: none;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 11px 13px;
+  font-size: 14px;
+  line-height: 1.55;
+  min-height: 46px;
+  max-height: 160px;
+}
+.composer textarea:focus { outline: 2px solid var(--green-soft); border-color: var(--green); }
+.sendButton {
+  border: 0;
+  border-radius: 10px;
+  background: var(--green);
+  color: #fff;
+  padding: 8px 22px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.sendButton:disabled { background: #a9c4b9; cursor: not-allowed; }
+.composerHint { margin-top: 6px; font-size: 11px; color: var(--muted); }
+
+/* ── login ─────────────────────────────────────────── */
+.loginShell { min-height: 100vh; display: grid; place-items: center; }
+.loginCard {
+  width: 360px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 34px 30px 28px;
+  box-shadow: 0 6px 22px rgba(25, 50, 42, .05);
+}
+.loginCard h1 { font-size: 20px; }
+.loginCard p { font-size: 12px; color: var(--muted); margin: 8px 0 20px; }
+.loginCard label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 5px; }
+.loginCard input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+.loginCard input:focus { outline: 2px solid var(--green-soft); border-color: var(--green); }
+.loginCard button {
+  width: 100%;
+  margin-top: 20px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--green);
+  color: #fff;
+  padding: 11px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.loginCard .loginError { color: #b0433a; font-size: 12px; margin-top: 10px; }
+
+/* ── history view (P1-3) ── */
+.historyCard {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 6px 22px rgba(25, 50, 42, .035);
+  padding: 20px clamp(22px, 4vw, 44px) 18px;
+}
+.historyActions { display: flex; gap: 10px; }
+.historyBody { flex: 1; min-height: 0; display: flex; gap: 18px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #edf0ee; }
+.sessionRail { width: 210px; flex: none; overflow-y: auto; border-right: 1px solid #edf0ee; padding-right: 12px; display: grid; gap: 4px; align-content: start; }
+.sessionItem {
+  display: block;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  padding: 9px 10px;
+  cursor: pointer;
+}
+.sessionItem:hover { background: var(--soft); }
+.sessionItem.active { background: var(--green-soft); }
+.sessionItem span { display: block; font-size: 13px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sessionItem small { display: block; margin-top: 3px; font-size: 10.5px; color: var(--muted); }
+.historyList { flex: 1; min-height: 0; overflow-y: auto; }
+.historyUser, .historyAssistant { margin-bottom: 16px; }
+.historyRound { margin-bottom: 20px; }
+.historyQuestion { font-size: 13.5px; line-height: 1.7; background: #f0f2f1; border-radius: 8px; padding: 10px 13px; }
+.historyRole { font-size: 11px; font-weight: 700; color: var(--green); margin-bottom: 4px; }
+.historyText { font-size: 13.5px; line-height: 1.7; white-space: pre-wrap; }
+.historyUser .historyText { background: #f0f2f1; border-radius: 8px; padding: 10px 13px; }
+.historyEmpty { color: var(--muted); font-size: 13px; }
+
+/* ── report view (P1-1) ── */
+.reportCard {
+  flex: 1; /* fill the viewport like the conversation card */
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 6px 22px rgba(25, 50, 42, .035);
+  padding: 28px clamp(22px, 4vw, 44px) 26px;
+}
+.reportIntro { font-size: 14px; color: var(--ink); margin: 14px 0 8px; }
+.reportOutline { margin: 8px 0 20px; padding-left: 20px; font-size: 13px; color: var(--muted); line-height: 1.9; }
+.generateButton {
+  border: 0;
+  border-radius: 10px;
+  background: var(--green);
+  color: #fff;
+  padding: 12px 26px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.generateButton:disabled { background: #a9c4b9; cursor: not-allowed; }
+
+/* Generated-report download list (plan 6.1: 报告页含下载列表). */
+.reportHistory { margin-top: 26px; border-top: 1px solid #edf0ee; padding-top: 14px; max-width: 560px; }
+.reportHistoryRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 130px 56px;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 4px;
+  border-bottom: 1px solid #f2f5f3;
+  font-size: 12.5px;
+}
+.reportFileName { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reportHistoryRow small { color: var(--muted); }
+.reportDownloadButton {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 7px;
+  font-size: 11.5px;
+  color: var(--green-dark);
+  padding: 4px 0;
+}
+.reportDownloadButton:hover { border-color: var(--green); }
+.reportDownloadButton:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── placeholder views (history / report, B5 content) ── */
+.placeholderView {
+  width: min(980px, calc(100% - 40px));
+  margin: 24px auto;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 40px;
+  text-align: center;
+  color: var(--muted);
+}
+.placeholderView h2 { color: var(--ink); font-size: 18px; }
+.placeholderView p { font-size: 13px; }
