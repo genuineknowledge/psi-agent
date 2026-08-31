@@ -123,7 +123,14 @@ markers = ["schedule: schedule-based tests (> 30s)"]
 extra-paths = ["examples/haitun-workspace/skills/workflow"]
 
 [tool.ty.src]
-exclude = ["examples/haitun-workspace/skills/workflow/fusion_flow/generated"]
+exclude = [
+    "examples/haitun-workspace/skills/workflow/fusion_flow/generated",
+    # guoshu-weekly BFF is a self-contained uv project (web/guoshu-weekly-bff/
+    # pyproject.toml) whose dependencies (fastapi, reportlab, itsdangerous,
+    # …) the root environment does not install — module resolution for it
+    # cannot work here. Its own checks run inside its own project.
+    "web/guoshu-weekly-bff",
+]
 
 [tool.coverage.run]
 source = ["src/psi_agent"]
