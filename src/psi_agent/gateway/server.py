@@ -20,6 +20,7 @@ from psi_agent.gateway._defaults import (
     resolve_default_agent,
     resolve_default_workspace,
 )
+from psi_agent.gateway._docs_addon import DocsAddonManager
 from psi_agent.gateway._feishu_manager import FeishuManager
 from psi_agent.gateway._free_model import is_cloud_free_model
 from psi_agent.gateway._history_manager import HistoryManager
@@ -197,6 +198,63 @@ def _session_data(info: SessionInfo) -> dict[str, Any]:
     return data
 
 
+# Only the docs add-on needs cross-origin access: it runs in a Feishu-hosted iframe,
+# so its requests carry a Feishu CDN Origin rather than the gateway's own. Everything
+# else (SPA, feishu channel, CLI) is same-origin or a non-browser client and must NOT
+# become reachable from a web page — hence the path allowlist below.
+_CORS_PATH_PREFIXES = ("/docs-addon/",)
+
+
+def _cors_origin(request: web.Request) -> str:
+    """The request's Origin if it is explicitly allowed, else "".
+
+    Exact string match against the configured allowlist. Deliberately no wildcard
+    and no suffix matching: ``*`` would let any page on the internet drive the
+    agent, and naive suffix checks (``endswith(".feishu.cn")``) are defeated by
+    ``evil-feishu.cn``. Operators list the exact origins they trust.
+    """
+    origin = request.headers.get("Origin", "")
+    if not origin:
+        return ""
+    allowed: frozenset[str] = request.app["docs_addon_origins"]
+    return origin if origin in allowed else ""
+
+
+def _apply_cors(request: web.Request, response: web.StreamResponse) -> None:
+    """Attach CORS headers when the path opts in and the Origin is allowlisted."""
+    if not request.path.startswith(_CORS_PATH_PREFIXES):
+        return
+    origin = _cors_origin(request)
+    if not origin:
+        return
+    headers = response.headers
+    headers["Access-Control-Allow-Origin"] = origin
+    # Vary matters because the value above is per-Origin: without it a shared cache
+    # could hand one origin's response (and its Allow-Origin) to another.
+    headers["Vary"] = "Origin"
+    headers["Access-Control-Allow-Headers"] = "Content-Type, X-Psi-Addon-Token"
+    headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    headers["Access-Control-Max-Age"] = "600"
+
+
+@web.middleware
+async def _cors_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+    """CORS for the docs add-on endpoints only, plus their OPTIONS preflight.
+
+    Credentials are never allowed: the add-on authenticates with an explicit
+    ``X-Psi-Addon-Token`` header, so there is no reason to let browsers attach
+    ambient cookies — and ``Allow-Credentials`` with a reflected origin is how
+    CSRF-by-CORS happens.
+    """
+    if request.method == "OPTIONS" and request.path.startswith(_CORS_PATH_PREFIXES):
+        preflight = web.Response(status=204)
+        _apply_cors(request, preflight)
+        return preflight
+    response = await handler(request)
+    _apply_cors(request, response)
+    return response
+
+
 async def create_app(
     aim: AIManager,
     sm: SessionManager,
@@ -214,8 +272,12 @@ async def create_app(
     schedm: SchedulerManager | None = None,
     sum_m: SummaryManager | None = None,
     authm: AuthManager | None = None,
+    docs_addon_token: str = "",
+    docs_addon_origins: tuple[str, ...] = (),
+    docs_addon_ai_id: str = "",
+    docs_addon_workspace_root: str = "",
 ) -> web.Application:
-    app = web.Application(client_max_size=100 * 1024 * 1024)
+    app = web.Application(client_max_size=100 * 1024 * 1024, middlewares=[_cors_middleware])
     app["aim"] = aim
     app["rm"] = rm
     app["sm"] = sm
@@ -226,6 +288,15 @@ async def create_app(
     # startup restore); standalone tests may omit it.
     app["schedm"] = schedm or SchedulerManager(_sm=sm, _ai_id=scheduler_ai_id or feishu_ai_id)
     app["fm"] = FeishuManager(_sm=sm, _ai_id=feishu_ai_id, _workspace_root=feishu_workspace_root)
+    # Docs add-on: falls back to the feishu AI id, since both front an agent for the
+    # same Feishu tenant and operators otherwise have to configure the same id twice.
+    app["dam"] = DocsAddonManager(
+        _sm=sm,
+        _ai_id=docs_addon_ai_id or feishu_ai_id,
+        _workspace_root=docs_addon_workspace_root,
+        _token=docs_addon_token,
+    )
+    app["docs_addon_origins"] = frozenset(docs_addon_origins)
     app["oauth"] = OAuthRelay()
     app["wm"] = WorkspaceManager()
     app["cm"] = ChatManager()
@@ -297,6 +368,9 @@ async def create_app(
     app.router.add_post("/sessions/{session_id}/chat", _handle_chat)
     app.router.add_post("/feishu/route", _feishu_route)
     app.router.add_get("/feishu/routes", _list_feishu_routes)
+    app.router.add_post("/docs-addon/session", _docs_addon_session)
+    app.router.add_post("/docs-addon/chat", _docs_addon_chat)
+    app.router.add_get("/docs-addon/routes", _list_docs_addon_routes)
     app.router.add_get("/oauth/callback", _oauth_callback)
     app.router.add_get("/oauth/code", _oauth_take_code)
 
@@ -528,6 +602,145 @@ async def _feishu_route(request: web.Request) -> web.Response:
 async def _list_feishu_routes(request: web.Request) -> web.Response:
     fm: FeishuManager = request.app["fm"]
     return _json([asdict(r) for r in fm.list_routes()])
+
+
+def _docs_addon_guard(request: web.Request) -> web.Response | None:
+    """Reject the request unless the add-on endpoints are enabled and authenticated.
+
+    Returns the error response to send, or None when the caller may proceed. Kept
+    separate so every add-on handler goes through the same two gates and neither
+    can be forgotten: no token configured → the feature is off entirely.
+    """
+    dam: DocsAddonManager = request.app["dam"]
+    if not dam.enabled:
+        return _error(
+            "docs add-on endpoint is disabled: start the gateway with --docs-addon-token to enable it",
+            status=404,
+        )
+    if not dam.check_token(request.headers.get("X-Psi-Addon-Token", "")):
+        return _error("invalid or missing X-Psi-Addon-Token", status=401)
+    return None
+
+
+async def _ensure_scheduler_for(request: web.Request, session_id: str) -> None:
+    """Give this session's workspace its dedicated scheduler Session.
+
+    Schedules belong to the workspace but firing rights are per (session x schedule),
+    so they must run on the scheduler Session rather than the add-on one. **Every**
+    path that can spawn an add-on Session has to call this — the chat route spawns
+    too, and skipping it there would mean schedules created from a document never
+    fire until someone happens to hit the session route.
+    """
+    sm: SessionManager = request.app["sm"]
+    schedm: SchedulerManager = request.app["schedm"]
+    await schedm.ensure(
+        sm.get_workspace(session_id),
+        ai_id=sm.get_backend_id(session_id),
+        agent=sm.get_agent(session_id),
+    )
+
+
+async def _docs_addon_session(request: web.Request) -> web.Response:
+    """幂等地把一次「文档小组件会话」路由到其 Session, 首次见到时按需 spawn。
+
+    body: ``{doc_token, user_id, ai_id?, workspace?}`` →
+    ``201 {doc_token, user_id, session_id}``。
+
+    **对话不走这里, 走 ``POST /docs-addon/chat``** —— 那个端点自己会重新路由, 所以小组件
+    的正常链路根本不需要先调本端点。本端点的用处是「预热」(让 Session 先起来) 与运维排查,
+    回的 ``session_id`` 可用于对照 ``GET /sessions`` / 历史文件。别把它理解成「先拿
+    session_id 再去 ``/sessions/{id}/chat``」: 那条路径不在 CORS 白名单里 (刻意的, 见
+    ``_CORS_PATH_PREFIXES``), 浏览器端调不通。
+
+    ``channel_socket`` **刻意不返回** —— 它是本机 socket/pipe 路径, 对浏览器端毫无用处,
+    而泄漏本机路径只会给攻击者送情报 (feishu channel 是进程内可信客户端, 故那边照旧返回)。
+
+    注意 ``user_id`` 是客户端自报值, 只用于会话隔离, 不构成身份认证 —— 见 ``_docs_addon``
+    模块文档。
+    """
+    denied = _docs_addon_guard(request)
+    if denied is not None:
+        return denied
+
+    dam: DocsAddonManager = request.app["dam"]
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            return _error("Request body must be a JSON object", status=400)
+        doc_token = body.get("doc_token") or ""
+        user_id = body.get("user_id") or ""
+        _socket, session_id = await dam.route(
+            doc_token,
+            user_id,
+            ai_id=body.get("ai_id"),
+            workspace=body.get("workspace"),
+        )
+        await _ensure_scheduler_for(request, session_id)
+        return _json(
+            {
+                "doc_token": doc_token,
+                "user_id": user_id,
+                "session_id": session_id,
+            },
+            status=201,
+        )
+    except (TypeError, ValueError, KeyError) as e:
+        return _error(str(e), status=400)
+    except LookupError as e:
+        return _error(str(e), status=404)
+    except Exception as e:
+        logger.error(f"Unexpected error routing docs add-on session: {e!r}")
+        return _error(str(e), status=500)
+
+
+async def _list_docs_addon_routes(request: web.Request) -> web.Response:
+    denied = _docs_addon_guard(request)
+    if denied is not None:
+        return denied
+    dam: DocsAddonManager = request.app["dam"]
+    return _json([asdict(r) for r in dam.list_routes()])
+
+
+async def _docs_addon_chat(request: web.Request) -> web.StreamResponse:
+    """一轮小组件对话, SSE 流式返回, 事件格式与 ``/sessions/{id}/chat`` 完全一致。
+
+    body: ``{doc_token, user_id, chunks: [{"type":"text","text":"..."}]}``。
+
+    这里**不接受 session_id** —— 由 ``(doc_token, user_id)`` 重新路由一次。若让浏览器直接
+    指定 session_id, 任何拿到 token 的人都能把话灌进别人的会话或读到别人的回答; 而路由是
+    幂等的, 重算一次的成本只是一次字典命中。
+    """
+    denied = _docs_addon_guard(request)
+    if denied is not None:
+        return denied
+
+    dam: DocsAddonManager = request.app["dam"]
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            return _error("Request body must be a JSON object", status=400)
+        raw_chunks = body.get("chunks")
+        if not isinstance(raw_chunks, list):
+            return _error("chunks must be a JSON array", status=400)
+        channel_socket, session_id = await dam.route(
+            body.get("doc_token") or "",
+            body.get("user_id") or "",
+        )
+    except (ValueError, TypeError, KeyError) as e:
+        return _error(str(e), status=400)
+    except LookupError as e:
+        return _error(str(e), status=404)
+
+    # This route spawns Sessions too, so it owes the same scheduler hookup as
+    # /docs-addon/session — see _ensure_scheduler_for.
+    await _ensure_scheduler_for(request, session_id)
+
+    return await _stream_chat_response(
+        request,
+        channel_socket=channel_socket,
+        session_id=session_id,
+        body={"chunks": raw_chunks},
+    )
 
 
 _OAUTH_DONE_HTML = (
@@ -831,9 +1044,60 @@ async def _set_todo_segment_label(request: web.Request) -> web.Response:
     return _json(seg)
 
 
+async def _stream_chat_response(
+    request: web.Request,
+    *,
+    channel_socket: str,
+    session_id: str,
+    body: dict[str, Any],
+) -> web.StreamResponse:
+    """Run one chat turn and stream it back as SSE.
+
+    Shared by ``/sessions/{id}/chat`` and the docs add-on's own chat route so both
+    speak the identical event protocol (``{"type": ...}`` lines then ``[DONE]``).
+    """
+    cm: ChatManager = request.app["cm"]
+    resp = web.StreamResponse(
+        status=200,
+        reason="OK",
+        headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+    # CORS headers must be attached before prepare(): once the response is prepared
+    # the headers are on the wire, and the outer middleware's post-hoc _apply_cors
+    # would be a no-op — the browser would then discard the whole stream.
+    _apply_cors(request, resp)
+    try:
+        await resp.prepare(request)
+    except Exception:
+        logger.warning(f"Failed to prepare SSE response for session {session_id!r}, client likely disconnected")
+        return resp
+
+    try:
+        # Long tool / first-token waits yield nothing for minutes; keep the browser
+        # fetch alive with SSE comments (ignored by readSSE) without cancelling
+        # the upstream ChatManager generator — see `_write_chat_sse_with_keepalive`.
+        await _write_chat_sse_with_keepalive(
+            resp,
+            cm.handle(channel_socket, body),
+            session_id=session_id,
+        )
+    except Exception as e:
+        logger.warning(f"Chat error for session {session_id!r}: {e!r}")
+        with suppress(Exception):
+            await resp.write(f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n".encode())
+    finally:
+        with suppress(Exception):
+            await resp.write(b"data: [DONE]\n\n")
+    return resp
+
+
 async def _handle_chat(request: web.Request) -> web.StreamResponse:
     sm: SessionManager = request.app["sm"]
-    cm: ChatManager = request.app["cm"]
     session_id = request.match_info["session_id"]
     try:
         channel_socket = sm.get_socket(session_id)
@@ -861,39 +1125,12 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
     except (ValueError, TypeError) as e:
         return _error(f"Invalid request: {e}", status=400)
 
-    resp = web.StreamResponse(
-        status=200,
-        reason="OK",
-        headers={
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+    return await _stream_chat_response(
+        request,
+        channel_socket=channel_socket,
+        session_id=session_id,
+        body=body,
     )
-    try:
-        await resp.prepare(request)
-    except Exception:
-        logger.warning(f"Failed to prepare SSE response for session {session_id!r}, client likely disconnected")
-        return resp
-
-    try:
-        # Long tool / first-token waits yield nothing for minutes; keep the browser
-        # fetch alive with SSE comments (ignored by readSSE) without cancelling
-        # the upstream ChatManager generator — see `_write_chat_sse_with_keepalive`.
-        await _write_chat_sse_with_keepalive(
-            resp,
-            cm.handle(channel_socket, body),
-            session_id=session_id,
-        )
-    except Exception as e:
-        logger.warning(f"Chat error for session {session_id!r}: {e!r}")
-        with suppress(Exception):
-            await resp.write(f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n".encode())
-    finally:
-        with suppress(Exception):
-            await resp.write(b"data: [DONE]\n\n")
-    return resp
 
 
 # ---------------------------------------------------------------- 认证 (/auth/*)

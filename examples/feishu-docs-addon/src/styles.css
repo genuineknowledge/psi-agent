@@ -1,0 +1,189 @@
+/* 跟随飞书文档的浅色/深色与字号，避免小组件在正文里显得突兀。 */
+:root {
+  color-scheme: light dark;
+  --ha-border: rgba(31, 35, 41, 0.15);
+  --ha-bg-user: rgba(20, 86, 240, 0.08);
+  --ha-bg-assistant: rgba(31, 35, 41, 0.04);
+  --ha-fg: #1f2329;
+  --ha-fg-weak: #646a73;
+  --ha-primary: #1456f0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ha-border: rgba(255, 255, 255, 0.2);
+    --ha-bg-user: rgba(78, 131, 253, 0.16);
+    --ha-bg-assistant: rgba(255, 255, 255, 0.06);
+    --ha-fg: #e8e8e8;
+    --ha-fg-weak: #a0a0a0;
+    --ha-primary: #4e83fd;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  color: var(--ha-fg);
+}
+
+.ha-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--ha-border);
+  border-radius: 8px;
+}
+
+.ha-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ha-title {
+  font-weight: 600;
+}
+
+.ha-icon-btn,
+.ha-save,
+.ha-send,
+.ha-insert {
+  cursor: pointer;
+  border-radius: 6px;
+  border: 1px solid var(--ha-border);
+  background: transparent;
+  color: var(--ha-fg);
+  padding: 4px 10px;
+  font-size: 13px;
+}
+
+.ha-send {
+  background: var(--ha-primary);
+  border-color: var(--ha-primary);
+  color: #fff;
+  align-self: flex-end;
+  padding: 6px 16px;
+}
+
+.ha-send:disabled,
+.ha-insert:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ha-settings {
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--ha-border);
+  border-radius: 6px;
+}
+
+.ha-settings--open {
+  display: flex;
+}
+
+.ha-label {
+  font-size: 12px;
+  color: var(--ha-fg-weak);
+}
+
+.ha-field {
+  padding: 6px 8px;
+  border: 1px solid var(--ha-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ha-fg);
+  font: inherit;
+}
+
+.ha-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ha-fg-weak);
+}
+
+.ha-save {
+  align-self: flex-start;
+}
+
+.ha-log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.ha-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+
+.ha-msg--user {
+  background: var(--ha-bg-user);
+}
+
+.ha-msg--assistant {
+  background: var(--ha-bg-assistant);
+}
+
+.ha-msg-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ha-insert {
+  align-self: flex-start;
+}
+
+.ha-notice:empty {
+  display: none;
+}
+
+.ha-notice {
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+
+.ha-notice--error {
+  color: #d83931;
+  background: rgba(216, 57, 49, 0.1);
+}
+
+.ha-notice--ok {
+  color: #2ea121;
+  background: rgba(46, 161, 33, 0.1);
+}
+
+.ha-notice--info {
+  color: var(--ha-fg-weak);
+  background: var(--ha-bg-assistant);
+}
+
+.ha-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ha-input {
+  width: 100%;
+  resize: vertical;
+  padding: 8px;
+  border: 1px solid var(--ha-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ha-fg);
+  font: inherit;
+}
