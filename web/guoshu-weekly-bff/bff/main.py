@@ -16,15 +16,17 @@ import base64
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from .config import BffConfig, load_config
+from .export import build_excel, build_pdf
 from .gateway_proxy import GatewayProxy
 from .identity import IdentityStore, SessionSigner, compare_digest, workspace_for
 from .ratelimit import SlidingWindowLimiter
+from .report import build_summary_document, fetch_weekly_summary
 
 COOKIE_NAME = "guoshu_weekly_session"
 
@@ -56,7 +58,7 @@ def _config(request: Request) -> BffConfig:
     return request.app.state.config
 
 
-def _current_user(request: Request, config: BffConfig = Depends(_config)) -> str:
+def _current_user(request: Request, config: Annotated[BffConfig, Depends(_config)]) -> str:
     """Login-state check: no valid signed session -> 401, Gateway never sees it."""
     token = request.cookies.get(COOKIE_NAME, "")
     username = request.app.state.signer.verify(token) if token else None
@@ -69,7 +71,7 @@ def _current_user(request: Request, config: BffConfig = Depends(_config)) -> str
 async def login(
     request: Request,
     response: Response,
-    config: BffConfig = Depends(_config),
+    config: Annotated[BffConfig, Depends(_config)],
 ) -> dict[str, object]:
     body = await request.json()
     username = str(body.get("username", "")).strip()
@@ -85,14 +87,14 @@ async def login(
 @app.post("/api/logout")
 async def logout(
     response: Response,
-    username: str = Depends(_current_user),
+    username: Annotated[str, Depends(_current_user)],
 ) -> dict[str, object]:
     response.delete_cookie(COOKIE_NAME)
     return {"ok": True}
 
 
 @app.get("/api/health")
-async def health(request: Request, config: BffConfig = Depends(_config)) -> dict[str, object]:
+async def health(request: Request, config: Annotated[BffConfig, Depends(_config)]) -> dict[str, object]:
     proxy: GatewayProxy = request.app.state.proxy
     gateway_ok = False
     try:
@@ -106,8 +108,8 @@ async def health(request: Request, config: BffConfig = Depends(_config)) -> dict
 @app.post("/api/sessions")
 async def create_session(
     request: Request,
-    username: str = Depends(_current_user),
-    config: BffConfig = Depends(_config),
+    username: Annotated[str, Depends(_current_user)],
+    config: Annotated[BffConfig, Depends(_config)],
 ) -> dict[str, object]:
     proxy: GatewayProxy = request.app.state.proxy
     # AI binding: the Gateway needs backend_type/backend_id or the Session
@@ -132,7 +134,7 @@ async def create_session(
 # and these lines must not contradict that.
 _IDENTITY_INSTRUCTION = {
     "领导": "回答组织方式采用领导视角:结论先行,给汇总、风险与滞后项、跨组对比,明细收在末尾。",
-    "个人": "回答组织方式采用个人视角:过程优先,逐项列出当前状态与下一步。",
+    "员工": "回答组织方式采用员工视角:过程优先,逐项列出当前状态与下一步。",
 }
 _PREFERENCE_INSTRUCTION = {
     "结论优先": "先给结论,再给依据与明细。",
@@ -214,8 +216,8 @@ def _gateway_chat_body(body: dict[str, object]) -> dict[str, object]:
 async def chat(
     session_id: str,
     request: Request,
-    username: str = Depends(_current_user),
-    config: BffConfig = Depends(_config),
+    username: Annotated[str, Depends(_current_user)],
+    config: Annotated[BffConfig, Depends(_config)],
 ) -> StreamingResponse:
     limiter: SlidingWindowLimiter = request.app.state.limiter
     if not limiter.allow(username):
@@ -233,7 +235,7 @@ async def chat(
 async def history(
     session_id: str,
     request: Request,
-    username: str = Depends(_current_user),
+    username: Annotated[str, Depends(_current_user)],
 ) -> list[dict[str, object]]:
     """The Gateway returns the transcript as a JSON *array* — the annotation
     must match it or FastAPI rejects the response with a 500."""
@@ -246,22 +248,20 @@ async def history(
 @app.get("/api/reports/weekly-summary")
 async def weekly_summary(
     request: Request,
-    username: str = Depends(_current_user),
+    username: Annotated[str, Depends(_current_user)],
 ) -> Response:
     """P1-1: generate the weekly summary Word document and download it.
 
     Deterministic: the BFF fetches aggregated calibers from the取数 service
     and lays them out itself — no model turn involved (plan 5.4).
     """
-    from .report import build_summary_document, fetch_weekly_summary
-
     limiter: SlidingWindowLimiter = request.app.state.limiter
     if not limiter.allow(f"{username}:report"):
         raise HTTPException(status_code=429, detail="rate limit exceeded")
     try:
         data = await fetch_weekly_summary(request.app.state.config)
         document = build_summary_document(data)
-    except Exception as exc:  # noqa: BLE001 - the caller gets an honest 502
+    except Exception as exc:
         raise HTTPException(status_code=502, detail=f"report generation failed: {exc!r}") from exc
     filename = f"weekly-summary-{date.today().isoformat()}.docx"
     return Response(
@@ -275,11 +275,9 @@ async def weekly_summary(
 async def export_history(
     session_id: str,
     request: Request,
-    username: str = Depends(_current_user),
+    username: Annotated[str, Depends(_current_user)],
 ) -> Response:
     """P1-3: export the conversation history as Excel or PDF."""
-    from .export import build_excel, build_pdf
-
     format = request.query_params.get("format", "excel").strip().lower()
     if format not in {"excel", "pdf"}:
         raise HTTPException(status_code=400, detail="format must be excel or pdf")

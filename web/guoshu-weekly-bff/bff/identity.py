@@ -12,14 +12,13 @@ model says, never by a request header the browser can forge.
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import tempfile
 from pathlib import Path
 
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-from .config import BffConfig, SESSION_MAX_AGE_SECONDS, load_token_map
+from .config import SESSION_MAX_AGE_SECONDS, BffConfig, load_token_map
 
 
 class SessionSigner:
@@ -34,7 +33,7 @@ class SessionSigner:
     def verify(self, token: str) -> str | None:
         try:
             payload = self._serializer.loads(token, max_age=SESSION_MAX_AGE_SECONDS)
-        except (BadSignature, SignatureExpired):
+        except BadSignature, SignatureExpired:
             return None
         username = payload.get("u") if isinstance(payload, dict) else None
         return username if isinstance(username, str) and username else None

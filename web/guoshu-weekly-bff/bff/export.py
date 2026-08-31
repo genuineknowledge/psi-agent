@@ -184,7 +184,13 @@ def _pdf_story_from_markdown(markdown: str) -> list[Any]:
     paragraphs with **bold** / `code` inline markup."""
     body_style = ParagraphStyle("body", fontName="STSong-Light", fontSize=10.5, leading=15, spaceAfter=6)
     list_style = ParagraphStyle("list", parent=body_style, leftIndent=14)
-    code_style = ParagraphStyle("code", fontName="Courier", fontSize=9, leading=12, backColor=colors.HexColor("#F2F4F3"))
+    code_style = ParagraphStyle(
+        "code",
+        fontName="Courier",
+        fontSize=9,
+        leading=12,
+        backColor=colors.HexColor("#F2F4F3"),
+    )
     heading_sizes = {1: 14, 2: 12.5, 3: 11.5}
 
     lines = markdown.split("\n")
@@ -241,12 +247,16 @@ def _pdf_story_from_markdown(markdown: str) -> list[Any]:
         # Paragraph: run until a blank line or the next block start.
         buffer_lines = [stripped]
         index += 1
-        while index < len(lines) and lines[index].strip() and not (
-            lines[index].strip().startswith("|")
-            or lines[index].strip().startswith("#")
-            or lines[index].strip().startswith("```")
-            or re.match(r"^[-*]\s+", lines[index].strip())
-            or re.match(r"^\d+[.)]\s+", lines[index].strip())
+        while (
+            index < len(lines)
+            and lines[index].strip()
+            and not (
+                lines[index].strip().startswith("|")
+                or lines[index].strip().startswith("#")
+                or lines[index].strip().startswith("```")
+                or re.match(r"^[-*]\s+", lines[index].strip())
+                or re.match(r"^\d+[.)]\s+", lines[index].strip())
+            )
         ):
             buffer_lines.append(lines[index].strip())
             index += 1

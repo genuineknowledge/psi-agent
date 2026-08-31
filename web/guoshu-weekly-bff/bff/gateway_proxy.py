@@ -18,7 +18,11 @@ class GatewayProxy:
     def __init__(self, config: BffConfig) -> None:
         self._base = config.gateway_base_url
         self._shared_secret = config.gateway_shared_secret
-        self._client = httpx.AsyncClient(base_url=self._base, trust_env=False, timeout=httpx.Timeout(120.0, connect=10.0))
+        self._client = httpx.AsyncClient(
+            base_url=self._base,
+            trust_env=False,
+            timeout=httpx.Timeout(120.0, connect=10.0),
+        )
 
     def _headers(self) -> dict[str, str]:
         if self._shared_secret:
