@@ -362,7 +362,7 @@ export function ChatView({ onSessionExpired }: { onSessionExpired: () => void })
               身份
               <select value={identity} onChange={(e) => setIdentity(e.target.value)}>
                 <option>领导</option>
-                <option>个人</option>
+                <option>员工</option>
               </select>
             </label>
             <label>
