@@ -58,7 +58,7 @@ class SummaryManager:
         }
         try:
             connector, endpoint = resolve_connector_and_endpoint(ai_socket)
-            timeout = ClientTimeout(total=None)
+            timeout = ClientTimeout(total=None, connect=30.0)
             async with (
                 ClientSession(connector=connector, timeout=timeout) as session,
                 session.post(endpoint, json=body) as resp,

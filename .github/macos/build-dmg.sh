@@ -364,6 +364,7 @@ run_capped() {
         i=$((i + 1))
     done
     kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
     return 124
 }
 
@@ -579,11 +580,12 @@ if hdiutil attach "$DMG_PATH" -mountpoint "$MNT" -nobrowse -readonly >/dev/null 
         smoke "process still alive after 40s (expected: launcher waits on the Gateway)"
         SMOKE_OK=1
         kill -TERM "-$SMOKE_PID" 2>/dev/null || kill -TERM "$SMOKE_PID" 2>/dev/null || true
+        wait "$SMOKE_PID" 2>/dev/null || true
     else
         # Exit status is the diagnosis: 126/127 point at exec (bad interpreter,
         # not executable), >128 is a signal -- 137/SIGKILL is what a hardened
         # runtime or library-validation rejection looks like from out here.
-        wait "$SMOKE_PID" 2>/dev/null
+        wait "$SMOKE_PID" 2>/dev/null || true
         smoke "process exited early, status $?"
     fi
 
