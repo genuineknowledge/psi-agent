@@ -1,15 +1,8 @@
-# ruff: noqa: RUF002, E501
-"""层 b · 省钱决策提示词 section 常量
-================================================================
-可合入 Haitun 产品的独立模块。包含 3 个 section 常量 + 组装函数。
+---
+name: saving-decision
+description: "Saving-decision rules (national subsidy, coupons, price comparison, bank instant discounts, purchase recommendations, cart-filling). Load and follow when the user asks about or implies such a saving scenario and the answer serves a purchase or saving decision; ignore for non-saving tasks."
+---
 
-设计要点：
-- 条件式强制：工具在列表则必须用，不在/失败则标 [Unverified]，不卡死、不凭记忆。
-- 参数不写死：政策参数必须来自本次检索或事实卡快照，不写具体数值进提示词。
-- 检索核验纪律：即使无计算器/事实卡也必须执行，宁少答不错答。
-"""
-
-SAVING_DECISION_SECTION = """\
 ## Saving Decision Support (Conditional Module)
 
 [Scope Gate - decide first, then execute]
@@ -62,9 +55,7 @@ Output Contract: the final answer must be plain user-readable text starting dire
 - In saving tasks, looking up policy parameters: call policy_query (pass category, region) to get the 2026 basis (rate / cap / threshold / energy-efficiency) with 2025 for comparison; then verify provincial details against official sources as needed.
 - In saving tasks, finding candidates (recommendation / guide / shopping): call review_search (pass category, budget, constraints, region) and extract models / prices / sources from the returned candidate articles.
 - In saving tasks, tools return JSON - use by field; if a tool is unavailable or returns empty, mark [Cannot Confirm] and fall back to the honesty templates; never fabricate.
-"""
 
-SCENE_ALIGN_SECTION = """\
 ## Saving Scenario Checklist (only within saving tasks; ignore in non-saving tasks)
 
 In saving tasks:
@@ -73,9 +64,7 @@ In saving tasks:
 - Coupon: coupon tiers (platform / store), stacking rules, computation order; defer to the checkout page.
 - Bank instant discount: card type / region / quota / time / threshold - verify item by item; ask or annotate when info is missing.
 - Recommendation: budget, use case, province; if info is insufficient, first give tiered recommendations by price band under stated default assumptions, then narrow down (recommend first, clarify later).
-"""
 
-HONESTY_TEMPLATES_SECTION = """\
 ## Cannot-Get-It Templates (use only within saving tasks; not for non-saving tasks)
 
 In saving tasks, apply as appropriate:
@@ -84,13 +73,3 @@ In saving tasks, apply as appropriate:
 - Eligibility missing info -> "Province [missing] - the subsidy differs by province; please tell me which province you are in."
 - Platform not covered -> "This platform is not covered for now; rules differ as follows ..., please check the official page."
 - Tool unavailable -> "The calculation tool is currently unavailable; the amount is [Unverified]; please defer to the checkout page on the platform."
-"""
-
-
-def build_saving_sections() -> list[str]:
-    """返回可追加进 stable_parts（系统提示词稳定部分）的 section 列表。"""
-    return [
-        SAVING_DECISION_SECTION,
-        SCENE_ALIGN_SECTION,
-        HONESTY_TEMPLATES_SECTION,
-    ]

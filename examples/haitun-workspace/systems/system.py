@@ -40,7 +40,6 @@ import importlib
 import json
 import logging
 import os
-from saving_decision_sections import build_saving_sections
 import platform
 import re
 import types
@@ -1244,7 +1243,7 @@ this workspace, generated workflows, instruction files, or committed `.env` file
             stable_parts += ["", BOOTSTRAP_PENDING_SECTION]
 
         stable_parts += ["", SILENT_REPLIES_SECTION]
-        stable_parts += ["", *build_saving_sections()]
+        stable_parts += ["", _SAVING_GATE_SECTION]
 
         model_identity = build_model_identity_line(model)
         if model_identity:
@@ -1450,6 +1449,15 @@ async def system_before_turn(
         logger.warning("Background supervisor unavailable: %r", exc, exc_info=True)
         return {}
     return {"supervisor_advice": advice} if isinstance(advice, dict) else {}
+
+
+_SAVING_GATE_SECTION = """\
+## Saving-decision gate
+For purchase / money-saving requests (national subsidy, coupons, price comparison, bank instant discounts,
+recommendations, cart-filling), you MUST load and follow `skills/saving-decision/SKILL.md`
+(read it with the read tool) and call its tools (policy_query / subsidy_calc / review_search)
+as instructed there. Ignore this gate for non-saving tasks.
+"""
 
 
 async def system_prompt_builder(
