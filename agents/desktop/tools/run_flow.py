@@ -1518,7 +1518,10 @@ def _program_error_outputs(
     message: str,
     attempts: list[_ProgramProcessResult],
 ) -> dict[str, object]:
-    if getattr(invocation.dispatch, "iteration_index", None) is not None:
+    if (
+        getattr(invocation.dispatch, "iteration_index", None) is not None
+        or getattr(invocation.dispatch, "loop_id", None) is not None
+    ):
         invocation_id = getattr(invocation.dispatch, "invocation_id", "") or invocation.binding_name
         summary = " ".join(message.split())
         if len(summary) > _PROGRAM_FOREACH_ERROR_MESSAGE_LIMIT:
