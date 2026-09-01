@@ -34,6 +34,8 @@ from .workflow_execution import (
 )
 
 STATE_VERSION = 3
+DEFAULT_MAX_LOOP_EPOCHS = 25
+
 type RunStatus = Literal[
     "running",
     "waiting_for_human",
@@ -53,6 +55,7 @@ _RUN_KEYS = frozenset(
         "definition_digest",
         "inputs",
         "resource_capacities",
+        "max_loop_epochs",
         "checkpoint",
         "prepared_request",
         "human_responses",
@@ -60,6 +63,7 @@ _RUN_KEYS = frozenset(
         "error",
     }
 )
+_LEGACY_RUN_KEYS = _RUN_KEYS - {"max_loop_epochs"}
 _CHECKPOINT_KEYS = frozenset(
     {
         "workflow_id",
@@ -172,6 +176,7 @@ class HumanWorkflowRun:
     definition_digest: str
     inputs: dict[str, object]
     resource_capacities: dict[str, ResourceCapacity]
+    max_loop_epochs: int = DEFAULT_MAX_LOOP_EPOCHS
     checkpoint: ExecutionCheckpoint | None = None
     prepared_request: HumanRequestSpec | None = None
     human_responses: dict[str, object] = field(default_factory=dict)
@@ -321,6 +326,7 @@ class JobStore:
         definition_digest: str,
         inputs: Mapping[str, object],
         resource_capacities: Mapping[str, ResourceCapacity] | None = None,
+        max_loop_epochs: int = DEFAULT_MAX_LOOP_EPOCHS,
         checkpoint: ExecutionCheckpoint | None = None,
     ) -> HumanWorkflowRun:
         """Create and persist a new running job with an opaque run ID."""
@@ -342,6 +348,7 @@ class JobStore:
                 definition_digest=definition_digest,
                 inputs=dict(inputs),
                 resource_capacities=dict(resource_capacities or {}),
+                max_loop_epochs=max_loop_epochs,
                 checkpoint=checkpoint,
             )
             run_lock: _RunLock | None = None
@@ -575,6 +582,7 @@ def _run_to_json(run: HumanWorkflowRun) -> dict[str, object]:
         "definition_digest": run.definition_digest,
         "inputs": run.inputs,
         "resource_capacities": capacities,
+        "max_loop_epochs": run.max_loop_epochs,
         "checkpoint": checkpoint,
         "prepared_request": request,
         "human_responses": run.human_responses,
@@ -587,7 +595,8 @@ def _run_from_json(payload: object) -> HumanWorkflowRun:
     if not isinstance(payload, dict):
         raise InvalidRunStateError("run state must be a JSON object")
     payload = cast(dict[str, object], payload)
-    _require_exact_keys(payload, _RUN_KEYS, "run state")
+    if frozenset(payload) not in {_RUN_KEYS, _LEGACY_RUN_KEYS}:
+        _require_exact_keys(payload, _RUN_KEYS, "run state")
     if type(payload["version"]) is not int or payload["version"] != STATE_VERSION:
         raise InvalidRunStateError(f"unsupported run state version: {payload['version']!r}")
 
@@ -788,6 +797,10 @@ def _run_from_json(payload: object) -> HumanWorkflowRun:
             ),
             inputs=_require_json_mapping(payload["inputs"], context="inputs"),
             resource_capacities=_decode_resource_capacities(payload["resource_capacities"]),
+            max_loop_epochs=_require_int(
+                payload.get("max_loop_epochs", DEFAULT_MAX_LOOP_EPOCHS),
+                context="max_loop_epochs",
+            ),
             checkpoint=checkpoint,
             prepared_request=request,
             human_responses=_require_json_mapping(
@@ -835,6 +848,8 @@ def _validate_run(
 ) -> None:
     if type(run.version) is not int or run.version != STATE_VERSION:
         raise error_type(f"version must be {STATE_VERSION}")
+    if type(run.max_loop_epochs) is not int or run.max_loop_epochs < 1:
+        raise error_type("max_loop_epochs must be a positive integer")
     _validate_opaque_id(run.run_id, "run_id", error_type=error_type)
     if run.status not in {
         "running",
@@ -1106,6 +1121,7 @@ def _reject_json_constant(value: str) -> object:
 
 
 __all__ = [
+    "DEFAULT_MAX_LOOP_EPOCHS",
     "STATE_VERSION",
     "HumanRequestSpec",
     "HumanWorkflowRun",

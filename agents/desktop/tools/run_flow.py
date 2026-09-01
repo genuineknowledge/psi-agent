@@ -53,6 +53,7 @@ from fusion_flow.execution import (  # noqa: E402
 )
 from fusion_flow.execution import run as _run_execution  # noqa: E402
 from fusion_flow.job_store import (  # noqa: E402
+    DEFAULT_MAX_LOOP_EPOCHS,
     HumanRequestSpec,
     HumanWorkflowRun,
     JobStore,
@@ -2664,6 +2665,7 @@ async def _execute_persisted_run(
                     inputs=run.inputs,
                     complete=agent_sessions.complete,
                     resource_capacities=run.resource_capacities,
+                    max_loop_epochs=run.max_loop_epochs,
                     supported_executor_kinds=("Agent", "Human", "Program"),
                     work_dir=_workspace_dir(),
                     run_program=complete_program,
@@ -2748,6 +2750,7 @@ async def run_flow(
     flow_path: str,
     inputs_json: str = "{}",
     resource_capacities_json: str = "",
+    max_loop_epochs: int = DEFAULT_MAX_LOOP_EPOCHS,
 ) -> str:
     """Start one G4 workflow and return outputs or a persisted Human request.
 
@@ -2756,6 +2759,8 @@ async def run_flow(
         inputs_json: JSON object keyed by the workflow's input artifact IDs.
         resource_capacities_json: Optional JSON object mapping resource IDs to
             positive counts or concrete instance-ID arrays.
+        max_loop_epochs: Positive upper bound on loop epochs across Human
+            pauses and resumes.
 
     Returns:
         A JSON object keyed by output artifact IDs, or a
@@ -2766,6 +2771,8 @@ async def run_flow(
     ai_socket = current_tool_ai_socket()
     if ai_socket is None:
         raise RuntimeError("run_flow must be called by a psi-agent Session")
+    if type(max_loop_epochs) is not int or max_loop_epochs < 1:
+        raise ValueError("max_loop_epochs must be a positive integer")
 
     source = await _read_flow_source(flow_path)
     inputs = _parse_mapping(inputs_json, label="inputs_json")
@@ -2785,6 +2792,7 @@ async def run_flow(
             definition_digest=_workflow_definition_digest(source, instruction_files),
             inputs=inputs,
             resource_capacities=resource_capacities,
+            max_loop_epochs=max_loop_epochs,
             checkpoint=initial_checkpoint,
         )
         async with store.acquire(run.run_id) as lease:
@@ -2841,6 +2849,7 @@ async def run_flow(
                 inputs=inputs,
                 complete=agent_sessions.complete,
                 resource_capacities=resource_capacities,
+                max_loop_epochs=max_loop_epochs,
                 supported_executor_kinds=("Agent", "Program"),
                 resolve_instruction=_cached_instruction_resolver(instruction_files),
                 work_dir=_workspace_dir(),
