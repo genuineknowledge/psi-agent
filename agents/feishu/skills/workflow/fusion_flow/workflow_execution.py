@@ -828,8 +828,8 @@ def _discover_feedback_loop(graph: WorkflowGraph) -> _FeedbackLoopDraft | None:
             artifact.artifact_id
             for artifact in graph.artifacts
             if artifact.is_input
-            and producer_by_artifact.get(artifact.artifact_id) in component
-            and bool(consumers_by_artifact.get(artifact.artifact_id, set()) & component)
+            and producer_by_artifact.get(artifact.artifact_id) in loop_steps
+            and bool(consumers_by_artifact.get(artifact.artifact_id, set()) & loop_steps)
         )
     )
     if not feedback_ids:
