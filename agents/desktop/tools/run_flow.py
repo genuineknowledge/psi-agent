@@ -25,7 +25,7 @@ from anyio.abc import ByteReceiveStream, Process
 from json_repair import repair_json
 from loguru import logger
 
-from psi_agent.session.agent import SessionAgent, current_tool_ai_socket, AgentError
+from psi_agent.session.agent import AgentError, SessionAgent, current_tool_ai_socket
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.schedule_registry import ScheduleRegistry
@@ -2309,8 +2309,7 @@ async def _complete_agent_step(
         parameters={
             "type": "object",
             "properties": {
-                artifact_id: {"type": "boolean"} if context.terminal else {}
-                for artifact_id in context.output_ids
+                artifact_id: {"type": "boolean"} if context.terminal else {} for artifact_id in context.output_ids
             },
             "required": list(context.output_ids),
             "additionalProperties": False,
