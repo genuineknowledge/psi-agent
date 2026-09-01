@@ -254,6 +254,31 @@ async def test_post_handles_error_chunk(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_post_non_200_invalid_json_fallback(tmp_path):
+    """Non-200 HTTP response with non-JSON body handles exception gracefully and raises ChannelError."""
+    sock_path = str(tmp_path / "session.sock")
+
+    async def handler(request: web.Request) -> web.Response:
+        return web.Response(text="Bad Gateway HTML", status=502)
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    await anyio.sleep(0.1)
+
+    async with ChannelCore(sock_path) as core:
+        with pytest.raises(ChannelError, match="Bad Gateway HTML"):
+            async for _ in core.post([TextChunk("hi")]):
+                pass
+
+    await runner.cleanup()
+
+
+@pytest.mark.anyio
 async def test_post_non_200_http_error(tmp_path):
     """Non-200 HTTP response raises with error message."""
     sock_path = str(tmp_path / "session.sock")
