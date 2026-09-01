@@ -1,11 +1,16 @@
 # ruff: noqa: RUF001, RUF002, RUF003
 """国补品类共享常量与匹配（policy_query / subsidy_calc 共用，杜绝分叉）。
 
-v1（2026-08-26，review 修复 #1）：
-- 白名单别名 + 收尾匹配：完全相等或「品牌/系列 + 品类」以别名结尾才命中；
-- 组合词排除：电视柜/空调扇/手机壳 等「品类词 + 附属词」不命中；
-- 长别名优先：平板电脑 → 平板（数码），不因含「电脑」误归家电。
+v2（2026-09-01，枚举化改造）：
+- 品类归一化交给模型：调用工具前须把用户说法映射到 ENUM 十个枚举之一（见 SKILL.md 约束 8）；
+- 工具侧只做确定性兜底：白名单别名收尾匹配（笔记本/游戏本→电脑 等高频别名，防模型漏映射）
+  + 未知返回 None（由工具返回 suggest_search）；
+- 删除组合词穷举（PARTS_WORDS）：电视柜/空调扇/手机壳 等由「模型映射不出枚举→不调工具」兜底，
+  工具收尾匹配天然不命中（它们不以品类词结尾）。
 """
+
+# 国补品类枚举（工具只认这些值；模型调用前须映射到此）
+ENUM = ("电脑", "手机", "平板", "手表", "眼镜", "空调", "冰箱", "洗衣机", "电视", "热水器")
 
 # 品类 → 别名白名单（归一品类名；完全相等或以别名结尾命中）
 ALIASES = {
@@ -21,24 +26,17 @@ ALIASES = {
     "热水器": ["热水器", "电热水器", "燃气热水器"],
 }
 
-# 组合词排除：以这些词结尾的一律不算品类（电视柜/空调扇/手机壳/数据线…）
-PARTS_WORDS = ("柜", "扇", "壳", "膜", "支架", "配件", "套", "罩", "挂架", "底座", "贴", "线", "充电器", "保护套")
-
 
 def match_category(subject: str):
     """返回归一品类名；无法确定返回 None。"""
     s = (subject or "").strip()
     if not s:
         return None
-    if s.endswith(PARTS_WORDS):
-        return None
     best, best_len = None, -1
     for cat, aliases in ALIASES.items():
         for a in aliases:
             if (s == a or s.endswith(a)) and len(a) > best_len:
                 best, best_len = cat, len(a)
-                if len(a) > best_len:
-                    best, best_len = cat, len(a)
     return best
 
 
