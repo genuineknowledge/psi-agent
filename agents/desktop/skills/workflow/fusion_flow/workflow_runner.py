@@ -634,9 +634,7 @@ def _normalize_terminal_output(
     return {output_ids[0]: value}
 
 
-def _output_contract(output_ids: tuple[str, ...], *, terminal: bool = False) -> str:
-    if terminal:
-        return "Return exactly one Boolean value: true or false."
+def _output_contract(output_ids: tuple[str, ...]) -> str:
     if not output_ids:
         return "Return no artifact value for this step."
     if len(output_ids) == 1:
@@ -774,7 +772,7 @@ def _build_dispatch(
     ) -> Mapping[str, object]:
         output_ids = tuple(sorted(outputs_by_step[step.step_id]))
         terminal = step.step_type == "TerminalStep"
-        output_contract = _output_contract(output_ids, terminal=terminal)
+        output_contract = _output_contract(output_ids)
         instruction = instructions[step.step_id]
         executor_kind = compiled.executor_kinds[step.executor_id]
         completion_context = CompletionContext(
