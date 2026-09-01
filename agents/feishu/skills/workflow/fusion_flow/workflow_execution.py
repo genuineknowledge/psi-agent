@@ -2127,13 +2127,17 @@ async def _execute_plan_with_loops(
                     loop_id=loop_id,
                     epoch=epoch,
                 )
+                attempt_inputs = _copy_json_mapping(
+                    step_inputs,
+                    context=f"inputs for {invocation_id} attempt {attempt}",
+                )
                 attempt_start = _start_timing(enabled=attempt_timings is not None)
                 try:
                     if step.timeout_seconds is None:
-                        outputs = await dispatch(step, step_inputs, context)
+                        outputs = await dispatch(step, attempt_inputs, context)
                     else:
                         with anyio.fail_after(step.timeout_seconds):
-                            outputs = await dispatch(step, step_inputs, context)
+                            outputs = await dispatch(step, attempt_inputs, context)
                     validated = _validate_step_outputs(
                         step.step_id,
                         outputs,
