@@ -8,6 +8,7 @@
 - 降级：channel 不够时补 bing/ddg，轻量过滤官网/大全/百科。
 - 兜底：全部失败返回 C 端友好话术。
 """
+
 import json
 import re
 import urllib.parse
@@ -27,14 +28,34 @@ NOTE_ARTICLES = (
 # 每品类源列表（多源冗余：主源失败切备源）
 _CATEGORY_SOURCES = {
     "笔记本": ["https://detail.zol.com.cn/notebook/", "https://product.pconline.com.cn/notebook/"],
-    "电脑":   ["https://detail.zol.com.cn/notebook/", "https://product.pconline.com.cn/notebook/"],
+    "电脑": ["https://detail.zol.com.cn/notebook/", "https://product.pconline.com.cn/notebook/"],
     "游戏本": ["https://detail.zol.com.cn/notebook/", "https://product.pconline.com.cn/notebook/"],
-    "手机":   ["https://product.pconline.com.cn/mobile/"],
-    "平板":   ["https://product.pconline.com.cn/pad/"],
-    "耳机":   ["https://product.pconline.com.cn/headphone/"],
+    "手机": ["https://product.pconline.com.cn/mobile/"],
+    "平板": ["https://product.pconline.com.cn/pad/"],
+    "耳机": ["https://product.pconline.com.cn/headphone/"],
 }
-_NOISE = ("登录", "QQ", "微博", "点评", "奖品", "收藏", "购物车", "注册", "下载", "客户端",
-          "论坛", "首页", "帮助", "官网", "大全", "百科", "报价", "频道", "主页", "品牌")
+_NOISE = (
+    "登录",
+    "QQ",
+    "微博",
+    "点评",
+    "奖品",
+    "收藏",
+    "购物车",
+    "注册",
+    "下载",
+    "客户端",
+    "论坛",
+    "首页",
+    "帮助",
+    "官网",
+    "大全",
+    "百科",
+    "报价",
+    "频道",
+    "主页",
+    "品牌",
+)
 
 
 def _category_sources(category: str) -> list[str]:
@@ -44,8 +65,7 @@ def _category_sources(category: str) -> list[str]:
     return []
 
 
-def _build_query(category: str, budget_min: float, budget_max: float | None,
-                 constraints: str, region: str) -> str:
+def _build_query(category: str, budget_min: float, budget_max: float | None, constraints: str, region: str) -> str:
     parts = [category]
     if budget_min or budget_max:
         parts.append(f"预算{int(budget_min)}-{int(budget_max or budget_min + 5000)}元")
@@ -60,8 +80,7 @@ def _build_query(category: str, budget_min: float, budget_max: float | None,
 async def _http_get(url: str, timeout: float = 20) -> str | None:
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "Chrome/126 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36"
         }
         async with aiohttp.ClientSession(headers=headers) as sess:
             async with sess.get(url, timeout=aiohttp.ClientTimeout(total=timeout), ssl=False) as resp:
@@ -130,8 +149,14 @@ async def _ddg_html(query: str) -> list[dict]:
 
 
 def _light_filter(articles: list[dict]) -> list[dict]:
-    return [a for a in articles if not any(x in (a.get("title", "") or "") for x in
-            ("官网", "大全", "百科", "报价", "首页", "频道", "主页", "论坛", "品牌", "下载"))]
+    return [
+        a
+        for a in articles
+        if not any(
+            x in (a.get("title", "") or "")
+            for x in ("官网", "大全", "百科", "报价", "首页", "频道", "主页", "论坛", "品牌", "下载")
+        )
+    ]
 
 
 async def review_search(
@@ -177,15 +202,31 @@ async def review_search(
     articles = uniq[:max_results]
 
     if articles:
-        body = {"query": {"category": category, "budget": [budget_min, budget_max],
-                          "constraints": constraints, "region": region},
-                "sources_tried": 1 + (1 if len(articles) >= max_results else 2),
-                "sources_succeeded": 1,
-                "articles": articles, "note": NOTE_ARTICLES, "fallback": None}
+        body = {
+            "query": {
+                "category": category,
+                "budget": [budget_min, budget_max],
+                "constraints": constraints,
+                "region": region,
+            },
+            "sources_tried": 1 + (1 if len(articles) >= max_results else 2),
+            "sources_succeeded": 1,
+            "articles": articles,
+            "note": NOTE_ARTICLES,
+            "fallback": None,
+        }
     else:
-        body = {"query": {"category": category, "budget": [budget_min, budget_max],
-                          "constraints": constraints, "region": region},
-                "sources_tried": 3, "sources_succeeded": 0,
-                "articles": [], "note": "",
-                "fallback": {"reasons": reasons, "user_message": USER_FALLBACK}}
+        body = {
+            "query": {
+                "category": category,
+                "budget": [budget_min, budget_max],
+                "constraints": constraints,
+                "region": region,
+            },
+            "sources_tried": 3,
+            "sources_succeeded": 0,
+            "articles": [],
+            "note": "",
+            "fallback": {"reasons": reasons, "user_message": USER_FALLBACK},
+        }
     return json.dumps(body, ensure_ascii=False)
