@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  卡片通用元素 DSL · XML Schema(第一版)
+  ======================================
+  本 Schema 是词汇表的机器可读规范:哪些元素合法、每个元素有哪些属性、属性取什么值。
+  两个用途:
+    1. 喂给海豚(与本 SKILL.md 同目录):模型按此 Schema 生成合法 XML;
+    2. 生成后的 XML 按此 Schema 做合法性校验(运行时 _card_dsl 内置等效校验,零依赖)。
+
+  三层结构(元素 → 属性 → 映射):
+    元素 = 卡上的部件(是什么);属性 = 语义(什么样);
+    颜色不进 XML —— type="reject" 由引擎映射表翻译成飞书红色按钮。
+
+  飞书限制说明(引擎消化,业务不可见):
+    - 按钮一次性消费 → 引擎生成 {action}_r{round} 轮次名,预注册 20 轮;
+    - input 值仅 confirm 可回传 → 引擎自动为 comment 附加「确认」按钮;
+    - 飞书按钮只有 default/primary/danger 三种颜色:accept 的绿色是设计意图,
+      先映射 primary(蓝),飞书开放绿色后改引擎映射表一行即可。
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <!-- ── 简单类型:取值枚举 ─────────────────────────────────────────── -->
+
+  <!-- 卡头配色:语义名,不写颜色值 -->
+  <xs:simpleType name="Template">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="blue"/>   <!-- 普通卡 -->
+      <xs:enumeration value="green"/>  <!-- 成功、完成态 -->
+      <xs:enumeration value="red"/>    <!-- 告警、逾期 -->
+      <xs:enumeration value="grey"/>   <!-- 归档、只读 -->
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- 按钮语义:颜色由引擎映射表决定(accept→蓝 reject/danger→红 default→灰 primary→蓝) -->
+  <xs:simpleType name="ButtonType">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="accept"/>   <!-- 通过/确认 -->
+      <xs:enumeration value="reject"/>   <!-- 驳回/打回 -->
+      <xs:enumeration value="danger"/>   <!-- 危险操作 -->
+      <xs:enumeration value="default"/>  <!-- 普通动作 -->
+      <xs:enumeration value="primary"/>  <!-- 主操作/选中 -->
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- ── 元素定义 ───────────────────────────────────────────────────── -->
+
+  <!-- 信息行:一条「标签:值」,纯展示不可交互 -->
+  <xs:element name="info">
+    <xs:complexType>
+      <xs:attribute name="label" type="xs:string" use="required"/>
+      <xs:attribute name="value" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- 评分按钮组:点选即回调,rounds 轮可改分;bind-record 绑定业务对象 -->
+  <xs:element name="score">
+    <xs:complexType>
+      <xs:attribute name="min" type="xs:positiveInteger" default="1"/>
+      <xs:attribute name="max" type="xs:positiveInteger" default="5"/>
+      <xs:attribute name="rounds" type="xs:positiveInteger" default="20"/>
+      <xs:attribute name="bind-record" type="xs:string" use="optional"/>
+      <xs:attribute name="selected" type="xs:positiveInteger" use="optional"/>
+      <xs:attribute name="action" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- 评语输入框:引擎自动配「确认」按钮(飞书 input 值唯一回传通道) -->
+  <xs:element name="comment">
+    <xs:complexType>
+      <xs:attribute name="placeholder" type="xs:string" use="optional"/>
+      <xs:attribute name="bind-record" type="xs:string" use="optional"/>
+      <xs:attribute name="action" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- 动作按钮:action 必填(决定回调路由),text 为按钮文字 -->
+  <xs:element name="button">
+    <xs:complexType>
+      <xs:attribute name="text" type="xs:string" use="required"/>
+      <xs:attribute name="type" type="ButtonType" default="default"/>
+      <xs:attribute name="action" type="xs:string" use="required"/>
+      <xs:attribute name="bind-record" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- 按钮行:只容纳 button -->
+  <xs:element name="action-row">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="button" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- 待办行:list 的一行;done="true" 的行发卡时即只读(无按钮) -->
+  <xs:element name="row">
+    <xs:complexType>
+      <xs:attribute name="title" type="xs:string" use="required"/>
+      <xs:attribute name="task-guid" type="xs:string" use="optional"/>
+      <xs:attribute name="detail" type="xs:string" use="optional"/>
+      <xs:attribute name="shape" type="xs:string" use="optional"/>
+      <xs:attribute name="bind-record" type="xs:string" use="optional"/>
+      <xs:attribute name="done" type="xs:boolean" default="false"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- 待办列表:多行逐条勾选(todo 卡)。含 list 的卡走 legacy 行机制,
+       第一版不与 score/comment 等 2.0 元素混用。 -->
+  <xs:element name="list">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="row" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="shape" type="xs:string" default="circle"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- 根元素:卡片容器,title 必填 -->
+  <xs:element name="card">
+    <xs:complexType>
+      <xs:choice minOccurs="0" maxOccurs="unbounded">
+        <xs:element ref="info"/>
+        <xs:element ref="score"/>
+        <xs:element ref="comment"/>
+        <xs:element ref="action-row"/>
+        <xs:element ref="list"/>
+      </xs:choice>
+      <xs:attribute name="title" type="xs:string" use="required"/>
+      <xs:attribute name="template" type="Template" default="blue"/>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

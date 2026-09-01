@@ -645,12 +645,19 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
 
     /* 7. launch psi-agent.exe with Gateway path defaults + log files.
      *
-     * Install layout: {app} IS the haitun-workspace (tools/skills/systems).
-     * Soft-default in Python only finds examples/haitun-workspace under a
+     * Install layout: {app} IS the tob workspace (tools/skills/systems).
+     * Soft-default in Python only finds agents/feishu under a
      * repo root — so the launcher must pass --default-agent explicitly.
      * Workspace soft-default is Desktop/haitun交付; pass it too so install
      * and CLI stay aligned. Paths are resolved at runtime (g_dir + SHGetFolderPath),
      * never hardcoded machine paths.
+     *
+     * Same story for --gateway, now passed explicitly: it is required (no
+     * default), because which HTTP surfaces to mount is the deployer's call
+     * and mounting one too few fails silently (some frontend 404s, nothing
+     * logs). The installer build ships only the ToC surface, so it passes
+     * "desktop" alone — NOT the full set. Adding "feishu" here would mount
+     * ToB routes no installed user can reach.
      */
     {
         WCHAR cmd[CMD_BUF];
@@ -688,7 +695,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
         /* Quote paths: install dir may contain spaces ("HaiTun Agent"). */
         lstrcpyW(cmd, L"\"");
         lstrcatW(cmd, g_dir);
-        lstrcatW(cmd, L"\\psi-agent.exe\" gateway --tray --browser --icon haitun.ico --verbose");
+        lstrcatW(cmd, L"\\psi-agent.exe\" gateway --gateway desktop"
+                      L" --tray --browser --icon haitun.ico --verbose");
         lstrcatW(cmd, L" --default-agent \"");
         lstrcatW(cmd, g_dir);
         lstrcatW(cmd, L"\"");

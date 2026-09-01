@@ -6,9 +6,9 @@ import anyio
 import pytest
 from anyio.abc import TaskGroup
 
-from psi_agent.gateway._ai_manager import AIManager
-from psi_agent.gateway._manager import _socket_path, _wait_socket
-from psi_agent.gateway._session_manager import SessionManager
+from psi_agent.runtime._ai_manager import AIManager
+from psi_agent.runtime._manager import _socket_path, _wait_socket
+from psi_agent.runtime._session_manager import SessionManager
 
 
 def _is_socket_path(path: str) -> bool:
@@ -253,7 +253,7 @@ async def test_aimanager_rollback_when_wait_socket_fails(tmp_path: str, monkeypa
     async def _never_ready(*args: object, **kwargs: object) -> None:
         raise TimeoutError("not ready")
 
-    monkeypatch.setattr("psi_agent.gateway._ai_manager._wait_socket", _never_ready)
+    monkeypatch.setattr("psi_agent.runtime._ai_manager._wait_socket", _never_ready)
 
     tg = anyio.create_task_group()
     await tg.__aenter__()

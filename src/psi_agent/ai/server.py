@@ -29,6 +29,22 @@ _DELTA_FIELDS = ("content", "reasoning", "reasoning_content", "thinking", "role"
 # truncated — so the outgoing messages get a census of their own.
 _MESSAGE_REASONING_FIELDS = ("reasoning_content", "reasoning", "thinking")
 
+# ** 为什么要显式传 reasoning_effort **: any-llm 的 DeepSeek provider 把
+# ``reasoning_effort`` 缺省值 ``"auto"`` 当成「调用方没要思维」, 于是往请求体里塞
+# ``extra_body.thinking={"type": "disabled"}`` —— 见 1.26.0 的
+# ``providers/deepseek/deepseek.py``。DeepSeek V4 官方默认是**开**思维, any-llm
+# 为对齐旧版 ``deepseek-chat`` 行为主动反转成关。
+#
+# 后果不是「字段丢了」而是「思维根本没生成」: 模型被关掉思维通道后仍要推理, 就把
+# 自我对话直接写进 ``content`` —— 这就是线上看到的泄漏 (复述提问 + 自问自答)。
+# 实测同一 prompt: 不传 = 0/9 个 chunk 带思维链, 传 "medium" = 20/23。
+#
+# 该默认值是 1.21.0 之后引入的 (1.21.0 的同一文件里没有 thinking 分支), 而依赖写的
+# 是 ``any-llm-sdk>=1.21.0``, 所以是一次静默的上游行为变更改掉了我们的线上语义。
+#
+# 只在调用方**没给**时兜底, 给了就用它的 —— 这里是转发层, 不该覆盖上游意图。
+_DEFAULT_REASONING_EFFORT = "medium"
+
 
 def _describe_delta(data: str) -> str:
     """One never-truncated line naming which delta fields exist, and how long.
@@ -158,6 +174,9 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     body.pop("api_key", None)
     body.pop("api_base", None)
     body.pop("routing", None)
+    # 见 ``_DEFAULT_REASONING_EFFORT``: 不传等于让 DeepSeek provider 关掉思维模式。
+    # ``setdefault`` 而非赋值 —— 调用方显式给的值 (含 ``"none"``) 优先。
+    body.setdefault("reasoning_effort", _DEFAULT_REASONING_EFFORT)
     stream_opts = body.get("stream_options", {})
     if isinstance(stream_opts, dict):
         stream_opts["include_usage"] = True

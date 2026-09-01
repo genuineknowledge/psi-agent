@@ -9,11 +9,12 @@ import pytest
 from aiohttp import ClientSession, ClientTimeout, web
 
 from psi_agent._appdata import appdata_ui_prefs_path
-from psi_agent.gateway._ai_manager import AIManager
-from psi_agent.gateway._session_manager import SessionManager
-from psi_agent.gateway._title_manager import TitleManager
-from psi_agent.gateway._ui_prefs import UIPrefs
-from psi_agent.gateway.server import create_app
+from psi_agent.gateway.desktop._routes import register_desktop_routes
+from psi_agent.gateway.desktop._ui_prefs import UIPrefs
+from psi_agent.gateway.server import create_core_app
+from psi_agent.runtime._ai_manager import AIManager
+from psi_agent.runtime._session_manager import SessionManager
+from psi_agent.runtime._title_manager import TitleManager
 
 
 def _prefs(tmp_path: Path) -> UIPrefs:
@@ -110,7 +111,8 @@ async def test_survey_pref_routes(tmp_path: Path) -> None:
     aim = AIManager(_prefix="ui-prefs-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="ui-prefs-test", _tg=tg)
     # appdata=tmp_path so the test never touches the real user AppData.
-    app = await create_app(aim, sm, TitleManager(), appdata=str(tmp_path))
+    # UIPrefs 由 register_desktop_routes 从骨架记下的 appdata 建 —— /ui/prefs/* 是 ToC 专属。
+    app = await register_desktop_routes(await create_core_app(aim, sm, TitleManager(), appdata=str(tmp_path)))
     base_url, runner = await _start_app_on_free_port(app)
     try:
         async with ClientSession(timeout=ClientTimeout(total=10)) as session:
@@ -146,7 +148,7 @@ async def test_survey_pref_survives_app_restart(tmp_path: Path) -> None:
         await tg.__aenter__()
         aim = AIManager(_prefix=f"ui-prefs-restart-{expected}", _tg=tg)
         sm = SessionManager(_aim=aim, _prefix=f"ui-prefs-restart-{expected}", _tg=tg)
-        app = await create_app(aim, sm, TitleManager(), appdata=str(tmp_path))
+        app = await register_desktop_routes(await create_core_app(aim, sm, TitleManager(), appdata=str(tmp_path)))
         base_url, runner = await _start_app_on_free_port(app)
         try:
             async with ClientSession(timeout=ClientTimeout(total=10)) as session:

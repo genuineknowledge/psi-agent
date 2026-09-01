@@ -25,7 +25,7 @@ from psi_agent.channel.feishu._agent_events import (
     _register_platform_map,
 )
 
-HAITUN = Path(__file__).resolve().parents[4] / "examples" / "haitun-workspace"
+HAITUN = Path(__file__).resolve().parents[4] / "agents" / "feishu"
 
 
 class _UserId:

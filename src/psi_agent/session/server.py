@@ -10,6 +10,7 @@ from aiohttp.typedefs import Handler
 from loguru import logger
 
 from psi_agent._sockets import create_site
+from psi_agent.session import live_agent
 from psi_agent.session.file_serving import FileServingError, resolve_within_root
 
 if TYPE_CHECKING:
@@ -90,7 +91,12 @@ async def serve_session(*, channel_socket: str, agent: SessionAgent) -> None:
     logger.info(f"Session server listening on {channel_socket}")
 
     try:
-        await anyio.sleep_forever()
+        # Reachable for out-of-band resumes only while actually serving: work that
+        # outlived its turn (Feishu authorization) needs a turn to finish in, and a
+        # registration outliving the server would resume a conversation with no
+        # listener. See ``session.live_agent``.
+        with live_agent.register(agent.session_id, agent):
+            await anyio.sleep_forever()
     finally:
         logger.info(f"Shutting down session server on {channel_socket}")
         with anyio.CancelScope(shield=True):

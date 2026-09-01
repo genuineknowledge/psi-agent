@@ -16,7 +16,7 @@ from typing import Any
 import anyio
 import pytest
 
-from psi_agent.gateway._auth_store import AuthStore
+from psi_agent.gateway.desktop._auth_store import AuthStore
 
 _TOKEN = "tok-abcdef-0123456789"
 

@@ -4,7 +4,7 @@
 
 **Goal:** 在 `haitun-inno-setup` CI job 里装一份 MSYS2（base + 常用工具，保留 pacman），打包进安装程序，并让 VBS 把它加到 PATH，使工作区 `bash` 工具在 Windows 上开箱即用。
 
-**Architecture:** CI 用 `msys2/setup-msys2` 装 MSYS2 → robocopy 复制进 `examples/haitun-workspace/msys64` → 删包缓存瘦身 → 现有 ISCC 递归 glob 自动打包到 `{app}\msys64`。VBS 启动前把 `msys64\usr\bin` 与 `msys64\ucrt64\bin` prepend 到 PATH 并设 `CHERE_INVOKING=1`；`bash.py` 与 `.iss` 均不改。
+**Architecture:** CI 用 `msys2/setup-msys2` 装 MSYS2 → robocopy 复制进 `agents/feishu/msys64` → 删包缓存瘦身 → 现有 ISCC 递归 glob 自动打包到 `{app}\msys64`。VBS 启动前把 `msys64\usr\bin` 与 `msys64\ucrt64\bin` prepend 到 PATH 并设 `CHERE_INVOKING=1`；`bash.py` 与 `.iss` 均不改。
 
 **Tech Stack:** GitHub Actions、`msys2/setup-msys2`、Inno Setup、VBScript、robocopy/pwsh。
 
@@ -17,7 +17,7 @@
 ### Task 1: VBS 加 PATH + CHERE_INVOKING
 
 **Files:**
-- Modify: `examples/haitun-workspace/haitun agent.vbs`（在 .env 块之后、`objShell.Run` 之前插入）
+- Modify: `agents/feishu/haitun agent.vbs`（在 .env 块之后、`objShell.Run` 之前插入）
 
 - [ ] **Step 1: 编辑文件**
 
@@ -48,18 +48,18 @@ objShell.Run "psi-agent.exe gateway --tray --icon haitun.ico", 0, False
 
 - [ ] **Step 2: 验证内容**
 
-Run: `cat "examples/haitun-workspace/haitun agent.vbs"`
+Run: `cat "agents/feishu/haitun agent.vbs"`
 Expected: 末尾出现 `strUsrBin`、`strUcrtBin`、`PATH` prepend、`CHERE_INVOKING` 四处新增，且 `objShell.Run` 仍是最后一行。
 
 - [ ] **Step 3: 验证 If/Do/Loop 结构未被破坏**
 
-Run: `grep -cE "^\s*(If |Do Until|End If|Loop)" "examples/haitun-workspace/haitun agent.vbs"`
+Run: `grep -cE "^\s*(If |Do Until|End If|Loop)" "agents/feishu/haitun agent.vbs"`
 Expected: `11`（与改动前一致——新增代码不含分支语句）。
 
 - [ ] **Step 4: 提交**
 
 ```bash
-git add "examples/haitun-workspace/haitun agent.vbs"
+git add "agents/feishu/haitun agent.vbs"
 git commit -m "feat: prepend bundled MSYS2 to PATH in launcher VBS"
 ```
 
@@ -76,7 +76,7 @@ git commit -m "feat: prepend bundled MSYS2 to PATH in launcher VBS"
 
 ```yaml
       - shell: cmd
-        run: copy dist-exe\psi-agent.exe "examples\haitun-workspace\psi-agent.exe"
+        run: copy dist-exe\psi-agent.exe "workspace	ob\psi-agent.exe"
       - run: choco install innosetup --no-progress
 ```
 
@@ -84,7 +84,7 @@ git commit -m "feat: prepend bundled MSYS2 to PATH in launcher VBS"
 
 ```yaml
       - shell: cmd
-        run: copy dist-exe\psi-agent.exe "examples\haitun-workspace\psi-agent.exe"
+        run: copy dist-exe\psi-agent.exe "workspace	ob\psi-agent.exe"
       - uses: msys2/setup-msys2@v2
         id: msys2
         with:
@@ -97,10 +97,10 @@ git commit -m "feat: prepend bundled MSYS2 to PATH in launcher VBS"
             mingw-w64-ucrt-x86_64-nodejs mingw-w64-ucrt-x86_64-uv
       - shell: pwsh
         run: |
-          robocopy "${{ steps.msys2.outputs.msys2-location }}" "examples\haitun-workspace\msys64" /E /NFL /NDL /NJH /NJS /NP
+          robocopy "${{ steps.msys2.outputs.msys2-location }}" "workspace	ob\msys64" /E /NFL /NDL /NJH /NJS /NP
           if ($LASTEXITCODE -ge 8) { exit 1 } else { exit 0 }
       - shell: pwsh
-        run: Remove-Item -Recurse -Force "examples\haitun-workspace\msys64\var\cache\pacman\pkg\*" -ErrorAction SilentlyContinue
+        run: Remove-Item -Recurse -Force "workspace	ob\msys64\var\cache\pacman\pkg\*" -ErrorAction SilentlyContinue
       - run: choco install innosetup --no-progress
 ```
 
@@ -108,7 +108,7 @@ git commit -m "feat: prepend bundled MSYS2 to PATH in launcher VBS"
 - `setup-msys2` 全新装 MSYS2 并装上指定包（保留 pacman）；output `msys2-location` 是其根目录。
 - robocopy 退出码 0~7 都算成功，故 `if ($LASTEXITCODE -ge 8) { exit 1 } else { exit 0 }` 归一化（否则 pwsh 把成功当失败）。
 - 删 `var/cache/pacman/pkg/*`（已下载安装包缓存，约 100MB+）。
-- ISCC 步骤无需改动：现有 `Source: "*"; recursesubdirs createallsubdirs` 会自动把 `examples/haitun-workspace/msys64` 打包到 `{app}\msys64`。
+- ISCC 步骤无需改动：现有 `Source: "*"; recursesubdirs createallsubdirs` 会自动把 `agents/feishu/msys64` 打包到 `{app}\msys64`。
 
 - [ ] **Step 2: 验证 YAML 可解析**
 
@@ -132,7 +132,7 @@ git commit -m "ci: install and bundle MSYS2 into the Haitun Agent installer"
 ### Task 3: .gitignore 忽略 msys64/
 
 **Files:**
-- Modify: `examples/haitun-workspace/.gitignore`
+- Modify: `agents/feishu/.gitignore`
 
 - [ ] **Step 1: 编辑文件**
 
@@ -155,13 +155,13 @@ msys64/
 
 - [ ] **Step 2: 验证**
 
-Run: `grep -n "msys64/" examples/haitun-workspace/.gitignore`
+Run: `grep -n "msys64/" agents/feishu/.gitignore`
 Expected: 出现一行 `msys64/`。
 
 - [ ] **Step 3: 提交**
 
 ```bash
-git add examples/haitun-workspace/.gitignore
+git add agents/feishu/.gitignore
 git commit -m "chore: gitignore generated msys64 bundle in haitun-workspace"
 ```
 
@@ -170,12 +170,12 @@ git commit -m "chore: gitignore generated msys64 bundle in haitun-workspace"
 ### Task 4: 文档同步
 
 **Files:**
-- Modify: `examples/haitun-workspace/README.md`（Windows 安装包段，补 MSYS2 说明）
-- Modify: `examples/haitun-workspace/AGENTS.md`（tools 表里 bash 一行）
+- Modify: `agents/feishu/README.md`（Windows 安装包段，补 MSYS2 说明）
+- Modify: `agents/feishu/AGENTS.md`（tools 表里 bash 一行）
 
 - [ ] **Step 1: 读取 README 安装包段确认锚点**
 
-Run: `tail -12 examples/haitun-workspace/README.md`
+Run: `tail -12 agents/feishu/README.md`
 Expected: 见到 `## Windows 安装包` 段与结尾的 `.env` 提示。
 
 - [ ] **Step 2: 在 README 安装包段追加 MSYS2 说明**
@@ -196,7 +196,7 @@ Expected: 见到 `## Windows 安装包` 段与结尾的 `.env` 提示。
 
 - [ ] **Step 3: 更新 AGENTS.md 的 bash 行**
 
-把 `examples/haitun-workspace/AGENTS.md` 中这一行：
+把 `agents/feishu/AGENTS.md` 中这一行：
 
 ```markdown
 | `bash` | Shell commands (anyio, Windows-aware bash detection). |
@@ -210,13 +210,13 @@ Expected: 见到 `## Windows 安装包` 段与结尾的 `.env` 提示。
 
 - [ ] **Step 4: 验证**
 
-Run: `grep -n "msys64" examples/haitun-workspace/README.md examples/haitun-workspace/AGENTS.md`
+Run: `grep -n "msys64" agents/feishu/README.md agents/feishu/AGENTS.md`
 Expected: README 与 AGENTS.md 各至少出现一处 `msys64`。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add examples/haitun-workspace/README.md examples/haitun-workspace/AGENTS.md
+git add agents/feishu/README.md agents/feishu/AGENTS.md
 git commit -m "docs: document bundled MSYS2 in haitun-workspace"
 ```
 
@@ -225,7 +225,7 @@ git commit -m "docs: document bundled MSYS2 in haitun-workspace"
 ## Definition of Done
 
 - [ ] VBS 在启动前 prepend `msys64\usr\bin` 与 `msys64\ucrt64\bin` 到 PATH 并设 `CHERE_INVOKING=1`
-- [ ] `pyinstaller.yml` 的 `haitun-inno-setup` job 内：`setup-msys2` 装包 → robocopy 进 `examples/haitun-workspace/msys64` → 删 pacman 缓存；YAML 可解析
+- [ ] `pyinstaller.yml` 的 `haitun-inno-setup` job 内：`setup-msys2` 装包 → robocopy 进 `agents/feishu/msys64` → 删 pacman 缓存；YAML 可解析
 - [ ] `.gitignore` 忽略 `msys64/`
 - [ ] README + AGENTS.md 记录自带 MSYS2
 - [ ] `.iss` 与 `bash.py` 未改动

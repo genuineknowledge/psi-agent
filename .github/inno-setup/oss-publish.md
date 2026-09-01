@@ -3,14 +3,38 @@
 ## 发版流程
 
 1. 修改 `.github/inno-setup/haitun.iss` 里的 `MyAppVersion`，推送 `main`。
-2. `PyInstaller` workflow 构建 Windows 安装包，产出 `haitun-agent-installers` artifact，内含：
-   - `HaiTun_Agent_Setup.exe`（完整包）
-   - `HaiTun_Agent_App_Setup.exe`（海豚组件包）
-   - `msys-setup.exe`（环境组件包）
-   - `haitun-version.txt` / `msys-version.txt`
+2. `PyInstaller` workflow 构建两平台安装包，产出三个 artifact：
+   - `haitun-agent-installers`（Windows）内含：
+     - `HaiTun_Agent_Setup.exe`（完整包）
+     - `HaiTun_Agent_App_Setup.exe`（海豚组件包）
+     - `msys-setup.exe`（环境组件包）
+     - `haitun-version.txt` / `msys-version.txt`
+   - `haitun-agent-macos`（macOS arm64）内含：
+     - `HaiTun_Agent.dmg`
+   - `haitun-agent-macos-version` 内含：
+     - `haitun-version.txt`
+
+   macOS 侧的版本文件单独成一个 artifact：`haitun-agent-macos` 是拿去装的东西，
+   解开就只有一个安装包；版本号是发布流水线自己核对用的元数据，不跟安装包混在
+   一起。Windows 侧沿用一个 artifact，是因为它本来就是「三个安装包 + 两个版本
+   文件」的组合下载，没有「解开只应有一个文件」的预期。
 3. `Publish Haitun Installer to OSS` workflow 检测该 commit 是否改动了 `haitun.iss`：
    - 如果 OSS 上的 `haitun-version.txt` 已等于本次版本，跳过；
-   - 否则按顺序上传三个安装包，最后上传 `haitun-version.txt` 和 `msys-version.txt`。
+   - 否则校验两平台版本号一致，按顺序上传四个安装包，最后上传
+     `haitun-version.txt` 和 `msys-version.txt`。
+
+macOS 的打包细节、所需 secrets 与真机验收清单见
+[`.github/macos/macos-release.md`](../macos/macos-release.md)。
+
+### 两平台共用 haitun-version.txt
+
+macOS 与 Windows 共用同一个版本文件，因此**两个平台必须在同一个 workflow run 内
+打包、同一次 publish 上传**。原因是这个文件同时充当发布闸门（OSS 版本号等于本次版本
+即跳过上传）：若两平台各自 publish，先完成的那个会写上新版本号，把后者永久闸掉——
+「mac 这次没编出来」会静默退化成「mac 再也发不出去」。
+
+所以 `oss-publish.yml` 里下载 macOS artifact 的步骤刻意不设 `continue-on-error`，
+mac 缺席就让整条 publish 变红。
 
 当前使用 OSS bucket 直连下载，不经过 CDN，因此不需要 CDN 刷新权限。
 
@@ -19,7 +43,7 @@
 同一个安装包，PyInstaller 全链约 17 分钟，Nuitka 约 2 小时（三平台并行，墙钟取最慢
 那个，99% 花在单条编译命令上）。两者对发版是等价的：`haitun.c` 硬编码
 `psi-agent.exe`，两个 builder 都把 exe 拷到
-`examples/haitun-workspace/psi-agent.exe`，`build-haitun-launcher.ps1` 只从
+`agents/feishu/psi-agent.exe`，`build-haitun-launcher.ps1` 只从
 `haitun.iss` 解析 `MyAppVersion`，不碰 agent exe。两条流水线的
 `haitun-inno-setup` job 结构也完全一致，只差来源 / 产出 artifact 名。
 
@@ -70,9 +94,9 @@ Variables：
 ## 用户侧更新
 
 打包时 `build-haitun-launcher.ps1` 会从 `haitun.iss` 读取版本号，生成
-`examples/haitun-workspace/haitun-update.conf` 和
-`examples/haitun-workspace/haitun-version.txt`，并读取 `MyMsysVersion` 写入
-`examples/haitun-workspace/msys64/msys-version.txt`（手填环境版本，例如 `env-1`）：
+`agents/feishu/haitun-update.conf` 和
+`agents/feishu/haitun-version.txt`，并读取 `MyMsysVersion` 写入
+`agents/feishu/msys64/msys-version.txt`（手填环境版本，例如 `env-1`）：
 
 ```text
 HAITUN_UPDATE_BASE_URL=https://haitun-agent.oss-cn-hangzhou.aliyuncs.com/
@@ -95,7 +119,7 @@ HAITUN_UPDATE_INTERVAL_HOURS=24
 
 安装向导第一页是协议页：两个链接分别打开《Haitun Agent 软件许可及服务协议》与《Haitun Agent 隐私保护政策》，**一个勾选框同时覆盖两份**，不勾则「下一步」禁用。这个形态由许可协议导言本身规定（「您在本软件安装过程中勾选同意本协议，即视为您同时同意隐私保护政策」），不是 UI 选择。
 
-两份协议的 HTML 是 `docs/` 下 md 源的生成物，由 `scripts/gen_legal_html.py` 产出到 `src/psi_agent/gateway/spa-v2/public/`，安装器与产品内共用同一份。**改了 md 必须重新生成**，否则 CI 的 `--check` 步骤会失败。
+两份协议的 HTML 是 `docs/` 下 md 源的生成物，由 `scripts/gen_legal_html.py` 产出到 `src/psi_agent/gateway/desktop/spa-v2/public/`，安装器与产品内共用同一份。**改了 md 必须重新生成**，否则 CI 的 `--check` 步骤会失败。
 
 **不记录同意状态。** 无注册表、无标记文件 —— 团队决定每次安装都勾。自动更新走完整向导（`haitun.c` 拉起 setup 未带 `/SILENT`），因此升级也会经过协议页。
 

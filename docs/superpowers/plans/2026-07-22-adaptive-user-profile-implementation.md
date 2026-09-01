@@ -23,7 +23,7 @@ The shared domain map is stored separately from per-hashed-user heatmaps. A
 dedicated, tool-free supervisor workspace has no before/after hooks, so it
 cannot recursively supervise itself and never receives the main answer,
 reasoning, tool calls, or tool results. Keep these contracts synchronized with
-`src/psi_agent/session/AGENTS.md` and `examples/haitun-workspace/AGENTS.md`;
+`src/psi_agent/session/AGENTS.md` and `agents/feishu/AGENTS.md`;
 detailed product operation belongs in `examples/haitun-supervisor-workspace/README.md`,
 not in additional execution-plan files.
 
@@ -36,12 +36,12 @@ not in additional execution-plan files.
 - `src/psi_agent/session/system_prompt.py`: invoke optional workspace hook parameters and expose turn-policy validation.
 - `src/psi_agent/session/agent.py`: resolve conflict markers, preserve upstream history-kind behavior, buffer/validate final response, commit, and run after-turn.
 - `src/psi_agent/session/protocol.py`: typed `TurnPolicy` and validation result models.
-- `examples/haitun-workspace/tools/_user_profile.py`: identity-safe storage, migration, topics, double-speed EMA, global profile, and locking.
-- `examples/haitun-workspace/systems/system.py`: single adaptive prompt injection and Wiki lookup fallback.
-- `examples/haitun-workspace/tools/_llm_wiki_impl.py`: reusable search-to-related recommendation helper if existing primitives cannot express the fallback cleanly.
+- `agents/feishu/tools/_user_profile.py`: identity-safe storage, migration, topics, double-speed EMA, global profile, and locking.
+- `agents/feishu/systems/system.py`: single adaptive prompt injection and Wiki lookup fallback.
+- `agents/feishu/tools/_llm_wiki_impl.py`: reusable search-to-related recommendation helper if existing primitives cannot express the fallback cleanly.
 - `tests/psi_agent/session/*`: runtime context, adapter, lifecycle, conflict-resolution, and validator tests.
 - `tests/integration/test_haitun_profile.py`: profile engine, migration, multi-user, Wiki, and end-to-end prompt tests.
-- `src/psi_agent/session/AGENTS.md`, `examples/haitun-workspace/AGENTS.md`: lifecycle and storage documentation.
+- `src/psi_agent/session/AGENTS.md`, `agents/feishu/AGENTS.md`: lifecycle and storage documentation.
 
 ### Task 1: Restore a Valid Session Runtime and Preserve Both Conflict Sides
 
@@ -165,8 +165,8 @@ git commit -m "feat: pass trusted turn identity to workspace hooks"
 ### Task 3: Replace the Profile Engine with Version-3 Multi-User Aggregates
 
 **Files:**
-- Modify: `examples/haitun-workspace/tools/_user_profile.py`
-- Modify: `examples/haitun-workspace/tools/profile_tools.py`
+- Modify: `agents/feishu/tools/_user_profile.py`
+- Modify: `agents/feishu/tools/profile_tools.py`
 - Test: `tests/integration/test_haitun_profile.py`
 
 - [ ] **Step 1: Write failing persistence and identity tests**
@@ -220,14 +220,14 @@ Expected: independent files, safe digest paths, non-empty migration, and no raw 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add examples/haitun-workspace/tools/_user_profile.py examples/haitun-workspace/tools/profile_tools.py tests/integration/test_haitun_profile.py
+git add agents/feishu/tools/_user_profile.py agents/feishu/tools/profile_tools.py tests/integration/test_haitun_profile.py
 git commit -m "feat: isolate versioned learner profiles by user"
 ```
 
 ### Task 4: Implement Topic Resolution, Signed Double-Speed EMA, and Global Warm Start
 
 **Files:**
-- Modify: `examples/haitun-workspace/tools/_user_profile.py`
+- Modify: `agents/feishu/tools/_user_profile.py`
 - Test: `tests/integration/test_haitun_profile.py`
 
 - [ ] **Step 1: Write failing behavioral tests**
@@ -264,15 +264,15 @@ Expected: style switches update the same topic within one turn and unrelated top
 - [ ] **Step 5: Commit**
 
 ```bash
-git add examples/haitun-workspace/tools/_user_profile.py tests/integration/test_haitun_profile.py
+git add agents/feishu/tools/_user_profile.py tests/integration/test_haitun_profile.py
 git commit -m "feat: add adaptive topic and double-speed profile updates"
 ```
 
 ### Task 5: Consolidate Prompt Injection and Add Grounded Wiki Fallbacks
 
 **Files:**
-- Modify: `examples/haitun-workspace/systems/system.py`
-- Modify: `examples/haitun-workspace/tools/_llm_wiki_impl.py`
+- Modify: `agents/feishu/systems/system.py`
+- Modify: `agents/feishu/tools/_llm_wiki_impl.py`
 - Test: `tests/integration/test_haitun_profile.py`
 
 - [ ] **Step 1: Write failing prompt and Wiki tests**
@@ -309,7 +309,7 @@ Expected: one profile section, correct turn triggers, grounded Wiki fallback, no
 - [ ] **Step 5: Commit**
 
 ```bash
-git add examples/haitun-workspace/systems/system.py examples/haitun-workspace/tools/_llm_wiki_impl.py tests/integration/test_haitun_profile.py
+git add agents/feishu/systems/system.py agents/feishu/tools/_llm_wiki_impl.py tests/integration/test_haitun_profile.py
 git commit -m "feat: inject one adaptive policy with wiki guidance"
 ```
 
@@ -369,8 +369,8 @@ git commit -m "feat: validate adaptive coaching responses"
 ### Task 7: Wire After-Turn Identity, Locking, and Final Content Persistence
 
 **Files:**
-- Modify: `examples/haitun-workspace/systems/system.py`
-- Modify: `examples/haitun-workspace/tools/_user_profile.py`
+- Modify: `agents/feishu/systems/system.py`
+- Modify: `agents/feishu/tools/_user_profile.py`
 - Modify: `src/psi_agent/session/agent.py`
 - Test: `tests/integration/test_haitun_profile.py`
 - Test: `tests/psi_agent/session/test_agent.py`
@@ -423,7 +423,7 @@ Expected: identity-isolated atomic updates and no rollback of delivered replies 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add examples/haitun-workspace/systems/system.py examples/haitun-workspace/tools/_user_profile.py src/psi_agent/session/agent.py tests/integration/test_haitun_profile.py tests/psi_agent/session/test_agent.py
+git add agents/feishu/systems/system.py agents/feishu/tools/_user_profile.py src/psi_agent/session/agent.py tests/integration/test_haitun_profile.py tests/psi_agent/session/test_agent.py
 git commit -m "feat: persist final adaptive profile updates safely"
 ```
 
@@ -431,7 +431,7 @@ git commit -m "feat: persist final adaptive profile updates safely"
 
 **Files:**
 - Modify: `src/psi_agent/session/AGENTS.md`
-- Modify: `examples/haitun-workspace/AGENTS.md`
+- Modify: `agents/feishu/AGENTS.md`
 - Modify: `README.md`
 - Modify: `README_en.md`
 - Test: all relevant test suites
@@ -444,7 +444,7 @@ Document reserved identity request fields, fallback semantics, lifecycle hook si
 
 ```powershell
 rg -n "^(<<<<<<<|=======|>>>>>>>)" src tests examples
-uv run ruff check src tests examples/haitun-workspace/systems/system.py examples/haitun-workspace/tools/_user_profile.py examples/haitun-workspace/tools/_llm_wiki_impl.py
+uv run ruff check src tests agents/feishu/systems/system.py agents/feishu/tools/_user_profile.py agents/feishu/tools/_llm_wiki_impl.py
 uv run ruff format --check .
 uv run ty check
 uv run pytest -q -m "not schedule"
@@ -456,7 +456,7 @@ Expected: no conflict markers; all commands exit 0; no failed tests.
 
 ```powershell
 uv run pytest -q -m schedule
-uv run python examples/haitun-workspace/systems/system.py
+uv run python agents/feishu/systems/system.py
 ```
 
 Expected: schedule tests pass; prompt smoke contains exactly one profile/policy section and no traceback.
@@ -468,7 +468,7 @@ Run a temporary two-user conversation smoke, then verify profile files contain a
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/psi_agent/session/AGENTS.md examples/haitun-workspace/AGENTS.md README.md README_en.md
+git add src/psi_agent/session/AGENTS.md agents/feishu/AGENTS.md README.md README_en.md
 git commit -m "docs: document adaptive multi-user coaching"
 ```
 

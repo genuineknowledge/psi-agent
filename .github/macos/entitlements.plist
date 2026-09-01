@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened runtime entitlements for the signed HaiTun Agent bundle.
+
+  Hardened runtime (codesign with the "runtime" option) is mandatory for
+  notarization, and it blocks several things a PyInstaller-frozen CPython needs
+  by default. Every key below is here because notarization requires the runtime
+  AND the runtime would otherwise break the app; none are speculative.
+
+  allow-jit / allow-unsigned-executable-memory: CPython allocates
+  writable-executable pages (ctypes/cffi trampolines; matplotlib and pymupdf
+  both pull in cffi paths). Without these the process dies at import time.
+
+  disable-library-validation: PyInstaller unpacks and dlopen()s .so files not
+  signed by our Team ID. Library validation rejects exactly that.
+
+  files.user-selected / files.downloads: the Gateway writes deliverables to
+  ~/Desktop/haitun交付 (see _defaults.py DEFAULT_USER_WORKSPACE_NAME) and users
+  pick arbitrary paths from the web console.
+
+  network.client / network.server: the Gateway binds a local HTTP port and talks
+  to upstream AI providers and Feishu.
+
+  Keychain note: _auth_store.py stores the credential-encryption key via keyring
+  (macOS Keychain). Keychain access needs no explicit entitlement for a
+  Developer ID-signed app, but the entry is bound to the signing identity, so
+  re-signing with a different certificate makes existing entries unreadable and
+  users must log in again. _auth_store.py degrades to plaintext plus a warning
+  rather than crashing. Documented in macos-release.md.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<key>com.apple.security.files.downloads.read-write</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.network.server</key>
+	<true/>
+</dict>
+</plist>

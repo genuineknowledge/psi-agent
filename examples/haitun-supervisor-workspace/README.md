@@ -83,7 +83,7 @@ Raw user IDs are SHA-256 hashed before filenames, process identities, or routine
 Maps live under:
 
 ```text
-examples/haitun-workspace/wiki/supervisor/maps/<domain>.yaml
+agents/feishu/wiki/supervisor/maps/<domain>.yaml
 ```
 
 Maps are shared across users and include:
@@ -102,7 +102,7 @@ Later users should reuse an existing field map and add only missing branches rat
 Heatmaps live under:
 
 ```text
-examples/haitun-workspace/wiki/supervisor/users/<user-hash>/domains/<domain>.yaml
+agents/feishu/wiki/supervisor/users/<user-hash>/domains/<domain>.yaml
 ```
 
 They retain complete history. There is no time decay and no automatic truncation. Historical evidence records what the user explored and requested; `active_branches` controls only the current answer strategy.
@@ -164,7 +164,7 @@ Supervisor cache hit: source=cache
 Inspect state:
 
 ```powershell
-Get-ChildItem examples\haitun-workspace\wiki\supervisor -Recurse
+Get-ChildItem workspace	ob\wiki\supervisor -Recurse
 ```
 
 ## Experiments
@@ -172,7 +172,7 @@ Get-ChildItem examples\haitun-workspace\wiki\supervisor -Recurse
 The maintained scenario runner covers a CEO deciding whether to adopt CI/CD and a technology-company legal worker learning Agent governance:
 
 ```powershell
-uv run --no-cache python examples/haitun-workspace/demo_supervisor_scenarios.py --output artifacts/supervisor-scenarios
+uv run --no-cache python agents/feishu/demo_supervisor_scenarios.py --output artifacts/supervisor-scenarios
 ```
 
 Real LLM evidence and deterministic fallback must always be labeled separately.

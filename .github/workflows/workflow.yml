@@ -19,7 +19,7 @@ jobs:
       - name: Install ANTLR tools
         run: pip install antlr4-tools==0.2.2
       - name: Verify Workflow generated sources
-        working-directory: examples/haitun-workspace/skills/workflow
+        working-directory: agents/feishu/skills/workflow
         run: |
           output="$RUNNER_TEMP/workflow-generated"
           mkdir "$output"

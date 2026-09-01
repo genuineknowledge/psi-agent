@@ -12,12 +12,84 @@ name: PyInstaller
 # 接成 oss-publish.yml 的上游不需要在这里收窄: 下游自己在 `workflow_run` 上有
 # `branches: [main, v*]` 过滤, 特性分支和 PR 的 run 根本到不了它, 再加 job 级的
 # `head_branch == 'main'` 做第二道闸。管住发布面的是下游, 不是这里。
+#
+# workflow_dispatch 的 force_notarize 现在只剩一个用处: 在 alpha tag 上临时问一次
+# Apple 的结论。别的分支已经默认公证, 不需要它 (实测一次 48s, 见下面 notarize 那步)。
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      force_notarize:
+        description: '强制公证 (alpha tag 默认跳过, 勾上则也提交给 Apple)'
+        type: boolean
+        default: false
+      # 查一个**已提交**的单子的结论, 不打包。存在的理由: notarytool --wait 挂在
+      # runner 上, 而 runner 会掉网 (实测 3h 等待走到第 58 min 时 DNS 归零)。提交
+      # 在 Apple 服务端照常处理, 结论已经有了, 只是那次 run 没接到 —— 重跑打包
+      # 要 20 min 且会新开一个单子, 旧单的结论仍然查不到。
+      #
+      # 挂在这条流水线里而不是独立 workflow: workflow_dispatch 必须在默认分支上
+      # 存在才能被调用, 独立文件在特性分支上是 404。
+      notarization_id:
+        description: '只查这个公证单的结论并退出 (填了就不打包)'
+        type: string
+        default: ''
 
 jobs:
+  # 查询模式: 填了 notarization_id 就只查结论, 三平台编译和打包全跳过。
+  notarization-status:
+    if: inputs.notarization_id != ''
+    runs-on: macos-latest
+    steps:
+      - name: Query notarization status
+        env:
+          SUBMISSION_ID: ${{ inputs.notarization_id }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APP_SPECIFIC_PASSWORD: ${{ secrets.APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${APPLE_ID:-}" ] || [ -z "${APP_SPECIFIC_PASSWORD:-}" ] || [ -z "${APPLE_TEAM_ID:-}" ]; then
+            echo "::error::Apple 凭证缺失, 无法查询"
+            exit 1
+          fi
+          # id 要拼进命令行, 先卡死 UUID 格式再用
+          case "$SUBMISSION_ID" in
+            [0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*) ;;
+            *) echo "::error::submission_id 不像 UUID: $SUBMISSION_ID"; exit 1 ;;
+          esac
+
+          echo "=== notarytool info ==="
+          xcrun notarytool info "$SUBMISSION_ID" \
+            --apple-id "$APPLE_ID" --password "$APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" | tee info.txt
+
+          echo "=== notarytool log ==="
+          # Invalid 时这里才有内容: 逐个文件列出为什么被拒
+          xcrun notarytool log "$SUBMISSION_ID" \
+            --apple-id "$APPLE_ID" --password "$APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" 2>&1 | tee notary-log.json || true
+
+          STATUS="$(sed -n 's/^[[:space:]]*status:[[:space:]]*\(.*\)$/\1/p' info.txt | head -1)"
+          echo "::notice::结论: ${STATUS:-unknown}"
+          case "$STATUS" in
+            Accepted) echo "公证通过" ;;
+            "In Progress") echo "::warning::仍在排队, 稍后再查" ;;
+            *) echo "::error::公证未通过 ($STATUS), 见上面的 log"; exit 1 ;;
+          esac
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: notarization-status
+          path: |
+            info.txt
+            notary-log.json
+          if-no-files-found: warn
+
   pyinstaller:
+    if: inputs.notarization_id == ''
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -28,8 +100,8 @@ jobs:
         --onefile
         --name psi-agent
         --distpath pyinstaller-dist
-        --add-data src/psi_agent/gateway/spa/dist:psi_agent/gateway/spa/dist
-        --add-data src/psi_agent/gateway/spa-v2/dist:psi_agent/gateway/spa-v2/dist
+        --add-data src/psi_agent/gateway/desktop/spa/dist:psi_agent/gateway/desktop/spa/dist
+        --add-data src/psi_agent/gateway/desktop/spa-v2/dist:psi_agent/gateway/desktop/spa-v2/dist
         --collect-submodules any_llm
         --collect-submodules mcp
         --collect-submodules serper_mcp_server
@@ -65,13 +137,13 @@ jobs:
         with:
           node-version: "26"
       - run: npm ci
-        working-directory: src/psi_agent/gateway/spa
+        working-directory: src/psi_agent/gateway/desktop/spa
       - run: npm run build
-        working-directory: src/psi_agent/gateway/spa
+        working-directory: src/psi_agent/gateway/desktop/spa
       - run: npm ci
-        working-directory: src/psi_agent/gateway/spa-v2
+        working-directory: src/psi_agent/gateway/desktop/spa-v2
       - run: npm run build
-        working-directory: src/psi_agent/gateway/spa-v2
+        working-directory: src/psi_agent/gateway/desktop/spa-v2
       - shell: bash
         run: uv run pyinstaller $PYINSTALLER_COMMON_FLAGS src/psi_agent/cli.py
       - uses: actions/upload-artifact@v7
@@ -95,7 +167,7 @@ jobs:
           name: psi-agent-pyinstaller-windows-latest
           path: dist-exe
       - shell: cmd
-        run: copy dist-exe\psi-agent.exe "examples\haitun-workspace\psi-agent.exe"
+        run: copy dist-exe\psi-agent.exe "agents\feishu\psi-agent.exe"
       - uses: msys2/setup-msys2@v2
         id: msys2
         with:
@@ -108,10 +180,10 @@ jobs:
             mingw-w64-ucrt-x86_64-nodejs mingw-w64-ucrt-x86_64-uv
       - shell: pwsh
         run: |
-          robocopy "${{ steps.msys2.outputs.msys2-location }}" "examples\haitun-workspace\msys64" /E /NFL /NDL /NJH /NJS /NP
+          robocopy "${{ steps.msys2.outputs.msys2-location }}" "agents\feishu\msys64" /E /NFL /NDL /NJH /NJS /NP
           if ($LASTEXITCODE -ge 8) { exit 1 } else { exit 0 }
       - shell: pwsh
-        run: Remove-Item -Recurse -Force "examples\haitun-workspace\msys64\var\cache\pacman\pkg\*" -ErrorAction SilentlyContinue
+        run: Remove-Item -Recurse -Force "agents\feishu\msys64\var\cache\pacman\pkg\*" -ErrorAction SilentlyContinue
       - run: choco install innosetup --no-progress
       - name: Build launcher with updater config
         shell: pwsh
@@ -129,7 +201,7 @@ jobs:
           SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
         run: |
           # 只把 key 写进打包目录，不落库；PR 分支没有 secret 时生成空 .env，打包照常成功。
-          $path = "examples\haitun-workspace\.env"
+          $path = "agents\feishu\.env"
           $lines = [System.Collections.Generic.List[string]]::new()
           if ($env:SERPER_API_KEY) {
             $lines.Add("SERPER_API_KEY=$env:SERPER_API_KEY")
@@ -152,9 +224,126 @@ jobs:
       - name: Collect version files
         shell: pwsh
         run: |
-          Copy-Item -Force "examples\haitun-workspace\haitun-version.txt" "installer-output\"
-          Copy-Item -Force "examples\haitun-workspace\msys64\msys-version.txt" "installer-output\"
+          Copy-Item -Force "agents\feishu\haitun-version.txt" "installer-output\"
+          Copy-Item -Force "agents\feishu\msys64\msys-version.txt" "installer-output\"
       - uses: actions/upload-artifact@v7
         with:
           name: haitun-agent-installers
           path: installer-output
+
+  # macOS 侧的组装环节, 对应 Windows 的 `haitun-inno-setup`。
+  #
+  # 编译器同样走 PyInstaller 而非 Nuitka: 除了 17 min vs 2 h 那笔账 (见文件头),
+  # 签名与公证要反复调试, 两小时一轮的反馈周期不可接受。
+  #
+  # 签名/公证按 **secret 有无自动开关**: 证书还在申请, 没配就产出未签名 dmg
+  # (用户需手动绕 Gatekeeper), 证书到位后只加 secrets, 这里和脚本都不用改。
+  haitun-macos-dmg:
+    needs: pyinstaller
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: psi-agent-pyinstaller-macos-latest
+          path: dist-bin
+      - name: Inject runtime .env
+        env:
+          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+        run: |
+          # 与 Windows 侧同一套做法: 只写进打包目录, 不落库; PR 分支没有 secret
+          # 时生成空 .env, 打包照常成功。
+          if [ -n "$SERPER_API_KEY" ]; then
+            printf 'SERPER_API_KEY=%s\n' "$SERPER_API_KEY" > agents/feishu/.env
+          else
+            : > agents/feishu/.env
+          fi
+          echo "runtime .env prepared (SERPER_API_KEY present: ${SERPER_API_KEY:+yes})"
+      # 公证默认全开, 特性分支和 PR 也公证。
+      #
+      # 这里曾按「只有 main / v* tag 才公证」收窄, 理由是公证要同步等 Apple 队列
+      # 「45 min 以上」。那个数字是错的: 实测 run 33033841268 提交到 Accepted 用了
+      # **48 秒** (02:42:34 -> 02:43:22)。省下不到一分钟, 代价是特性分支的包在 Mac
+      # 上一律打不开 —— Gatekeeper 直接拦在启动前, 连功能都验不了。装包本来就是
+      # 为了验功能, 收窄把这件事本身给废了, 所以取消收窄。
+      #
+      # 队列偶发会慢: build-dmg.sh 把 --wait 的超时设成 3h 是有来由的 (曾有一次等
+      # 到第 58 min 时 runner DNS 归零)。真慢的时候宁可等, 也不要发一个验不了的包。
+      #
+      # 仍然排除 alpha tag: `auto-alpha-tag.yml` 每天在 main 的最后一个绿色 commit
+      # 上打一个 `v*-alphaYYYYMMDD`, 用途是发 PyPI, 与安装器发版无关(安装器看
+      # haitun.iss)。tag 指向的 commit 推 main 时已经公证过一遍, 同一份内容再排一次
+      # 队是纯浪费, 且它产出的包没人拿去装。
+      #
+      # 没配 Apple secret 时这个开关是空操作: build-dmg.sh 还要求凭证齐全才提交,
+      # 缺凭证照旧产出未签名 dmg, 不会红。
+      - name: Decide whether to notarize
+        id: notarize
+        shell: bash
+        env:
+          FORCE_NOTARIZE: ${{ inputs.force_notarize }}
+        run: |
+          # 默认开: 每个包都要能在 Mac 上打开, 否则装了也验不了。
+          enabled=true
+          case "$GITHUB_REF" in
+            # alpha tag 走 PyPI, 不是安装器发版; 内容已随 main 公证过
+            refs/tags/v*-alpha*) enabled=false ;;
+          esac
+          # 保留强制开关: alpha tag 上想临时问一次 Apple 的结论时用。
+          if [ "$FORCE_NOTARIZE" = "true" ]; then
+            enabled=true
+            echo "::notice::手动强制公证 ($GITHUB_REF)"
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          if [ "$enabled" = "true" ]; then
+            echo "::notice::将提交公证 ($GITHUB_REF)"
+          else
+            echo "::notice::alpha tag ($GITHUB_REF), 内容已随 main 公证过, 跳过"
+          fi
+      - name: Build dmg
+        env:
+          PSI_AGENT_BIN: dist-bin/psi-agent
+          HAITUN_NOTARIZE: ${{ steps.notarize.outputs.enabled }}
+          HAITUN_DOWNLOAD_BASE_URL: ${{ vars.HAITUN_DOWNLOAD_BASE_URL }}
+          HAITUN_UPDATE_INTERVAL_HOURS: ${{ vars.HAITUN_UPDATE_INTERVAL_HOURS }}
+          P12_CERTIFICATE: ${{ secrets.P12_CERTIFICATE }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          MACOS_KEYCHAIN_PWD: ${{ secrets.MACOS_KEYCHAIN_PWD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APP_SPECIFIC_PASSWORD: ${{ secrets.APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          chmod +x dist-bin/psi-agent
+          bash .github/macos/build-dmg.sh
+      # 只放 dmg。这个 artifact 是「给人下载去装的东西」, 从 Actions 页面下下来解开
+      # 应该就是一个安装包, 不该再多一个文件让人猜它是不是要一起拷走。
+      # `haitun-version.txt` 是发布流水线的元数据 (oss-publish 用它核对两平台版本
+      # 号是否一致), 与安装无关, 拆到下面单独一个 artifact。
+      - uses: actions/upload-artifact@v7
+        with:
+          name: haitun-agent-macos
+          path: macos-dist/HaiTun_Agent.dmg
+      # 版本号元数据单独一个 artifact, 只给 oss-publish.yml 消费。
+      #
+      # 不设 `if: always()`: 版本文件由 build-dmg.sh 在成功路径上写出, 构建挂了就
+      # 该缺席 —— oss-publish 那边下载失败会让整条 publish 红, 这正是要的效果
+      # (见 oss-publish.yml 里"两平台共用版本文件"那段注释)。
+      - uses: actions/upload-artifact@v7
+        with:
+          name: haitun-agent-macos-version
+          path: macos-dist/haitun-version.txt
+      # if: always() so the Gatekeeper verdict survives a failed build -- that is
+      # exactly the case you need it in.
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: haitun-macos-gatekeeper
+          path: |
+            macos-dist/build/spctl.txt
+            macos-dist/build/spctl-quarantined.txt
+            macos-dist/build/syspolicy.txt
+            macos-dist/build/syspolicy-quarantined.txt
+            macos-dist/build/smoke.txt
+            macos-dist/build/smoke-exec.txt
+            macos-dist/build/notarytool-submit.log
+          if-no-files-found: warn

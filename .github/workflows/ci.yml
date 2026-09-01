@@ -16,6 +16,10 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run ty check .
+      # macOS 打包脚本(.github/macos/)只在 macos runner 上执行, 但静态检查放这里:
+      # ubuntu runner 预装 shellcheck, macOS runner 没有。放在打包 job 里会让
+      # 「装 shellcheck」这一步拖慢每次发版, 而 lint 本身与平台无关。
+      - run: shellcheck .github/macos/*.sh
 
   test:
     needs: lint
@@ -27,6 +31,21 @@ jobs:
           python-version: "3.14"
       - run: uv sync
       - run: uv run pytest -v
+
+  # ToB 前端脚手架的可构建性。单独一个 job 而不是塞进 publish: publish 只在打 tag 时
+  # 跑, 那样脚手架坏掉要到发版才发现 —— 方案 3.6 要的是「不会悄悄坏掉」。
+  # 这里只验证「能构建」, 不产出也不下发任何东西 (产物下发不在本轮范围)。
+  feishu-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+      - run: npm ci
+        working-directory: src/psi_agent/gateway/feishu/feishu-web
+      - run: npm run build
+        working-directory: src/psi_agent/gateway/feishu/feishu-web
 
   publish:
     needs: [lint, test]
@@ -41,13 +60,13 @@ jobs:
         with:
           node-version: "26"
       - run: npm ci
-        working-directory: src/psi_agent/gateway/spa
+        working-directory: src/psi_agent/gateway/desktop/spa
       - run: npm run build
-        working-directory: src/psi_agent/gateway/spa
+        working-directory: src/psi_agent/gateway/desktop/spa
       - run: npm ci
-        working-directory: src/psi_agent/gateway/spa-v2
+        working-directory: src/psi_agent/gateway/desktop/spa-v2
       - run: npm run build
-        working-directory: src/psi_agent/gateway/spa-v2
+        working-directory: src/psi_agent/gateway/desktop/spa-v2
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.14"

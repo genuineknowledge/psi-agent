@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-WORKSPACES = sorted(Path("examples").glob("*/systems/system.py"))
+WORKSPACES = sorted([*Path("examples").glob("*/systems/system.py"), *Path("agents").glob("*/systems/system.py")])
 
 
 # Sibling helper modules the workspaces import by bare name.  Several workspaces

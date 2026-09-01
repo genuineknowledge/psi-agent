@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import textwrap
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -670,3 +671,176 @@ async def test_get_last_file_wins(tmp_path: Path) -> None:
     func = tr.get("echo")
     assert func is not None
     assert await func() in ("a", "b")  # glob order is filesystem-dependent
+
+
+# ── bare-name private helper imports ─────────────────────────────────────────
+#
+# Tool files import same-directory private helpers by bare name
+# (``from _helper import thing``).  That only resolves if the tools dir is on
+# ``sys.path``, which used to depend on the process cwd and on some *other*
+# tool file happening to insert the dir first — so the files sorting earliest
+# in glob order silently failed to load with only an ERROR log.
+
+
+async def _write_helper_workspace(tools_dir: Path, marker: str) -> None:
+    """A tools dir whose public tool imports a private helper by bare name."""
+    await anyio.Path(tools_dir).mkdir(parents=True)
+    await anyio.Path(tools_dir / "_priv_helper.py").write_text(
+        f"MARKER = {marker!r}\nSTATE: list[str] = []\n", encoding="utf-8"
+    )
+    # Name sorts before "_priv_helper" has any chance of being pre-imported,
+    # and before any file that might insert the dir onto sys.path.
+    await anyio.Path(tools_dir / "aaa_first.py").write_text(
+        textwrap.dedent(
+            """
+            from _priv_helper import MARKER
+
+            async def which_marker() -> str:
+                return MARKER
+            """
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.anyio
+async def test_load_resolves_bare_private_import_from_unrelated_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bare-name helper imports resolve even when cwd is not the tools dir."""
+    tools_dir = tmp_path / "ws" / "tools"
+    await _write_helper_workspace(tools_dir, "from-ws")
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+
+    tr = await ToolRegistry.load(tools_dir)
+
+    assert set(tr.tools) == {"which_marker"}, "bare private import failed to resolve"
+    func = tr.get("which_marker")
+    assert func is not None
+    assert await func() == "from-ws"
+
+
+@pytest.mark.anyio
+async def test_load_does_not_depend_on_glob_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A file sorting *before* every sys.path-inserting file still loads.
+
+    This is the exact shape of the original failure: files whose names sorted
+    first were exec'd while the tools dir was not yet on ``sys.path``.
+    """
+    tools_dir = tmp_path / "tools"
+    await _write_helper_workspace(tools_dir, "ordered")
+    # zzz_last mimics the tools that carry their own sys.path prologue.
+    await anyio.Path(tools_dir / "zzz_last.py").write_text(
+        textwrap.dedent(
+            """
+            import sys
+            from pathlib import Path
+
+            TOOLS_DIR = Path(__file__).resolve().parent
+            if str(TOOLS_DIR) not in sys.path:
+                sys.path.insert(0, str(TOOLS_DIR))
+
+            from _priv_helper import MARKER
+
+            async def last_tool() -> str:
+                return MARKER
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path.parent)
+    tr = await ToolRegistry.load(tools_dir)
+
+    assert set(tr.tools) == {"which_marker", "last_tool"}
+
+
+@pytest.mark.anyio
+async def test_load_leaves_sys_path_unchanged(tmp_path: Path) -> None:
+    """The tools dir is not left behind on ``sys.path`` after loading."""
+    tools_dir = tmp_path / "tools"
+    await _write_helper_workspace(tools_dir, "scoped")
+
+    before = list(sys.path)
+    await ToolRegistry.load(tools_dir)
+    assert str(tools_dir) not in sys.path
+    assert sys.path == before
+
+
+@pytest.mark.anyio
+async def test_two_workspaces_bind_their_own_private_helper(tmp_path: Path) -> None:
+    """Same-named private helpers in two tools dirs must not cross-contaminate.
+
+    Bare-name imports share one global ``sys.modules`` slot, so without
+    per-dir scoping the second workspace silently reuses the first one's
+    helper — a real hazard, since two workspaces ship
+    ``_assignment_tool_common.py`` with different contents.
+    """
+    first = tmp_path / "ws_a" / "tools"
+    second = tmp_path / "ws_b" / "tools"
+    await _write_helper_workspace(first, "ws-a")
+    await _write_helper_workspace(second, "ws-b")
+
+    tr_a = await ToolRegistry.load(first, "a")
+    tr_b = await ToolRegistry.load(second, "b")
+
+    func_a, func_b = tr_a.get("which_marker"), tr_b.get("which_marker")
+    assert func_a is not None and func_b is not None
+    assert await func_a() == "ws-a"
+    assert await func_b() == "ws-b", "second workspace bound the first workspace's helper"
+
+
+@pytest.mark.anyio
+async def test_refresh_preserves_private_helper_module_state(tmp_path: Path) -> None:
+    """Module-level state in a private helper survives a refresh.
+
+    Helpers such as ``_background_process_registry`` track live processes in
+    module globals, so a refresh must not hand tools a fresh helper module.
+    """
+    tools_dir = tmp_path / "tools"
+    await _write_helper_workspace(tools_dir, "stateful")
+    await anyio.Path(tools_dir / "aaa_first.py").write_text(
+        textwrap.dedent(
+            """
+            import _priv_helper
+
+            async def remember(item: str) -> int:
+                _priv_helper.STATE.append(item)
+                return len(_priv_helper.STATE)
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    tr = await ToolRegistry.load(tools_dir)
+    remember = tr.get("remember")
+    assert remember is not None
+    assert await remember("one") == 1
+
+    # Edit the tool itself so refresh re-execs it and re-imports the helper.
+    # A cached (unchanged) file would keep its existing module reference and
+    # pass regardless, so the file has to actually change.
+    await anyio.Path(tools_dir / "aaa_first.py").write_text(
+        textwrap.dedent(
+            """
+            import _priv_helper
+
+            async def remember(item: str) -> int:
+                _priv_helper.STATE.append(item)
+                return len(_priv_helper.STATE)
+
+            async def extra() -> str:
+                return 'extra'
+            """
+        ),
+        encoding="utf-8",
+    )
+    await tr.refresh()
+
+    remember_after = tr.get("remember")
+    assert remember_after is not None
+    assert await remember_after("two") == 2, "private helper state was reset by refresh"

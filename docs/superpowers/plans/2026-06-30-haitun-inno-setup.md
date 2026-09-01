@@ -4,7 +4,7 @@
 
 **Goal:** Add a separate `inno-setup` GitHub Actions job that bundles the PyInstaller-built `psi-agent.exe` with the `haitun-workspace` folder into a Windows installer, emitted as an artifact.
 
-**Architecture:** A committed VBS launcher and Inno Setup `.iss` script live inside `examples/haitun-workspace/`. A new CI job (`needs: pyinstaller`, `runs-on: windows-latest`) downloads the Windows exe artifact, drops it into the workspace, installs Inno Setup via chocolatey, compiles the `.iss`, and uploads `Haitun Agent Setup.exe`.
+**Architecture:** A committed VBS launcher and Inno Setup `.iss` script live inside `agents/feishu/`. A new CI job (`needs: pyinstaller`, `runs-on: windows-latest`) downloads the Windows exe artifact, drops it into the workspace, installs Inno Setup via chocolatey, compiles the `.iss`, and uploads `Haitun Agent Setup.exe`.
 
 **Tech Stack:** GitHub Actions, Inno Setup 6 (ISCC), VBScript, chocolatey.
 
@@ -15,17 +15,17 @@
 ### Task 1: Move the icon into the workspace
 
 **Files:**
-- Move: `haitun.ico` → `examples/haitun-workspace/haitun.ico`
+- Move: `haitun.ico` → `agents/feishu/haitun.ico`
 
 - [ ] **Step 1: Move the file with git**
 
 ```bash
-git mv haitun.ico examples/haitun-workspace/haitun.ico
+git mv haitun.ico agents/feishu/haitun.ico
 ```
 
 - [ ] **Step 2: Verify new location and old removed**
 
-Run: `ls -la examples/haitun-workspace/haitun.ico && ls haitun.ico 2>&1 || echo "root copy gone (expected)"`
+Run: `ls -la agents/feishu/haitun.ico && ls haitun.ico 2>&1 || echo "root copy gone (expected)"`
 Expected: the workspace path lists the ~1MB file; the root `haitun.ico` is gone.
 
 - [ ] **Step 3: Commit**
@@ -40,11 +40,11 @@ git commit -m "chore: move haitun.ico into haitun-workspace"
 ### Task 2: Create the VBS launcher
 
 **Files:**
-- Create: `examples/haitun-workspace/haitun agent.vbs`
+- Create: `agents/feishu/haitun agent.vbs`
 
 - [ ] **Step 1: Write the file**
 
-Create `examples/haitun-workspace/haitun agent.vbs` with EXACTLY this content:
+Create `agents/feishu/haitun agent.vbs` with EXACTLY this content:
 
 ```vbs
 Set objFSO = CreateObject("Scripting.FileSystemObject")
@@ -57,13 +57,13 @@ Rationale: line 3 forces the working directory to the script's own folder, so `p
 
 - [ ] **Step 2: Verify content**
 
-Run: `cat "examples/haitun-workspace/haitun agent.vbs"`
+Run: `cat "agents/feishu/haitun agent.vbs"`
 Expected: the 4 lines above, exactly.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add "examples/haitun-workspace/haitun agent.vbs"
+git add "agents/feishu/haitun agent.vbs"
 git commit -m "feat: add Haitun Agent VBS launcher"
 ```
 
@@ -72,11 +72,11 @@ git commit -m "feat: add Haitun Agent VBS launcher"
 ### Task 3: Create the Inno Setup script
 
 **Files:**
-- Create: `examples/haitun-workspace/haitun.iss`
+- Create: `agents/feishu/haitun.iss`
 
 - [ ] **Step 1: Write the file**
 
-Create `examples/haitun-workspace/haitun.iss` with EXACTLY this content:
+Create `agents/feishu/haitun.iss` with EXACTLY this content:
 
 ```iss
 ; Inno Setup script for Haitun Agent.
@@ -118,19 +118,19 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 ```
 
 Notes:
-- `Source: "*"` + `recursesubdirs createallsubdirs` packages the whole workspace tree (systems/, tools/, skills/, …) plus `psi-agent.exe`. Source paths are relative to the `.iss` directory (`examples/haitun-workspace/`).
+- `Source: "*"` + `recursesubdirs createallsubdirs` packages the whole workspace tree (systems/, tools/, skills/, …) plus `psi-agent.exe`. Source paths are relative to the `.iss` directory (`agents/feishu/`).
 - `[Run]` uses `shellexec` because `.vbs` is not a directly executable image.
 - `WizardStyle=modern` (dropped the non-standard `dynamic` token from the original wizard output).
 
 - [ ] **Step 2: Verify content**
 
-Run: `cat examples/haitun-workspace/haitun.iss`
+Run: `cat agents/feishu/haitun.iss`
 Expected: the content above, exactly.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add examples/haitun-workspace/haitun.iss
+git add agents/feishu/haitun.iss
 git commit -m "feat: add Inno Setup script for Haitun Agent installer"
 ```
 
@@ -139,27 +139,27 @@ git commit -m "feat: add Inno Setup script for Haitun Agent installer"
 ### Task 4: Update the workspace .gitignore
 
 **Files:**
-- Modify: `examples/haitun-workspace/.gitignore` (lines 29, 31 — remove `haitun.ico` and `haitun agent.vbs`)
+- Modify: `agents/feishu/.gitignore` (lines 29, 31 — remove `haitun.ico` and `haitun agent.vbs`)
 
 Context: `dolphin.ico` is no longer used (we use the committed `haitun.ico`), and `haitun agent.vbs` is now a committed source file, so neither should be ignored. `psi-agent.exe` and `psi-agent` stay ignored (build artifacts).
 
 - [ ] **Step 1: Remove the `haitun.ico` line**
 
-Delete the line containing exactly `haitun.ico` from `examples/haitun-workspace/.gitignore`.
+Delete the line containing exactly `haitun.ico` from `agents/feishu/.gitignore`.
 
 - [ ] **Step 2: Remove the `haitun agent.vbs` line**
 
-Delete the line containing exactly `haitun agent.vbs` from `examples/haitun-workspace/.gitignore`.
+Delete the line containing exactly `haitun agent.vbs` from `agents/feishu/.gitignore`.
 
 - [ ] **Step 3: Verify**
 
-Run: `grep -nE "haitun.ico|haitun agent.vbs|psi-agent.exe" examples/haitun-workspace/.gitignore`
+Run: `grep -nE "haitun.ico|haitun agent.vbs|psi-agent.exe" agents/feishu/.gitignore`
 Expected: only `psi-agent.exe` remains; the other two are gone.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add examples/haitun-workspace/.gitignore
+git add agents/feishu/.gitignore
 git commit -m "chore: un-ignore haitun.iss launcher assets in haitun-workspace"
 ```
 
@@ -186,10 +186,10 @@ Add the following to the end of `.github/workflows/pyinstaller.yml` (a new top-l
           name: psi-agent-pyinstaller-windows-latest
           path: dist-exe
       - shell: cmd
-        run: copy dist-exe\psi-agent.exe "examples\haitun-workspace\psi-agent.exe"
+        run: copy dist-exe\psi-agent.exe "workspace	ob\psi-agent.exe"
       - run: choco install innosetup --no-progress
       - shell: pwsh
-        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /O"installer-output" "examples\haitun-workspace\haitun.iss"'
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /O"installer-output" "workspace	ob\haitun.iss"'
       - uses: actions/upload-artifact@v7
         with:
           name: haitun-agent-installer
@@ -225,18 +225,18 @@ git commit -m "ci: build Haitun Agent installer via Inno Setup job"
 ### Task 6: Document the installer build
 
 **Files:**
-- Modify: `examples/haitun-workspace/README.md` (append a short "Windows 安装包" section)
+- Modify: `agents/feishu/README.md` (append a short "Windows 安装包" section)
 
 Context: AGENTS.md Definition-of-Done item 1 requires doc sync for new behavior/CI. Add a brief note describing how the installer is produced.
 
 - [ ] **Step 1: Read the current README tail to match style**
 
-Run: `tail -20 examples/haitun-workspace/README.md`
+Run: `tail -20 agents/feishu/README.md`
 Expected: see existing heading style / language (Chinese).
 
 - [ ] **Step 2: Append the section**
 
-Append to `examples/haitun-workspace/README.md`:
+Append to `agents/feishu/README.md`:
 
 ```markdown
 
@@ -253,13 +253,13 @@ Append to `examples/haitun-workspace/README.md`:
 
 - [ ] **Step 3: Verify**
 
-Run: `tail -12 examples/haitun-workspace/README.md`
+Run: `tail -12 agents/feishu/README.md`
 Expected: the new section is present.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add examples/haitun-workspace/README.md
+git add agents/feishu/README.md
 git commit -m "docs: document Haitun Agent Windows installer build"
 ```
 
@@ -267,7 +267,7 @@ git commit -m "docs: document Haitun Agent Windows installer build"
 
 ## Definition of Done
 
-- [ ] `examples/haitun-workspace/` contains `haitun.ico`, `haitun agent.vbs`, `haitun.iss`
+- [ ] `agents/feishu/` contains `haitun.ico`, `haitun agent.vbs`, `haitun.iss`
 - [ ] `.gitignore` no longer ignores `haitun.ico` / `haitun agent.vbs`; still ignores `psi-agent.exe`
 - [ ] `pyinstaller.yml` has a second job `inno-setup` (`needs: pyinstaller`, windows-latest) that parses as valid YAML
 - [ ] README documents the installer build

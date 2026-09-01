@@ -295,7 +295,7 @@ agent 拿到 `chat_id` 后自行决定是否调 `feishu_message_list(container_i
 |------|------|------|
 | 修改 | `psi_agent/channel/feishu/client.py` | 新增 `_context_header`；`_build_chunks` 注入 header 并保持 unsupported-type 语义 |
 | 修改 | `tests/psi_agent/channel/feishu/test_feishu.py` | 元数据头注入 / 群聊 chat_id 携带 / 空消息丢弃 header |
-| 修改 | `examples/haitun-workspace/TOOLS.md` | 常驻引导：群聊里如何用 `feishu_message_list` / `feishu_doc_read` / `feishu_file_download` |
+| 修改 | `agents/feishu/TOOLS.md` | 常驻引导：群聊里如何用 `feishu_message_list` / `feishu_doc_read` / `feishu_file_download` |
 | 修改 | `src/psi_agent/channel/AGENTS.md` | Feishu 约定补「消息元数据注入（`_context_header`）」一条（含刻意为之留痕） |
 
 ### 13.4 非目标
@@ -401,11 +401,11 @@ SDK 回调在其后台线程触发；`_on_approval` 经 `portal.start_task_soon(
 | 操作 | 文件 | 说明 |
 |------|------|------|
 | 修改 | `psi_agent/channel/feishu/client.py` | `_APPROVAL_*` 常量 + `_SeenEvents` + `_build_instance_get_request` / `_parse_instance_detail` / `_fetch_instance_detail` / `_approval_event_header` / `_handle_approval_event` / `_register_approval_processor`；`run_feishu` 加 `approval_seen` + `_on_approval` + `start_background()` 后注册 |
-| 修改 | `examples/haitun-workspace/tools/_feishu_impl.py` | `subscribe_approval_impl` / `unsubscribe_approval_impl` + 两个 `_build_*_request` |
-| 修改 | `examples/haitun-workspace/tools/feishu_approval.py` | `feishu_approval_subscribe` / `feishu_approval_unsubscribe` 薄封装 |
-| 修改 | `examples/haitun-workspace/TOOLS.md` | 订阅审批事件的运行时引导（订阅一次、不轮询、收 `<feishu_approval_event>`） |
+| 修改 | `agents/feishu/tools/_feishu_impl.py` | `subscribe_approval_impl` / `unsubscribe_approval_impl` + 两个 `_build_*_request` |
+| 修改 | `agents/feishu/tools/feishu_approval.py` | `feishu_approval_subscribe` / `feishu_approval_unsubscribe` 薄封装 |
+| 修改 | `agents/feishu/TOOLS.md` | 订阅审批事件的运行时引导（订阅一次、不轮询、收 `<feishu_approval_event>`） |
 | 修改 | `tests/psi_agent/channel/feishu/test_feishu.py` | 详情解析 / 去重与有界 / 推送申请人 / 白名单 / 重投去重 / 无申请人跳过 / 异常吞掉 / 缺 instance_code 跳过 / 双 schema 注册 / 无 _processorMap 降级 / run_feishu 注册 |
-| 修改 | `examples/haitun-workspace/tests/test_feishu.py` | subscribe/unsubscribe 建请求 / 校验 code / 透传错误 / 工具 async 带 docstring |
+| 修改 | `agents/feishu/tests/test_feishu.py` | subscribe/unsubscribe 建请求 / 校验 code / 透传错误 / 工具 async 带 docstring |
 | 修改 | `src/psi_agent/channel/AGENTS.md` | Feishu 约定补「审批状态变化主动推送」一条（含刻意为之留痕） |
 
 ### 15.6 前置依赖与非目标

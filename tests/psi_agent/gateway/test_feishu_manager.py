@@ -6,9 +6,9 @@ from typing import cast
 import anyio
 import pytest
 
-from psi_agent.gateway._ai_manager import AIManager
-from psi_agent.gateway._feishu_manager import FeishuManager, _sanitize_open_id, external_sessions
-from psi_agent.gateway._session_manager import SessionManager
+from psi_agent.gateway.feishu._feishu_manager import FeishuManager, _sanitize_open_id, external_sessions
+from psi_agent.runtime._ai_manager import AIManager
+from psi_agent.runtime._session_manager import SessionManager
 
 # 纯谓词用例 (is_external / _workspace_for) 都不碰 self._sm, 故意不造 SessionManager ——
 # 真造一个要连带 AIManager + task group。cast 只为让类型检查放行, 运行期仍是 None:
@@ -464,3 +464,12 @@ def test_private_space_unset_is_noop(tmp_path: str, monkeypatch: pytest.MonkeyPa
     fm = FeishuManager(_sm=_NO_SM, _ai_id="ai1", _workspace_root=str(tmp_path))
 
     assert fm._workspace_for("ou_secret") == os.path.join(str(tmp_path), "ou_secret")
+
+
+def test_public_derivation_escapes_dash(tmp_path: str) -> None:
+    """私聊侧 ``-`` 必须转义: 否则 open_id 为 ``chat-oc_x`` 的人与群 ``oc_x`` 撞同一个 id。"""
+    fm = FeishuManager(_sm=_NO_SM, _workspace_root=str(tmp_path))
+    assert fm.session_id_for("chat-oc_x") == "feishu-chat_oc_x"
+    assert fm.session_id_for("chat:oc_x") == "feishu-chat-oc_x"
+    assert fm.session_id_for("chat-oc_x") != fm.session_id_for("chat:oc_x")
+    assert fm.workspace_for("chat-oc_x") != fm.workspace_for("chat:oc_x")

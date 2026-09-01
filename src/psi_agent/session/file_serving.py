@@ -10,7 +10,7 @@ gateway 容器里; 而独立容器的 Session 有自己的文件系统。agent �
 上传 (SDK 收 ``bytes``, 见 ``channel/feishu/client.py`` 的 ``_send_file``)。方向上与入向
 的 ``_attachment_handoff`` 互为镜像 —— 两边共同的原则是**不假装两个容器共享文件系统**。
 
-判定与 ``gateway/_workspace_manager.py`` 的 ``read_file`` 同一套 (``resolve()`` 后判包含),
+判定与 ``gateway/desktop/_workspace_manager.py`` 的 ``read_file`` 同一套 (``resolve()`` 后判包含),
 刻意不共用实现: Session 不该 import Gateway 的私有模块 (同 ``_feishu_routing`` /
 ``_send_markers`` 的取舍)。分离出本模块而非写在 handler 里, 是为了让路径逃逸这类判定
 能脱离 aiohttp 单元测试。

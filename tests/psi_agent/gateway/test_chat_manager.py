@@ -6,7 +6,7 @@ from pathlib import Path
 import anyio
 import pytest
 
-from psi_agent.gateway._chat_manager import ChatManager
+from psi_agent.runtime._chat_manager import ChatManager
 
 
 @pytest.fixture

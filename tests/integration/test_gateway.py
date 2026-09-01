@@ -13,12 +13,14 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, FormData, web
 
-from psi_agent.gateway._ai_manager import AIManager
-from psi_agent.gateway._attention import AttentionHub
-from psi_agent.gateway._router_manager import RouterManager
-from psi_agent.gateway._session_manager import SessionManager
-from psi_agent.gateway._title_manager import TitleManager
-from psi_agent.gateway.server import create_app
+from psi_agent.gateway.desktop._attention import AttentionHub
+from psi_agent.gateway.desktop._routes import register_desktop_routes
+from psi_agent.gateway.feishu._routes import register_feishu_routes
+from psi_agent.gateway.server import create_core_app
+from psi_agent.runtime._ai_manager import AIManager
+from psi_agent.runtime._router_manager import RouterManager
+from psi_agent.runtime._session_manager import SessionManager
+from psi_agent.runtime._title_manager import TitleManager
 from tests.integration.conftest import MockAIServer
 
 
@@ -93,16 +95,17 @@ async def test_gateway_rest_crud(tmp_path: str, monkeypatch: pytest.MonkeyPatch)
     async def serve(**_kwargs: object) -> None:
         await anyio.sleep_forever()
 
-    monkeypatch.setattr("psi_agent.gateway._router_manager._wait_socket", ready)
-    monkeypatch.setattr("psi_agent.gateway._router_manager._remove_socket", ready)
-    monkeypatch.setattr("psi_agent.gateway._router_manager._run_router_service", serve)
+    monkeypatch.setattr("psi_agent.runtime._router_manager._wait_socket", ready)
+    monkeypatch.setattr("psi_agent.runtime._router_manager._remove_socket", ready)
+    monkeypatch.setattr("psi_agent.runtime._router_manager._run_router_service", serve)
     tg = anyio.create_task_group()
     await tg.__aenter__()
 
     aim = AIManager(_prefix="gw-test", _tg=tg)
     rm = RouterManager(_aim=aim, _prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _rm=rm, _prefix="gw-test", _tg=tg)
-    app = await create_app(aim, sm, TitleManager(), rm=rm)
+    # /ais /routers /sessions 全在骨架里 —— 这条 CRUD 用例不需要任何产品线。
+    app = await create_core_app(aim, sm, TitleManager(), rm=rm)
     base_url, runner = await _start_app_on_free_port(app)
 
     try:
@@ -260,7 +263,10 @@ async def test_gateway_feishu_route(tmp_path: str) -> None:
 
     aim = AIManager(_prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
-    app = await create_app(aim, sm, TitleManager(), feishu_workspace_root=str(tmp_path))
+    app = register_feishu_routes(
+        await create_core_app(aim, sm, TitleManager()),
+        feishu_workspace_root=str(tmp_path),
+    )
     base_url, runner = await _start_app_on_free_port(app)
 
     try:
@@ -277,6 +283,13 @@ async def test_gateway_feishu_route(tmp_path: str) -> None:
                 },
             ) as resp:
                 assert resp.status == 201
+
+            # 只贴了飞书那面 → 桌面端专属端点一条都不在。这是 A4 之前不可能断言的:
+            # 那时 create_app 无条件建 WorkspaceManager 并注册 /workspace/*。
+            async with session.get(f"{base_url}/workspace/cwd") as resp:
+                assert resp.status == 404
+            async with session.post(f"{base_url}/ui/attention") as resp:
+                assert resp.status == 404
 
             # 无 feishu_ai_id 且请求也不带 ai_id → 400。
             async with session.post(f"{base_url}/feishu/route", json={"open_id": "ou_alice"}) as resp:
@@ -325,7 +338,10 @@ async def test_gateway_feishu_route_group_chat(tmp_path: str) -> None:
 
     aim = AIManager(_prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
-    app = await create_app(aim, sm, TitleManager(), feishu_workspace_root=str(tmp_path))
+    app = register_feishu_routes(
+        await create_core_app(aim, sm, TitleManager()),
+        feishu_workspace_root=str(tmp_path),
+    )
     base_url, runner = await _start_app_on_free_port(app)
 
     try:
@@ -397,7 +413,10 @@ async def test_gateway_feishu_route_reports_external(tmp_path: str, monkeypatch:
 
     aim = AIManager(_prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
-    app = await create_app(aim, sm, TitleManager(), feishu_workspace_root=str(tmp_path))
+    app = register_feishu_routes(
+        await create_core_app(aim, sm, TitleManager()),
+        feishu_workspace_root=str(tmp_path),
+    )
     base_url, runner = await _start_app_on_free_port(app)
 
     try:
@@ -442,7 +461,7 @@ async def test_gateway_rest_errors(tmp_path: str) -> None:
 
     aim = AIManager(_prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
-    app = await create_app(aim, sm, TitleManager())
+    app = await create_core_app(aim, sm, TitleManager())
     base_url, runner = await _start_app_on_free_port(app)
 
     try:
@@ -488,7 +507,7 @@ async def test_gateway_chat_sse(tmp_path: str, mock_ai_server: MockAIServer) -> 
     workspace = await _make_workspace(str(tmp_path))
     await sm.create(ai_id="gw-ai", workspace=workspace, id="gw-sess")
 
-    app = await create_app(aim, sm, TitleManager())
+    app = await create_core_app(aim, sm, TitleManager())
     base_url, runner = await _start_app_on_free_port(app)
 
     try:
@@ -566,7 +585,7 @@ async def test_gateway_blob_send(tmp_path: str, mock_ai_server: MockAIServer, mo
     workspace = await _make_workspace(str(tmp_path))
     await sm.create(ai_id="gw-ai", workspace=workspace, id="gw-sess")
 
-    app = await create_app(aim, sm, TitleManager())
+    app = await create_core_app(aim, sm, TitleManager())
     base_url, runner = await _start_app_on_free_port(app)
 
     try:
@@ -627,10 +646,13 @@ async def test_gateway_favicon(tmp_path: str) -> None:
     aim = AIManager(_prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
 
-    app_with = await create_app(aim, sm, TitleManager(), favicon_path=icon_path)
+    app_with = await register_desktop_routes(
+        await create_core_app(aim, sm, TitleManager()),
+        favicon_path=icon_path,
+    )
     base_with, runner_with = await _start_app_on_free_port(app_with)
 
-    app_without = await create_app(aim, sm, TitleManager())
+    app_without = await register_desktop_routes(await create_core_app(aim, sm, TitleManager()))
     base_without, runner_without = await _start_app_on_free_port(app_without)
 
     try:
@@ -655,7 +677,10 @@ async def test_gateway_spa_index_app_name() -> None:
 
     aim = AIManager(_prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
-    app = await create_app(aim, sm, TitleManager(), app_name="Haitun Agent")
+    app = await register_desktop_routes(
+        await create_core_app(aim, sm, TitleManager()),
+        app_name="Haitun Agent",
+    )
     base, runner = await _start_app_on_free_port(app)
 
     try:
@@ -679,7 +704,10 @@ async def test_gateway_ui_attention() -> None:
     attention = AttentionHub()
     tray = MagicMock()
     attention.bind(tray=tray)
-    app = await create_app(aim, sm, TitleManager(), attention=attention)
+    app = await register_desktop_routes(
+        await create_core_app(aim, sm, TitleManager()),
+        attention=attention,
+    )
     base, runner = await _start_app_on_free_port(app)
 
     try:
@@ -689,6 +717,42 @@ async def test_gateway_ui_attention() -> None:
             body = await resp.json()
             assert body == {"ok": True}
         tray.request_attention.assert_called_once()
+    finally:
+        await runner.cleanup()
+        await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_desktop_only_app_has_no_feishu_surface() -> None:
+    """只贴桌面端 → 飞书路由一条都不在, 且 openapi 里也没有 ``/feishu/*``。
+
+    这是 `test_gateway_feishu_route` 那条隔离断言的反方向。A4 之前两条都不可能断言:
+    ``create_app`` 无条件建 ``FeishuManager`` 并注册 ``/feishu/*``, 桌面端容器里也有。
+    """
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+
+    aim = AIManager(_prefix="gw-test", _tg=tg)
+    sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
+    app = await register_desktop_routes(await create_core_app(aim, sm, TitleManager()))
+    assert "fm" not in app  # 桌面端容器不再建飞书管理器
+    base, runner = await _start_app_on_free_port(app)
+
+    try:
+        timeout = ClientTimeout(total=10)
+        async with ClientSession(timeout=timeout) as session:
+            async with session.post(f"{base}/feishu/route", json={"open_id": "ou_alice"}) as resp:
+                assert resp.status == 404
+            async with session.get(f"{base}/feishu/routes") as resp:
+                assert resp.status == 404
+
+            # spec 报的是本进程真注册了的那批 path。
+            async with session.get(f"{base}/openapi.json") as resp:
+                assert resp.status == 200
+                paths = (await resp.json())["paths"]
+            assert not [p for p in paths if p.startswith("/feishu/")]
+            assert "/workspace/cwd" in paths  # 桌面端那批仍在
+            assert "/sessions" in paths  # 骨架那批仍在
     finally:
         await runner.cleanup()
         await tg.__aexit__(None, None, None)

@@ -8,10 +8,10 @@
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `haitun.ico` → `examples/haitun-workspace/haitun.ico` | 移动 | 图标文件，用于 tray icon、installer icon、shortcut icon |
-| `examples/haitun-workspace/haitun agent.vbs` | 新建 | VBS 启动器，负责 launch `psi-agent gateway --tray --icon haitun.ico` |
-| `examples/haitun-workspace/haitun.iss` | 新建 | Inno Setup 安装脚本 |
-| `examples/haitun-workspace/.gitignore` | 修改 | 移除 `haitun agent.vbs`、`haitun.ico` 行（现已提交） |
+| `haitun.ico` → `agents/feishu/haitun.ico` | 移动 | 图标文件，用于 tray icon、installer icon、shortcut icon |
+| `agents/feishu/haitun agent.vbs` | 新建 | VBS 启动器，负责 launch `psi-agent gateway --tray --icon haitun.ico` |
+| `agents/feishu/haitun.iss` | 新建 | Inno Setup 安装脚本 |
+| `agents/feishu/.gitignore` | 修改 | 移除 `haitun agent.vbs`、`haitun.ico` 行（现已提交） |
 | `.github/workflows/pyinstaller.yml` | 修改 | 新增 `haitun-inno-setup` job，在 PyInstaller 之后运行 |
 
 ## haitun agent.vbs
@@ -114,10 +114,10 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
         with:
           name: psi-agent-pyinstaller-windows-latest
           path: dist-exe
-      - run: copy dist-exe\psi-agent.exe examples\haitun-workspace\psi-agent.exe
+      - run: copy dist-exe\psi-agent.exe workspace	ob\psi-agent.exe
         shell: cmd
       - run: choco install innosetup --no-progress
-      - run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /O"installer-output" "examples\haitun-workspace\haitun.iss"'
+      - run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /O"installer-output" "workspace	ob\haitun.iss"'
         shell: pwsh
       - uses: actions/upload-artifact@v7
         with:

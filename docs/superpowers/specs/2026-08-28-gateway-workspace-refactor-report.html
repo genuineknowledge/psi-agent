@@ -1,0 +1,1151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gateway / Workspace 架构重排 —— 交付汇报</title>
+<style>
+:root{
+  --bg:#0f1419; --panel:#171d24; --panel2:#1d242c; --line:#2a333d;
+  --tx:#e4e9ee; --tx2:#9aa7b4; --tx3:#6b7885;
+  --ok:#3ddc97; --warn:#ffb454; --bad:#ff6b6b; --acc:#4aa8ff; --acc2:#a78bfa;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);
+  font:15px/1.7 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  padding:0 0 80px}
+.wrap{max-width:1180px;margin:0 auto;padding:0 28px}
+
+/* ---- header ---- */
+header{background:linear-gradient(135deg,#141b23 0%,#1b2530 60%,#16202a 100%);
+  border-bottom:1px solid var(--line);padding:44px 0 36px;margin-bottom:34px}
+h1{font-size:30px;font-weight:650;letter-spacing:-.4px;margin-bottom:14px}
+.meta{display:flex;flex-wrap:wrap;gap:10px}
+.chip{background:#0e141a;border:1px solid var(--line);border-radius:20px;
+  padding:5px 14px;font-size:12.5px;color:var(--tx2)}
+.chip b{color:var(--tx);font-weight:600}
+.chip.mono b{font-family:ui-monospace,Consolas,monospace}
+
+/* ---- sections ---- */
+section{margin-bottom:44px}
+h2{font-size:21px;font-weight:640;margin-bottom:18px;padding-left:13px;
+  border-left:3px solid var(--acc)}
+h3{font-size:16px;font-weight:620;margin:26px 0 12px;color:var(--tx)}
+p{color:var(--tx2);margin-bottom:12px}
+p strong,li strong{color:var(--tx);font-weight:600}
+ul{margin:0 0 12px 20px;color:var(--tx2)}
+li{margin-bottom:7px}
+code{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;
+  background:#0d1318;border:1px solid #232c35;border-radius:4px;
+  padding:1.5px 5px;color:#8fd3ff}
+
+/* ---- verdict banner ---- */
+.verdict{background:linear-gradient(100deg,rgba(61,220,151,.13),rgba(61,220,151,.03));
+  border:1px solid rgba(61,220,151,.3);border-left:4px solid var(--ok);
+  border-radius:10px;padding:20px 24px;margin-bottom:22px}
+.verdict .big{font-size:17px;font-weight:640;color:var(--tx);margin-bottom:6px}
+.verdict .sub{font-size:13.5px;color:var(--tx2)}
+
+/* ---- KPI cards ---- */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));gap:14px;margin:20px 0}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:17px 18px;position:relative;overflow:hidden}
+.kpi::after{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--acc)}
+.kpi.ok::after{background:var(--ok)} .kpi.warn::after{background:var(--warn)}
+.kpi .lb{font-size:12px;color:var(--tx3);margin-bottom:9px;letter-spacing:.2px}
+.kpi .vl{font-size:25px;font-weight:670;letter-spacing:-.6px;
+  font-family:ui-monospace,Consolas,monospace}
+.kpi .vl .from{color:var(--tx3);font-size:17px;font-weight:400}
+.kpi .vl .ar{color:var(--tx3);font-size:15px;margin:0 5px}
+.kpi .nt{font-size:11.5px;color:var(--tx3);margin-top:7px}
+
+/* ---- tables ---- */
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px;
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+th{background:var(--panel2);color:var(--tx2);font-weight:600;text-align:left;
+  padding:11px 14px;border-bottom:1px solid var(--line);font-size:12.5px;
+  letter-spacing:.3px;white-space:nowrap}
+td{padding:10px 14px;border-bottom:1px solid #222a33;color:var(--tx2);vertical-align:top}
+tr:last-child td{border-bottom:none}
+td strong{color:var(--tx)}
+td.n{font-family:ui-monospace,Consolas,monospace;text-align:right;white-space:nowrap}
+
+/* ---- badges ---- */
+.bg{display:inline-block;padding:2px 9px;border-radius:5px;font-size:11.5px;
+  font-weight:600;white-space:nowrap}
+.bg.ok{background:rgba(61,220,151,.15);color:var(--ok);border:1px solid rgba(61,220,151,.3)}
+.bg.no{background:rgba(255,180,84,.13);color:var(--warn);border:1px solid rgba(255,180,84,.3)}
+.bg.bad{background:rgba(255,107,107,.13);color:var(--bad);border:1px solid rgba(255,107,107,.3)}
+
+/* ---- code blocks ---- */
+pre{background:#0b1015;border:1px solid #202932;border-radius:9px;
+  padding:16px 18px;overflow-x:auto;margin:14px 0;
+  font:12.5px/1.65 ui-monospace,Consolas,monospace;color:#b9c6d3}
+pre .c{color:#5c6b7a} pre .g{color:var(--ok)} pre .y{color:var(--warn)}
+pre .b{color:var(--acc)} pre .p{color:var(--acc2)} pre .r{color:var(--bad)}
+
+/* ---- before/after diagram ---- */
+.ba{display:grid;grid-template-columns:1fr auto 1fr;gap:18px;align-items:stretch;margin:20px 0}
+.ba .col{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+.ba .col h4{font-size:13px;font-weight:640;margin-bottom:12px;
+  padding-bottom:9px;border-bottom:1px solid var(--line);color:var(--tx2)}
+.ba .col.after h4{color:var(--ok)}
+.ba .arrow{display:flex;align-items:center;color:var(--tx3);font-size:22px}
+.node{font:12px/1.5 ui-monospace,Consolas,monospace;padding:5px 9px;margin-bottom:5px;
+  border-radius:5px;background:#0d1318;border:1px solid #222b34;color:var(--tx2)}
+.node.core{border-color:rgba(74,168,255,.35);color:#9fd0ff;background:rgba(74,168,255,.07)}
+.node.skel{border-color:rgba(167,139,250,.35);color:#c9b6ff;background:rgba(167,139,250,.07)}
+.node.toc{border-color:rgba(61,220,151,.35);color:#95e9c4;background:rgba(61,220,151,.07)}
+.node.tob{border-color:rgba(255,180,84,.35);color:#ffd39b;background:rgba(255,180,84,.07)}
+.node.mix{border-color:rgba(255,107,107,.3);color:#ffaeae;background:rgba(255,107,107,.06)}
+.node small{color:var(--tx3);font-size:10.5px}
+
+/* ---- callout ---- */
+.call{border-radius:9px;padding:15px 18px;margin:15px 0;font-size:13.5px;
+  border:1px solid;border-left-width:3px}
+.call.i{background:rgba(74,168,255,.06);border-color:rgba(74,168,255,.28);border-left-color:var(--acc)}
+.call.w{background:rgba(255,180,84,.06);border-color:rgba(255,180,84,.28);border-left-color:var(--warn)}
+.call.bad{background:rgba(255,107,107,.06);border-color:rgba(255,107,107,.28);border-left-color:var(--bad)}
+.call.ok{background:rgba(61,220,151,.07);border-color:rgba(61,220,151,.3);border-left-color:var(--ok)}
+.call.ok .h{color:var(--ok)}
+.call .h{font-weight:640;color:var(--tx);margin-bottom:6px;font-size:13.5px}
+.call p{margin-bottom:0;color:var(--tx2)}
+.call p+p{margin-top:8px}
+
+/* ---- stacked bar ---- */
+.bar{display:flex;height:30px;border-radius:6px;overflow:hidden;margin:14px 0 8px;
+  border:1px solid var(--line)}
+.bar div{display:flex;align-items:center;justify-content:center;
+  font-size:11.5px;font-weight:600;color:#0f1419}
+.legend{display:flex;flex-wrap:wrap;gap:16px;font-size:12px;color:var(--tx2);margin-bottom:6px}
+.legend span{display:flex;align-items:center;gap:6px}
+.legend i{width:11px;height:11px;border-radius:3px;display:inline-block}
+
+footer{border-top:1px solid var(--line);margin-top:50px;padding-top:22px;
+  font-size:12.5px;color:var(--tx3)}
+@media(max-width:860px){.ba{grid-template-columns:1fr}.ba .arrow{justify-content:center;transform:rotate(90deg)}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>Gateway / Workspace 架构重排 —— 交付汇报</h1>
+    <div class="meta">
+      <span class="chip">汇报日期 <b>2026-08-28</b></span>
+      <span class="chip mono">分支 <b>refactor/gateway-workspace-evolution</b></span>
+      <span class="chip mono">交付点 <b>3fa34a4c</b></span>
+      <span class="chip mono">基线 <b>main @ 64b6273b</b>（未动）</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+<!-- ============ 一、结论 ============ -->
+<section>
+  <h2>一、结论</h2>
+
+  <div class="verdict">
+    <div class="big">骨架 / 内核 / 两条产品线三层拆开，两个能力包各自独立，行为零回归。</div>
+    <div class="sub">A1–A7 七项 + B1/B2/B5/B6 四项（B2 与 A 线共用一次提交，B3 已撤回）。18 次提交，另加本轮 OAuth 搬迁与 <code>workspace/toc</code> 抽取。</div>
+  </div>
+
+  <table>
+    <tr><th>目标</th><th style="width:88px">结果</th><th>判据（实测）</th></tr>
+    <tr><td><strong>骨架层与产品线解耦</strong></td><td><span class="bg ok">达成</span></td>
+        <td>骨架 <code>.py</code> 从 26 → <strong>6</strong> 个；<code>server.py</code> 对产品符号反向 import <strong>8 → 0</strong></td></tr>
+    <tr><td><strong>内核不反向依赖产品线</strong></td><td><span class="bg ok">达成</span></td>
+        <td>新建 <code>runtime/</code> 包（11 文件），<code>runtime → gateway</code> 代码依赖 <strong>0</strong></td></tr>
+    <tr><td><strong>两条产品线各自成包</strong></td><td><span class="bg ok">达成</span></td>
+        <td><code>desktop/</code> 12 个 <code>.py</code>、<code>feishu/</code> 5 个 <code>.py</code>，互不 import</td></tr>
+    <tr><td><strong>ToB 能力包脱离 examples/</strong></td><td><span class="bg ok">达成</span></td>
+        <td><code>examples/</code> 12 → <strong>11</strong> 个示范件；生产资产独立为 <code>workspace/tob</code>（486 文件）</td></tr>
+    <tr><td><strong>行为零回归</strong></td><td><span class="bg ok">达成</span></td>
+        <td>全量 57 failed / <strong>1481 passed</strong> / 7 skipped，失败集与基线<strong>逐条相同</strong></td></tr>
+    <tr><td><strong>ToB 前端脚手架</strong></td><td><span class="bg ok">达成</span></td>
+        <td>9 个源文件，构建 654ms，占位页 <code>GET /defaults</code> HTTP 200</td></tr>
+    <tr><td><strong>ToC 能力包独立</strong></td><td><span class="bg ok">达成</span></td>
+        <td>抽出 <code>workspace/toc</code> <strong>266 文件</strong>；提示词里点名却不存在的工具 83 → <strong>0</strong>（见 2.5）</td></tr>
+  </table>
+
+  <div class="call ok">
+    <div class="h">第九章的 7 项讨论已于 2026-08-29 过会，5 项拍定、2 项仍开放</div>
+    <p><strong>已定</strong>：用户数据移出 <code>{app}</code> 落到 AppData 的 <code>.haitun</code>（9.1 + 9.3 + 9.6 收敛成一个方向，
+    具体落点与实施推后）、开发启动方式<strong>加参数分开选</strong>而不是选个习惯（9.2）、
+    <code>toc</code>/<code>tob</code> 的重复<strong>短期接受、记为欠账</strong>（9.4）、
+    <strong>一次性合并主干且改名先落</strong>（9.7）。会上另追加一项：顶层 <code>workspace/</code> 改名 <code>agents/</code>、
+    <code>tob</code>/<code>toc</code> 改名 <code>feishu</code>/<code>desktop</code>（9.8）。</p>
+    <p><strong>仍开放</strong>：桌面版要不要长期记忆（9.5），依赖 ToC 身份体系，不是本轮范围。</p>
+    <p>已定的都落成了 Kanban 任务，任务号见 9.0 的表。各小节保留了过会前的原始材料 ——
+    <strong>B3 正是没先定边界就动手、做完发现没换来保护而撤回的例子</strong>，留着是为了让后来人看得到当时为什么这么选。</p>
+  </div>
+
+  <div class="call w">
+    <div class="h">还差的一件事</div>
+    <p><code>workspace/toc</code> 已能被 Gateway 挂上（负责人实操，启动日志 <code>Default agent: …\workspace\toc</code>），
+    但<strong>没在它上面真跑过一轮对话</strong> —— 工具真调起、skill 真读入、回复真产出这一段没验。见 7.1。</p>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi ok"><div class="lb">骨架层 .py 文件数</div>
+      <div class="vl"><span class="from">26</span><span class="ar">→</span>6</div>
+      <div class="nt">20 个模块归位到产品包 / 内核</div></div>
+    <div class="kpi ok"><div class="lb">server.py 行数</div>
+      <div class="vl"><span class="from">1031</span><span class="ar">→</span>610</div>
+      <div class="nt">−421 行，装配职责搬出</div></div>
+    <div class="kpi ok"><div class="lb">骨架反向 import 产品</div>
+      <div class="vl"><span class="from">8</span><span class="ar">→</span>0</div>
+      <div class="nt">OAuth 中继本轮已搬进 feishu/（4.1）</div></div>
+    <div class="kpi ok"><div class="lb">runtime → gateway 依赖</div>
+      <div class="vl">0</div>
+      <div class="nt">内核方向单一，永不回头</div></div>
+    <div class="kpi"><div class="lb">全量测试通过</div>
+      <div class="vl">1481</div>
+      <div class="nt">57 failed 为 Windows 既有失败</div></div>
+    <div class="kpi ok"><div class="lb">失败集比对</div>
+      <div class="vl" style="font-size:19px">IDENTICAL</div>
+      <div class="nt">57 条逐条相同，含参数化标记</div></div>
+  </div>
+</section>
+
+<!-- ============ 二、改了什么 ============ -->
+<section>
+  <h2>二、改了什么</h2>
+
+  <h3>2.1 一句话概括</h3>
+  <p>这一轮动了两处：<strong>A 线动代码结构</strong>（<code>gateway/</code> 一个包切成内核 / 骨架 / 两条产品线三层），
+  <strong>B 线动资产与内核契约</strong>（生产能力包从 <code>examples/</code> 里搬出来独立成 <code>workspace/tob</code>，
+  内核不再靠 <code>__file__</code> 硬推 agent 根）。两条线各自的前后对照分列在 2.2 与 2.3。</p>
+
+  <h3>2.2 代码结构前后对照（A 线）</h3>
+  <p>原来 <code>gateway/</code> 一个包里塞了 26 个模块：内核管理器、桌面端（托盘 / webview / 登录）、飞书端混在一起，
+  且<strong>内核管理器反向 import 桌面端的品牌字面量</strong>。现在切成三层。</p>
+
+  <div class="ba">
+    <div class="col">
+      <h4>改前 · main @ 64b6273b</h4>
+      <div class="node mix">gateway/ <small>26 个 .py 混住</small></div>
+      <div class="node mix" style="margin-left:14px">10 个 manager <small>内核, 但依赖 ToC</small></div>
+      <div class="node mix" style="margin-left:14px">_tray / _webview / _auth… <small>ToC 12 个</small></div>
+      <div class="node mix" style="margin-left:14px">_feishu_manager… <small>ToB</small></div>
+      <div class="node mix" style="margin-left:14px">spa/ spa-v2/ <small>2 棵 SPA</small></div>
+      <div class="node mix" style="margin-left:14px">server.py <small>1031 行</small></div>
+      <div class="node mix" style="margin-left:14px">_openapi.py <small>915 行单文件</small></div>
+    </div>
+    <div class="arrow">➜</div>
+    <div class="col after">
+      <h4>改后 · HEAD @ 3fa34a4c</h4>
+      <div class="node core">runtime/ <small>内核 · 11 文件 · 新建</small></div>
+      <div class="node core" style="margin-left:14px">10 个 manager <small>1740 行整体平移</small></div>
+      <div class="node skel">gateway/ <small>骨架 · 只剩 6 个 .py</small></div>
+      <div class="node skel" style="margin-left:14px">server.py <small>610 行</small></div>
+      <div class="node skel" style="margin-left:14px">_defaults.py <small>品牌字面量唯一落点</small></div>
+      <div class="node skel" style="margin-left:14px">_openapi.py ×3 <small>按 path 拆分</small></div>
+      <div class="node toc" style="margin-left:14px">desktop/ <small>ToC · 12 .py + 2 棵 SPA</small></div>
+      <div class="node tob" style="margin-left:14px">feishu/ <small>ToB · 4 .py + feishu-web</small></div>
+    </div>
+  </div>
+
+  <h3>2.3 workspace 与安装器结构前后对照（B 线）</h3>
+  <p>ToB 的生产能力包原来叫 <code>examples/haitun-workspace</code>，485 个文件，<strong>安装器打包打的就是它</strong>，
+  却和 11 个真示范件混住在同一个 <code>examples/</code> 目录下。这一轮把它搬出来独立成顶层 <code>workspace/tob</code>。</p>
+
+  <div class="ba">
+    <div class="col">
+      <h4>改前 · main @ 64b6273b</h4>
+      <div class="node mix">examples/ <small>合计 12 个</small></div>
+      <div class="node mix" style="margin-left:14px">haitun-workspace/ <small>485 文件 · 生产资产混住</small></div>
+      <div class="node" style="margin-left:14px">openclaw-style-workspace/</div>
+      <div class="node" style="margin-left:14px">hermes-style-workspace/</div>
+      <div class="node" style="margin-left:14px">… 另 9 个 <small>真示范件</small></div>
+      <div class="node mix" style="margin-top:9px">haitun.iss <small>Source: 11 条</small></div>
+      <div class="node mix" style="margin-left:14px">examples\haitun-workspace\* <small>整目录一把拷贝，用户数据分不出来</small></div>
+    </div>
+    <div class="arrow">➜</div>
+    <div class="col after">
+      <h4>改后 · HEAD @ 3fa34a4c</h4>
+      <div class="node">examples/ <small>合计 11 个 · 全是真示范件</small></div>
+      <div class="node" style="margin-left:14px">openclaw-style-workspace/</div>
+      <div class="node" style="margin-left:14px">hermes-style-workspace/</div>
+      <div class="node" style="margin-left:14px">… 另 9 个</div>
+      <div class="node tob">workspace/ <small>新建顶层目录</small></div>
+      <div class="node tob" style="margin-left:14px">tob/ <small>486 文件 · 生产资产独立</small></div>
+      <div class="node tob" style="margin-left:14px">toc/ <small>266 文件 · 桌面版能力包（本轮新增，见 2.5）</small></div>
+      <div class="node mix" style="margin-top:9px">haitun.iss <small>Source: 11 条 · B3 已撤回</small></div>
+      <div class="node mix" style="margin-left:14px">workspace\tob\* <small>换了路径没换语义，出厂内容与用户数据仍混住</small></div>
+    </div>
+  </div>
+
+  <table>
+    <tr><th>指标</th><th style="width:180px">改前</th><th style="width:180px">改后</th></tr>
+    <tr><td><code>examples/</code> 下 workspace 个数</td><td>12（含 1 个生产资产）</td><td><strong>11</strong>（全是真示范件）</td></tr>
+    <tr><td><code>workspace/</code> 顶层目录</td><td>不存在</td><td><strong>新建</strong>，含 <code>tob</code> + <code>toc</code></td></tr>
+    <tr><td>ToB 能力包文件数</td><td class="n">485</td><td class="n"><strong>486</strong></td></tr>
+    <tr><td>ToC 能力包文件数</td><td class="n">不存在</td><td class="n"><strong>266</strong>（见 2.5）</td></tr>
+    <tr><td>该次搬迁改动量</td><td class="n">—</td><td class="n">529 文件，+250 / −243</td></tr>
+    <tr><td>安装器 <code>Source:</code> 行数</td><td class="n">11</td><td class="n"><strong>11</strong>（B3 已撤回）</td></tr>
+    <tr><td><code>system_prompt.py</code> 推 agent 根方式</td><td><code>__file__</code> 硬推 4 处</td><td><strong>接收传入路径</strong>（B6，+328 / −22）</td></tr>
+    <tr><td>hook 契约测试</td><td>无</td><td><strong>12×6 实测表</strong>（B5）</td></tr>
+  </table>
+
+  <div class="call w">
+    <div class="h">B3 做过又撤回了，Source: 由 14 条回到 11 条</div>
+    <p>B3 原本把 <code>SOUL.md</code> / <code>USER.md</code> / <code>schedules\*</code> 从整目录拷贝里摘出来单列，
+    想让「哪些是出厂的、哪些是用户的」在安装器里有个落点。</p>
+    <p><strong>撤回的理由</strong>：<code>{app}\app</code> 上挂的是 <code>SwapComponent('app')</code>，升级时整目录换新，
+    <strong>单独列 Source: 并不改变任何换新行为</strong> —— 摘出来的三项照样被换掉。也就是说 B3 只是把清单写长了 3 行，
+    没换来任何保护，反而让人以为这问题已经处理过了。</p>
+    <p>出厂内容与用户数据怎么分，本身是个要先定边界再动手的设计题（升级保数据、用户改过的出厂文件怎么办、<code>SOUL.md</code>
+    归谁），已作为 <strong>9.1</strong> 的讨论项，定下来后单独开 PR 做。</p>
+  </div>
+
+  <h3>2.4 关键数字汇总</h3>
+  <table>
+    <tr><th>指标</th><th style="width:150px">改前</th><th style="width:220px">改后</th></tr>
+    <tr><td><code>gateway/</code> 骨架层 <code>.py</code> 文件数</td><td class="n">26</td><td class="n"><strong>6</strong></td></tr>
+    <tr><td><code>runtime/</code> 内核包 <code>.py</code> 文件数</td><td class="n">0（不存在）</td><td class="n"><strong>11</strong></td></tr>
+    <tr><td><code>server.py</code> 行数</td><td class="n">1031</td><td class="n"><strong>610</strong></td></tr>
+    <tr><td><code>server.py</code> 反向 import 产品符号</td><td class="n">8 行</td><td><strong>0 行</strong>（<code>_oauth_manager</code> 已搬进 <code>feishu/</code>，见 4.1）</td></tr>
+    <tr><td><code>runtime → gateway</code> 代码依赖</td><td>内核候选有 2 处指向 ToC</td><td class="n"><strong>0</strong></td></tr>
+    <tr><td><code>_openapi</code></td><td>915 行单文件</td><td>拆 4 份（装配 58 + 公共 CORE 16 path + ToC 6 + ToB 4），26 个 path key 并集不变</td></tr>
+    <tr><td><code>examples/</code> 下 workspace 个数</td><td class="n">12</td><td class="n"><strong>11</strong></td></tr>
+    <tr><td><code>workspace/</code> 下能力包个数</td><td class="n">0（不存在）</td><td class="n"><strong>2</strong>（<code>tob</code> + <code>toc</code>）</td></tr>
+    <tr><td>安装器 <code>Source:</code> 行数</td><td class="n">11</td><td class="n"><strong>11</strong>（B3 已撤回，见 7.3 / 9.1）</td></tr>
+    <tr><td>提交数 / 改动量</td><td class="n">—</td><td class="n">18 次提交（另加本轮 <code>toc</code> 抽取 268 文件）</td></tr>
+  </table>
+
+  <h3>2.5 <code>workspace/toc</code> 抽取（本轮新增）</h3>
+  <p>以 <code>workspace/tob</code> 为起点，去掉落到飞书的能力，留下通用能力，抽出桌面版能力包 <code>workspace/toc</code>。</p>
+
+  <table>
+    <tr><th>指标</th><th style="width:300px">数字</th></tr>
+    <tr><td>文件数</td><td class="n"><strong>266</strong>（从 tob 的 486 个在库文件里挑，丢弃 220）</td></tr>
+    <tr><td>工具 <code>.py</code> 文件 / 实际注册工具</td><td class="n"><strong>85 文件 / 93 工具</strong>（tob 是 151 文件）</td></tr>
+    <tr><td>skills</td><td class="n"><strong>102</strong>（tob 是 145，少 43 个 ToB 专用的）</td></tr>
+    <tr><td>hook 数</td><td class="n"><strong>6/6</strong> 全解析（<code>systems/</code> 只差 3 处提示词文字）</td></tr>
+    <tr><td>组装出的系统提示词长度</td><td class="n"><strong>131707 字符</strong>，是 tob 的 66%</td></tr>
+    <tr><td>提示词里点到但包内不存在的工具</td><td class="n"><strong>0</strong>（第一版是 83 个）</td></tr>
+    <tr><td>提示词里 <code>feishu</code> 出现次数</td><td class="n"><strong>6</strong>（tob 是 398），全是刻意留的交叉引用</td></tr>
+  </table>
+
+  <p><strong>丢弃规则（按区块）</strong>：<code>tests/</code> 67 个全丢（测的是 ToB 行为），<code>channel_events/</code> 41 个全丢（飞书事件落库），
+  43 个 ToB 专用 skill 丢，66 个不在通用闭包里的工具丢。</p>
+
+  <div class="call">
+    <div class="h">判定通用与否，用内核自己当裁判，没用我的静态分析</div>
+    <p>起因是我先后用 AST、正则、精确 import 三种办法算依赖闭包，得出 <strong>92 / 95 / 93 / 85</strong> 四个互相矛盾的数字，
+    连 5 个 <code>memory_*</code> 到底算不算通用都对不上。</p>
+    <p>根因是这个仓库里有<strong>三种 import 写法</strong>并存：普通 <code>import</code>、<code>_load_sibling_module("名字")</code>
+    字符串加载、<code>TOOLS_DIR / f"{名字}.py"</code> 拼路径后 <code>exec</code>。后两种任何静态分析都抓不全。</p>
+    <p>改成直接调内核的 <code>ToolRegistry.load()</code> 加载两个包再比集合，才拿到可信的数：<code>toc</code> 有而 <code>tob</code>
+    没有的工具 <strong>0 个</strong>，<code>toc</code> 里的飞书/派工工具名 <strong>0 个</strong>。</p>
+  </div>
+
+  <p><strong><code>memory_*</code> 5 个工具不带</strong>，因为这条链是硬的：</p>
+  <pre>memory_*  →  _fusion_memory_mcp.py:56        _load_sibling_module("_fusion_memory_membership")
+          →  _fusion_memory_membership.py:14  from _feishu_impl import list_chat_members_impl
+          →  _feishu_impl.py</pre>
+  <p>「谁的身份在写记忆」是拿飞书 <code>open_id</code> 认的，桌面版没有飞书身份，整条链落不了地。桌面版要长期记忆，
+  需要另设一套本地身份，不是把这条链搬过来 —— 列为 <strong>9.5</strong> 讨论项。</p>
+
+  <div class="call w">
+    <div class="h">顺手抓出一个纯拷文件会静默带走的缺陷</div>
+    <p><code>AGENTS.md</code> / <code>TOOLS.md</code> / <code>IDENTITY.md</code> / <code>BOOTSTRAP.md</code> 这四个文件是被
+    <code>_build_bootstrap_files</code> <strong>整篇原文塞进系统提示词</strong>的。直接拷过来，提示词里就点着
+    <strong>83 个</strong>这个包里并不存在的工具名 —— 模型会照着去调，然后拿到报错。</p>
+    <p>所以这四份文档连同 <code>systems/prompt_sections.py</code> 里三处无条件注入的段落都得改：删掉 22 行过期工具表、
+    25 条过期 skill 条目、整节 Fusion Memory 与 Channel events，改掉 <code>SEND_FILES_SECTION</code> 的渠道列表和
+    <code>SILENT_REPLIES_SECTION</code> 的飞书卡片例外。</p>
+    <p><strong>83 → 6 → 3 → 0</strong>，每一轮都是重新组装提示词实测出来的。中间还有一次是我自己写的说明文字漏了 ——
+    我在「本包没有记忆工具」那节里把 5 个工具名写了出来，这段本身又进了提示词，等于换个地方点名。改成不写名字、只讲原因。</p>
+  </div>
+</section>
+
+<!-- ============ 三、逐项验收 ============ -->
+<section>
+  <h2>三、逐项任务与验收</h2>
+
+  <h3>A 线 · 骨架拆分（7 项）</h3>
+  <table>
+    <tr><th style="width:44px">项</th><th>做了什么</th><th>验收判据（实测）</th></tr>
+    <tr><td><strong>A1</strong></td><td>切断内核候选对 ToC 的 2 处依赖，品牌字面量收拢</td><td><code>_defaults.py</code> 成为 <code>haitun交付</code> / <code>workspace/tob</code> 唯一落点</td></tr>
+    <tr><td><strong>A2</strong></td><td>10 个 manager、1740 行移出建 <code>runtime/</code></td><td><code>runtime → gateway</code> 依赖归零</td></tr>
+    <tr><td><strong>A3</strong></td><td><code>_openapi.py</code> 915 行按 path 拆三份</td><td>26 个 path key 并集与 schema <strong>逐一不变</strong></td></tr>
+    <tr><td><strong>A4</strong></td><td>17 参装配函数拆成骨架 + 两个「贴纸」</td><td>桌面端不再构造飞书管理器</td></tr>
+    <tr><td><strong>A5</strong></td><td>12 个产品模块 + 2 棵 SPA 落位产品包</td><td>骨架层剩 5 个装配件</td></tr>
+    <tr><td><strong>A6</strong></td><td>ToB 前端脚手架 9 源文件 + 1 个静态挂载点</td><td>S1–S6 六条全过，后端只多 1 个 <code>add_static</code></td></tr>
+    <tr><td><strong>A7</strong></td><td>两个 <code>register_*_routes</code> 搬进产品包</td><td>骨架反向 import <strong>7 → 0</strong>；路由表逐条不变</td></tr>
+  </table>
+
+  <h3>B 线 · workspace 与内核（5 项）</h3>
+  <table>
+    <tr><th style="width:66px">项</th><th>做了什么</th><th>验收判据（实测）</th></tr>
+    <tr><td><strong>B1/B2</strong></td><td><code>examples/haitun-workspace</code> → <code>workspace/tob</code></td><td>60 处引用清零；<strong>补回 10 个静默消失的测试</strong></td></tr>
+    <tr><td><strong>B3</strong></td><td><span class="bg no">已撤回</span> ToC workspace 分包内 / 包外</td>
+        <td>做过并逐条核对过 14 个 <code>Source</code>、516 文件落点不变，但<strong>撤回了</strong> ——
+        单独列 <code>Source:</code> 不改变 <code>SwapComponent('app')</code> 的整目录换新行为，没换来保护。见 2.3 与 9.1</td></tr>
+    <tr><td><strong>B5</strong></td><td>hook 契约钉成 12×6 实测表</td><td>12 个 workspace 里<strong>只有 tob 满 6 个，其余 11 个只暴露 2–3 个</strong></td></tr>
+    <tr><td><strong>B6</strong></td><td>4 处 <code>__file__</code> 推根改为接收传入路径</td><td>5 个 hook 调用点补上 agent 根</td></tr>
+  </table>
+
+  <div class="call w">
+    <div class="h">两个值得团队注意的发现</div>
+    <p><strong>① 搬迁会静默吃掉测试。</strong>两个测试文件用 <code>Path("examples").glob("*/systems/system.py")</code> 做参数化，
+    <code>haitun-workspace</code> 一搬走，它的 10 个用例<strong>不报错地消失了</strong> —— pytest 不认为参数化列表变短是错误。已补回。</p>
+    <p><strong>② 原任务书的判据是错的。</strong>B5 原写「逐个 workspace 断言 6 个 hook 都非 None」。
+    实测 <code>turn_context_fn</code> / <code>compaction_fn</code> 的 <code>None</code> 按内核约定<strong>承载语义</strong>
+    （「这个 workspace 没有易变块」），照原判据会一次红 11 个 workspace，钉的是内核并不存在的契约。已按实测改写。</p>
+  </div>
+</section>
+
+<!-- ============ 四、骨架剩下的 7 个文件 ============ -->
+<section>
+  <h2>四、骨架层剩下这 6 个文件，各自为什么留下</h2>
+
+  <p>拆完之后有人会问：既然分了 ToC 包和 ToB 包，为什么骨架层还剩这几个文件？逐个给判据。</p>
+
+  <table>
+    <tr><th>文件</th><th style="width:62px">行数</th><th style="width:30%">它是什么</th><th>为什么不能进产品包</th></tr>
+    <tr><td><code>__init__.py</code></td><td class="n">—</td>
+        <td><strong>总装配入口</strong>。先起骨架，再把 ToC / ToB 两张「贴纸」贴上去</td>
+        <td>它要同时认识两条线才能装配，进任一包都会让那个包被另一条反向依赖</td></tr>
+    <tr><td><code>server.py</code></td><td class="n">610</td>
+        <td><strong>公共路由</strong> —— 会话、AI、标题、摘要这些两条线都要的接口</td>
+        <td>两条线共用，不归任何一条</td></tr>
+    <tr><td><code>_defaults.py</code></td><td class="n">105</td>
+        <td><strong>品牌字面量的唯一落点</strong>（<code>haitun交付</code>、<code>workspace/tob</code>）</td>
+        <td>内核建 Session 要拿这些路径。放进产品包，内核就得反向 import 产品线 —— 正是 A1 消除的那种依赖</td></tr>
+    <tr><td><code>_state.py</code></td><td class="n">—</td>
+        <td>重启后恢复现场用的状态快照</td><td>两条线共用</td></tr>
+    <tr><td><code>_openapi.py</code></td><td class="n">58</td>
+        <td><strong>说明书装订工</strong>（详见 4.2）</td>
+        <td>同时 import 三份章节，进任一包即造成两线互相耦合</td></tr>
+    <tr><td><code>_openapi_core.py</code></td><td class="n">700</td>
+        <td><strong>说明书公共章节</strong>，16 条两线都注册的接口</td>
+        <td>不归任何一条线</td></tr>
+  </table>
+
+  <p><code>_oauth_manager.py</code> 本来是第 7 个，本轮已搬进 <code>feishu/</code>，详见 4.1。</p>
+
+  <h3>4.1 <code>_oauth_manager.py</code> —— 本轮已搬进 <code>feishu/</code></h3>
+
+  <p>它做的事很小：浏览器跳到 <code>/oauth/callback</code> 时，按一个随机串 <code>state</code> 把授权码 <code>code</code>
+  存进带 TTL 的内存信箱；发起方用同一个 <code>state</code> 从 <code>/oauth/code</code> 取走，一次即删。
+  用途是<strong>免去用户从地址栏手工复制授权码</strong>。</p>
+
+  <p>我最初把它留在骨架层，理由是「这段代码不认识飞书」。这一半成立 —— 69 行里零飞书字样，不碰 token 交换，
+  不知道 app_secret，也不知道是哪个用户。<strong>但漏查了实际消费者。补测结果：取件方全在 ToB 一侧，ToC 零调用。</strong></p>
+
+<pre><span class="y">workspace/tob/tools/_oauth_receiver.py:38</span>    _CALLBACK_PATH = "/oauth/callback"
+<span class="y">workspace/tob/tools/_oauth_receiver.py:220</span>   client.get(f"{base}/oauth/code", ...)
+<span class="y">workspace/tob/tools/_oauth_setup.py</span>          整个文件都在讲飞书后台怎么登记回调
+<span class="y">workspace/tob/tools/feishu_auth.py:16</span>        通过 Gateway 的 /oauth/callback 中继
+<span class="y">workspace/tob/tools/_feishu/auth.py:21</span>       import _oauth_receiver
+
+<span class="c">desktop/_auth_manager.py:7                   仅注释, 说命名风格与 OAuthRelay 同级</span>
+<span class="c">desktop/_auth_manager.py:16                  仅注释, "跳转留给将来的 OAuth"  ← 将来时</span></pre>
+
+  <div class="call w">
+    <div class="h">留在骨架层的理由不成立</div>
+    <p><strong>ToC 的登录已经做完了，走手机号 + 验证码，不经过 OAuth 跳转。</strong>
+    <code>_auth_manager.py:16</code> 那句「将来复用」是注释里的将来计划，拿它支撑一个当下的位置决定，
+    违背方案自己的「先问存在性、不为假想需求预留」。</p>
+    <p><strong>结论：按当前实测它应当搬进 <code>feishu/</code>。</strong>
+    这属于「机制通用但当前只有一个消费者」，方案 §3.2 四条判据里「认识什么概念」中立、「先问存在性」指向产品包，
+    判据本身有冲突，不是一边倒。选择搬走的理由是：消费者单一且明确，等 ToC 真要用 OAuth 那天再往上提，
+    那时是有真实需求驱动的移动，成本比现在为假想需求占位低。</p>
+  </div>
+
+  <p><strong>本轮已做</strong>（提交 <code>456009d3</code>）。实际改动面：文件搬到 <code>gateway/feishu/_oauth_manager.py</code>，
+  <code>server.py</code> 去掉 3 处（<code>app["oauth"]</code> 赋值 + 两个 handler）与 2 条路由注册、改由
+  <code>feishu/_routes.py</code> 注册，spec 片段从 <code>CORE_PATHS</code> 挪进 <code>FEISHU_PATHS</code>，
+  另动 3 个测试文件与 <code>gateway/AGENTS.md</code> 3 处。</p>
+
+  <table>
+    <tr><th>实测项</th><th style="width:150px">改前</th><th style="width:150px">改后</th></tr>
+    <tr><td>骨架层 <code>.py</code> 文件数</td><td class="n">7</td><td class="n"><strong>6</strong></td></tr>
+    <tr><td><code>server.py</code> 行数</td><td class="n">1031</td><td class="n"><strong>610</strong></td></tr>
+    <tr><td>骨架层反向 import 产品符号</td><td class="n">8 行</td><td class="n"><strong>0 行</strong></td></tr>
+    <tr><td><code>_openapi_core</code> 公共章节</td><td class="n">18 条</td><td class="n"><strong>16 条</strong></td></tr>
+    <tr><td><code>FEISHU_PATHS</code></td><td class="n">2 条</td><td class="n"><strong>4 条</strong></td></tr>
+    <tr><td>26 个 path key 的并集与 schema</td><td colspan="2" class="n"><strong>逐一不变</strong></td></tr>
+    <tr><td>全量失败集合</td><td colspan="2" class="n">与基线 <strong>57 行逐行相同</strong></td></tr>
+  </table>
+
+  <div class="call">
+    <div class="h">这件事的方法论收获</div>
+    <p>方案 §3.2 那四条判据里，「代码认识什么概念」和「先问存在性」会打架 —— 这个文件 69 行零飞书字样，按前者是通用的；
+    消费者全在 ToB，按后者归产品包。<strong>冲突时以「先问存在性」为准</strong> —— 一句写着「将来」的注释不能支撑当下的位置决定。</p>
+  </div>
+
+  <h3>4.2 两个 <code>_openapi*</code> 文件是干什么的</h3>
+
+  <p><strong>不是注册路由，是生成一份 API 说明书。</strong>这两件事要分清：</p>
+
+  <table>
+    <tr><th style="width:100px"></th><th style="width:26%">谁干的</th><th>作用</th><th style="width:24%">删掉会怎样</th></tr>
+    <tr><td><strong>注册路由</strong></td><td><code>server.py</code> + 两个 <code>_routes.py</code></td>
+        <td>告诉服务器「有人访问 <code>/sessions</code> 时执行哪个函数」</td>
+        <td><strong>接口不能用了</strong></td></tr>
+    <tr><td><strong>OpenAPI</strong></td><td>四个 <code>_openapi*</code> 文件</td>
+        <td>生成一份 JSON 说明书，写着本服务有哪些接口、各收什么参数、返回什么</td>
+        <td>接口照样能用，只是<strong>没人知道怎么对接</strong></td></tr>
+  </table>
+
+  <p>访问 <code>http://127.0.0.1:8080/openapi.json</code> 拿到的就是这份说明书，前端和第三方靠它对接。
+  那三份是说明书的三个章节，第四份是装订工：</p>
+
+<pre>_openapi_core.py    728 行  →  <span class="b">18</span> 条公共接口的说明   (/sessions /ais /titles /oauth ...)
+desktop/_openapi.py 111 行  →   <span class="g">6</span> 条 ToC 专属接口     (/ui/* /workspace/*)
+feishu/_openapi.py   98 行  →   <span class="y">2</span> 条 ToB 专属接口     (/feishu/route /feishu/routes)
+_openapi.py          58 行  →  把上面三份订成一本
+
+18 + 6 + 2 = <span class="g">26 条</span>，与改前 915 行单文件的 path key 集合一字不差〔实测两边都是 26〕</pre>
+
+  <p><strong>改前的毛病</strong>：26 条说明混在一个大字典里。飞书容器想只发布自己那 2 条做不到，
+  只能把 ToC 那 6 条一起发出去 —— 等于把桌面端的内部接口告诉飞书那边的对接方。</p>
+
+  <div class="call i">
+    <div class="h">为什么装订工必须在顶层</div>
+    <p><code>_openapi.py</code> 第 25–27 行同时 import 了三份章节。要是把它放进 <code>desktop/</code>，
+    <code>desktop</code> 就 import 了 <code>feishu</code>，两条产品线立刻互相耦合 —— 正是本轮花七步消除的那种依赖。
+    它必须站在两条线之上，那个位置就是骨架层。<code>_openapi_core.py</code> 同理：装的是两条线<strong>共有</strong>的 18 条，
+    塞进哪个产品包都会让另一条反向依赖。</p>
+  </div>
+</section>
+
+<!-- ============ 五、验证 ============ -->
+<section>
+  <h2>五、验证：怎么证明没坏</h2>
+
+  <h3>5.1 全量测试 —— 判据是「失败集逐条相同」，不是「失败数相同」</h3>
+  <pre><span class="c"># 全量</span>
+57 failed, <span class="g">1481 passed</span>, 7 skipped, 653 warnings in 350.67s   <span class="c">← 含 toc 抽取后的最新一次</span>
+
+<span class="c"># passed 由 1469 涨到 1481: toc 进契约表后 3 个 workspace 遍历测试的参数化用例
+#   8 条 test_compact_history_chaining + 2 条 test_compaction_prompt_injection
+#   + 2 条 test_workspace_hook_contract   (len(WORKSPACES) 12 → 13)</span>
+
+<span class="c"># 那 57 条不是回归，是 Windows 既有失败（asyncio 子进程 NotImplementedError）</span>
+基线 baseline-failures.txt : 57 行, md5 <span class="y">6af0fceab6945fb18c2f85d4efbf326b</span>
+本轮 junit-xml 提取        : 57 条
+diff --strip-trailing-cr   : <span class="g">IDENTICAL</span>   <span class="c">← 参数化标记 [asyncio] 完整保留</span></pre>
+
+  <h3>5.2 路由表逐条核对</h3>
+  <p>A7 把装配函数整体搬包，最大风险是漏挂路由。用同一份脚本跑改前（<code>3d687c37</code>）与改后两棵树，路由表<strong>逐条字节相同</strong>。</p>
+  <pre>desktop routes: <span class="g">46</span>    feishu routes: <span class="g">5</span>    合计 <span class="g">51</span></pre>
+  <div class="call i">
+    <div class="h">为什么不用「条数」当判据</div>
+    <p>计数随参数变化：<code>authm</code> 为 <code>None</code> 时少 11 条 <code>/auth/*</code>；一次 <code>add_static</code> 会产生多条 route 记录。
+    所以条数本身是约定依赖的，<strong>实质判据是逐条比对 —— 两种参数组合下都相同</strong>。</p>
+  </div>
+
+  <h3>5.3 三个前端产物实测</h3>
+  <table>
+    <tr><th>前端</th><th>产物</th><th>挂载点</th><th>实测</th></tr>
+    <tr><td>ToC v1</td><td class="n">72 文件 / 11M</td><td><code>/spa/</code></td><td><span class="bg ok">index + JS + CSS 全 200</span></td></tr>
+    <tr><td>ToC v2（默认）</td><td class="n">74 文件 / 7.3M</td><td><code>/spa-v2/</code></td><td><span class="bg ok">index + JS + CSS + PNG 全 200</span></td></tr>
+    <tr><td>ToB 脚手架</td><td class="n">2 文件 / 189K</td><td><code>/feishu-web/</code></td><td><span class="bg ok">页面显示 GET /defaults: HTTP 200</span></td></tr>
+  </table>
+  <p>三份 <code>dist/</code> 均被 <code>.gitignore</code> 覆盖，<strong>0 个产物被跟踪</strong>，<code>git status</code> 无受跟踪改动。</p>
+
+  <h3>5.4 三向同步</h3>
+  <p>本轮同步更新 <strong>8 份 AGENTS.md</strong>：根、<code>gateway/</code>、<code>runtime/</code>、<code>session/</code>、
+  <code>workspace/tob/</code>、<code>desktop/spa/</code>、<code>desktop/spa-v2/</code>、<code>feishu/feishu-web/</code>。</p>
+</section>
+
+<!-- ============ 六、启动形态 ============ -->
+<section>
+  <h2>六、当前启动形态（团队常问）</h2>
+  <div class="call i">
+    <div class="h">一个进程，两条线都贴 —— 刻意设计，不是遗留问题</div>
+    <p>生产上飞书容器起的也是同一个 <code>psi-agent gateway</code>（同容器内另起 <code>psi-agent channel feishu</code> 连过来），
+    所以两面都必须贴，<strong>少贴哪面都是行为回归</strong>。</p>
+  </div>
+
+  <pre><span class="c"># gateway/__init__.py:246  骨架先起</span>
+app = await create_core_app(aim, sm, tm, rm=rm, ...)
+<span class="c"># :257  ToC 贴纸</span>
+await <span class="b">register_desktop_routes</span>(app, favicon_path=..., app_name=..., attention=..., authm=...)
+<span class="c"># :264  ToB 贴纸</span>
+<span class="p">register_feishu_routes</span>(app, feishu_ai_id=..., feishu_workspace_root=...)</pre>
+
+  <p><strong>本轮拆的是装配函数，不是进程入口。</strong>收益在于「谁认识什么」现在写在函数签名里，两者零交叉。
+  真要一个纯 ToB 进程，代价是少调一行，不需要重构。启动命令一个字不变：</p>
+  <pre>psi-agent gateway --listen http://127.0.0.1:8080 --browser</pre>
+</section>
+
+<!-- ============ 七、遗留 ============ -->
+<section>
+  <h2>七、遗留与建议</h2>
+
+  <h3>7.1 <code>workspace/toc</code> 本轮已落地，Gateway 已能挂上，还差真跑一轮对话</h3>
+  <p><strong>原来的遗留是</strong>：<code>workspace/</code> 下只有 <code>tob</code> 一个包，它<strong>一身两职</strong> —— 既是 ToC 桌面端出厂的能力包
+  （安装器 <code>haitun.iss:79</code> 打的就是它），又是 ToB 飞书机器人的 workspace。实测其构成：</p>
+
+  <div class="legend">
+    <span><i style="background:#4aa8ff"></i>通用 101</span>
+    <span><i style="background:#ffb454"></i>feishu_* 28</span>
+    <span><i style="background:#ff6b6b"></i>assignment_* 8</span>
+    <span><i style="background:#a78bfa"></i>handbook_/haibao_ 3</span>
+  </div>
+  <div class="bar">
+    <div style="background:#4aa8ff;flex:101">101 通用</div>
+    <div style="background:#ffb454;flex:28">28</div>
+    <div style="background:#ff6b6b;flex:8">8</div>
+    <div style="background:#a78bfa;flex:3"></div>
+  </div>
+  <p style="font-size:12.5px;color:var(--tx3)">140 个 tools 的构成。另有 145 个 skills，其中 <strong>30 个</strong>名字含 feishu / 飞书。</p>
+
+  <div class="call w">
+    <div class="h">这不是命名问题，是 ToC 用户在为 ToB 业务付提示词成本</div>
+    <p>装机用户拿到的包里含 <strong>28 个飞书 API 工具、8 个内部派单工具、30 个飞书技能</strong>。</p>
+  </div>
+
+  <p><strong>本轮已做</strong>（提交 <code>80b54129</code>）：<strong>从现有包减出 ToC</strong>，不按原方案「以
+  <code>openclaw-style</code> 为基线新建」—— 实测该基线只有 5 个 tools、1 个 skill，从它起步等于把 ToC 出厂能力砍到近零，
+  是回退不是演进。落地数字与判定方法见 <strong>2.5</strong>。</p>
+
+  <p>两件相关事实：<code>.iss</code> 现在打的仍是 <code>workspace\tob</code>，抽 <code>toc</code> 没改它一行，安装器该打哪个包属 9.1；
+  共享层已查清 —— <code>ToolRegistry.load(cls, tools_dir: Path, session_id: str = "")</code> 只收<strong>一个</strong>
+  <code>tools_dir</code>，不改内核就没有多根目录，<code>toc</code> 与 <code>tob</code> 之间的重复无法避免，列为 <strong>9.4</strong>。</p>
+
+  <div class="call w">
+    <div class="h">还差什么</div>
+    <p><strong>已经能挂上</strong>：Gateway 起在 8080，启动日志打出 <code>Default agent: F:\code\psi-agent\workspace\toc</code>。
+    能不能接与用哪种启动姿势无关 —— 接是已经通的，姿势才是 9.2 要定的。</p>
+    <p><strong>还差最后一步：没在 toc 上真跑过一轮对话。</strong>已验到的是内核能加载它（6 个 hook 全解析、93 工具、102 skill）、
+    提示词组装正确（点名不存在的工具 0 个）、Gateway 认它作 default agent。<strong>没验到的是发一条真消息走完一轮</strong> ——
+    工具真调起来、skill 真读进去、回复真产出。这一步要人在界面上点，我没做。</p>
+  </div>
+
+  <h3>7.2 其他已知未修（均非本轮引入）</h3>
+  <table>
+    <tr><th style="width:180px">问题</th><th>说明</th><th style="width:100px">本轮影响</th></tr>
+    <tr><td>命名管道跨文件污染</td>
+        <td>两个测试文件共用硬编码前缀 <code>gw-test</code>，全量跑时前者留下同名管道，后者绑定被 <code>[WinError 5]</code> 拒掉。
+        表现为 <code>test_route_*</code> 随机某条失败，单跑该文件 27/27 全绿。<strong>与 9.2 双进程那条是同一失败模式</strong> ——
+        一个完整管道名有多个持有者，只是这里撞在前缀段、那里撞在 sid 段。</td>
+        <td><span class="bg no">逐字未变</span></td></tr>
+    <tr><td><code>{app}\app</code> 升级整目录换新</td>
+        <td>用户数据（<code>SOUL.md</code> / <code>USER.md</code> / <code>schedules</code>）会被遗弃在 <code>{app}\app.backup</code>。</td>
+        <td><span class="bg no">不改善不恶化</span></td></tr>
+    <tr><td>运行时产物未 gitignore</td>
+        <td><code>workspace/tob/</code> 下 <code>charts/</code>（252 个 PNG）、<code>channel_events/</code>、<code>.psi/</code> 无 gitignore 条目。
+        虽从未被跟踪，但已被 Kanban 内部 checkpoint ref 全树暂存扫进去过 —— 风险真实存在。<strong>建议补</strong>。</td>
+        <td><span class="bg no">待补</span></td></tr>
+  </table>
+
+  <h3>7.3 review 提出的改动（本轮已处理）</h3>
+  <table>
+    <tr><th style="width:230px">改动</th><th>提交</th><th>结果</th></tr>
+    <tr><td><code>_oauth_manager.py</code> 搬进 <code>feishu/</code></td>
+        <td class="n"><code>456009d3</code></td>
+        <td>骨架层 7 → <strong>6</strong> 个 <code>.py</code>，反向 import 归零。判据与实测见 4.1</td></tr>
+    <tr><td>撤回 B3 的安装器分包</td>
+        <td class="n"><code>b11cda40</code></td>
+        <td><code>Source:</code> 由 14 条回到 <strong>11</strong> 条。理由是单独列 <code>Source:</code> 并不改变
+        <code>SwapComponent('app')</code> 的整目录换新行为，等于只把清单写长 3 行、没换来保护。见 <strong>9.1</strong></td></tr>
+    <tr><td>抽出 <code>workspace/toc</code></td>
+        <td class="n"><code>80b54129</code></td>
+        <td>266 文件，见 2.5 与 7.1</td></tr>
+  </table>
+
+  <h3>7.4 已推后（负责人决定）</h3>
+  <p><strong>B4</strong> 升级保数据、<strong>T1</strong> 真装真升实验 —— 属打包部署，落点取决于 workspace 结构。</p>
+</section>
+
+<!-- ============ 八、没验到的 ============ -->
+<section>
+  <h2>八、我明确没验到的</h2>
+  <p>如实交代，不含糊。</p>
+  <table>
+    <tr><th>项</th><th style="width:130px">状态</th><th>说明</th></tr>
+    <tr><td><code>feishu-web</code> 的 <code>npm run dev</code> 独立 dev server</td><td><span class="bg bad">未跑</span></td>
+        <td>只验了构建产物经 gateway 静态挂载的路径，vite proxy 路径没跑</td></tr>
+    <tr><td>启动日志里 9 个 <code>ModuleNotFoundError</code></td><td><span class="bg bad">未深查</span></td>
+        <td>工具首次加载的相对 import 失败，随后 refresh 全部 <code>added</code> 补回，与本轮改动无关</td></tr>
+    <tr><td><code>tool_registry</code> 是否支持多 tools 根目录</td><td><span class="bg no">已查（本轮）</span></td>
+        <td><code>ToolRegistry.load(cls, tools_dir, session_id="")</code> 只收一个根，不改内核就没有共享层。见 7.1 ③ 与 9.4</td></tr>
+    <tr><td>Gateway 挂载 <code>workspace/toc</code></td><td><span class="bg no">已验（负责人实操）</span></td>
+        <td>启动日志 <code>Default agent: F:\code\psi-agent\workspace\toc</code></td></tr>
+    <tr><td>在 <code>toc</code> 上真跑一轮对话</td><td><span class="bg bad">未跑</span></td>
+        <td>工具真调起、skill 真读入、回复真产出这一段没验，要人在界面上点</td></tr>
+    <tr><td><code>toc</code> 那 93 个工具逐个调用</td><td><span class="bg bad">未验</span></td>
+        <td>判据是能注册、依赖闭包完整，不是运行时行为</td></tr>
+    <tr><td><code>toc</code> 那 102 个 skill 的正文</td><td><span class="bg bad">未逐篇读</span></td>
+        <td>只核了不点名本包不存在的工具</td></tr>
+    <tr><td>ToC 用户实际用不到那 36 个 ToB 工具的比例</td><td><span class="bg bad">未查</span></td>
+        <td>只按前缀数了名字，无调用数据</td></tr>
+    <tr><td>139 万字符 SKILL.md 里多少真进了提示词</td><td><span class="bg bad">未查</span></td>
+        <td>skills 按需读取，启动只加载索引</td></tr>
+    <tr><td>Linux / macOS 上的测试表现</td><td><span class="bg bad">未跑</span></td>
+        <td>仅 Windows 实测</td></tr>
+  </table>
+</section>
+
+<!-- ============ 九、讨论项 ============ -->
+<section>
+  <h2>九、需要讨论的细节</h2>
+
+  <h3>9.0 讨论结论（2026-08-29 已过会，结论先行）</h3>
+
+  <div class="call ok">
+    <div class="h">7 项里 5 项已拍定，2 项仍开放</div>
+    <p>已定的 5 项都已落成 Kanban 任务，任务号见下表。后面各小节<strong>保留</strong>原始的问题陈述、实测事实与可选项，
+    并在标题后标注最终结论 —— 保留是为了让后来人看得到当时为什么这么选，<strong>不是还没定</strong>。</p>
+  </div>
+
+  <table>
+    <tr><th style="width:112px">#</th><th style="width:26%">题目</th><th>结论</th><th style="width:19%">落到哪</th></tr>
+    <tr><td class="n">9.1 + 9.3 + 9.6</td><td>用户数据落点、<code>SOUL.md</code>/<code>USER.md</code> 归属、ToC 用户隔离</td>
+        <td><strong style="color:var(--ok)">方向已定：用户数据移出 <code>{app}</code>，落到 AppData 下的 <code>.haitun</code></strong>。
+        三题收敛成同一方向；具体落点与实施<strong>推后</strong>（不属本轮）</td>
+        <td><code>3a79a</code>、<code>33fe6</code><br><small>均已推后，不要在本轮启动</small></td></tr>
+    <tr><td class="n">9.2</td><td>开发时一进程还是两进程</td>
+        <td><strong style="color:var(--ok)">已定：加启动参数分开选</strong> —— 不是二选一的习惯问题，是补一个参数。
+        默认值保持现状（两条线都挂）</td><td><code>88bd2</code></td></tr>
+    <tr><td class="n">9.4</td><td><code>toc</code>/<code>tob</code> 的重复成本</td>
+        <td><strong style="color:var(--ok)">已定：短期接受重复（选项 A），记为欠账不是终局</strong>。本轮不动内核 <code>load()</code> 签名</td>
+        <td>无任务，欠账记录在 9.4</td></tr>
+    <tr><td class="n">9.7 + 9.8</td><td>怎么合并回主干、顶层目录改名</td>
+        <td><strong style="color:var(--ok)">已定：一次性合并（选项 A），改名先落再合并，且必须在远程仓库冻结期内做</strong></td>
+        <td><code>848e4</code>（改名，进行中）→ <code>69225</code>（合并 main）</td></tr>
+    <tr><td class="n">9.5</td><td>桌面版要不要长期记忆</td>
+        <td><strong style="color:var(--warn)">仍开放</strong>。依赖 ToC 身份体系，不是本轮范围</td><td>无</td></tr>
+  </table>
+
+  <div class="call w">
+    <div class="h">本报告里的路径坐标都是改名前的</div>
+    <p>会上追加定下：顶层 <code>workspace/</code> 改名 <code>agents/</code>，其下 <code>tob</code>/<code>toc</code> 改名
+    <code>feishu</code>/<code>desktop</code>（与 <code>gateway/</code> 的子包命名对齐）。任务 <code>848e4</code> 已在跑。
+    <strong>所以下文所有 <code>workspace/tob</code>、<code>workspace/toc</code> 字面路径读的时候按
+    <code>agents/feishu</code>、<code>agents/desktop</code> 换算。</strong></p>
+  </div>
+
+  <hr style="border:0;border-top:1px solid var(--line);margin:26px 0">
+
+  <div class="call">
+    <div class="h">以下是过会前的原始材料</div>
+    <p>共 7 项，每项都是<strong>动手前必须先定边界</strong>的设计题 —— 边界没定就写代码，会像 B3 那样做完再撤回。
+    每项给的是：问题是什么、实测到的事实、可选项与代价、我的倾向。<strong>倾向仅供参考，请负责人裁决。</strong></p>
+  </div>
+
+  <table>
+    <tr><th style="width:44px">#</th><th style="width:24%">题目</th><th>为什么必须先讨论</th><th style="width:22%">卡住谁</th></tr>
+    <tr><td class="n">9.1</td><td>ToC 出厂内容与用户数据混住</td>
+        <td>牵动升级保数据语义，改错会丢用户数据</td><td>B4、T1、安装器</td></tr>
+    <tr><td class="n">9.2</td><td>开发启动方式：一进程还是两进程</td>
+        <td>决定 <code>workspace/toc</code> 怎么接上去</td><td>7.1 的收尾</td></tr>
+    <tr><td class="n">9.3</td><td><code>SOUL.md</code> / <code>USER.md</code> 归谁</td>
+        <td>它既是出厂模板又是用户数据，两种身份互斥</td><td>9.1 的前置</td></tr>
+    <tr><td class="n">9.4</td><td><code>toc</code> 与 <code>tob</code> 的重复成本</td>
+        <td>内核只收一个 <code>tools_dir</code>，重复是结构性的</td><td>长期维护</td></tr>
+    <tr><td class="n">9.5</td><td>桌面版要不要长期记忆</td>
+        <td>现有实现认飞书身份，桌面版得另设一套</td><td>ToC 产品能力</td></tr>
+    <tr><td class="n">9.6</td><td>ToC 的用户隔离靠什么</td>
+        <td>现有隔离认飞书 id，桌面版单机多用户没有对应物</td><td>9.1、9.5 的共同前置</td></tr>
+    <tr><td class="n">9.7</td><td>这次重排怎么合并、怎么推给全团队</td>
+        <td>改动跨 18 次提交，动了 13 个 workspace 的加载路径</td><td>全团队日常开发</td></tr>
+  </table>
+
+  <h3>9.1 ToC 出厂内容与用户数据混在一起 —— 已定方向 A，实施推后</h3>
+
+  <div class="call ok">
+    <div class="h">结论：走选项 A，用户数据移出 <code>{app}</code>，落到 AppData 下的 <code>.haitun</code></div>
+    <p>9.1 / 9.3 / 9.6 三题<strong>收敛成同一个方向</strong>，不再各自决策。</p>
+    <p><strong>但具体落点与实施都推后</strong>，不属本轮架构演进。理由：本轮只做开发架构（包内/包外分类、根目录约定），
+    装到哪、升级怎么保住、存量怎么迁、卸载删不删都属于打包部署，与「不做部署」这条边界同族；且正确落点取决于
+    ToC/ToB workspace 的最终结构，结构没定就动它，落完还得再改一遍。任务 <code>3a79a</code>，<strong>不要在本轮启动</strong>。</p>
+    <p><strong>落点还要比 <code>{app}\userdata</code> 再往外一层</strong>：<code>[UninstallDelete]</code>
+    （<code>haitun.iss:88-90</code>）删 <code>{app}\*</code> 和 <code>{app}</code>，挪到 <code>{app}\userdata</code>
+    在卸载重装时仍会丢 —— 这也是方向定在 AppData 的原因。<code>rollback-state.json</code>（<code>:77</code>）能活下来就是先例：
+    它在 <code>{app}\</code> 而不在 <code>{app}\app</code>，与 <code>onlyifdoesntexist</code> 无关。</p>
+    <p><strong>另两件超出架构范围、需单独决定的</strong>：存量用户的数据迁移（改了读取位置后，数据仍在
+    <code>{app}\app</code> 的用户会看起来丢东西，除非写迁移。负责人称「还没人真的在用这个能力」，但已装机用户的实际情况需核实）；
+    卸载语义（卸载该不该删掉用户养出来的海豚 —— 这是产品甚至法务决定）。</p>
+  </div>
+
+  <p><strong>问题</strong>：安装器 <code>haitun.iss</code> 用一条通配 <code>Source: workspace\tob\*</code> 整目录拷贝，
+  出厂内容（<code>systems/</code> <code>tools/</code> <code>skills/</code> 与几份提示词模板）和用户数据
+  （<code>SOUL.md</code> <code>USER.md</code> <code>schedules/</code>）落在同一个 <code>{app}\app</code> 下，结构上分不出来。</p>
+  <p><strong>实测事实</strong>：<code>{app}\app</code> 挂的是 <code>[Code]</code> 段的 <code>SwapComponent('app')</code>，
+  升级时<strong>整目录换新</strong>。B3 试过把三项摘成独立 <code>Source:</code>（11 → 14 条），已撤回 —— 因为
+  <code>Flags</code> 不变的话，单独列出来的三项照样被换掉，<strong>清单长了 3 行，保护一点没多</strong>。</p>
+
+  <table>
+    <tr><th style="width:30%">可选项</th><th>代价</th></tr>
+    <tr><td><strong>A. 用户数据搬出 <code>{app}</code></strong><br><small>放 <code>{localappdata}</code> 或
+        <code>{userappdata}</code>，出厂目录保持整目录可换新</small></td>
+        <td>workspace 根目录被拆成两个物理位置，<code>agent_path</code> 那套推导要能同时认两个根</td></tr>
+    <tr><td><strong>B. 留在 <code>{app}</code> 内</strong><br><small>靠 <code>Flags: onlyifdoesntexist</code> +
+        升级前备份还原</small></td>
+        <td>用户改过的<strong>出厂</strong>文件（比如自己调了 <code>AGENTS.md</code>）在升级时是保还是覆盖，
+        得逐文件定策略，容易漏</td></tr>
+    <tr><td><strong>C. 分成两个 component</strong><br><small>出厂内容与用户数据各自换新策略</small></td>
+        <td>Inno 的 component 语义要摸清，且不解决「用户改过出厂文件」这一类</td></tr>
+  </table>
+
+  <div class="call w">
+    <div class="h">倾向 A</div>
+    <p>它是唯一让「出厂目录可以无脑整体换新」成立的选项 —— 这条性质一旦成立，升级逻辑就不必逐文件判断，
+    B / C 都要为每个文件回答「这次要不要覆盖」。代价是路径推导要认两个根，但那是一次性的结构成本，
+    而逐文件策略是每加一个文件都要再想一遍的长期成本。</p>
+    <p><strong>注意</strong>：定下来之前 <strong>B4（升级保数据）和 T1（真装真升实验）都动不了</strong>，因为它们改的就是这一处。</p>
+  </div>
+
+  <h3>9.2 ToC / ToB 开发时怎么启动：一个进程还是两个 —— 已定：加启动参数分开选</h3>
+
+  <div class="call ok">
+    <div class="h">结论：加启动参数，让开发时能自己选 gateway 与 agent 的组合</div>
+    <p>本节原先把这题写成「A 还是 B 的习惯问题，机制两边都不缺」，<strong>这个判断被否了</strong> —— 真正缺的是一个参数：
+    用飞书 gateway + 飞书 agent 启动时应当<strong>只</strong>挂飞书前端与飞书 agent，而现在
+    <code>gateway/__init__.py</code> 的 <strong>257 与 264 行无条件挂载两条产品线</strong>，起飞书必然顺带把 ToC 前端也起起来。</p>
+    <p><strong>默认值必须保持现状</strong>（两条线都挂），否则云上 <code>launch-gateway.sh</code> 会静默少挂一条 ——
+    改默认值等于改生产行为。</p>
+    <p>参数粒度倾向枚举（<code>--gateway feishu|desktop|both</code>）而非两个独立布尔，因为布尔组合会出现「都关」这种无意义状态。
+    agent 侧接到现有 <code>--default-agent</code>/<code>_defaults.py</code> 那套上，<strong>不另造一套</strong>。</p>
+    <p>一处连带影响：<code>/oauth/callback</code>、<code>/oauth/code</code> 现挂在 <code>feishu/_routes.py</code>，
+    注释明说「ToC 进程照样有这两条 —— 唯一的生产入口两条线都贴，所以行为不变」。<strong>改成可选之后这句注释的前提就不成立了</strong>，
+    要么改注释，要么保证 ToC 单独起时这两条仍在。另有 <code>desktop/_routes.py</code> 里 <code>/</code> 的
+    spa-v2→spa 降级链，关掉 ToC 后 <code>/</code> 该给谁要明确定。任务 <code>88bd2</code>，无依赖，可并行。</p>
+  </div>
+
+  <p><strong>问题</strong>：现在 <code>workspace/toc</code> 和 <code>workspace/tob</code> 两个包都在库里了，但开发时怎么起、起几个，没定。</p>
+
+  <div class="call w">
+    <div class="h"><code>workspace/tob</code> 不是写死的目标，只是 explicit 为空时的候选</div>
+    <p>解析链是：</p>
+<pre>Gateway.default_agent <span class="c">(__init__.py:79, 真参数)</span>
+  → resolve_default_agent(explicit)          <span class="c">_defaults.py:99</span>
+  → resolve_agent_package(explicit, repo_candidate="workspace/tob")
+      <span class="y">1. explicit 非空 → 就用它</span>                 <span class="c">← 传 workspace/toc 这里就中了</span>
+      2. 否则 cwd/workspace/tob 是目录 → 用它     <span class="c">← 「写死」其实只是这一层的候选</span>
+      3. 否则 cwd 自带 tools/+skills/ → 用 cwd    <span class="c">← 装机形态</span>
+      4. 否则 "" → agent ≡ workspace</pre>
+    <p><code>workspace/tob</code> 只是 <strong>explicit 为空时</strong>的仓库内候选（<code>_defaults.py:66</code>）。
+    <strong>所以 <code>toc</code> 今天就能选中，传 <code>default_agent</code> 指过去即可，不需要改任何代码。</strong></p>
+  </div>
+
+  <table>
+    <tr><th style="width:30%">可选项</th><th>代价</th></tr>
+    <tr><td><strong>A. 一个进程，启动时传 <code>default_agent</code> 选包</strong></td>
+        <td><span class="bg no">零改动，机制已在</span> 缺点是同一时刻只能是一条线，两条线的路由都注册着但只有一个 workspace 在跑，
+        容易让人误判「两条线都活着」</td></tr>
+    <tr><td><strong>B. 两个进程各占一个端口</strong>，各自带一个包</td>
+        <td>两个终端两个端口、前端 dev proxy 要指对，<strong>且必须给第二个进程换一个 <code>--socket-path</code></strong>（下方单列）；
+        但两条线真正独立，<strong>最接近生产形态</strong>（ToC 是装机的、ToB 是服务器上的，本来就是两个进程）</td></tr>
+    <tr><td><strong>C. 一个进程同时挂两个 workspace</strong></td>
+        <td><span class="bg bad">按当前内核不成立</span> 见 9.4，<code>ToolRegistry.load()</code> 只收一个
+        <code>tools_dir</code>，要做得改内核</td></tr>
+  </table>
+
+  <div class="call bad">
+    <div class="h">B 的隐藏前提：第二个进程要换 <code>--socket-path</code></div>
+    <p>实测两个 gateway 同 <code>socket_path=psi</code>、不同端口，会在建 Session 时报 <code>[WinError 5] 拒绝访问</code>，Session 起不来：</p>
+<pre>ERROR serve_session: Failed to start session server on
+      \\.\pipe\psi\channels\&lt;sid&gt;: <span class="y">[WinError 5] 拒绝访问。</span>
+ERROR Session '&lt;sid&gt;' crashed: PermissionError(13, '拒绝访问。', None, 5, None)</pre>
+    <p>冲突的是<strong>完整管道名</strong>，不是前缀 —— 同前缀不同 sid 的两条管道可以并存（实测两个进程各建一个 Session，零报错）。
+    撞名来源是 <code>_scheduler_manager.py:69</code>：调度 Session 的 id 由 workspace 路径 sha256 派生，两个进程只要
+    <code>--default-workspace</code> 指向同一目录就算出同一个 id，而 <code>_session_manager.py:131</code> 的去重只管进程内。</p>
+    <p>修法两条，实测都成立：给第二个进程换 <code>--socket-path psi-tob</code>，或让两个进程用不同的 <code>--default-workspace</code>。
+    另外 <code>--listen</code> 必须带 scheme，<code>--listen 127.0.0.1:18081</code> 会掉进 <code>_sockets.py:94</code>
+    的 Unix socket 分支在 Windows 上直接抛错。</p>
+  </div>
+
+  <div class="call w">
+    <div class="h">倾向 B，但它和 A 不是二选一</div>
+    <p>现实路径是<strong>平时用 A</strong>（<code>--default-agent</code> 指包，零改动），<strong>验证与联调用 B</strong>（两个进程，跟生产同形）。
+    <s><strong>9.2 要定的只剩一句</strong>：本地开发的默认姿势是 A 还是 B —— 机制两边都不缺，是习惯问题，定了写进 <code>AGENTS.md</code> 即可。</s></p>
+    <p><strong style="color:var(--warn)">上面划掉那句已被否</strong>（见本节开头的结论）。机制并非两边都不缺：A 能选 agent 包，
+    但<strong>不能只挂一条产品线的路由与前端</strong>，这一层现在是无条件的。所以结论不是「选个习惯」，而是<strong>补一个参数</strong>。</p>
+    <p>一个进程把两条线路由都注册着是<strong>当前的正确行为</strong>，不必讨论 —— <code>__init__.py:240–244</code> 的注释写明
+    <code>psi-agent gateway</code> 是唯一入口，生产上飞书容器起的也是它，少贴哪一面都是行为回归。A6/A7 的收益是让「只贴一面」
+    变得可能（ToB 容器、测试用），而不是让默认进程只贴一面。</p>
+  </div>
+
+  <h3>9.3 <code>SOUL.md</code> / <code>USER.md</code> 到底归谁 —— 并入 9.1 的方向，实施推后</h3>
+
+  <div class="call ok">
+    <div class="h">结论：不单独决策，并入 9.1 的方向</div>
+    <p>用户数据移出 <code>{app}</code>、落到 AppData 下的 <code>.haitun</code>。「模板与实例分离」的倾向仍是那个方向下的正确做法，
+    但<strong>实施随 9.1 一并推后</strong>。</p>
+    <p>一条已被推翻的路线要留在这里，免得后来人重走：<strong><code>onlyifdoesntexist</code> 逐条加是无效的</strong>。
+    该标志只防「文件还在原地时被覆盖」；<code>SwapComponent</code> 改名之后原地没有文件，被保护的文件照样重新写入。
+    <strong>这是改名问题，不是覆盖问题</strong> —— B3 试过摘独立 <code>Source:</code>（11 → 14 条）已撤回，就是撞在这里。</p>
+  </div>
+
+  <p><strong>问题</strong>：这两个文件<strong>同时</strong>是出厂模板和用户数据。安装器要放一份初始版本进去
+  （否则新装用户没有），可它们又会被 agent 自己改写、被用户积累内容 —— 一旦改过，就不能再当出厂文件覆盖。</p>
+  <p><strong>为什么单列</strong>：9.1 的三个选项都绕不开它。A 要求把用户数据搬出 <code>{app}</code>，
+  那「初始版本」是谁在什么时候放进去的（安装器？首次启动时生成？）；B 的 <code>onlyifdoesntexist</code>
+  正好为这种文件设计，但它意味着<strong>出厂模板一旦发布就再也改不动了</strong> —— 老用户永远拿不到新版模板。</p>
+
+  <div class="call w">
+    <div class="h">倾向：模板与实例分离</div>
+    <p>出厂只发 <code>SOUL.template.md</code>，首次启动时拷成 <code>SOUL.md</code>，之后模板照常随版本更新，实例归用户。</p>
+    <p>这是唯一能让「出厂模板可持续更新」和「用户内容不被覆盖」同时成立的做法，别的选项都得牺牲一头。
+    但它引入的「模板更新了怎么告知用户」是<strong>产品问题，不是工程问题</strong>，得产品一起定。</p>
+  </div>
+
+  <h3>9.4 <code>toc</code> 与 <code>tob</code> 的重复成本是结构性的 —— 已定：短期接受重复，记为欠账</h3>
+
+  <div class="call ok">
+    <div class="h">结论：短期按选项 A 走（接受重复），本轮不动内核 <code>ToolRegistry.load()</code> 签名</div>
+    <p><strong>这是欠账，不是终局</strong> —— 终局仍是选项 B（<code>load()</code> 收多个根，做成 <code>_shared</code> +
+    各自 <code>tools/</code> 两层）。现在不动的理由：先让 <code>desktop</code>（原 <code>toc</code>）在 9.2 定下的参数形态下真跑起来，
+    攒够「哪些文件真的需要共享」的实测，再动内核签名。现在动等于凭猜设计同名工具的覆盖优先级。</p>
+    <p><strong>接受重复的代价要明说</strong>：85 个工具文件、整个 <code>systems/</code>、102 个 skill 是拷贝，
+    <code>feishu</code> 侧改一处通用工具的 bug，<code>desktop</code> 不会跟着变。靠约定和 review 守，漏一份就是
+    <strong>静默的行为分叉</strong>。本节没有对应的 Kanban 任务 —— 这条欠账就记录在这里。</p>
+  </div>
+
+  <p><strong>问题</strong>：<code>workspace/toc</code> 抽出来了，但它和 <code>tob</code> 之间<strong>没有共享层</strong>，
+  85 个工具文件、整个 <code>systems/</code>、102 个 skill 都是<strong>拷贝</strong>。tob 那边改一处通用工具的 bug，toc 不会跟着变。</p>
+  <p><strong>实测事实</strong>：内核的签名是</p>
+<pre>ToolRegistry.load(cls, tools_dir: <span class="y">Path</span>, session_id: str = "")   <span class="c">← 只收一个根</span></pre>
+  <p><strong>不改内核就没有多根目录</strong>，符号链接 / 构建期拷贝那些办法都是在绕这个签名。</p>
+
+  <table>
+    <tr><th style="width:30%">可选项</th><th>代价</th></tr>
+    <tr><td><strong>A. 接受重复</strong>，靠约定和 review 保持同步</td>
+        <td>通用工具的修改要手工同步两份，漏一份就是<strong>静默的行为分叉</strong></td></tr>
+    <tr><td><strong>B. 改内核让 <code>load()</code> 收多个根</strong>
+        <br><small><code>tools_dirs: Sequence[Path]</code>，做成 <code>_shared</code> + 各自 <code>tools/</code> 两层</small></td>
+        <td>动内核公共 API，12 个 workspace 的加载路径都受影响；且同名工具的覆盖优先级要定义清楚</td></tr>
+    <tr><td><strong>C. 构建期拼包</strong>
+        <br><small>库里存 <code>_shared</code> 与差异部分，打包/启动时合成完整目录</small></td>
+        <td>库里的目录不再是运行时的目录，调试时看到的和跑的不是一回事</td></tr>
+  </table>
+
+  <div class="call w">
+    <div class="h">倾向 B，但不是现在</div>
+    <p>这是唯一从结构上消掉问题的选项（A 是靠人守纪律，C 是把问题挪到构建期）。不是现在的理由是：
+    先让 <code>toc</code> 在 9.2 定的形态下真跑起来，攒够「哪些文件真的需要共享」的实测，再动内核签名 ——
+    现在动等于凭猜设计覆盖优先级。</p>
+    <p><strong>短期先按 A 走，但要明确记下这是欠账，不是终局。</strong></p>
+  </div>
+
+  <h3>9.5 桌面版要不要长期记忆 —— 仍开放</h3>
+
+  <div class="call w">
+    <div class="h">仍未定，本轮不做，无对应任务</div>
+    <p>这题依赖 ToC 的身份体系（见 9.6 的选项 C），而那一层本身依赖一个尚未核过的前提：登录返回里有没有稳定账号 id 可作路径段。
+    本节的价值是讲清「为什么 <code>desktop</code> 包里没有记忆工具」<strong>不是抽包时漏了</strong>。</p>
+  </div>
+
+  <p><strong>问题</strong>：<code>memory_*</code> 那 5 个工具（跨会话长期记忆）没进 <code>workspace/toc</code>。</p>
+  <p><strong>实测事实</strong>：这条链是硬的 ——</p>
+<pre>memory_*  →  <span class="y">_fusion_memory_mcp.py:56</span>        _load_sibling_module("_fusion_memory_membership")
+          →  <span class="y">_fusion_memory_membership.py:14</span>  from _feishu_impl import list_chat_members_impl
+          →  <span class="y">_feishu_impl.py</span></pre>
+  <p>「谁的身份在写这条记忆」认的是飞书 <code>open_id</code>。桌面版没有飞书身份，整条链落不了地。
+  所以这不是「少拷了几个文件」，是<strong>桌面版缺一套身份</strong>。</p>
+
+  <table>
+    <tr><th style="width:30%">可选项</th><th>代价</th></tr>
+    <tr><td><strong>A. 桌面版不做长期记忆</strong>，只有会话内上下文</td>
+        <td>能力上明显弱于 ToB 版</td></tr>
+    <tr><td><strong>B. 设一套本地身份</strong>
+        <br><small>ToC 登录已有手机号 + 验证码，可以拿它当身份锚点，记忆写本地</small></td>
+        <td>要新写一套存储与检索，不是把飞书那条链搬过来</td></tr>
+    <tr><td><strong>C. 桌面版记忆走云端</strong>，用 ToC 账号体系认身份</td>
+        <td>涉及数据出本机，是<strong>合规与产品决策</strong>，不只是工程</td></tr>
+  </table>
+
+  <div class="call w">
+    <div class="h">倾向 B</div>
+    <p>ToC 已经有手机号 + 验证码的登录，身份锚点是现成的，不必新造；写本地也避开了 C 的合规问题。</p>
+    <p>但这是个新增能力，不是本轮范围 —— 这里只负责把「为什么 toc 没有记忆工具」讲清楚，别让人以为是抽包时漏了。</p>
+  </div>
+
+  <h3>9.6 ToC 的用户隔离靠什么 —— 并入 9.1 的方向（B 打底），C 仍开放</h3>
+
+  <div class="call ok">
+    <div class="h">结论：选项 B 并入 9.1 的方向，选项 C 仍开放待查</div>
+    <p>用户数据落到 AppData 下的 <code>.haitun</code>，跨 OS 账号这一层天然就隔开了，与 9.1 是同一个动作，不额外花成本。</p>
+    <p><strong>选项 C（按 ToC 登录身份隔离）仍开放</strong>，因为它依赖一个<strong>没有核过</strong>的前提：
+    <code>_auth_manager.py</code> 现在只管拿 token，不产出可作路径段的稳定 id，得先确认云端返回里有没有这样一个字段。
+    <strong>这条要先查再定。</strong></p>
+    <p>所以 9.1 / 9.3 / 9.6 收敛成一句话：<strong>用户数据搬到 AppData 的 <code>.haitun</code> 下</strong> ——
+    一个动作同时解决升级保数据、模板与实例分离的落点、跨 OS 账号隔离三件事。同一方向覆盖三题，这是选它的主要理由。</p>
+  </div>
+
+  <p><strong>问题</strong>：ToB 的多用户隔离是完整的，ToC 没有对应物。桌面版是单机单进程，一台机器上如果有多个使用者
+  （家庭共用、同一台办公机多人登录），谁的会话、文件、记忆归谁，现在没有任何边界。</p>
+  <p><strong>实测事实</strong>：ToB 侧隔离全部锚在飞书 id 上，三层都是（<code>gateway/feishu/_feishu_manager.py</code>）：</p>
+<pre>session id   私聊 <span class="y">feishu-&lt;open_id&gt;</span>        群聊 <span class="y">feishu-chat-&lt;chat_id&gt;</span>
+workspace    <span class="y">&lt;root&gt;/&lt;open_id&gt;</span>            <span class="y">&lt;root&gt;/chat-&lt;chat_id&gt;</span>
+管道名        psi\channels\&lt;session id&gt;</pre>
+  <p><code>_sanitize_open_id</code> 还专门把私聊 id 里的 <code>-</code> 转义，防止某人 open_id 恰为 <code>chat-oc_x</code> 时与群
+  <code>oc_x</code> 撞成同一个 session —— 注释直接写明那是「陌生人共享上下文的隐私事故」。
+  <strong>桌面版没有 <code>open_id</code>，这三层锚点同时失效</strong>：所有会话落在同一个 <code>--default-workspace</code>，
+  共用同一份 <code>state/</code>、<code>histories/</code>、<code>todos/</code>。</p>
+
+  <table>
+    <tr><th style="width:30%">可选项</th><th>代价</th></tr>
+    <tr><td><strong>A. 不做隔离</strong>，一台机器一个使用者</td>
+        <td>等于把「别人别用我电脑」写成产品前提；同机多人时后来者能读到前者全部会话与文件，
+        是<strong>隐私问题</strong>而非体验问题</td></tr>
+    <tr><td><strong>B. 靠操作系统账号隔离</strong>
+        <br><small>workspace 与 appdata 都落 <code>{localappdata}</code>，Windows 账号天然分开</small></td>
+        <td>同一 OS 账号下多人共用（很常见）仍不隔离；且要求 9.1 选 A，两题绑在一起</td></tr>
+    <tr><td><strong>C. 靠 ToC 登录身份隔离</strong>
+        <br><small>用账号 id 作 workspace 与 session id 前缀，切账号即切数据</small></td>
+        <td>要定义「未登录时写哪里」以及登录后怎么归档；<code>_auth_manager.py</code> 现在只管拿 token，
+        <span class="bg no">不确认是否有可作路径段的稳定 id</span></td></tr>
+  </table>
+
+  <div class="call w">
+    <div class="h">倾向 B 打底、C 叠加</div>
+    <p>B 几乎零成本（跟 9.1 的 A 同一个动作），先把跨 OS 账号这条守住；C 才是真正对齐「谁在用」的那层，
+    但它依赖一个<strong>我没有核过</strong>的前提：登录返回里是否有稳定账号 id 可作路径段。<strong>这条要先查再定。</strong></p>
+    <p>这题是 9.1 与 9.5 的<strong>共同前置</strong> —— 9.1 要定用户数据放哪、9.5 要定记忆按谁归档，
+    两者都得先知道「用户」在 ToC 里怎么标识。</p>
+  </div>
+
+  <h3>9.7 这次重排怎么合并、怎么推给全团队 —— 已定：一次性合并，改名先落，冻结期内做</h3>
+
+  <div class="call ok">
+    <div class="h">结论：走选项 A（一次性合并主干），先落改名（<code>848e4</code>）、再合并 main（<code>69225</code>）</div>
+    <p>合并<strong>必须在远程仓库冻结期内执行</strong>，冻结通知由负责人发出。</p>
+  </div>
+
+  <div class="call bad">
+    <div class="h">合并面已于 2026-08-29 重测，下方正文里的旧数字作废，以这组为准</div>
+    <table>
+      <tr><th style="width:38%">项</th><th>实测值</th></tr>
+      <tr><td>merge-base</td><td><code>64b6273bbc75504e0a0951f3330f436c9a2bd60a</code></td></tr>
+      <tr><td>main 领先</td><td class="n"><strong>15</strong> commits</td></tr>
+      <tr><td>本分支领先</td><td class="n"><strong>20</strong> commits</td></tr>
+      <tr><td>main 动的文件</td><td class="n"><strong>63</strong></td></tr>
+      <tr><td>本分支动的文件</td><td class="n"><strong>1063</strong></td></tr>
+      <tr><td><strong>重叠文件</strong></td><td class="n"><strong>仅 9 个</strong></td></tr>
+      <tr><td><code>merge-tree</code> 实测冲突</td><td class="n"><strong>8 个</strong>（1 内容 + 7 file-location）</td></tr>
+    </table>
+    <p>9 个重叠文件：<code>.github/inno-setup/haitun.iss</code>、<code>.github/inno-setup/oss-publish.md</code>、
+    <code>.github/workflows/ci.yml</code>、<code>.github/workflows/pyinstaller.yml</code>、<code>AGENTS.md</code>、
+    <code>pyproject.toml</code>、<code>src/psi_agent/channel/feishu/__init__.py</code>、
+    <code>src/psi_agent/session/AGENTS.md</code>、<code>tests/psi_agent/gateway/test_auth_manager.py</code>。</p>
+    <p><strong>唯一的内容冲突</strong>是 <code>tests/psi_agent/gateway/test_auth_manager.py</code>，而且它是<strong>新出现的</strong> ——
+    上一次量的时候只有 file-location 冲突，main 又推进了 1 个 commit 就多出一个内容冲突。
+    <strong>所以开工前必须重量一遍，别把这里的数字当最终值。</strong></p>
+  </div>
+
+  <p>7 个 <code>CONFLICT (file location)</code> 全部同源：main 在 <code>examples/haitun-workspace/</code> 里<strong>新增</strong>了文件，
+  而本分支把这个目录搬走了。清单：<code>tests/test_feishu_leave_query.py</code>、<code>tests/test_feishu_sheet_find_columns.py</code>、
+  <code>tests/test_feishu_sheet_grid_range.py</code>、<code>tests/test_feishu_sheet_truncation.py</code>、
+  <code>tests/test_todo_completion_standard.py</code>、<code>tools/_feishu/leave.py</code>、<code>tools/feishu_leave_query.py</code>。
+  main 在这个目录里共 <strong>23 文件 / 2997 insertions</strong>，这批改动是合并的主要工作量。</p>
+
+  <div class="call w">
+    <div class="h">那 7 个文件必须逐个判断落点，不能照 git 的建议批量搬</div>
+    <p>git 建议全搬到 <code>workspace/tob</code>（改名后 <code>agents/feishu</code>），但<strong>至少 1 条是错的</strong>：
+    <code>feishu_leave_query.py</code> 的 docstring 引用 <code>GET /open-apis/approval/v4/instances</code>，是飞书专属工具，
+    git 之所以建议它去 desktop 侧，是因为 desktop 包里飞书工具数为 0，<strong>纯统计错觉</strong>。逐个看 docstring 与 import 定落点。</p>
+    <p><strong>改名优先这个顺序的已知代价</strong>：产生 <strong>1 个错建议 / 7 个</strong>；先合并后改名是 0 个错建议。
+    负责人已选改名优先，所以这 7 个由人判断。</p>
+    <p><strong>git 的 rename 检测没问题</strong> —— 实测 684 个 rename 全部识别（R100/R097），即便顶层与子目录两次叠加改名也如此，
+    不必担心合并时丢历史。</p>
+  </div>
+
+  <div class="call bad">
+    <div class="h">最容易静默失败的一处：测试数量看不出那 7 个文件有没有搬对</div>
+    <p>那 7 个文件里<strong>没有 <code>systems/system.py</code></strong>。三个测试文件用 glob
+    <code>Path('agents').glob('*/systems/system.py')</code> 参数化，所以 <strong>workspace 数会稳定停在 13，不会因为漏搬而变化</strong>。
+    正确判据是逐文件核对 <code>examples/haitun-workspace/</code> 的 23 个改动各自落到哪，<strong>不是看测试数</strong>。</p>
+  </div>
+
+  <p><strong>问题</strong>：这次重排是 18 次提交、跨 gateway/runtime/session/workspace 四层的结构性改动，目前只在
+  <code>refactor/gateway-workspace-evolution</code> 一条分支上。怎么并回主干、并回去之后团队里在跑的分支和各自的
+  workspace 怎么跟上，没定。</p>
+  <table>
+    <tr><th style="width:150px">维度</th><th>实测事实</th></tr>
+    <tr><td>改动面</td>
+        <td>骨架层 <code>.py</code> 由 12 降到 6；10 个 manager 1740 行移出 gateway 到 <code>runtime/</code>；
+        <code>haitun-workspace</code> 从 <code>examples/</code> 迁到 <code>workspace/tob</code>（60 处引用清零）；
+        另抽出 <code>workspace/toc</code>（266 文件）。<strong>在途分支只要 import 过这些路径就会冲突。</strong></td></tr>
+    <tr><td>workspace 数量</td>
+        <td>受影响的有 <strong>13 个</strong>（<code>examples/</code> 11 个 + <code>tob</code>、<code>toc</code>，
+        即三个测试文件 <code>WORKSPACES</code> glob 的口径），不止两个。B5 当时记的 12 是 <code>toc</code> 抽出前的数。</td></tr>
+    <tr><td>测试基线</td>
+        <td>Windows 全量有 57 条既有失败（非本轮引入），且在 57–62 间浮动。
+        <span class="bg bad">「合并后全绿」不是可用判据</span> 只能比对失败集合是否逐条相同 —— A7 就是这么验的。</td></tr>
+  </table>
+
+  <table>
+    <tr><th style="width:30%">可选项</th><th>代价</th></tr>
+    <tr><td><strong>A. 一次性合并主干</strong>，团队各自 rebase</td>
+        <td>所有在途分支同一天集中解冲突，量大但集中在 import 路径这类机械改动上；只痛一次，之后不必维护双形态</td></tr>
+    <tr><td><strong>B. 分批合并</strong>（先 runtime、再 workspace、最后 toc）</td>
+        <td>中间态存在多次，每次都要各自 rebase 一遍，累计痛感更大；中间态的三向同步文档要写几份又废几份</td></tr>
+    <tr><td><strong>C. 保留兼容层</strong>，旧 import 转发到新位置</td>
+        <td>兼容层本身是要删的代码，过渡期内两套路径并存，新人不知道用哪个 —— <strong>与本轮「消除反向依赖」的目标相反</strong></td></tr>
+  </table>
+
+  <div class="call w">
+    <div class="h">倾向 A</div>
+    <p>这次的冲突绝大多数是 import 路径的机械替换，不是语义冲突，集中解一次的实际成本低于分三次；
+    C 引入的兼容层与本轮目标直接冲突，B 的中间态会让三向同步文档写几份又废几份。</p>
+  </div>
+
+  <div class="call bad">
+    <div class="h">合并要满足的前置（判据，不是建议）</div>
+    <p><strong>1. 失败集合逐条比对</strong>，不是看全绿 —— 合并前后必须 <code>IDENTICAL</code>。<br>
+    <strong>2. 13 个 workspace 的加载路径各跑一次</strong>，不只 <code>toc</code>/<code>tob</code>。<br>
+    <strong>3. 7.1 那一轮真实对话补上</strong> —— 现在 <code>toc</code> 只验到「能加载」，没验到「能跑」。</p>
+    <p><strong>推给团队要交付的</strong>：<code>AGENTS.md</code> 里写清 9.2 定下的启动姿势
+    （<code>--default-agent</code> 怎么用、要不要带 <code>--socket-path</code>）、新的目录归属（谁该往 <code>runtime/</code> 放、谁往产品包放）。
+    这是<strong>三向同步的要求</strong> —— 结构变了而 <code>AGENTS.md</code> 没变，下一个人还会往骨架层加文件。</p>
+  </div>
+
+  <h3>9.8 顶层目录改名（会上追加决定）</h3>
+
+  <div class="call ok">
+    <div class="h">结论：<code>workspace/</code> → <code>agents/</code>，<code>tob</code>/<code>toc</code> → <code>feishu</code>/<code>desktop</code></div>
+    <p>与 <code>gateway/</code> 的子包命名对齐。任务 <code>848e4</code>，<strong>改名先落、合并 main（<code>69225</code>）后跑</strong>。
+    负责人明确担心「改错改混」，所以这项的重点不是动手快，是<strong>判据先立住</strong>。</p>
+  </div>
+
+  <table>
+    <tr><th style="width:150px">维度</th><th>实测值</th></tr>
+    <tr><td>字面路径总处数</td>
+        <td><code>workspace/tob</code> + <code>workspace/toc</code> 全库 <strong>306 处</strong>，排除 <code>docs/</code> 后
+        <strong>73 处</strong>，分布在 <strong>31 个文件</strong>。核心一处是 <code>gateway/_defaults.py:66</code> 的
+        <code>DEFAULT_AGENT_REPO_CANDIDATE = "workspace/tob"</code>（同文件 docstring 14/25/103 行也提到）</td></tr>
+    <tr><td>陷阱一</td>
+        <td><strong><code>toc</code> 在 ToC 前端里是「目录」（table of contents）</strong> ——
+        <code>desktop/spa-v2/public/legal.css</code> 有 6 处 <code>.toc</code> CSS 类，<code>privacy.html</code> 1 处。
+        改了会破坏隐私政策页排版</td></tr>
+    <tr><td>陷阱二</td>
+        <td><strong><code>ToC</code>/<code>ToB</code> 是产品线称谓，不是路径</strong> —— <code>src/</code> 下 <strong>102 处</strong>，必须原样保留</td></tr>
+    <tr><td>量化后果</td>
+        <td><code>src/</code> 下不区分大小写搜 <code>toc|tob</code> 命中 <strong>624 处</strong>，真正是路径的只有 <strong>21 处</strong>。
+        <span class="bg bad">天真的全局 sed 会破坏 603 处</span> 禁止全局 sed，逐处判断</td></tr>
+    <tr><td>必须不变的</td>
+        <td>9 处 REST 路由字面量 <code>"/workspace/..."</code>（<code>cwd</code>/<code>places</code>/<code>browse</code>/<code>file</code>/<code>reveal</code>
+        —— 这是 HTTP 接口，改了前端全 404）、19 处 <code>default_workspace</code>、11 处 <code>workspace_root</code>、
+        <code>--default-workspace</code> flag、<code>SessionManager</code> 里的 <code>workspace=</code> 形参名</td></tr>
+  </table>
+
+  <div class="call bad">
+    <div class="h">最容易静默失败的一处</div>
+    <p>三个测试文件（<code>test_compaction_prompt_injection.py:26</code>、<code>test_compact_history_chaining.py:19</code>、
+    <code>test_workspace_hook_contract.py:32</code>）用 glob <code>Path('workspace').glob('*/systems/system.py')</code> 参数化。
+    改名后这个 glob <strong>静默变成 0 命中，测试不报错、只是数量变少</strong>。必须同步改成 <code>agents</code>，
+    并确认参数化后仍是 <strong>13 个</strong>。</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap" style="padding:0">
+    设计方案原文：<code>docs/superpowers/specs/2026-08-26-gateway-workspace-architecture-evolution.md</code><br>
+    本报告 Markdown 版：<code>docs/superpowers/specs/2026-08-28-gateway-workspace-refactor-report.md</code>
+  </div>
+</footer>
+
+</div>
+</body>
+</html>

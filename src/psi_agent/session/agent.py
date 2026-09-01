@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing
@@ -11,6 +12,16 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent._card_markers import (
+    CARD_ACTION_BATCH_PATTERN,
+    CARD_ACTION_TAG,
+)
+from psi_agent._card_markers import (
+    CARD_ACTION_PATTERN as _CARD_ACTION_PATTERN,
+)
+from psi_agent._card_markers import (
+    SILENT_REPLY as _SILENT_REPLY,
+)
 from psi_agent.protocol import (
     FINISH_REASON_COMPACTION_NEEDED,
     FINISH_REASON_ERROR,
@@ -154,6 +165,36 @@ def current_tool_ai_socket() -> str | None:
     return _CURRENT_TOOL_AI_SOCKET.get()
 
 
+def _extract_card_actions(content: Any) -> list[tuple[str, dict[str, Any]]] | None:
+    """Extract single card-action JSON payloads from a (possibly batched) callback message.
+
+    Returns ``None`` when the message is not composed **entirely** of card actions
+    (any residue text, or an unparseable payload, means the caller should fall
+    back to the ordinary AI turn instead of guessing).
+    """
+    if not isinstance(content, str) or f"<{CARD_ACTION_TAG}" not in content:
+        return None
+    # 剥离 batch 外壳再提取:连点合并后的消息是 <feishu_card_action_batch>
+    # 包裹多条 <feishu_card_action>,外壳本身不算「非回调文本」。
+    inner = CARD_ACTION_BATCH_PATTERN.sub("", content)
+    matches = _CARD_ACTION_PATTERN.findall(inner)
+    if not matches:
+        return None
+    residue = _CARD_ACTION_PATTERN.sub("", inner).strip()
+    if residue:
+        return None
+    actions: list[tuple[str, dict[str, Any]]] = []
+    for raw in matches:
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        actions.append((raw.strip(), payload))
+    return actions
+
+
 class AgentRun:
     """One in-flight agent run: an ``AgentChunk`` stream plus its terminal result.
 
@@ -247,6 +288,16 @@ class SessionAgent:
         """
         return self._workspace_path
 
+    @property
+    def session_id(self) -> str:
+        """This Session's id — the identity ``session.live_agent`` registers under.
+
+        Read-only accessor for ``serve_session``: the id lives on the Conversation,
+        and out-of-band resumes address an agent by the same id a tool reads from
+        ``runtime_context.get_session_id()``.
+        """
+        return self._conversation.session_id
+
     # -- factory --------------------------------------------------------------
 
     @classmethod
@@ -337,6 +388,87 @@ class SessionAgent:
 
     async def reload_triggers(self) -> dict[str, str]:
         return await self._trigger_registry.refresh()
+
+    # -- deterministic card dispatch ------------------------------------------
+
+    async def _try_direct_card_dispatch(
+        self,
+        user_message: dict[str, Any],
+        turn_response_kind: str,
+    ) -> list[AgentChunk] | None:
+        """Short-circuit deterministic Feishu card callbacks — call the handler tool
+        directly, skipping the AI turn.
+
+        Card ticks/untick are deterministic: the clicked button's ``dispatch.handler``
+        already names the tool that should run. Routing them through a full AI turn
+        costs a model round-trip (seconds of thinking) for zero judgement, which is
+        exactly what "状态更新太慢" is. This path fires only when **every** condition
+        holds — the whole message is card actions, each ``dispatch.handler`` resolves
+        to a registered tool that accepts ``card_action_json`` — otherwise it returns
+        ``None`` and the ordinary AI turn runs (behaviour-compatible with anything the
+        model used to decide, e.g. skills as handlers).
+
+        Records the turn in conversation history like any other turn; yields one
+        silent chunk on full success (the Channel suppresses ``NO_REPLY``), or a
+        visible error chunk naming the failures. The card's visual tick is applied
+        by the Channel *before* this runs, so success stays quiet.
+        """
+        actions = _extract_card_actions(user_message.get("content", ""))
+        if actions is None:
+            return None
+
+        calls: list[tuple[str, Any, str, str]] = []  # (handler, func, payload_json, operator)
+        for payload_json, payload in actions:
+            dispatch = payload.get("dispatch")
+            if not isinstance(dispatch, dict):
+                return None
+            # 信任边界:只有 Channel 侧受控分发的回调(matched=true)才允许直调。
+            # 任意用户都能发一条伪造的 <feishu_card_action> 消息,/chat/completions
+            # 本身无鉴权——不校验 matched 等于给"以任意身份执行任意卡片工具"
+            # 开一条纯文本注入面。matched 缺失/为 false 一律回落 AI 轮次。
+            if dispatch.get("matched") is not True:
+                return None
+            handler = dispatch.get("handler")
+            if not isinstance(handler, str) or not handler.strip():
+                return None
+            func = self._tool_registry.get(handler.strip())
+            if func is None:
+                return None
+            if "card_action_json" not in inspect.signature(func).parameters:
+                return None
+            operator = payload.get("operator_open_id") or ""
+            calls.append((handler.strip(), func, payload_json, operator))
+
+        logger.info(f"Direct card dispatch: {len(calls)} action(s) -> {[c[0] for c in calls]}")
+
+        summaries: list[str] = []
+        async with self._conversation:
+            self._conversation.add(with_kind(user_message, message_kind(user_message)))
+            await self._conversation.commit()
+            for handler, func, payload_json, operator in calls:
+                kwargs: dict[str, Any] = {"card_action_json": payload_json}
+                if "user_key" in inspect.signature(func).parameters:
+                    kwargs["user_key"] = operator
+                try:
+                    result = str(await func(**kwargs))
+                    summaries.append(f"{handler}: ok ({result[:200]})")
+                except Exception as e:
+                    summaries.append(f"{handler}: FAILED ({e!r})")
+                    logger.error(f"Direct card dispatch {handler} failed: {e!r}")
+            self._conversation.add(
+                with_kind(
+                    {"role": "assistant", "content": "[card direct] " + " | ".join(summaries)},
+                    turn_response_kind,
+                )
+            )
+            await self._conversation.commit()
+
+        failures = [s for s in summaries if "FAILED" in s]
+        if failures:
+            # 异常细节只进日志(见上方的 logger.error),用户侧给短文案——
+            # 裸 repr 直出对话没有信息量还难看。
+            return [AgentChunk(content=f"卡片操作有 {len(failures)} 项失败,请重试或稍后再试。")]
+        return [AgentChunk(content=_SILENT_REPLY)]
 
     # -- channel request lifecycle --------------------------------------------
 
@@ -505,6 +637,18 @@ class SessionAgent:
                 # Reload tools and schedules from their configured roots.
                 await self._tool_registry.refresh()
                 await self._schedule_registry.refresh()
+
+                # 确定性卡片回调短路(tick/untick 等):handler 是已注册工具时
+                # 直调、跳过 AI 回合与 system prompt 构建;不匹配则原样走 AI。
+                direct_chunks = await self._try_direct_card_dispatch(stored_user_message, turn_response_kind)
+                if direct_chunks is not None:
+                    for chunk in direct_chunks:
+                        yield chunk
+                    # 直调回合同样要落终态(0 个模型回合):否则 handle_request
+                    # 会把成功的直调记成 "completed without a terminal result
+                    # (failed or abandoned)",排障日志误导。
+                    _finish(AgentRunStatus.COMPLETED, AgentStopCause.MODEL_COMPLETED, None, 0)
+                    return
 
                 if not turn_response_kind.startswith("schedule."):
                     hook_message |= await self._system_prompt.run_before_turn(hook_message)

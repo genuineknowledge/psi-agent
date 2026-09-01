@@ -14,7 +14,7 @@ from psi_agent.channel._event_defs import ChannelEventDef, load_channel_event_de
 from psi_agent.channel._synthetic import SyntheticContext, start_synthetic_producers
 from psi_agent.session.event_protocol import parse_event_envelope
 
-HAITUN = Path(__file__).resolve().parents[3] / "examples" / "haitun-workspace"
+HAITUN = Path(__file__).resolve().parents[3] / "agents" / "feishu"
 
 
 @pytest.mark.anyio

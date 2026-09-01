@@ -21,11 +21,11 @@
 
 ## File Structure
 
-- `examples/haitun-workspace/tools/_feishu_impl.py` — 共享实现层：SDK 懒加载、client 缓存、`_invoke`、请求 builder、返回归一化、doc/drive 各操作的 impl 函数。
-- `examples/haitun-workspace/tools/feishu_doc.py` — 薄壳，1 工具 `feishu_doc_read`。
-- `examples/haitun-workspace/tools/feishu_drive.py` — 薄壳，4 工具。
-- `examples/haitun-workspace/tests/test_feishu.py` — 单元测试，mock `_invoke`，不打真实 API。
-- `examples/haitun-workspace/AGENTS.md` — 工具表加行（文档收尾任务内）。
+- `agents/feishu/tools/_feishu_impl.py` — 共享实现层：SDK 懒加载、client 缓存、`_invoke`、请求 builder、返回归一化、doc/drive 各操作的 impl 函数。
+- `agents/feishu/tools/feishu_doc.py` — 薄壳，1 工具 `feishu_doc_read`。
+- `agents/feishu/tools/feishu_drive.py` — 薄壳，4 工具。
+- `agents/feishu/tests/test_feishu.py` — 单元测试，mock `_invoke`，不打真实 API。
+- `agents/feishu/AGENTS.md` — 工具表加行（文档收尾任务内）。
 
 ## SDK 调用契约（已实测确认）
 
@@ -43,8 +43,8 @@
 ### Task 1: 共享实现层基础 — client 构建 + `_invoke` + 返回归一化
 
 **Files:**
-- Create: `examples/haitun-workspace/tools/_feishu_impl.py`
-- Test: `examples/haitun-workspace/tests/test_feishu.py`
+- Create: `agents/feishu/tools/_feishu_impl.py`
+- Test: `agents/feishu/tests/test_feishu.py`
 
 **Interfaces:**
 - Produces:
@@ -56,7 +56,7 @@
 
 - [ ] **Step 1: 写失败测试**
 
-在 `examples/haitun-workspace/tests/test_feishu.py`：
+在 `agents/feishu/tests/test_feishu.py`：
 
 ```python
 from __future__ import annotations
@@ -111,12 +111,12 @@ def test_dumps_result_roundtrip() -> None:
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `uv run pytest examples/haitun-workspace/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null`
+Run: `uv run pytest agents/feishu/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null`
 Expected: FAIL — `ModuleNotFoundError: No module named '_feishu_impl'`
 
 - [ ] **Step 3: 写最小实现**
 
-创建 `examples/haitun-workspace/tools/_feishu_impl.py`：
+创建 `agents/feishu/tools/_feishu_impl.py`：
 
 ```python
 """Private helper for the Feishu tools — authenticated client + request execution.
@@ -209,13 +209,13 @@ async def _invoke(request: Any) -> dict[str, Any]:
 
 - [ ] **Step 4: 运行确认通过**
 
-Run: `uv run pytest examples/haitun-workspace/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null`
+Run: `uv run pytest agents/feishu/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null`
 Expected: PASS（4 passed）
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add examples/haitun-workspace/tools/_feishu_impl.py examples/haitun-workspace/tests/test_feishu.py
+git add agents/feishu/tools/_feishu_impl.py agents/feishu/tests/test_feishu.py
 git commit -m "feat(haitun): feishu 工具共享实现层（client + _invoke）
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
@@ -226,8 +226,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ### Task 2: Drive 评论实现函数（4 个）
 
 **Files:**
-- Modify: `examples/haitun-workspace/tools/_feishu_impl.py`（追加 4 个 impl 函数 + 1 个 reply builder + import）
-- Test: `examples/haitun-workspace/tests/test_feishu.py`（追加）
+- Modify: `agents/feishu/tools/_feishu_impl.py`（追加 4 个 impl 函数 + 1 个 reply builder + import）
+- Test: `agents/feishu/tests/test_feishu.py`（追加）
 
 **Interfaces:**
 - Consumes: `_invoke`, `_error`（Task 1）；`comment.build_comment_create_request` / `build_comment_list_request` / `build_comment_reply_list_request`。
@@ -312,7 +312,7 @@ async def test_reply_comment_with_mention(monkeypatch: pytest.MonkeyPatch) -> No
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `uv run pytest examples/haitun-workspace/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null`
+Run: `uv run pytest agents/feishu/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null`
 Expected: FAIL — `AttributeError: module '_feishu_impl' has no attribute 'add_comment_impl'`
 
 - [ ] **Step 3: 写最小实现**
@@ -394,13 +394,13 @@ async def reply_comment_impl(
 
 - [ ] **Step 4: 运行确认通过**
 
-Run: `uv run pytest examples/haitun-workspace/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null`
+Run: `uv run pytest agents/feishu/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null`
 Expected: PASS（9 passed）
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add examples/haitun-workspace/tools/_feishu_impl.py examples/haitun-workspace/tests/test_feishu.py
+git add agents/feishu/tools/_feishu_impl.py agents/feishu/tests/test_feishu.py
 git commit -m "feat(haitun): feishu drive 评论 impl（add/list/replies/reply）
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
@@ -411,8 +411,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ### Task 3: `feishu_drive.py` 薄壳（4 个工具）
 
 **Files:**
-- Create: `examples/haitun-workspace/tools/feishu_drive.py`
-- Test: `examples/haitun-workspace/tests/test_feishu.py`（追加加载校验）
+- Create: `agents/feishu/tools/feishu_drive.py`
+- Test: `agents/feishu/tests/test_feishu.py`（追加加载校验）
 
 **Interfaces:**
 - Consumes: `_feishu_impl.add_comment_impl` / `list_comments_impl` / `list_comment_replies_impl` / `reply_comment_impl`, `dumps_result`。
@@ -451,12 +451,12 @@ async def test_drive_add_comment_tool_returns_json(monkeypatch: pytest.MonkeyPat
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `uv run pytest examples/haitun-workspace/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null`
+Run: `uv run pytest agents/feishu/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null`
 Expected: FAIL — `ModuleNotFoundError: No module named 'feishu_drive'`
 
 - [ ] **Step 3: 写实现**
 
-创建 `examples/haitun-workspace/tools/feishu_drive.py`：
+创建 `agents/feishu/tools/feishu_drive.py`：
 
 ```python
 """Feishu/Lark drive comment tools — read and post comments on cloud documents.
@@ -544,13 +544,13 @@ async def feishu_drive_reply_comment(
 
 - [ ] **Step 4: 运行确认通过**
 
-Run: `uv run pytest examples/haitun-workspace/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null`
+Run: `uv run pytest agents/feishu/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null`
 Expected: PASS（11 passed）
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add examples/haitun-workspace/tools/feishu_drive.py examples/haitun-workspace/tests/test_feishu.py
+git add agents/feishu/tools/feishu_drive.py agents/feishu/tests/test_feishu.py
 git commit -m "feat(haitun): feishu_drive_* 工具薄壳（4 个评论工具）
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
@@ -561,9 +561,9 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ### Task 4: `feishu_doc_read` — doc 全文读取（docx/doc/sheet 分派）+ 薄壳
 
 **Files:**
-- Modify: `examples/haitun-workspace/tools/_feishu_impl.py`（追加 doc 读取 impl + 3 个 builder）
-- Create: `examples/haitun-workspace/tools/feishu_doc.py`
-- Test: `examples/haitun-workspace/tests/test_feishu.py`（追加）
+- Modify: `agents/feishu/tools/_feishu_impl.py`（追加 doc 读取 impl + 3 个 builder）
+- Create: `agents/feishu/tools/feishu_doc.py`
+- Test: `agents/feishu/tests/test_feishu.py`（追加）
 
 **Interfaces:**
 - Consumes: `_invoke`, `_error`, `BaseRequest`, `HttpMethod`, `AccessTokenType`（Task 1/2）。
@@ -623,7 +623,7 @@ def test_doc_tool_is_async_with_docstring() -> None:
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `uv run pytest examples/haitun-workspace/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null`
+Run: `uv run pytest agents/feishu/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null`
 Expected: FAIL — `AttributeError: module '_feishu_impl' has no attribute 'read_doc_impl'`
 
 - [ ] **Step 3: 写实现**
@@ -725,7 +725,7 @@ async def read_doc_impl(file_type: str, token: str, max_chars: int) -> dict[str,
     }
 ```
 
-创建 `examples/haitun-workspace/tools/feishu_doc.py`：
+创建 `agents/feishu/tools/feishu_doc.py`：
 
 ```python
 """Feishu/Lark document reader — read the full text of a cloud document.
@@ -764,13 +764,13 @@ async def feishu_doc_read(file_type: str, token: str, max_chars: int = 20000) ->
 
 - [ ] **Step 4: 运行确认通过**
 
-Run: `uv run pytest examples/haitun-workspace/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null`
+Run: `uv run pytest agents/feishu/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null`
 Expected: PASS（16 passed）
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add examples/haitun-workspace/tools/_feishu_impl.py examples/haitun-workspace/tools/feishu_doc.py examples/haitun-workspace/tests/test_feishu.py
+git add agents/feishu/tools/_feishu_impl.py agents/feishu/tools/feishu_doc.py agents/feishu/tests/test_feishu.py
 git commit -m "feat(haitun): feishu_doc_read（docx/doc/sheet 全文读取）
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
@@ -781,7 +781,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ### Task 5: 文档 + 全量验证
 
 **Files:**
-- Modify: `examples/haitun-workspace/AGENTS.md`（工具表加行 + 前置条件）
+- Modify: `agents/feishu/AGENTS.md`（工具表加行 + 前置条件）
 
 **Interfaces:**
 - Consumes: 全部前序任务的成品。
@@ -789,7 +789,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: 更新 AGENTS.md 工具表**
 
-在 `examples/haitun-workspace/AGENTS.md` 第 58 行（`browser` 那行）之后插入：
+在 `agents/feishu/AGENTS.md` 第 58 行（`browser` 那行）之后插入：
 
 ```markdown
 | `feishu_doc` (`feishu_doc.py` + `_feishu_impl.py`) | Read full text of a Feishu/Lark document. Tool `feishu_doc_read(file_type, token, max_chars)` supports docx/doc/sheet. Requires `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET`. |
@@ -806,10 +806,10 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 Run:
 ```bash
-uv run ruff check examples/haitun-workspace/tools/feishu_doc.py examples/haitun-workspace/tools/feishu_drive.py examples/haitun-workspace/tools/_feishu_impl.py examples/haitun-workspace/tests/test_feishu.py
-uv run ruff format --check examples/haitun-workspace/tools/feishu_doc.py examples/haitun-workspace/tools/feishu_drive.py examples/haitun-workspace/tools/_feishu_impl.py examples/haitun-workspace/tests/test_feishu.py
+uv run ruff check agents/feishu/tools/feishu_doc.py agents/feishu/tools/feishu_drive.py agents/feishu/tools/_feishu_impl.py agents/feishu/tests/test_feishu.py
+uv run ruff format --check agents/feishu/tools/feishu_doc.py agents/feishu/tools/feishu_drive.py agents/feishu/tools/_feishu_impl.py agents/feishu/tests/test_feishu.py
 uv run ty check .
-uv run pytest examples/haitun-workspace/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null
+uv run pytest agents/feishu/tests/test_feishu.py -q -p no:cacheprovider -c /dev/null
 ```
 Expected: ruff `All checks passed!` + `4 files already formatted`；ty 对 feishu 文件零报错（无关的既有报错如 Xlib/tray 忽略）；pytest `16 passed`。
 
@@ -820,7 +820,7 @@ Expected: ruff `All checks passed!` + `4 files already formatted`；ty 对 feish
 - [ ] **Step 4: 提交文档**
 
 ```bash
-git add examples/haitun-workspace/AGENTS.md
+git add agents/feishu/AGENTS.md
 git commit -m "docs(haitun): AGENTS.md 增加 feishu 工具说明
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"

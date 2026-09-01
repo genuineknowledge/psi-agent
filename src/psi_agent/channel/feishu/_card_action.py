@@ -8,6 +8,7 @@ from typing import Any, Protocol
 
 from loguru import logger
 
+from psi_agent._card_markers import CARD_ACTION_BATCH_TAG, CARD_ACTION_TAG
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._types import InputChunk, TextChunk
 
@@ -70,7 +71,7 @@ def _batched_card_context(contexts: list[str]) -> str:
     if len(contexts) == 1:
         return contexts[0]
     body = "\n".join(contexts)
-    return f'<feishu_card_action_batch count="{len(contexts)}">\n{body}\n</feishu_card_action_batch>'
+    return f'<{CARD_ACTION_BATCH_TAG} count="{len(contexts)}">\n{body}\n</{CARD_ACTION_BATCH_TAG}>'
 
 
 class StreamReply(Protocol):
@@ -335,7 +336,7 @@ def _card_action_context(
         },
     }
     body = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
-    return f"<feishu_card_action>\n{body}\n</feishu_card_action>"
+    return f"<{CARD_ACTION_TAG}>\n{body}\n</{CARD_ACTION_TAG}>"
 
 
 def _action_id_of(action_value: Any) -> str | None:

@@ -2,7 +2,7 @@
 param(
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')),
     [string]$InnoSetupDir = (Join-Path $RepoRoot '.github\inno-setup'),
-    [string]$WorkspaceDir = (Join-Path $RepoRoot 'examples\haitun-workspace')
+    [string]$WorkspaceDir = (Join-Path $RepoRoot 'agents\feishu')
 )
 
 $issPath = Join-Path $InnoSetupDir 'haitun.iss'

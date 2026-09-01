@@ -11,10 +11,10 @@ MSYS2 是 Windows 上的类 Unix 环境，提供 `bash`、`coreutils`、`git`、
 | 文件 | 操作 | 说明 |
 |------|------|------|
 | `.github/workflows/pyinstaller.yml` | 修改 | 在 `haitun-inno-setup` job 内新增：装 MSYS2 → 复制进工作区 → 瘦身 |
-| `examples/haitun-workspace/haitun agent.vbs` | 修改 | 启动前把 `msys64\usr\bin` 与 `msys64\ucrt64\bin` 加到 PATH 最前，并设 `CHERE_INVOKING=1` |
-| `examples/haitun-workspace/.gitignore` | 修改 | 新增 `msys64/`（CI 生成，不提交） |
-| `examples/haitun-workspace/haitun.iss` | **不改** | 现有递归 glob 自动打包 `msys64` |
-| `examples/haitun-workspace/tools/bash.py` | **不改** | 复用现有 `which` 查找逻辑（见下方说明） |
+| `agents/feishu/haitun agent.vbs` | 修改 | 启动前把 `msys64\usr\bin` 与 `msys64\ucrt64\bin` 加到 PATH 最前，并设 `CHERE_INVOKING=1` |
+| `agents/feishu/.gitignore` | 修改 | 新增 `msys64/`（CI 生成，不提交） |
+| `agents/feishu/haitun.iss` | **不改** | 现有递归 glob 自动打包 `msys64` |
+| `agents/feishu/tools/bash.py` | **不改** | 复用现有 `which` 查找逻辑（见下方说明） |
 | `README.md` / `AGENTS.md` | 修改 | 文档同步 |
 
 ## ① CI：获取 MSYS2 并瘦身（在 `haitun-inno-setup` job 内）
@@ -36,10 +36,10 @@ MSYS2 是 Windows 上的类 Unix 环境，提供 `bash`、`coreutils`、`git`、
             mingw-w64-ucrt-x86_64-nodejs mingw-w64-ucrt-x86_64-uv
       - shell: pwsh
         run: |
-          robocopy "${{ steps.msys2.outputs.msys2-location }}" "examples\haitun-workspace\msys64" /E /NFL /NDL /NJH /NJS /NP
+          robocopy "${{ steps.msys2.outputs.msys2-location }}" "workspace	ob\msys64" /E /NFL /NDL /NJH /NJS /NP
           if ($LASTEXITCODE -ge 8) { exit 1 } else { exit 0 }
       - shell: pwsh
-        run: Remove-Item -Recurse -Force "examples\haitun-workspace\msys64\var\cache\pacman\pkg\*" -ErrorAction SilentlyContinue
+        run: Remove-Item -Recurse -Force "workspace	ob\msys64\var\cache\pacman\pkg\*" -ErrorAction SilentlyContinue
 ```
 
 要点：
@@ -81,7 +81,7 @@ objShell.Environment("Process")("CHERE_INVOKING") = "1"
 
 ## ⑤ 文档与 .gitignore
 
-- `examples/haitun-workspace/.gitignore` 新增 `msys64/`。
+- `agents/feishu/.gitignore` 新增 `msys64/`。
 - README（安装包现在自带 MSYS2、bash 开箱即用）、根 `AGENTS.md` 或 workspace `AGENTS.md` 的 tools 说明、本设计文档同步。
 
 ## ⑥ 测试

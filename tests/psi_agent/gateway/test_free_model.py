@@ -19,12 +19,12 @@ import anyio
 import pytest
 from anyio.abc import TaskGroup
 
-from psi_agent.gateway._ai_manager import AIManager
-from psi_agent.gateway._free_model import (
+from psi_agent.gateway.desktop._free_model import (
     PLACEHOLDER_API_KEY,
     is_cloud_free_model,
     make_key_resolver,
 )
+from psi_agent.runtime._ai_manager import AIManager
 
 ENDPOINT = "https://account.genuineknowledge.cn"
 FREE_BASE = f"{ENDPOINT}/llm/v1"
@@ -129,8 +129,8 @@ class _SpyAi:
 @pytest.fixture
 def spy_ai(monkeypatch: pytest.MonkeyPatch) -> type[_SpyAi]:
     _SpyAi.seen = []
-    monkeypatch.setattr("psi_agent.gateway._ai_manager.Ai", _SpyAi)
-    monkeypatch.setattr("psi_agent.gateway._ai_manager._wait_socket", _noop_wait)
+    monkeypatch.setattr("psi_agent.runtime._ai_manager.Ai", _SpyAi)
+    monkeypatch.setattr("psi_agent.runtime._ai_manager._wait_socket", _noop_wait)
     return _SpyAi
 
 

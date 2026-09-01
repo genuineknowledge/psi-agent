@@ -28,6 +28,7 @@ from loguru import logger
 
 from psi_agent import _private_space
 from psi_agent._appdata import resolve_appdata_root
+from psi_agent._card_markers import SILENT_REPLY
 from psi_agent._feishu_routing import is_group_chat, route_key
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._errors import ChannelError
@@ -39,7 +40,9 @@ from ._card_action import CardActionBatcher, handle_card_action
 
 _EMOJI_PROCESSING = "Typing"
 _EMOJI_FAILED = "CrossMark"
-_SILENT_REPLY_TOKEN = "NO_REPLY"
+# 与 session 侧直调共享一份定义(psi_agent._card_markers):两边各持一份曾导致
+# 静默漂移——改名后 session 直调静默失效、或 token 直出对话。
+_SILENT_REPLY_TOKEN = SILENT_REPLY
 
 
 class ResolveCore(Protocol):
@@ -78,8 +81,9 @@ class _CoreRegistry:
     所有 core 进同一 ``AsyncExitStack``, 退出时逐个 shielded 关闭。
     """
 
-    def __init__(self, interval: float, stack: AsyncExitStack) -> None:
+    def __init__(self, interval: float, stack: AsyncExitStack, idle_drain: float = 5.0) -> None:
         self._interval = interval
+        self._idle_drain = idle_drain
         self._stack = stack
         self._cores: dict[str, ChannelCore] = {}
         self._lock = anyio.Lock()
@@ -91,7 +95,9 @@ class _CoreRegistry:
         async with self._lock:  # 慢路径: double-checked
             core = self._cores.get(socket)
             if core is None:
-                core = await self._stack.enter_async_context(ChannelCore(socket, interval=self._interval))
+                core = await self._stack.enter_async_context(
+                    ChannelCore(socket, interval=self._interval, idle_drain=self._idle_drain)
+                )
                 self._cores[socket] = core
                 logger.debug(f"created ChannelCore for socket={socket!r} (total={len(self._cores)})")
             return core
@@ -948,6 +954,7 @@ async def run_feishu(
     app_id: str,
     app_secret: str,
     interval: float = 1.0,
+    idle_drain: float = 5.0,
     allowed_user_ids: list[str] | None = None,
     require_mention: bool = True,
     respond_to_mention_all: bool = False,
@@ -970,7 +977,7 @@ async def run_feishu(
     # 顺序: portal 后进先出、先于 stack 关闭, 保证在飞的 handler 仍能用到活着的 core / http,
     # 与旧版 "core 在 stop_background 之后才关" 的取消安全性等价。
     async with AsyncExitStack() as stack, BlockingPortal() as portal:
-        registry = _CoreRegistry(interval, stack)
+        registry = _CoreRegistry(interval, stack, idle_drain=idle_drain)
 
         provider: _GatewayRouteProvider | None = None
         if gateway_url:

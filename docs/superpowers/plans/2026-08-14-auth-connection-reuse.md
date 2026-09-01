@@ -45,7 +45,7 @@ uv run ruff format src/psi_agent/gateway/_auth_manager.py tests/psi_agent/gatewa
 uv run ty check
 ```
 
-`ty check` 目前有 **2 个既有 error**（`examples/haitun-workspace/tools/run_flow.py` 的 `os.killpg`，Windows 上没这个函数），与本次改动无关。判据是**数量不增**，不是归零。
+`ty check` 目前有 **2 个既有 error**（`agents/feishu/tools/run_flow.py` 的 `os.killpg`，Windows 上没这个函数），与本次改动无关。判据是**数量不增**，不是归零。
 
 ### ⚠ 跑单个测试文件必须覆盖 addopts
 

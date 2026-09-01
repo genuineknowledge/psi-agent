@@ -10,7 +10,7 @@ src/psi_agent/gateway/                  @misakamikoto0721 @hzhangxyz
 
 src/psi_agent/channel/feishu/           @idol643 @hzhangxyz
 
-examples/haitun-workspace/              @idol643 @misakamikoto0721 @hzhangxyz
+agents/feishu/                          @idol643 @misakamikoto0721 @hzhangxyz
 
 examples/fusion-flow-workspace/         @idol643 @hzhangxyz
 

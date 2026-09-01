@@ -5,29 +5,34 @@ from __future__ import annotations
 import os
 import socket
 import webbrowser
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 import anyio
+import tyro
 from aiohttp import web
 from loguru import logger
 
 from psi_agent._logging import setup_logging
 from psi_agent._sockets import create_site
-from psi_agent.gateway._ai_manager import AIManager
-from psi_agent.gateway._attention import AttentionHub
-from psi_agent.gateway._auth_manager import AuthManager, resolve_endpoint
 from psi_agent.gateway._defaults import resolve_appdata_root, resolve_default_agent, resolve_default_workspace
-from psi_agent.gateway._free_model import make_key_resolver
-from psi_agent.gateway._router_manager import RouterManager, RouterUpstreamInfo
-from psi_agent.gateway._scheduler_manager import SchedulerManager
-from psi_agent.gateway._session_manager import SessionManager
-from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
 from psi_agent.gateway._state import GatewayState
-from psi_agent.gateway._summary_manager import SummaryManager
-from psi_agent.gateway._title_manager import TitleManager
-from psi_agent.gateway._tray import GatewayTray
-from psi_agent.gateway._webview import GatewayWebView
-from psi_agent.gateway.server import create_app
+from psi_agent.gateway.desktop._attention import AttentionHub
+from psi_agent.gateway.desktop._auth_manager import AuthManager, resolve_endpoint
+from psi_agent.gateway.desktop._free_model import make_key_resolver
+from psi_agent.gateway.desktop._routes import register_desktop_routes
+from psi_agent.gateway.desktop._spa_shell import DEFAULT_APP_NAME
+from psi_agent.gateway.desktop._tray import GatewayTray
+from psi_agent.gateway.desktop._webview import GatewayWebView
+from psi_agent.gateway.feishu._routes import register_feishu_routes, register_oauth_routes
+from psi_agent.gateway.server import create_core_app
+from psi_agent.runtime._ai_manager import AIManager
+from psi_agent.runtime._router_manager import RouterManager, RouterUpstreamInfo
+from psi_agent.runtime._scheduler_manager import SchedulerManager
+from psi_agent.runtime._session_manager import SessionManager
+from psi_agent.runtime._summary_manager import SummaryManager
+from psi_agent.runtime._title_manager import TitleManager
 
 
 def _random_port() -> int:
@@ -39,6 +44,53 @@ def _random_port() -> int:
         s.close()
 
 
+GatewayName = Literal["desktop", "feishu"]
+"""``--gateway`` 的取值域。加第三个 gateway 只动这里与 ``ALL_GATEWAYS``。"""
+
+ALL_GATEWAYS: tuple[GatewayName, ...] = ("desktop", "feishu")
+"""``--gateway`` 的取值域全集 (顺序即注册顺序: ToC 先贴, ``GET /`` 归它)。
+
+**不是默认值** —— 该参数必填, 见 ``Gateway.gateway``。这里只用于 ``resolve_gateways``
+的报错文案列举可选值。
+"""
+
+
+def resolve_gateways(selected: Sequence[str]) -> tuple[str, ...]:
+    """规整 ``--gateway`` 的取值: 去重保序, 空列表报错。
+
+    两种输入 tyro 都照收不报错, 得在这里自己拦 (实测):
+
+    - ``--gateway`` 后不跟任何值 → ``[]``。那是起了服务但一个前端都没有的状态, 明确拒绝
+      而不是静默起个空壳: 用户看不出区别, 只会在访问时拿 404 并以为服务挂了。骨架 REST
+      (``/ais`` ``/sessions`` …) 想单独跑不该借这个参数, 那是另一件事。
+    - ``--gateway feishu feishu`` → 重复值。去重而不是报错: 意图没有歧义 (要飞书那面),
+      报错只是给脚本拼参数的人添麻烦。注册函数被调两次才是真问题 —— 同名路由叠一层。
+    """
+    if not selected:
+        raise ValueError(f"--gateway needs at least one of {{{','.join(ALL_GATEWAYS)}}}; got an empty list")
+    return tuple(dict.fromkeys(selected))
+
+
+async def _redirect_to_feishu_web(request: web.Request) -> web.Response:
+    """只挂 ``--gateway feishu`` 时的 ``GET /``: 302 到 ``/feishu-web/``。
+
+    只在不挂 ToC 时注册。ToC 的 ``GET /`` 有 spa-v2 → spa 的降级链 (``desktop/_routes.py``),
+    两条线都挂时根路径仍归它, 行为不变。
+
+    刻意用重定向而不是直接返回 ToB 的 index: 静态挂载点 ``/feishu-web/`` 是 ``vite.config.ts``
+    的 ``base``, 前端资源路径都以它开头; 在 ``/`` 直接吐 index 会让相对资源请求打到根下而
+    404。dist 目录不存在时 ``/feishu-web/`` 本身没注册, 用户跟着跳过去拿 404 —— 与只挂
+    ToC 且 dist 缺失时的表现一致 (没有产物就是没有前端), 不再额外造一个假页面。
+
+    **指向 ``index.html`` 而不是目录** (实测): ``add_static(..., show_index=False)`` 对
+    ``/feishu-web/`` 这个裸目录回 **403** 而非 index (ToC 侧靠 ``add_static`` 之前另注册
+    三条 ``→ index.html`` 的 handler 绕过, 见 ``desktop/_routes.py`` 那句注释)。跳到目录
+    会让 ToB 单挂时的首页变成 403; 直接跳文件即可, 无需给飞书侧补那三条 —— 补了会改动
+    默认 (两面全挂) 组合的路由集合, 而那一条要求逐条不变。
+    """
+    return web.Response(status=302, headers={"Location": "/feishu-web/index.html"})
+
+
 @dataclass
 class Gateway:
     """Start the gateway REST + Web UI server."""
@@ -46,8 +98,54 @@ class Gateway:
     listen: str = ""
     """Listen address. Empty = random high port on 127.0.0.1."""
 
+    # **两个 Gateway 同时跑时必须给不同值** (或改 ``--default-workspace``, 见下)。冲突不来自
+    # 共享前缀, 而是**同一个完整管道名**: 同 workspace 的调度 Session id 由 workspace 路径的
+    # sha256 确定性派生 (``runtime/_scheduler_manager.py``), 两个进程必然算出同一个名字;
+    # ``_session_manager`` 的去重只在进程内, 抓不到跨进程重名。Windows 上表现为
+    # ``PermissionError(13, ...)`` / ``[WinError 5] 拒绝访问``。
     socket_path: str = "psi"
-    """Prefix for AI/Session socket paths (Unix sockets on POSIX, Named Pipes on Windows)."""
+    """Prefix for AI/Session socket paths (Unix sockets on POSIX, Named Pipes on Windows).
+
+    Give two concurrent Gateways different values, or their scheduler Sessions
+    collide on one pipe name.
+    """
+
+    # 本字段的 docstring 是**用户可见的帮助文本**, 刻意写短: tyro 把它整段渲进「缺必填参数」
+    # 的报错框里 (实测), 写长了会把「你少给了一个参数」这一句话淹在几十行说明里。设计理由与
+    # 实测记录都放这条注释里, 不进 docstring。
+    #
+    # **为什么必填、没有默认值**: 挂哪些面是**部署方的决定**, 内核不替它猜。原先默认全集
+    # ``("desktop", "feishu")`` 看着安全实则最危险 —— 少挂一面不报错, 只是某个前端 404,
+    # 出问题时排查方向完全跑偏。必填把这个静默失败提前成启动期的显式失败。
+    #
+    # **为什么不按环境给默认值** (比如云上默认 feishu): 内核里没有「产品线」这个概念 (定过),
+    # 要让内核默认 feishu, 内核就得先知道自己跑在云上 —— 那等于把产品线概念从参数名里赶
+    # 出去、又从环境判断偷偷放回来。哪一面该挂是部署脚本的事, 见 ``AGENTS.md``。
+    #
+    # **为什么用 ``tyro.MISSING`` 而非省略默认值**: 本字段前面的字段都带默认值, 真省掉会撞
+    # dataclass 的「非默认字段不能跟在默认字段后」而 ``TypeError``。``tyro.MISSING`` 在
+    # tyro 眼里是必填, 对 dataclass 而言又是个普通默认值, 于是不必重排字段顺序 (字段顺序
+    # 就是 ``--help`` 里的显示顺序, 为一个约束去重排会牵动无关的可读性)。
+    #
+    # 实测 (tyro 1.0.15 / Python 3.14.7):
+    #
+    # - ``--help``: 该项列在 ``options`` 段, 行尾标 ``(required)``; 值域直接印在参数名后
+    #   (``--gateway [{desktop,feishu} [{desktop,feishu} ...]]``)。
+    # - 不传: 退出码 **2**, 打一个 ``Required options`` 框, ``Missing from <prog> gateway:``
+    #   后跟该参数与值域 —— 缺什么、可选值是什么都在里面。
+    # - ``dataclasses.fields(Gateway)`` 上此字段的 ``default`` 是 ``tyro.MISSING``
+    #   (``tyro._singleton.PropagatingMissingType``), **不是** ``dataclasses.MISSING``;
+    #   ``default_factory`` 才是 ``dataclasses.MISSING``。判「有没有默认值」得认前者。
+    # - 必填**不覆盖**空列表那条: ``--gateway`` 后不跟任何值仍给 ``[]`` 且退出码 0 —— tyro
+    #   认为参数「给过了」。那一步的拦截仍归 ``resolve_gateways``, 别以为必填替掉了它。
+    #
+    # 各值挂哪些路由: ``desktop`` = ToC 那面 (``/spa/`` ``/spa-v2/`` ``/ui/*``
+    # ``/workspace/*`` ``/auth/*``); ``feishu`` = ToB 那面 (``/feishu/*``
+    # ``/feishu-web/``, 单挂时 ``GET /`` 302 到 ``/feishu-web/index.html``)。两个都写则
+    # 两面全挂; 只写一个, 另一面的路由不注册 (404)。逗号形式不支持。与 ``--default-agent``
+    # 是两个独立维度, 可自由组合。
+    gateway: list[GatewayName] = tyro.MISSING
+    """Which gateway HTTP surfaces to mount (required, space-separated, combinable)."""
 
     icon: str | None = None
     """Path to icon image file (png/jpg/ico). Used as favicon, tray icon (--tray), and webview icon (--webview)."""
@@ -64,30 +162,51 @@ class Gateway:
     tray: bool = False
     """Show a system tray icon (requires --icon)."""
 
+    # 飞书 channel 经 ``POST /feishu/route`` 按需为每个飞书用户/群 spawn 独立 Session 时用它
+    # 作缺省 AI (请求体也可逐次覆盖 ``ai_id``)。空 = 未配, 此时若请求也不带 ``ai_id`` 则
+    # ``/feishu/route`` 返回 400。
     feishu_ai_id: str = ""
-    """飞书 Session 默认挂载的 AI 实例 id。飞书 channel 经 ``POST /feishu/route`` 按需为每个
-    飞书用户/群 spawn 独立 Session 时用它作缺省 AI (请求体也可逐次覆盖 ``ai_id``)。空 = 未配,
-    此时若请求也不带 ``ai_id`` 则 ``/feishu/route`` 返回 400。"""
+    """Default AI instance id for Feishu Sessions. Empty = unset (requests must carry ai_id)."""
 
+    # 私聊每个 open_id 得到 ``<root>/<open_id>`` 子目录, 群聊每个 chat_id 得到
+    # ``<root>/chat-<chat_id>``, 文件/历史互相隔离。
     feishu_workspace_root: str = ""
-    """飞书各会话独立 workspace 的父目录。私聊每个 open_id 得到 ``<root>/<open_id>`` 子目录,
-    群聊每个 chat_id 得到 ``<root>/chat-<chat_id>``, 文件/历史互相隔离。空 = 以 Gateway 进程
-    cwd 为父目录。"""
+    """Parent dir for per-conversation Feishu workspaces. Empty = Gateway process cwd."""
 
+    # 网页应用免登要用这对凭证: 前端经 ``GET /feishu/app-id`` 取 app_id, 传给
+    # ``tt.requestAccess`` 换 code; 后端再拿 app_id + secret 把 code 换成
+    # ``user_access_token``。**secret 永不下发前端** —— 那个端点只回 app_id。
+    #
+    # 与 channel 侧读的是同一对凭证 (同一个自建应用), 但两个进程各自读环境变量, 不互相
+    # 传递。未配时 ``/feishu/auth/login`` 回 400 而非 500, 前端显示「未配置免登」。
+    feishu_app_id: str = ""
+    """Feishu app ID for web-app SSO (CLI > env ``PSI_FEISHU_APP_ID``). Empty = SSO off (400)."""
+
+    feishu_app_secret: str = ""
+    """Feishu app secret (CLI > env ``PSI_FEISHU_APP_SECRET``). Server-side only, never sent to the client."""
+
+    # 非空值两形解析 (见 ``_defaults.resolve_default_agent``): 先试值本身是目录, 再试
+    # ``agents/<值>``, 都不是则**报错退出**。原先第一档不查存在性, ``--default-agent desktop``
+    # 静默指向 ``{cwd}/desktop`` —— 启动期不碰这个路径, 日志干净端口正常, 错要等建 Session
+    # 才暴露成「这个 Session 没有 tools/skills」。
+    #
+    # 空值是有意义的第三态, 不报错: 软默认 ``agents/feishu`` → cwd 像装机布局 (``tools/`` +
+    # ``skills/``) → Session 单根兼容 (``agent=""`` 即等于 workspace)。
     default_agent: str = ""
-    """CLI: default agent package for new Sessions / GET /defaults.
+    """Default agent package for new Sessions / GET /defaults.
 
-    Empty → soft-default ``examples/haitun-workspace`` under cwd when present;
-    else cwd when it looks like an install layout (``tools/`` + ``skills/``);
-    else Session keeps single-root compat (``agent=\"\"`` → same as workspace).
+    A short name selects ``agents/<name>``; a path is used as given. Unknown
+    values exit with the available names. Empty = soft default.
     """
 
+    # 空值 → 软默认 ``{Desktop}/haitun交付``, 且**只公告路径不建目录**: 目录在第一次建
+    # Session / 开对话时才建, 开一下 Haitun 不该在桌面留个空文件夹。
+    #
+    # 这里不是 AppData: todos / history / Gateway state 都在 ``--appdata`` 下。
     default_workspace: str = ""
-    """Step 2 CLI: default user workspace for new Sessions / GET /defaults.
+    """Default user workspace for new Sessions / GET /defaults.
 
-    Empty → soft-default ``{Desktop}/haitun交付`` (path announced only; directory
-    created on first Session / conversation, not on Gateway boot).
-    Not AppData; todos/history/Gateway state live under ``--appdata``.
+    Empty = soft default under the OS Desktop. Not the AppData root (see --appdata).
     """
 
     appdata: str = ""
@@ -99,25 +218,29 @@ class Gateway:
     Step 4D: Gateway ``state/`` under ``{appdata}/state/`` (legacy cwd dual-read).
     """
 
+    # 每个 workspace 会得到一个专用调度 Session (对 SPA / state 隐藏), 以
+    # ``active_schedules=("*",)`` 激活该 workspace 下的全部定时任务 —— 定时任务从 workspace
+    # 加载, 但**触发权是 (session x schedule) 逐条的**, 一条必须恰好被一个 Session 激活,
+    # 否则飞书多用户下一条提醒会被在线会话数乘一遍。
     scheduler_ai_id: str = ""
-    """调度 Session 挂载的 AI 实例 id。每个 workspace 会得到一个专用调度 Session
-    (对 SPA / state 隐藏), 以 ``active_schedules=("*",)`` 激活该 workspace 下的全部
-    定时任务 —— 定时任务从 workspace 加载, 但**触发权是 (session x schedule) 逐条的**,
-    一条必须恰好被一个 Session 激活, 否则飞书多用户下一条提醒会被在线会话数乘一遍。
+    """AI instance id for the per-workspace scheduler Session.
 
-    空 = 回落 ``--feishu-ai-id``; 两者都空则不启动调度 Session (记 warning)。
+    Empty = fall back to --feishu-ai-id; both empty = no scheduler Session (warns).
     """
 
+    # 留空取的内置默认值是**账号服务的正式地址**。
+    #
+    # **空 ≠ 关闭**: 装了包的用户起 Gateway 就该能登录, 要求他先知道并手填一个域名, 等于把
+    # 部署细节转嫁给使用者。要**关掉**认证 (纯本地单用户, 不注册 ``/auth/*``、不读写本机凭证)
+    # 请显式设 ``PSI_AUTH_ENDPOINT=""``。
+    #
+    # 启用时客户端只做转发与本机凭证管理: 不持任何供应商密钥 (安装包里放阿里云 AK/SK 或
+    # Resend key 等于公开发布), 授权判定全在云端 (用户本人即机器管理员, 客户端侧校验可被
+    # 绕过)。见 ``_auth_manager.resolve_endpoint``。
     auth_endpoint: str = ""
-    """云端认证服务地址。**留空即取内置默认值** (账号服务的正式地址)。
+    """Cloud auth service address. Empty = built-in default (not disabled).
 
-    空 ≠ 关闭: 装了包的用户直接 ``psi-agent gateway`` 就该能登录, 要求他先知道并
-    手填一个域名, 等于把部署细节转嫁给使用者。要**关掉**认证 (纯本地单用户, 不注册
-    ``/auth/*``、不读写本机凭证) 请显式设 ``PSI_AUTH_ENDPOINT=""``。
-
-    启用时客户端只做转发与本机凭证管理: 不持任何供应商密钥 (安装包里放阿里云
-    AK/SK 或 Resend key 等于公开发布), 授权判定全在云端 (用户本人即机器管理员,
-    客户端侧校验可被绕过)。见 ``_auth_manager.resolve_endpoint``。
+    Set PSI_AUTH_ENDPOINT="" to turn auth off entirely.
     """
 
     verbose: bool = False
@@ -128,6 +251,9 @@ class Gateway:
 
         if self.browser and self.webview:
             raise ValueError("--browser and --webview are mutually exclusive")
+
+        # 与上面的互斥校验同处: 都在建 socket / 恢复 state 之前失败, 不留半启动的进程。
+        gateways = resolve_gateways(self.gateway)
 
         addr = self.listen or f"http://127.0.0.1:{_random_port()}"
         logger.info(f"Starting Gateway service on {addr} (socket_path={self.socket_path})")
@@ -235,24 +361,51 @@ class Gateway:
 
             attention = AttentionHub()
             schedm = SchedulerManager(_sm=sm, _ai_id=self.scheduler_ai_id or self.feishu_ai_id)
-            app = await create_app(
+            # 骨架 + 按 --gateway 贴各 gateway 的 HTTP 面。**贴哪些完全由调用方给定** ——
+            # 该参数必填, 没有「不传时挂什么」这回事: 少挂一面的表现是某个前端 404 而非
+            # 报错, 所以宁可在启动期就要求说清楚。生产上飞书容器起的也是 `psi-agent
+            # gateway` (同容器里另起一个 `psi-agent channel feishu` 连过来), 它得显式写
+            # `--gateway feishu`; 装机版显式写 `--gateway desktop`。开发时只写一个值单挂
+            # 一面, 省掉另一面的前端与 manager。
+            want_desktop = "desktop" in gateways
+            want_feishu = "feishu" in gateways
+            logger.info(f"Gateways: {' '.join(gateways)} (desktop={want_desktop}, feishu={want_feishu})")
+            app = await create_core_app(
                 aim,
                 sm,
                 tm,
                 rm=rm,
-                favicon_path=self.icon,
-                app_name=self.app_name,
-                attention=attention,
-                feishu_ai_id=self.feishu_ai_id,
-                feishu_workspace_root=self.feishu_workspace_root,
                 default_agent=agent_default,
                 default_workspace=workspace_default,
                 appdata=appdata_root,
                 scheduler_ai_id=self.scheduler_ai_id,
                 schedm=schedm,
                 sum_m=sum_m,
-                authm=authm,
             )
+            if want_desktop:
+                await register_desktop_routes(
+                    app,
+                    favicon_path=self.icon,
+                    app_name=self.app_name,
+                    attention=attention,
+                    authm=authm,
+                )
+            if want_feishu:
+                register_feishu_routes(
+                    app,
+                    feishu_ai_id=self.feishu_ai_id,
+                    feishu_workspace_root=self.feishu_workspace_root,
+                    feishu_app_id=self.feishu_app_id or os.environ.get("PSI_FEISHU_APP_ID", ""),
+                    feishu_app_secret=self.feishu_app_secret or os.environ.get("PSI_FEISHU_APP_SECRET", ""),
+                )
+                # ``GET /`` 的兜底链住在 ToC 那边 (spa-v2 → spa)。只挂飞书时那条链没注册,
+                # 根路径得自己交代去处, 否则用户访问裸地址拿到 404 还以为服务没起来。
+                if not want_desktop:
+                    app.router.add_get("/", _redirect_to_feishu_web)
+            else:
+                # 只挂 ToC: ``/oauth/*`` 随飞书装配一起没了, 这里补上 —— 回调地址登记在
+                # 第三方应用后台, 少这两条就是用户点完授权落到 404。
+                register_oauth_routes(app)
 
             # Restored sessions need a scheduler Session for their workspace too
             # (on demand: skipped when there are no schedules).

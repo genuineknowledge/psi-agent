@@ -6,6 +6,8 @@ import anyio
 import pytest
 
 from psi_agent.gateway._defaults import (
+    DEFAULT_AGENT_REPO_CANDIDATE,
+    DEFAULT_AGENT_SHORT_NAME_ROOT,
     DEFAULT_USER_WORKSPACE_NAME,
     appdata_history_path,
     ensure_workspace_dir,
@@ -14,7 +16,7 @@ from psi_agent.gateway._defaults import (
     resolve_default_workspace,
     resolve_history_read_path,
 )
-from psi_agent.gateway._session_manager import SessionInfo
+from psi_agent.runtime._session_manager import SessionInfo
 
 
 @pytest.mark.anyio
@@ -31,8 +33,9 @@ async def test_resolve_default_workspace_soft_desktop_announces_without_mkdir(
 ) -> None:
     desktop = tmp_path / "Desktop"
     await anyio.Path(desktop).mkdir()
+    # Desktop path math moved to the neutral module; brand name stays in _defaults.
     monkeypatch.setattr(
-        "psi_agent.gateway._defaults.platformdirs.user_desktop_dir",
+        "psi_agent._workspace_paths.platformdirs.user_desktop_dir",
         lambda: str(desktop),
     )
     expected = desktop / DEFAULT_USER_WORKSPACE_NAME
@@ -52,14 +55,38 @@ async def test_ensure_workspace_dir_creates(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_resolve_default_agent_soft_haitun_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    agent = tmp_path / "examples" / "haitun-workspace"
+    agent = tmp_path / "agents" / "feishu"
     await anyio.Path(agent).mkdir(parents=True)
     assert await resolve_default_agent("") == str(await anyio.Path(agent).resolve())
 
 
 @pytest.mark.anyio
+async def test_resolve_default_agent_short_name_under_agents(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--default-agent desktop`` selects ``agents/desktop``, not ``./desktop``."""
+    monkeypatch.chdir(tmp_path)
+    agent = tmp_path / "agents" / "desktop"
+    await anyio.Path(agent).mkdir(parents=True)
+    assert await resolve_default_agent("desktop") == str(await anyio.Path(agent).resolve())
+
+
+@pytest.mark.anyio
+async def test_resolve_default_agent_unknown_short_name_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Was the silent bug: an unknown value used to resolve to ``{cwd}/{value}``."""
+    monkeypatch.chdir(tmp_path)
+    await anyio.Path(tmp_path / "agents" / "feishu").mkdir(parents=True)
+    with pytest.raises(FileNotFoundError, match="feishu"):
+        await resolve_default_agent("desktop")
+
+
+@pytest.mark.anyio
+async def test_short_name_root_matches_repo_candidate_parent() -> None:
+    """The two constants must agree, or soft default and short names diverge."""
+    assert DEFAULT_AGENT_REPO_CANDIDATE.startswith(f"{DEFAULT_AGENT_SHORT_NAME_ROOT}/")
+
+
+@pytest.mark.anyio
 async def test_resolve_default_agent_soft_install_layout_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Inno {app} layout: tools/ + skills/ live at cwd (no examples/ nesting)."""
+    """Inno {app} layout: tools/ + skills/ live at cwd (no workspace/ nesting)."""
     monkeypatch.chdir(tmp_path)
     await anyio.Path(tmp_path / "tools").mkdir()
     await anyio.Path(tmp_path / "skills").mkdir()
@@ -70,11 +97,11 @@ async def test_resolve_default_agent_soft_install_layout_cwd(tmp_path: Path, mon
 async def test_resolve_default_agent_repo_layout_wins_over_cwd_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Repo root may have unrelated tools/; prefer examples/haitun-workspace."""
+    """Repo root may have unrelated tools/; prefer agents/feishu."""
     monkeypatch.chdir(tmp_path)
     await anyio.Path(tmp_path / "tools").mkdir()
     await anyio.Path(tmp_path / "skills").mkdir()
-    agent = tmp_path / "examples" / "haitun-workspace"
+    agent = tmp_path / "agents" / "feishu"
     await anyio.Path(agent).mkdir(parents=True)
     assert await resolve_default_agent("") == str(await anyio.Path(agent).resolve())
 

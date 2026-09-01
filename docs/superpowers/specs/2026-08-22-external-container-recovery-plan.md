@@ -385,7 +385,7 @@ reset 后 `git diff --stat origin/main HEAD -- src/` 输出为空，确认 `src/
 `_fusion_memory_config.py:148` 已解析该变量、`:181-186` 已实现 auto-register 分支，
 `README.md` / `AGENTS.md` / `SKILL.md` 三处都已写它。真正的缺口是它**从未被设置**，
 而默认 `False`（`:48`）。故本阶段的「新增配置项」落成两件事：新增
-`examples/haitun-workspace/.env.memory.example` 把该值记进 git（避免重演「只存在于
+`agents/feishu/.env.memory.example` 把该值记进 git（避免重演「只存在于
 服务器文件系统上的配置」），并在 `AGENTS.md` 该变量条目点明默认值的后果。
 **`.env` 实际落地属阶段 2**（需重启，与 D3 一致）。
 

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Bundle metadata template. build-dmg.sh substitutes @HAITUN_VERSION@ with
+  MyAppVersion parsed out of .github/inno-setup/haitun.iss, the same single
+  source of truth the Windows launcher uses (build-haitun-launcher.ps1) and the
+  same value oss-publish.yml gates releases on. Do not hardcode a version here.
+
+  LSUIElement is deliberately absent: the app opens the system browser and a
+  Dock icon is the only affordance the user has to tell it is running. See
+  launcher.sh for why tray mode is not used on macOS.
+
+  CFBundleIdentifier mirrors the publisher identity used in haitun.iss.
+  Changing it after release orphans Keychain entries and update state.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>HaiTun Agent</string>
+	<key>CFBundleDisplayName</key>
+	<string>HaiTun Agent</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.zhenzhi.haitun-agent</string>
+	<key>CFBundleExecutable</key>
+	<string>haitun</string>
+	<key>CFBundleIconFile</key>
+	<string>haitun.icns</string>
+	<key>CFBundleVersion</key>
+	<string>@HAITUN_VERSION@</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@HAITUN_VERSION@</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Hefei Zhenzhi Artificial Intelligence Application Software Co., Ltd</string>
+</dict>
+</plist>

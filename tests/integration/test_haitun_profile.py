@@ -13,14 +13,14 @@ import pytest
 
 
 def _load_profile_module(monkeypatch: pytest.MonkeyPatch):
-    tools_dir = Path(__file__).parents[2] / "examples" / "haitun-workspace" / "tools"
+    tools_dir = Path(__file__).parents[2] / "agents" / "feishu" / "tools"
     monkeypatch.syspath_prepend(str(tools_dir))
     sys.modules.pop("_user_profile", None)
     return importlib.import_module("_user_profile")
 
 
 def _load_system_module(monkeypatch: pytest.MonkeyPatch):
-    workspace = Path(__file__).parents[2] / "examples" / "haitun-workspace"
+    workspace = Path(__file__).parents[2] / "agents" / "feishu"
     monkeypatch.syspath_prepend(str(workspace / "systems"))
     monkeypatch.syspath_prepend(str(workspace / "tools"))
     spec = importlib.util.spec_from_file_location("haitun_system_test", workspace / "systems" / "system.py")
@@ -274,7 +274,7 @@ async def test_generated_prompt_has_one_profile_and_policy_section(
 
 
 def test_standalone_demo_is_runnable_without_real_wiki(tmp_path: Path) -> None:
-    demo = Path(__file__).parents[2] / "examples" / "haitun-workspace" / "demo_adaptive_profile.py"
+    demo = Path(__file__).parents[2] / "agents" / "feishu" / "demo_adaptive_profile.py"
     real_profiles = demo.parent / "wiki" / "profiles"
     profiles_before = set(real_profiles.glob("*")) if real_profiles.exists() else set()
     env = os.environ | {"HAITUN_DEMO_WORKSPACE": str(tmp_path), "PYTHONUTF8": "1"}

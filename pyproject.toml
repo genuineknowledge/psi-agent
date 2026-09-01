@@ -13,13 +13,27 @@ requires-python = ">=3.14"
 dependencies = [
     "anyio>=4.14.2",
     "aiohttp>=3.14.1",
+    # 直接依赖而非传递依赖: psi_agent._tls 自己 import 它。冻结包在 macOS 上没有
+    # 系统信任库可读, 根证书只能由它提供。
+    "certifi>=2026.6.17",
     "loguru>=0.7.3",
     "tyro>=1.0.15",
     "croniter>=6.2.4",
     "pyyaml>=6.0.3",
     "prompt-toolkit>=3.0.52",
     "rich>=15.0.0",
-    "any-llm-sdk>=1.21.0",
+    # 上界是承重的, 且必须卡到 minor: any-llm 会在 minor 版本里改**请求语义**。
+    # 实测 1.21.0 的 providers/deepseek/deepseek.py 没有 thinking 分支, 1.26.0
+    # 有 —— 它把 reasoning_effort 缺省值当「没要思维」, 下发
+    # extra_body.thinking={"type":"disabled"}, 于是模型把自我对话写进 content
+    # (线上的 thinking 泄漏)。原先写 >=1.21.0 开区间, 这个变更就静默上了线。
+    #
+    # 所以 <2.0.0 这种 semver 上界在这里没用: 1.21→1.26 本身就是 minor。要拦住
+    # 这一类, 上界只能卡 minor, 升级时人工读 changelog。
+    #
+    # 下界同时抬到 1.26.0 对齐生产: 之前 lock 是 1.21.0 而生产镜像跑 1.26.0,
+    # 本机与线上不在同一条 minor 线上 —— 这正是该变更没被本机测试发现的原因。
+    "any-llm-sdk>=1.26.0,<1.27.0",
     "json-repair>=0.63.0,<0.64",
     "platformdirs>=4.10.1",
     "keyring>=25.0.0",
@@ -65,12 +79,15 @@ source = "vcs"
 
 [tool.hatch.build.targets.sdist]
 artifacts = [
-    "src/psi_agent/gateway/spa/dist/**/*",
-    "src/psi_agent/gateway/spa-v2/dist/**/*",
+    "src/psi_agent/gateway/desktop/spa/dist/**/*",
+    "src/psi_agent/gateway/desktop/spa-v2/dist/**/*",
 ]
 exclude = [
-    "src/psi_agent/gateway/spa/node_modules/**",
-    "src/psi_agent/gateway/spa-v2/node_modules/**",
+    "src/psi_agent/gateway/desktop/spa/node_modules/**",
+    "src/psi_agent/gateway/desktop/spa-v2/node_modules/**",
+    # 只排 node_modules, 不往 artifacts 加 feishu-web 的 dist —— 产物怎么下发不在本轮
+    # 范围。少了这行, 新目录的依赖树会跟着 sdist 一起打进去。
+    "src/psi_agent/gateway/feishu/feishu-web/node_modules/**",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -78,18 +95,27 @@ packages = ["src/psi_agent"]
 exclude = [
     "src/psi_agent/**/AGENTS.md",
     "src/psi_agent/**/.gitignore",
-    "src/psi_agent/gateway/spa",
-    "src/psi_agent/gateway/spa-v2",
+    "src/psi_agent/gateway/desktop/spa",
+    "src/psi_agent/gateway/desktop/spa-v2",
+    # 与上面两棵 ToC 前端同一处置: 源码树不进 wheel。dist 也不进 (没往下面 artifacts
+    # 加) —— 本轮不含部署, 后端那个 add_static 目录不存在时会静默跳过, 不报错。
+    "src/psi_agent/gateway/feishu/feishu-web",
 ]
 artifacts = [
-    "src/psi_agent/gateway/spa/dist/**/*",
-    "src/psi_agent/gateway/spa-v2/dist/**/*",
+    "src/psi_agent/gateway/desktop/spa/dist/**/*",
+    "src/psi_agent/gateway/desktop/spa-v2/dist/**/*",
 ]
 
 [tool.ruff]
 target-version = "py314"
 line-length = 120
-extend-exclude = ["examples/haitun-workspace/skills/workflow/fusion_flow/generated"]
+extend-exclude = [
+    "agents/feishu/skills/workflow/fusion_flow/generated",
+    # ``desktop`` ships the same ANTLR-generated parser as ``feishu``
+    # (byte-identical); generated code is not hand-maintained, so it is
+    # excluded on both paths.
+    "agents/desktop/skills/workflow/fusion_flow/generated",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "ASYNC", "SIM", "C4", "B", "RUF", "N", "T20", "PLC"]
@@ -106,10 +132,17 @@ addopts = ["--strict-markers", "-ra", "--cov"]
 markers = ["schedule: schedule-based tests (> 30s)"]
 
 [tool.ty.environment]
-extra-paths = ["examples/haitun-workspace/skills/workflow"]
+# Only ``feishu`` is on the type-check path: ``desktop``'s copy of the workflow
+# skill is byte-identical, so adding it would make ty resolve the same bare
+# module names (``fusion_flow`` …) from two roots and report
+# duplicate-definition noise.
+extra-paths = ["agents/feishu/skills/workflow"]
 
 [tool.ty.src]
-exclude = ["examples/haitun-workspace/skills/workflow/fusion_flow/generated"]
+exclude = [
+    "agents/feishu/skills/workflow/fusion_flow/generated",
+    "agents/desktop/skills/workflow/fusion_flow/generated",
+]
 
 [tool.coverage.run]
 source = ["src/psi_agent"]

@@ -90,8 +90,8 @@ def setup_logging(*, verbose: bool = False) -> int:
 
 ### 3. 明确不做什么
 
-- **不修 thinking 泄漏。** 根因未坐实，方案待定。本任务的产出是「下次能看见」，不是「已修好」。
-- **不改 `session/ai_client.py` 读 `reasoning` 的行为。** 那正是待验假设 (b) 的对象，改了就毁掉判据。
+- ~~**不修 thinking 泄漏。** 根因未坐实，方案待定。本任务的产出是「下次能看见」，不是「已修好」。~~ → **1.3 之前有效**。根因已于 2026-08-26 坐实并修复，经负责人批准，见文末「根因坐实」节。观测能力正是坐实它的手段。
+- **不改 `session/ai_client.py` 读 `reasoning` 的行为。** 那正是待验假设 (b) 的对象，改了就毁掉判据。（假设 (b) 已排除，该文件最终**未改** —— 读 `reasoning` 是对的。）
 - **不碰 docker json-file / daemon.json。** 轮转做在应用侧，理由见 H 段方案比较。这也意味着 stderr 那一份仍无轮转 —— 但因为 stderr 级别不变，它的增速也不变，不构成新增风险。
 - **不做 per-module 的任意级别 DSL**（如 `psi_agent.ai=TRACE,psi_agent.channel=DEBUG`）。当前只有一个消费者，只需要 DEBUG。
 - **不做日志脱敏。** 见 H 段第 6 节。
@@ -271,6 +271,7 @@ V10 的单测只验「本进程写本进程的文件」这一半 —— 真的�
 | 1.1 | 2026-08-25 | 实现完成。补记一处实现期发现的顺序缺陷（见下）；`retention` 定为 10（负责人要求，从 3 上调，理由是「还没查到就没了」）|
 | 1.2 | 2026-08-26 | 部署前发现生产一容器两进程，改为一进程一文件（V10）。原单文件版已随 `7f45d2fe` 合入 main，本次单独修正 |
 | 1.3 | 2026-08-26 | 已上线（停机 69s），V7/V8/V10 生产实测通过。首次捕到泄漏样本，排除假设 (b)。补请求侧清单行 `_describe_messages`（V11），因请求体截断使根因仍不可观测 |
+| 2.0 | 2026-08-26 | **根因坐实并修复**：any-llm 的 DeepSeek provider 默认关思维模式。落 `reasoning_effort` 默认值（V12–V14），端到端实测 `0/9 → 24/33`。观测任务至此闭环，泄漏部分不再只可观测 |
 
 ### 实现期补记：`logger.remove()` 的顺序
 
@@ -331,3 +332,108 @@ V10 的单测只验「本进程写本进程的文件」这一半 —— 真的�
 3. 若指向「我们发错了」，照搬 `session/AGENTS.md` 里已有的单变量实测法（键名作唯一变量、各三次、对线上端点实测），换成「带/不带 `reasoning_content`」作唯一变量。
 
 **时间约束**：`psi-debug-9.log` 上线一小时已 6.0MB。空闲不涨（实测 120 秒 0 字节），但活跃对话每轮几 MB，单份 20MB 就轮转。靠自然流量攒样本别攒太久 —— 真出现泄漏那一轮的证据可能被后来的流量挤掉。
+
+***
+
+## 根因坐实：思维模式被上游默认关掉
+
+**结论先行：不是「字段被丢」，是「思维根本没生成」。** any-llm 的 DeepSeek provider 把 `reasoning_effort` 的缺省值 `"auto"` 读成「调用方没要思维」，转而下发 `extra_body.thinking={"type": "disabled"}`。模型被关掉思维通道后仍要推理，就把自我对话写进 `content`。
+
+上一节列的三条可能，实测塌成了**第 3 条**（我们发对了，模型没走 reasoning 通道），但原因不在模型 —— 在我们没要。
+
+### 源码
+
+`any_llm/providers/deepseek/deepseek.py:34-58`（1.26.0）：
+
+```python
+thinking_disabled = params.reasoning_effort in (None, "none", "auto")
+extra_body = converted_params.setdefault("extra_body", {})
+extra_body.setdefault("thinking", {"type": "disabled" if thinking_disabled else "enabled"})
+```
+
+其 docstring 写明理由：DeepSeek V4 官方默认**开**思维，any-llm 为对齐旧版 `deepseek-chat` 行为主动反转成**关**。这是有意的默认值，不是缺陷 —— 所以「给上游提 bug」这条路不成立。我们整个 `src/` 从不传该参数（`git grep reasoning_effort -- src/` 零命中），故恒定走 disabled 分支。
+
+### 实测：2×2 矩阵 + 单变量
+
+同 prompt（`"1+1 equals what? think briefly"`）、同模型 `deepseek-v4-flash`、同 key，只改一个变量，数带思维链的 chunk：
+
+| 组 | provider | 上游 | chunk | 带思维链 |
+|---|---|---|---|---|
+| **A（ToB 生产实际）** | `deepseek` | api.deepseek.com | 10 | **0** ❌ |
+| B | `deepseek` | litellm | 31 | 22 ✅ |
+| C（ToC 形态） | `openai` | litellm | 31 | 22 ✅ |
+| D | `openai` | api.deepseek.com | 43 | 33 ✅ |
+
+四格里只有 A 坏。B 好是因为 litellm 重写请求体覆盖掉了 `disabled`；D 好是因为 openai provider 不加这个默认值。
+
+固定 A 组配置，只加思维开关：
+
+| 组 | 参数 | chunk | 带思维链 |
+|---|---|---|---|
+| E | 什么都不传（= 线上现状） | 9 | **0** |
+| F | `reasoning_effort="medium"` | 23 | **20** |
+| G | `extra_body={"thinking":{"type":"enabled"}}` | 37 | **28** |
+
+### 版本来源
+
+1.21.0 的同一文件里**没有** `thinking` 分支（已比对本机 venv 1.21.0 与生产 1.26.0）。依赖声明是 `any-llm-sdk>=1.21.0`，开区间 —— 这是一次静默的上游行为变更改掉了线上语义。收紧版本区间建议单独立项，本次不动（修法在 1.21.0 与 1.26.0 上都成立）。
+
+### 两条被推翻的中间结论
+
+调查过程中我曾得出两个错误结论，**记在此处防止被复用**：
+
+- ❌「any-llm 把 `reasoning_content` 字段丢了」 —— 错。字段没丢，是压根没生成。当时只量了「穿过 any-llm 归零」，没拆开 provider 这个变量。
+- ❌「ToC 装机版很可能也中」 —— 错。C 组实测 22/31 正常。
+
+### ToC 为什么没事（是巧合，不是设计）
+
+两条产品线**共用同一份 `psi_agent` 与同一个 any-llm**，分岔只在配置：ToC 的 `spa-v2/src/services/bootstrapAi.ts` 里 `DEFAULT_REMOTE_AI` 配 `provider: 'openai'`（因为它打的是云端 OpenAI 兼容网关），顺带绕开了 DeepSeek provider 的默认值；ToC 链路里的 litellm 还会再兜一道（B 组已证）。
+
+**两重巧合。** 谁哪天把 ToC 的 provider「修正」成 `deepseek`，泄漏立刻出现在装机版上。
+
+### 修法与不选的理由
+
+| 方案 | 判断 |
+|---|---|
+| **1. 显式传 `reasoning_effort`（已采用）** | 一处改动，走公开接口，不绕库不打补丁。语义正确 —— 我们确实要思维模式 |
+| 2. ToB 的 provider 改 `openai` | 零代码，但放弃 DeepSeek provider 的 `_reinject_reasoning_content`，而思维模式下 tool_call 轮次不回传 `reasoning_content` 会 400。**不可行** |
+| 3. 给 any-llm 提 issue | 那是他们的有意默认值，不是 bug。**不成立** |
+
+落点：`ai/server.py` 的 `body.setdefault("reasoning_effort", "medium")`。用 `setdefault` 而非赋值 —— 这里是转发层，兜底只补「谁都没表态」这一种情况，调用方显式给的值（含 `"none"`）优先。
+
+### 影响面：不止泄漏
+
+思维模式关着，**模型能力一直在打折**，泄漏只是最显眼的表征。前端 `reasoningDisplay.ts` 那套 `kind: 'thinking'` 面板在 ToB 上从来没有内容可渲染，同一个原因。
+
+### 验收
+
+| # | 判据 | 状态 |
+|---|---|---|
+| V12 | 不传时兜默认值 | 单测 `test_handler_requests_thinking_mode_by_default` ✅ |
+| V13 | 调用方给的值优先（含 `"none"`） | 单测 `test_handler_keeps_caller_supplied_reasoning_effort` ✅ |
+| V14 | 真实端点上思维链回来 | **端到端实测**：一次性容器挂载改后 `server.py`，跑真 handler 打真端点，`0/9 → 24/33` ✅ |
+| V15 | `"none"` 真能关掉，不只是参数发出去 | **生产容器内三臂实测**（2026-08-27，同 prompt/模型/key，`reasoning_effort` 为唯一变量）✅ |
+
+V14 是关键 —— 单测只能证明参数发出去了，证明不了泄漏被修好。
+
+V15 补的是 V13 的盲区：单测断言的是「请求体里那个键还在」，证明不了这个值真被上游当回事。三臂在生产容器里打真端点：
+
+| `reasoning_effort` | 带思维链的 chunk | 说明 |
+|---|---|---|
+| 不传（旧行为） | **0/60** | 就是这个 bug：思维通道全哑 |
+| `"medium"`（新默认） | **42/62** | 修复生效 |
+| `"none"`（调用方显式关） | **0/21** | 覆盖真的穿透到上游 |
+
+第三臂说明 `setdefault` 保住的是端到端的调用方意图，不止是 dict 里的一个键 —— 转发层没有偷偷替上游做决定。
+
+### 连带发现（各自立项，本次不做）
+
+1. **压缩丢历史**：`messages_for_ai()` 从最后一个 `compacted` 标记往后重建，之前全部轮次不再上 wire。实测 3 个会话：磁盘 143/211/138 个带思维链的 tool_call 轮次，上 wire **0** 个；删掉标记后 143 个恢复。与本次泄漏无因果（已排除）。
+2. **依赖开区间**：`any-llm-sdk>=1.21.0` 让上游默认值变更能直接改线上语义。
+3. **泄漏检测判据不可靠**：现有脚本要求句子含问号，漏掉叙述式自言自语（「我先…」「让我…」）。换叙述式词表后同一时间窗 6/14 命中。正则判语气本就不可靠。
+
+### 如实交代没验到的部分
+
+- 该默认值具体是 1.22–1.26 哪个版本引入的，只确认了「1.21.0 没有、1.26.0 有」，没逐版本二分。
+- 生产完整会话链路（Session→AI→模型，带真实长 history 与 tool_calls）尚未跑过；V14 是单轮对话的端到端验证。
+- `reasoning_effort="medium"` 相对 `"high"` 的质量/成本差异未测，取值是判断而非实测结论。

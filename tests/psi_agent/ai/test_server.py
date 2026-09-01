@@ -176,6 +176,53 @@ async def test_handler_omits_client_args_without_http_client(tmp_path: Path, mon
     assert "client_args" not in received
 
 
+async def test_handler_requests_thinking_mode_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """不传 ``reasoning_effort`` 时必须兜一个默认值, 否则思维模式被上游关掉。
+
+    any-llm 的 DeepSeek provider 把缺省的 ``"auto"`` 读成「没要思维」, 转而下发
+    ``extra_body.thinking={"type": "disabled"}``。模型被关掉思维通道后仍要推理,
+    就把自我对话写进 ``content`` —— 即线上的 thinking 泄漏。
+    """
+    received: dict[str, Any] = {}
+    stream = _TrackingStream([_FakeChunk()])
+    runner, socket_path = await _serve_handler(tmp_path, monkeypatch, stream, received)
+    try:
+        await _drain(socket_path)
+    finally:
+        await runner.cleanup()
+
+    assert received["reasoning_effort"] == "medium"
+
+
+async def test_handler_keeps_caller_supplied_reasoning_effort(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """调用方显式给的值优先 —— 含 ``"none"``。
+
+    这里是转发层: 兜底只为补上「谁都没表态」这一种情况, 不该覆盖上游意图。
+    """
+    received: dict[str, Any] = {}
+    stream = _TrackingStream([_FakeChunk()])
+    runner, socket_path = await _serve_handler(tmp_path, monkeypatch, stream, received)
+    try:
+        async with (
+            ClientSession() as session,
+            session.post(
+                f"{socket_path}/chat/completions",
+                json={
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                    "reasoning_effort": "none",
+                },
+            ) as response,
+        ):
+            assert response.status == 200
+            async for _ in response.content:
+                pass
+    finally:
+        await runner.cleanup()
+
+    assert received["reasoning_effort"] == "none"
+
+
 def _delta_payload(delta: dict[str, Any]) -> str:
     return json.dumps({"id": "x", "choices": [{"index": 0, "delta": delta, "finish_reason": None}]})
 

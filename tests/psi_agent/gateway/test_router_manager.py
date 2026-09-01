@@ -6,8 +6,8 @@ import anyio
 import pytest
 from anyio.lowlevel import checkpoint
 
-from psi_agent.gateway._ai_manager import AIManager
-from psi_agent.gateway._router_manager import (
+from psi_agent.runtime._ai_manager import AIManager
+from psi_agent.runtime._router_manager import (
     RouterDependencyError,
     RouterManager,
     RouterUpstreamInfo,
@@ -49,7 +49,7 @@ async def test_run_router_service_builds_current_router(monkeypatch: pytest.Monk
         async def run(self) -> None:
             return None
 
-    monkeypatch.setattr("psi_agent.gateway._router_manager.Router", FakeRouter)
+    monkeypatch.setattr("psi_agent.runtime._router_manager.Router", FakeRouter)
     await _run_router_service(
         session_socket="router.sock",
         mode="aggregation",
@@ -89,9 +89,9 @@ async def test_create_aggregation_router_maps_ai_ids_and_current_options(
         captured.append(kwargs)
         await anyio.sleep_forever()
 
-    monkeypatch.setattr("psi_agent.gateway._router_manager._wait_socket", ready)
-    monkeypatch.setattr("psi_agent.gateway._router_manager._remove_socket", remove)
-    monkeypatch.setattr("psi_agent.gateway._router_manager._run_router_service", serve)
+    monkeypatch.setattr("psi_agent.runtime._router_manager._wait_socket", ready)
+    monkeypatch.setattr("psi_agent.runtime._router_manager._remove_socket", remove)
+    monkeypatch.setattr("psi_agent.runtime._router_manager._run_router_service", serve)
     async with anyio.create_task_group() as tg:
         try:
             manager = RouterManager(cast(AIManager, FakeAIManager()), "gw", tg)
@@ -168,9 +168,9 @@ async def test_routing_allows_selector_ai_as_upstream(monkeypatch: pytest.Monkey
     async def serve(**_kwargs: object) -> None:
         await anyio.sleep_forever()
 
-    monkeypatch.setattr("psi_agent.gateway._router_manager._wait_socket", ready)
-    monkeypatch.setattr("psi_agent.gateway._router_manager._remove_socket", remove)
-    monkeypatch.setattr("psi_agent.gateway._router_manager._run_router_service", serve)
+    monkeypatch.setattr("psi_agent.runtime._router_manager._wait_socket", ready)
+    monkeypatch.setattr("psi_agent.runtime._router_manager._remove_socket", remove)
+    monkeypatch.setattr("psi_agent.runtime._router_manager._run_router_service", serve)
     async with anyio.create_task_group() as tg:
         try:
             manager = RouterManager(cast(AIManager, FakeAIManager()), "gw", tg)
@@ -289,9 +289,9 @@ async def test_fallback_resolves_ai_and_router_upstreams_and_protects_dependenci
         captured.append(kwargs)
         await anyio.sleep_forever()
 
-    monkeypatch.setattr("psi_agent.gateway._router_manager._wait_socket", ready)
-    monkeypatch.setattr("psi_agent.gateway._router_manager._remove_socket", remove)
-    monkeypatch.setattr("psi_agent.gateway._router_manager._run_router_service", serve)
+    monkeypatch.setattr("psi_agent.runtime._router_manager._wait_socket", ready)
+    monkeypatch.setattr("psi_agent.runtime._router_manager._remove_socket", remove)
+    monkeypatch.setattr("psi_agent.runtime._router_manager._run_router_service", serve)
     async with anyio.create_task_group() as tg:
         try:
             manager = RouterManager(cast(AIManager, FakeAIManager()), "gw", tg)

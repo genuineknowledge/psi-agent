@@ -1,0 +1,79 @@
+# psi-agent session history
+histories/
+
+# Fusion Memory passive-writer checkpoints
+.fusion-memory/
+
+# gateway runtime state (contains AI api_key snapshots — never commit)
+state/
+
+# subagent runtime registry (spawned PIDs; not source)
+.psi/
+
+# system-prompt skills cache
+.skills_prompt_snapshot.json
+
+# curator (future-extension) state
+skills/.curator_state.json
+skills/.curator_report.md
+
+# python
+__pycache__/
+*.pyc
+
+# Fusion Flow legacy Node runtime + generated artifacts
+skills/fusion-flow-legacy/node_modules/
+skills/fusion-flow-legacy/runs/
+skills/fusion-flow-legacy/.env
+skills/workflow/.pytest_cache/
+
+# multimodal API credentials (local dev only)
+.env.multimodal
+
+# local desktop runtime env (vbs injects into psi-agent.exe; never commit)
+.env
+bin/apply_multimodal_test_api.ps1
+
+# generated at package build time (version + CDN updater endpoint)
+haitun-update.conf
+haitun-version.txt
+skills/fusion-flow-legacy/examples/*.flow.ts
+skills/fusion-flow-legacy/examples/*.flow.mts
+!skills/fusion-flow-legacy/examples/_placeholder.ts
+flows/*
+!flows/.gitkeep
+# Reusable G4 registry: commit canonical source and Markdown instruction sidecars.
+!flows/workflows/
+flows/workflows/*
+!flows/workflows/.gitkeep
+!flows/workflows/*/
+flows/workflows/*/*
+!flows/workflows/*/*.workflow
+!flows/workflows/*/README.md
+!flows/workflows/*/*.inputs.example.json
+!flows/workflows/*/instructions/
+!flows/workflows/*/instructions/*.md
+!flows/curated/
+!flows/curated/**/
+!flows/curated/**/FLOW.md
+flows/curated/**/runs/
+
+# image generation output (placeholder / inference)
+generated/
+!skills/workflow/fusion_flow/generated/
+!skills/workflow/fusion_flow/generated/*.py
+
+psi-agent.exe
+psi-agent
+
+# local test notes (not source)
+subagent-bug-report.md
+tmp_*.py
+haitun.ico
+
+# iFLYTEK speech credentials and generated audio
+.env.xfyun
+generated/audio/
+
+# rendered chart PNGs (runtime output of feishu_chart, also written by its tests)
+charts/

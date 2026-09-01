@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-_SPA_V2 = REPO_ROOT / "src" / "psi_agent" / "gateway" / "spa-v2"
+_SPA_V2 = REPO_ROOT / "src" / "psi_agent" / "gateway" / "desktop" / "spa-v2"
 # ** 源不放 docs/ **: 这两份 md 不是给开发者读的文档, 是发给用户的协议正文 ——
 # 改它等于改产品内容。放在产物目录隔壁, 源与产物的关系一眼可见;
 # 而 docs/ 下只放 superpowers 的 spec 与 plan。
