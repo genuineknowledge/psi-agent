@@ -102,6 +102,7 @@ class CompletionContext:
     output_ids: tuple[str, ...]
     dispatch: DispatchContext
     agent_config: CompiledAgentConfig | None = None
+    terminal: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -784,6 +785,7 @@ def _build_dispatch(
             output_ids=output_ids,
             dispatch=dispatch_context,
             agent_config=(compiled.agent_configs[step.executor_id] if executor_kind == "Agent" else None),
+            terminal=terminal,
         )
         if executor_kind == "Human":
             if prepare_human_instruction is None or request_human is None:

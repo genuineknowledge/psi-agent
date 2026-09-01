@@ -2205,6 +2205,30 @@ async def _complete_step_agent(
     return content
 
 
+def _validate_terminal_step_outputs(
+    outputs: Mapping[str, object],
+    *,
+    step_id: str,
+    output_ids: tuple[str, ...],
+) -> None:
+    """Require every TerminalStep output to be a strict JSON boolean.
+
+    This is the local guarantee behind the ``{"type": "boolean"}`` native
+    structured-output schema on ``submit_step_result`` for TerminalStep steps:
+    a value such as ``{}`` or ``"false"`` is rejected here, which routes the
+    malformed result through the Agent Step repair loop instead of failing the
+    whole workflow at the strict-bool loop check.
+    """
+
+    for artifact_id in output_ids:
+        value = outputs.get(artifact_id)
+        if type(value) is not bool:
+            raise ValueError(
+                f"TerminalStep {step_id!r} output {artifact_id!r} must be a strict JSON "
+                f"boolean true or false, got {type(value).__name__}"
+            )
+
+
 async def _complete_agent_step(
     prompt: str,
     context: CompletionContext,
@@ -2226,11 +2250,18 @@ async def _complete_agent_step(
             encoded = json.dumps(outputs, ensure_ascii=False, allow_nan=False)
         except (TypeError, ValueError) as error:
             raise ValueError("step result must contain finite JSON values") from error
-        submitted = _parse_agent_step_result(
+        parsed = _parse_agent_step_result(
             encoded,
             step_id=context.step_id,
             output_ids=context.output_ids,
         )
+        if context.terminal:
+            _validate_terminal_step_outputs(
+                parsed,
+                step_id=context.step_id,
+                output_ids=context.output_ids,
+            )
+        submitted = parsed
         return "Step result accepted."
 
     tools = tool_registry.tools
@@ -2240,7 +2271,10 @@ async def _complete_agent_step(
         description="Submit this step's final artifacts and stop.",
         parameters={
             "type": "object",
-            "properties": {artifact_id: {} for artifact_id in context.output_ids},
+            "properties": {
+                artifact_id: {"type": "boolean"} if context.terminal else {}
+                for artifact_id in context.output_ids
+            },
             "required": list(context.output_ids),
             "additionalProperties": False,
         },
@@ -2325,11 +2359,18 @@ async def _complete_agent_step(
             return submitted
         else:
             try:
-                return _parse_agent_step_result(
+                parsed = _parse_agent_step_result(
                     response,
                     step_id=context.step_id,
                     output_ids=context.output_ids,
                 )
+                if context.terminal:
+                    _validate_terminal_step_outputs(
+                        parsed,
+                        step_id=context.step_id,
+                        output_ids=context.output_ids,
+                    )
+                return parsed
             except _AgentStepResultParseError as error:
                 validation_error = error
                 repair_response = response
@@ -2358,6 +2399,12 @@ async def _complete_agent_step(
                         repair_count=repair_count,
                         response_form=response_form,
                     ).warning("FusionFlow Agent Step accepted safe trailing-comma output from json-repair")
+                    if context.terminal:
+                        _validate_terminal_step_outputs(
+                            repaired,
+                            step_id=context.step_id,
+                            output_ids=context.output_ids,
+                        )
                     return repaired
             raise ValueError(f"step {context.step_id!r} result remained invalid after 3 attempts") from validation_error
         message = (
