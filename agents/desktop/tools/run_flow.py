@@ -25,7 +25,7 @@ from anyio.abc import ByteReceiveStream, Process
 from json_repair import repair_json
 from loguru import logger
 
-from psi_agent.session.agent import SessionAgent, current_tool_ai_socket
+from psi_agent.session.agent import SessionAgent, current_tool_ai_socket, AgentError
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.schedule_registry import ScheduleRegistry
@@ -184,6 +184,7 @@ _PROGRAM_STDERR_LIMIT_BYTES = 1 * 1024 * 1024
 _PROGRAM_TERMINATION_GRACE_SECONDS = 1.0
 _PROGRAM_STDOUT_LIMIT_ENV = "PSI_FUSION_FLOW_PROGRAM_STDOUT_LIMIT_BYTES"
 _PROGRAM_STDERR_LIMIT_ENV = "PSI_FUSION_FLOW_PROGRAM_STDERR_LIMIT_BYTES"
+_JSON_SCHEMA_MODEL_PREFIXES_ENV = "PSI_FUSION_FLOW_JSON_SCHEMA_MODEL_PREFIXES"
 _PROGRAM_FOREACH_ERROR_MESSAGE_LIMIT = 240
 _JOB_STORE_RELATIVE_PATH = Path(".psi") / "fusion-flow" / "runs"
 _SESSION_RUNS_RELATIVE_PATH = Path(".psi") / "fusion-flow" / "session-runs"
@@ -2229,6 +2230,42 @@ def _validate_terminal_step_outputs(
             )
 
 
+def _terminal_boolean_response_format() -> dict[str, object] | None:
+    """Vendor-gated native structured output for a single TerminalStep boolean.
+
+    Returns an OpenAI-style ``response_format`` (strict JSON Schema that forces a
+    ``{\"done\": <boolean>}`` object) only when the step's declared model is in the
+    ``PSI_FUSION_FLOW_JSON_SCHEMA_MODEL_PREFIXES`` allowlist. Unknown or
+    unsupported models get ``None``, so the function-calling + local-validation
+    path stays the fallback (and providers such as DeepSeek that reject
+    ``json_schema`` never receive it). The ``strict`` schema uses the object
+    form, not a bare boolean, so the model's text output still matches the
+    ``{\"done\": ...}`` shape the step parser expects.
+    """
+
+    allowed_raw = os.environ.get(_JSON_SCHEMA_MODEL_PREFIXES_ENV, "")
+    prefixes = [part.strip() for part in allowed_raw.split(",") if part.strip()]
+    if not prefixes:
+        return None
+    config = _CURRENT_AGENT_CONFIG.get()
+    model = config.model if config is not None else None
+    if not model or not any(model.startswith(prefix) for prefix in prefixes):
+        return None
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "done",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {"done": {"type": "boolean"}},
+                "required": ["done"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
 async def _complete_agent_step(
     prompt: str,
     context: CompletionContext,
@@ -2312,6 +2349,14 @@ async def _complete_agent_step(
         if agent_config.reasoning_effort is not None:
             extra_params["reasoning_effort"] = agent_config.reasoning_effort
         extra_params = {name: value for name, value in extra_params.items() if value is not None}
+    # Vendor-gated native structured output for TerminalStep: send response_format
+    # only to allowlisted models; if the provider rejects it, the attempt loop
+    # below strips it and retries via the function-calling path.
+    structured_output = _terminal_boolean_response_format() if context.terminal else None
+    if structured_output is not None:
+        if extra_params is None:
+            extra_params = {}
+        extra_params["response_format"] = structured_output
     message = (
         "Execute exactly one assigned FusionFlow step. Do not start another workflow.\n"
         f"Workspace root: {workspace}\n"
@@ -2345,13 +2390,34 @@ async def _complete_agent_step(
     for attempt in range(3):
         submission_error = None
         repair_response: str | None = None
-        response = await _complete_step_agent(
-            agent,
-            conversation,
-            message,
-            stop_when=stop_after_submission,
-            extra_params=extra_params,
-        )
+        try:
+            response = await _complete_step_agent(
+                agent,
+                conversation,
+                message,
+                stop_when=stop_after_submission,
+                extra_params=extra_params,
+            )
+        except AgentError as error:
+            if structured_output is not None and extra_params is not None:
+                # Provider rejected response_format (e.g. it does not support
+                # strict json_schema). Downgrade gracefully to the
+                # function-calling + local-validation path instead of failing.
+                logger.warning(
+                    f"step {context.step_id!r}: provider rejected response_format; "
+                    f"retrying via function-calling: {error}"
+                )
+                structured_output = None
+                extra_params.pop("response_format", None)
+                response = await _complete_step_agent(
+                    agent,
+                    conversation,
+                    message,
+                    stop_when=stop_after_submission,
+                    extra_params=extra_params,
+                )
+            else:
+                raise
         if submission_error is not None:
             submitted = None
             validation_error = submission_error
