@@ -69,7 +69,7 @@ def browser() -> dict:
 - 无新增 Python 依赖，`pyproject.toml` 不改。
 
 ## 验证方式
-- `uv run pytest examples/haitun-workspace/tests/test_browser.py`
+- `uv run pytest agents/feishu/tests/test_browser.py`
 - `ruff check` + `ruff format --check`（CI 两者都跑）
 - 手动 smoke：起 agent，navigate→snapshot→click 一条链路（可选，需真实 Edge）。
 

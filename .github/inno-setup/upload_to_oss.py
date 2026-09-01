@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Upload the three Haitun Agent installers and two version files to Aliyun OSS.
+"""Upload the Haitun Agent installers and two version files to Aliyun OSS.
+
+Four packages: three Windows installers plus the macOS dmg.
 
 Upload order is fixed: installers first, version files last, so clients never
-see a new version before the matching packages are available.
+see a new version before the matching packages are available. This matters more
+now that both platforms share ``haitun-version.txt`` — writing it early would
+point macOS clients at a dmg that is not up yet.
 """
 
 import os
@@ -37,6 +41,7 @@ def main() -> None:
     full_path = _require_env("INSTALLER_FULL_PATH")
     app_path = _require_env("INSTALLER_APP_PATH")
     msys_path = _require_env("INSTALLER_MSYS_PATH")
+    macos_path = _require_env("INSTALLER_MACOS_PATH")
     haitun_version_file = _require_env("HAITUN_VERSION_FILE")
     msys_version_file = _require_env("MSYS_VERSION_FILE")
 
@@ -64,6 +69,7 @@ def main() -> None:
     _upload_file(bucket, key("HaiTun_Agent_Setup.exe"), full_path, exe_headers)
     _upload_file(bucket, key("HaiTun_Agent_App_Setup.exe"), app_path, exe_headers)
     _upload_file(bucket, key("msys-setup.exe"), msys_path, exe_headers)
+    _upload_file(bucket, key("HaiTun_Agent.dmg"), macos_path, exe_headers)
 
     with open(haitun_version_file, encoding="utf-8") as fh:
         haitun_text = fh.read().strip() or haitun_version

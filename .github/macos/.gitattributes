@@ -1,0 +1,12 @@
+# Pin LF for everything that ships inside the macOS bundle.
+#
+# This repo is developed on Windows, where core.autocrlf turns LF into CRLF on
+# checkout. A CRLF shebang makes the kernel look for an interpreter literally
+# named "/bin/bash\r" and the app dies with a bare "no such file or directory" —
+# so the launcher would break only on end users' Macs, never in review.
+#
+# plists are XML parsed by macOS tooling; keeping them LF avoids gratuitous
+# diffs against files generated on the build machine.
+*.sh text eol=lf
+*.plist text eol=lf
+*.plist.in text eol=lf

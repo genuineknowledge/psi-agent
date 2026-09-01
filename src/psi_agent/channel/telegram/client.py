@@ -142,6 +142,7 @@ async def run_telegram(
     session_socket: str,
     bot_token: str,
     interval: float = 1.0,
+    idle_drain: float = 5.0,
     allowed_user_ids: list[int] | None = None,
     proxy: str = "",
 ) -> None:
@@ -153,7 +154,7 @@ async def run_telegram(
     if not isinstance(app, Application):
         raise TypeError("Failed to build Application")
 
-    async with ChannelCore(session_socket, interval=interval) as core:
+    async with ChannelCore(session_socket, interval=interval, idle_drain=idle_drain) as core:
         app.bot_data["core"] = core
         app.bot_data["allowed_ids"] = allowed_user_ids
 

@@ -1,6 +1,6 @@
 """飞书私聊/群聊路由判定 —— Gateway 与 Channel 共用。
 
-判定曾在三处各写一遍 (``gateway/_feishu_manager.py`` 的 ``_is_group``、
+判定曾在三处各写一遍 (``gateway/feishu/_feishu_manager.py`` 的 ``_is_group``、
 ``channel/feishu/client.py`` 的 ``_cache_key`` 与一处内联判定), 群聊类型常量
 另在两处各定义一遍。判定漂移会让两个陌生人共享同一份上下文与 workspace ——
 是**隐私事故**而非美观问题, 故收敛到此处唯一定义。

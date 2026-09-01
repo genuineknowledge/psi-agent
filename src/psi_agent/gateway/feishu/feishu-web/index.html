@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>HaiTun Agent</title>
+    <!--
+      飞书网页应用的 JSSDK。免登要用它的 ``tt.requestAccess`` 拿 code, 所以必须在业务
+      脚本之前同步加载 —— 用 defer/module 会让 ``window.h5sdk`` 在 React 挂载时还没就绪。
+      appID 不写死在这里: 由 ``src/services/feishuAuth.ts`` 向后端要 (见任务 5fef7),
+      免登流程本身也在那个任务里落地, 本文件只负责把 SDK 和挂载点准备好。
+    -->
+    <script src="https://lf1-cdn-tos.bytegoofy.com/goofy/lark/op/h5-js-sdk-1.5.35.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

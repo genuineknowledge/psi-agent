@@ -6,8 +6,8 @@ import sys
 import anyio
 import pytest
 
-from psi_agent.gateway._manager import _socket_path
 from psi_agent.gateway._state import GatewayState
+from psi_agent.runtime._manager import _socket_path
 
 
 @pytest.mark.anyio

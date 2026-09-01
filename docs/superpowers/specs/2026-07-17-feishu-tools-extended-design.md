@@ -13,7 +13,7 @@
 基础文档/评论工具（[specs/2026-07-10-feishu-tools-design.md](2026-07-10-feishu-tools-design.md)）
 之上，扩展一组飞书（国内版 feishu.cn）能力：原生任务、日历、考勤查询、多维表格、文档
 搜索、审批与单据下载、通讯录成员名单。本规格整合了这些扩展工具的设计（不含 channel
-与基础文档工具，它们各有独立规格）。全部落在 `examples/haitun-workspace/` 内，`src/`
+与基础文档工具，它们各有独立规格）。全部落在 `agents/feishu/` 内，`src/`
 零改动、零新增依赖。
 
 ---
@@ -378,7 +378,7 @@ agent 误判"企业没有知识库"或让用户手动把机器人加为协作者
 | 修改 | `tests/test_feishu.py` | sheet_tabs 请求组装 / `sheetId` 兼容 / 缺 token；sheet_read 请求组装 / **mention 与富文本拍平** / `max_chars` 截断与 0 不限 / 缺 token·range；两读类工具转发 `user_key` 且 `prefer="tenant"`；工具面名单补两个新工具 |
 | 新增 | `tests/test_feishu_todo_board_sync.py` | 技能校验：frontmatter 合规 / 引用的 `feishu_*` 工具真实存在 / 流程必需 5 工具都点到 / 三条硬规则仍在正文 / 两种文件类型与 node_token·obj_token 区别 / 结构靠现场探不写死 |
 | 修改 | `TOOLS.md` | 补两条：`feishu_sheet_tabs`（`SHEET_ID` 不在 URL 里）、`feishu_sheet_read`（区域读、mention 拍平、用于定位人名行与写前探目标格） |
-| 修改 | `examples/haitun-workspace/AGENTS.md` | 工具表补 `feishu_sheet` 行（此前连写工具都没登记）；技能列表补 `feishu-todo-board-sync` |
+| 修改 | `agents/feishu/AGENTS.md` | 工具表补 `feishu_sheet` 行（此前连写工具都没登记）；技能列表补 `feishu-todo-board-sync` |
 
 ## 14. 后续增强：授权免手抄 code（回调自动落地 + PKCE + state 校验，2026-07-28）
 
@@ -433,16 +433,16 @@ Gateway 不参与 token 交换；不给回调中继加持久化或跨进程共�
 | 新增 | `src/psi_agent/gateway/_oauth_manager.py` | `OAuthRelay` — `state → {code, error}` 一次性信箱（TTL 600s、上限 256、进程内存不落盘） |
 | 修改 | `src/psi_agent/gateway/server.py` | `app["oauth"]`；`GET /oauth/callback`（收回调、回「授权成功」页）+ `GET /oauth/code`（发起方取件，一次性） |
 | 修改 | `src/psi_agent/gateway/_openapi.py` | 两个 `/oauth/*` 端点的 schema |
-| 新增 | `examples/haitun-workspace/tools/_oauth_receiver.py` | `plan_receiver`（通道择优）/ `wait_loopback`（一次性回环监听，校验 state）/ `poll_gateway`（轮询取件） |
+| 新增 | `agents/feishu/tools/_oauth_receiver.py` | `plan_receiver`（通道择优）/ `wait_loopback`（一次性回环监听，校验 state）/ `poll_gateway`（轮询取件） |
 | 修改 | `tools/_feishu_impl.py` | `auth_start_impl` 选通道 + 写 PKCE verifier/redirect_uri/mode 进 pending，返回 `auto_receive`/`mode`/`next_step`；新增 `auth_wait_impl`（10-600s）+ `_read_pending` + `_new_pkce_pair` + `_explicit_redirect_uri`；`auth_complete_impl` 带上 verifier/redirect_uri；删已无用的 `_redirect_uri` |
 | 修改 | `tools/feishu_auth.py` | 新增工具 `feishu_auth_wait(user_key, timeout_seconds)`；`feishu_auth_complete` 降级为兜底路径 |
 | 修改 | `TOOLS.md` | 「引导用户授权」改「默认免复制」：按 `auto_receive` 分支，并记两种部署配置 |
-| 修改 | `examples/haitun-workspace/AGENTS.md` | 工具表补 `feishu_auth` 行；环境变量表补两个 `PSI_OAUTH_*` |
+| 修改 | `agents/feishu/AGENTS.md` | 工具表补 `feishu_auth` 行；环境变量表补两个 `PSI_OAUTH_*` |
 | 修改 | `src/psi_agent/gateway/AGENTS.md` | 架构图 + 模块表补 `OAuthRelay`；REST 表补两个 `/oauth/*`；新增 `## OAuthRelay` 段（含「刻意不做 token 交换」的理由） |
 | 修改 | `AGENTS.md` | 目录树补 `_oauth_manager.py`（并补此前漏登记的 `_router_manager` / `_feishu_manager` / `_attention`） |
 | 新增 | `tests/psi_agent/gateway/test_oauth_manager.py` | 一次性取件 / 未知 state / 空 state 报错 / 错误透传 / TTL 清理 / 上限淘汰（6） |
 | 新增 | `tests/psi_agent/gateway/test_oauth_endpoints.py` | 成功页含「不用复制」/ 缺 state 400 / 错误记录 / 取件后 404（7） |
-| 新增 | `examples/haitun-workspace/tests/test_oauth_receiver.py` | 通道择优 6 例 + 真实回环往返（成功 / state 不匹配后仍等真回调 / 错误回调 / 超时 / 无基址不轮询）（11） |
-| 修改 | `examples/haitun-workspace/tests/test_feishu.py` | authorize URL 带 PKCE 且 verifier 落盘、`auto_receive` 两路径、换 token 带 verifier/redirect_uri、`auth_wait` 5 例 |
+| 新增 | `agents/feishu/tests/test_oauth_receiver.py` | 通道择优 6 例 + 真实回环往返（成功 / state 不匹配后仍等真回调 / 错误回调 / 超时 / 无基址不轮询）（11） |
+| 修改 | `agents/feishu/tests/test_feishu.py` | authorize URL 带 PKCE 且 verifier 落盘、`auto_receive` 两路径、换 token 带 verifier/redirect_uri、`auth_wait` 5 例 |
 
 

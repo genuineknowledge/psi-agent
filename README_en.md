@@ -12,7 +12,7 @@ You write Python functions and Markdown. The framework handles socket communicat
 - **Workspace is the agent**: Drop Python functions in `workspace/` for tools, write a system prompt for personality, add a cron for scheduled tasks
 - **Streaming interactions**: REPL/CLI show AI reasoning (dimmed) and final response in real time
 - **One-command launch**: `psi-agent run config.yml` starts AI + Session + Channel from a single YAML
-- **Web management console**: `psi-agent gateway` starts a REST API + Web Console SPA for visual management
+- **Web management console**: `psi-agent gateway --gateway desktop` starts a REST API + Web Console SPA for visual management
 
 ## Architecture
 
@@ -23,7 +23,7 @@ User ←→ Web UI → HTTP → Gateway ── TCP/Unix/Named Pipe ── Sessio
 
 AI layer is stateless. Session maintains conversation history. Channel is a pure UI client — the three core components are independent processes communicating via the OpenAI Chat Completions HTTP/SSE protocol over sockets. Gateway provides an HTTP bridge for the Web UI, internally reusing Channel sockets to communicate with Session.
 
-For developers: start components independently, mix and match for debugging and customization. For users: `psi-agent run config.yml` launches everything in one command, and `psi-agent gateway` provides a visual web console for managing everything.
+For developers: start components independently, mix and match for debugging and customization. For users: `psi-agent run config.yml` launches everything in one command, and `psi-agent gateway --gateway desktop` provides a visual web console for managing everything.
 
 ## Quick Start
 
@@ -103,9 +103,11 @@ Servers (ai, session) run forever; channel components exit when done — CLI exi
 Start the Gateway and manage everything in your browser:
 
 ```bash
-uv run psi-agent gateway                         # Random port on 127.0.0.1 (default)
-uv run psi-agent gateway --listen http://127.0.0.1:8080   # Specify a listen address
+uv run psi-agent gateway --gateway desktop       # Random port on 127.0.0.1
+uv run psi-agent gateway --gateway desktop --listen http://127.0.0.1:8080   # Specify a listen address
 ```
+
+`--gateway` is **required**: it selects which HTTP surfaces to mount. `desktop` is the Web Console described here (the ToC surface); `feishu` is the Feishu/Lark surface (ToB); pass both to mount both. Having no default is deliberate — mounting one surface too few does not raise an error, it just 404s some frontend, so the choice must be stated at startup.
 
 Open the printed address to see a Material Design 3 Web Console. From the UI you can:
 

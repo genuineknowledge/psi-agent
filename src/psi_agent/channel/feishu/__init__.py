@@ -36,7 +36,7 @@ class ChannelFeishu:
     """Agent package root containing ``channel_events/`` (event defs for this Channel).
 
     Empty → ``PSI_AGENT`` env, else cwd. Same package as Session ``--agent`` when
-    Feishu shares haitun-workspace. Event defs live here (not under ``src/psi_agent/channel``).
+    Feishu shares the tob workspace. Event defs live here (not under ``src/psi_agent/channel``).
     """
 
     app_id: str = ""
@@ -47,6 +47,13 @@ class ChannelFeishu:
 
     interval: float = 1.0
     """SSE buffer merge window."""
+
+    idle_drain: float = 5.0
+    """上游静默这么多秒后把缓冲里的尾巴先发出去 (0 = 关掉, 回到停顿多久就等多久)。
+
+    ``interval`` 的窗口是惰性的, 只在下一个 delta 到达时才检查, 所以上游在回复末尾长时间
+    不出字时最后一段会一直卡在缓冲里, 用户看到一句话断在中间。
+    """
 
     allowed_user_ids: list[str] | None = None
     """Whitelist of open_id/user_id. None = allow all."""
@@ -82,6 +89,7 @@ class ChannelFeishu:
             app_id=app_id,
             app_secret=app_secret,
             interval=self.interval,
+            idle_drain=self.idle_drain,
             allowed_user_ids=self.allowed_user_ids,
             require_mention=self.require_mention,
             respond_to_mention_all=self.respond_to_mention_all,

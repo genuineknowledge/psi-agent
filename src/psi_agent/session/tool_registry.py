@@ -20,16 +20,105 @@ import inspect
 import math
 import re
 import sys
+import threading
 import types
 import typing
-from collections.abc import Callable
-from contextlib import suppress
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import anyio
 from loguru import logger
+
+# ── tools-dir import scope ───────────────────────────────────────────────────
+
+# Tool files import their same-directory private helpers by bare name
+# (``import _runtime_paths``), so the tools dir has to be on ``sys.path``
+# while a file is exec'd.  Nested and concurrent loads of the same dir are
+# refcounted so the last one out removes the entry — otherwise a leaked
+# entry silently resolves another workspace's identically-named private
+# module (``_assignment_tool_common`` exists in two workspaces with
+# different contents).
+_path_scope_depth: dict[str, int] = {}
+_path_scope_lock = threading.Lock()
+
+
+@contextmanager
+def _tools_dir_on_sys_path(tools_dir: Path) -> Iterator[None]:
+    """Put *tools_dir* at the front of ``sys.path`` for the duration.
+
+    Reentrant and refcounted: the entry is inserted by the outermost
+    scope and removed by it, and only if this scope actually added it.
+    Pre-existing entries (a caller already put it there) are left alone.
+    """
+    entry = str(tools_dir)
+    with _path_scope_lock:
+        depth = _path_scope_depth.get(entry, 0)
+        inserted = False
+        if depth == 0 and entry not in sys.path:
+            sys.path.insert(0, entry)
+            inserted = True
+        _path_scope_depth[entry] = depth + 1
+    if inserted:
+        _restore_private_modules(entry)
+    try:
+        yield
+    finally:
+        with _path_scope_lock:
+            remaining = _path_scope_depth.get(entry, 1) - 1
+            if remaining <= 0:
+                _path_scope_depth.pop(entry, None)
+                if inserted:
+                    with suppress(ValueError):
+                        sys.path.remove(entry)
+            else:
+                _path_scope_depth[entry] = remaining
+        if inserted:
+            _stash_private_modules(entry)
+
+
+# Bare-name private modules (``_assignment_tool_common``) share one global
+# ``sys.modules`` slot across every tools dir, and two workspaces ship files
+# with that same name but different contents.  So each dir's private modules
+# are stashed out of ``sys.modules`` when its scope ends and restored when it
+# reopens: workspaces stay isolated, while module-level singletons (e.g.
+# ``_background_process_registry``'s live-process table) survive refreshes
+# instead of being rebuilt per load.
+_private_module_stash: dict[str, dict[str, types.ModuleType]] = {}
+
+
+def _restore_private_modules(entry: str) -> None:
+    """Put this dir's previously stashed private modules back in ``sys.modules``."""
+    for name, mod in _private_module_stash.pop(entry, {}).items():
+        sys.modules.setdefault(name, mod)
+
+
+def _stash_private_modules(entry: str) -> None:
+    """Move private modules loaded from *entry* out of ``sys.modules``."""
+    try:
+        resolved = Path(entry).resolve()
+    except OSError:
+        return
+    stash: dict[str, types.ModuleType] = {}
+    for name in list(sys.modules):
+        if not name.startswith("_") or "." in name:
+            continue
+        mod = sys.modules.get(name)
+        origin = getattr(mod, "__file__", None)
+        if mod is None or not origin:
+            continue
+        try:
+            same_dir = Path(origin).resolve().parent == resolved
+        except OSError:
+            continue
+        if same_dir:
+            stash[name] = mod
+            del sys.modules[name]
+    if stash:
+        _private_module_stash[entry] = stash
+
 
 # ── ToolFunction — metadata + annotation parsing ─────────────────────────────
 
@@ -431,6 +520,10 @@ class ToolRegistry:
         instead of re-imported.
 
         Returns ``{file_path: FileEntry}`` for all current ``.py`` files.
+
+        *tools_dir* is on ``sys.path`` for the whole scan so every file
+        resolves its same-directory private helpers, regardless of the
+        process cwd or which file happens to be scanned first.
         """
         files: dict[str, FileEntry] = {}
         registered_modules: list[str] = []
@@ -444,6 +537,22 @@ class ToolRegistry:
         if not tools_dir_exists:
             logger.warning(f"Tools directory not found: {tools_dir!r}")
             return files
+
+        with _tools_dir_on_sys_path(tools_dir):
+            return await ToolRegistry._exec_tool_files(
+                tools_anyio, tools_dir, session_id, old_files, files, registered_modules
+            )
+
+    @staticmethod
+    async def _exec_tool_files(
+        tools_anyio: anyio.Path,
+        tools_dir: Path,
+        session_id: str,
+        old_files: dict[str, FileEntry] | None,
+        files: dict[str, FileEntry],
+        registered_modules: list[str],
+    ) -> dict[str, FileEntry]:
+        """Compile and exec each tool file; caller owns the ``sys.path`` scope."""
 
         try:
             async for py_file in tools_anyio.glob("*.py"):

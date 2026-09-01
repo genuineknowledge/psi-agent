@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from psi_agent.gateway._workspace_manager import WorkspaceManager
+from psi_agent.gateway.desktop._workspace_manager import WorkspaceManager
 
 
 @pytest.mark.anyio
@@ -66,8 +66,8 @@ async def test_reveal_invokes_platform_launcher(tmp_path, monkeypatch) -> None:
     async def fake_run_process(cmd: list[str] | tuple[str, ...], **_kwargs: object) -> None:
         calls.append(list(cmd))
 
-    monkeypatch.setattr("psi_agent.gateway._workspace_manager.anyio.run_process", fake_run_process)
-    monkeypatch.setattr("psi_agent.gateway._workspace_manager.sys.platform", "win32")
+    monkeypatch.setattr("psi_agent.gateway.desktop._workspace_manager.anyio.run_process", fake_run_process)
+    monkeypatch.setattr("psi_agent.gateway.desktop._workspace_manager.sys.platform", "win32")
 
     wm = WorkspaceManager()
     result = await wm.reveal(str(target))

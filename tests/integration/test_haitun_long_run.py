@@ -7,7 +7,7 @@ import pytest
 
 
 def _load(name: str):
-    root = Path(__file__).parents[2] / "examples" / "haitun-workspace"
+    root = Path(__file__).parents[2] / "agents" / "feishu"
     spec = importlib.util.spec_from_file_location(name, root / f"{name}.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)

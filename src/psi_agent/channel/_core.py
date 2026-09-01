@@ -13,7 +13,7 @@ from loguru import logger
 from psi_agent._sockets import resolve_connector_and_endpoint
 from psi_agent.channel._errors import ChannelError
 from psi_agent.channel._markers import SendMarkerScanner, encode_input
-from psi_agent.channel._stream import StreamBuffer, iter_sse_events
+from psi_agent.channel._stream import IDLE, StreamBuffer, iter_sse_events
 from psi_agent.channel._types import FileChunk, InputChunk, OutputChunk, ReasoningChunk, TextChunk
 
 _CHAT_PATH = "/chat/completions"
@@ -24,6 +24,15 @@ _EVENTS_PATH = "/events"
 class ChannelCore:
     session_socket: str
     interval: float = 1.0
+    idle_drain: float = 5.0
+    """Seconds of upstream silence after which a buffered tail is emitted (0 = off).
+
+    ``StreamBuffer``'s window is lazy — checked only when the next delta arrives — so
+    a model that goes quiet near the end of a reply (observed: deepseek pausing
+    50-70s before ``[DONE]``) leaves the last chars invisible until stream end and
+    the reply looks cut off mid-sentence. Ignored when ``interval == 0``: those
+    callers emit every token as it arrives, so no tail can accumulate.
+    """
 
     @staticmethod
     def _to_chunk(kind: str, text: str) -> OutputChunk:
@@ -32,6 +41,18 @@ class ChannelCore:
             return TextChunk(text)
         provenance = kind.split(":", 1)[1] if ":" in kind else None
         return ReasoningChunk(text=text, kind=provenance or None)
+
+    @property
+    def _byte_source(self) -> str:
+        """出向文件的字节该从哪儿取; 本地 Session 返回 ``""``。
+
+        只有 TCP 地址才填 —— 那是「Session 在另一个容器」的形态 (见生产
+        ``PSI_FEISHU_EXTERNAL_SESSIONS``)。Unix socket / 命名管道意味着同机同文件系统,
+        此时路径本就可读, 填地址只会让客户端多绕一趟 HTTP 去拿它已经能直接读的字节。
+        """
+        if self.session_socket.startswith(("http://", "https://")):
+            return self.session_socket.rstrip("/")
+        return ""
 
     @staticmethod
     def events_endpoint_from_chat(chat_endpoint: str) -> str:
@@ -101,9 +122,17 @@ class ChannelCore:
                 logger.debug(f"non-200 error: {msg!r}")
                 raise ChannelError(msg)
 
-            async with aclosing(iter_sse_events(resp.content)) as events:
+            # idle_drain 只对有缓冲的通道有意义: interval=0 时每个 token 直出, 缓冲里
+            # 永远没有尾巴可排, 传超时进去只会白设一层 cancel scope。
+            idle_timeout = self.idle_drain if self.interval > 0 else 0.0
+            async with aclosing(iter_sse_events(resp.content, idle_timeout)) as events:
                 logger.debug("Starting to consume SSE stream")
                 async for delta in events:
+                    if delta is IDLE:
+                        for k, t in buffer.drain_if_idle():
+                            yield self._to_chunk(k, t)
+                        continue
+
                     reasoning_text = delta.get("reasoning") or ""
                     content_text = delta.get("content") or ""
                     raw_kind = delta.get("kind")
@@ -124,6 +153,9 @@ class ChannelCore:
                         if incoming_kind == "text":
                             logger.debug(f"delta.content ({len(text)} chars): {text[:1000]!r}")
                             for file_chunk in scanner.feed(text):
+                                # 跨容器时补上取字节的地址; 本地留空 → 客户端照旧直接读路径。
+                                # 填在这里而不是 scanner 里: scanner 是纯解码, 不该知道传输地址。
+                                file_chunk.source = self._byte_source
                                 yield file_chunk
                         else:
                             logger.debug(f"delta.reasoning kind={raw_kind!r} ({len(text)} chars): {text[:1000]!r}")

@@ -1,0 +1,101 @@
+{
+  "_comment": "本文件由 scripts/feishu_web_paths.py --regenerate 生成, 不要手改。它是 feishu-web 前端实际会打的后端路径, 供两处消费: (1) 本地判据 tests/psi_agent/gateway/test_feishu_web_api_paths.py; (2) 云上 oauth-proxy 白名单核对(--print-shell 生成 curl 脚本)。",
+  "generated_by": "scripts/feishu_web_paths.py --regenerate",
+  "paths": [
+    {
+      "method": "GET",
+      "path": "/feishu/app-id",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/feishu/auth/login",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/feishu/auth/logout",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/feishu/auth/me",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/feishu/defaults",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/feishu/sessions",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/feishu/sessions",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/feishu/sessions/{param}/history",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/feishu/summaries",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/feishu/titles",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "DELETE",
+      "path": "/sessions/{param}",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/sessions/{param}/chat",
+      "source": "src/services/chatStream.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/sessions/{param}/todo-segments",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/sessions/{param}/todo-segments/{param}",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/sessions/{param}/todos",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/titles",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/titles/generate",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/workspace/file",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/workspace/reveal",
+      "source": "src/api.ts"
+    }
+  ]
+}

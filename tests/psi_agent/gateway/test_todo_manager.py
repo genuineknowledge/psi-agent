@@ -6,7 +6,7 @@ from pathlib import Path
 import anyio
 import pytest
 
-from psi_agent.gateway._todo_manager import TodoManager
+from psi_agent.runtime._todo_manager import TodoManager
 
 
 @pytest.mark.anyio

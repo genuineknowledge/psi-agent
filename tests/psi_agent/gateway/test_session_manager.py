@@ -4,9 +4,9 @@ from typing import cast
 
 import pytest
 
-from psi_agent.gateway._ai_manager import AIManager
-from psi_agent.gateway._router_manager import RouterManager
-from psi_agent.gateway._session_manager import SessionManager
+from psi_agent.runtime._ai_manager import AIManager
+from psi_agent.runtime._router_manager import RouterManager
+from psi_agent.runtime._session_manager import SessionManager
 
 
 class BackendManager:

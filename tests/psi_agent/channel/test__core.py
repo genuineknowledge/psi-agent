@@ -677,3 +677,231 @@ async def test_post_releases_response_on_early_break(monkeypatch):
             break
 
     assert resp.released is True
+
+
+# -- 出向文件的来源地址 ---------------------------------------------------------
+#
+# 跨容器时 [SEND:] 里的路径在 channel 这一侧读不到 (Session 在别的容器, 各挂自己的卷),
+# 所以 FileChunk 要带上「字节从哪儿取」。本地 Session 必须留空, 否则会为已经能直接读的
+# 文件多绕一趟 HTTP。
+
+
+def test_byte_source_filled_for_tcp_session():
+    """TCP 地址 = Session 在别的容器, 要填 (末尾斜杠归一, 免得拼出 //files)。"""
+    assert ChannelCore("http://psi-agent-luolin:8081")._byte_source == "http://psi-agent-luolin:8081"
+    assert ChannelCore("https://host:8443/")._byte_source == "https://host:8443"
+
+
+def test_byte_source_empty_for_local_session():
+    """Unix socket / 命名管道 = 同机同文件系统, 路径本就可读, 留空。"""
+    assert ChannelCore("/tmp/psi/channels/x.sock")._byte_source == ""
+    assert ChannelCore(r"\.\pipe\psi\channels\x")._byte_source == ""
+
+
+@pytest.mark.anyio
+async def test_post_stamps_source_on_send_marker_for_tcp(monkeypatch):
+    """扫出的 FileChunk 必须带上来源地址 —— 少这一步, 下游拿不到字节就退回读本地路径。"""
+    resp = _RecordingResp(
+        [
+            b'data: {"choices":[{"index":0,"delta":{"content":"see [SEND:/workspace/x.md] done"}}]}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+    )
+    core = ChannelCore(session_socket="http://psi-agent-chengxx:8081", interval=0.0)
+    monkeypatch.setattr(core, "_session", _RecordingPostSession(resp), raising=False)
+    monkeypatch.setattr(core, "_endpoint", "http://psi-agent-chengxx:8081/chat/completions", raising=False)
+
+    files = [c async for c in core.post([TextChunk("hi")]) if isinstance(c, FileChunk)]
+
+    assert len(files) == 1
+    assert files[0].path == "/workspace/x.md"
+    assert files[0].source == "http://psi-agent-chengxx:8081"
+
+
+@pytest.mark.anyio
+async def test_post_leaves_source_empty_for_local(monkeypatch):
+    """本地 Session 的 FileChunk 不带地址 —— 与升级前零行为差异。"""
+    resp = _RecordingResp(
+        [
+            b'data: {"choices":[{"index":0,"delta":{"content":"see [SEND:/tmp/x.md] done"}}]}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+    )
+    core = ChannelCore(session_socket="/tmp/x.sock", interval=0.0)
+    monkeypatch.setattr(core, "_session", _RecordingPostSession(resp), raising=False)
+    monkeypatch.setattr(core, "_endpoint", "http://localhost/chat/completions", raising=False)
+
+    files = [c async for c in core.post([TextChunk("hi")]) if isinstance(c, FileChunk)]
+
+    assert len(files) == 1
+    assert files[0].source == ""
+
+
+class _StallingResp(_RecordingResp):
+    """Fake response that pauses ``stall`` seconds before its final lines.
+
+    Reproduces the observed upstream shape: content arrives, the model then goes
+    quiet well past the buffer interval, and only afterwards does ``[DONE]`` come.
+    """
+
+    def __init__(self, head: list[bytes], stall: float, tail: list[bytes]) -> None:
+        super().__init__([])
+        self.content: AsyncIterator[bytes] = self._stalling(head, stall, tail)
+
+    @staticmethod
+    async def _stalling(head: list[bytes], stall: float, tail: list[bytes]) -> AsyncIterator[bytes]:
+        for line in head:
+            yield line
+        await anyio.sleep(stall)
+        for line in tail:
+            yield line
+
+
+@pytest.mark.anyio
+async def test_post_drains_tail_while_upstream_is_silent(monkeypatch):
+    """A tail buffered before a long upstream pause reaches the user during the pause.
+
+    Regression: the interval window is lazy (checked only on the next delta), so a
+    quiet upstream left the last chars invisible until ``[DONE]`` — the reply looked
+    cut off mid-sentence. Asserting on *arrival time*, not just final content: the
+    old code produced the same text, only too late.
+    """
+    resp = _StallingResp(
+        [b'data: {"choices":[{"index":0,"delta":{"content":"tail text"}}]}\n\n'],
+        stall=1.0,
+        tail=[b"data: [DONE]\n\n"],
+    )
+    # interval high enough that only the idle drain can emit this tail.
+    core = ChannelCore(session_socket="/tmp/x.sock", interval=10.0, idle_drain=0.2)
+    monkeypatch.setattr(core, "_session", _RecordingPostSession(resp), raising=False)
+    monkeypatch.setattr(core, "_endpoint", "http://localhost/chat/completions", raising=False)
+
+    start = anyio.current_time()
+    seen: list[tuple[float, str]] = []
+    async for chunk in core.post([TextChunk("hi")]):
+        if isinstance(chunk, TextChunk):
+            seen.append((anyio.current_time() - start, chunk.text))
+
+    assert [text for _, text in seen] == ["tail text"]
+    # Arrived during the 1s silence, not at [DONE].
+    assert seen[0][0] < 0.9
+
+
+@pytest.mark.anyio
+async def test_post_idle_drain_does_not_split_active_stream(monkeypatch):
+    """Deltas arriving steadily still coalesce — the drain only fires on real silence."""
+    resp = _RecordingResp(
+        [
+            b'data: {"choices":[{"index":0,"delta":{"content":"a"}}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{"content":"b"}}]}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+    )
+    core = ChannelCore(session_socket="/tmp/x.sock", interval=10.0, idle_drain=5.0)
+    monkeypatch.setattr(core, "_session", _RecordingPostSession(resp), raising=False)
+    monkeypatch.setattr(core, "_endpoint", "http://localhost/chat/completions", raising=False)
+
+    texts = [c.text async for c in core.post([TextChunk("hi")]) if isinstance(c, TextChunk)]
+
+    assert texts == ["ab"]
+
+
+@pytest.mark.anyio
+async def test_post_idle_drain_disabled_keeps_legacy_path(monkeypatch):
+    """``idle_drain<=0`` skips the pump task entirely — unchanged behaviour."""
+    resp = _RecordingResp(
+        [
+            b'data: {"choices":[{"index":0,"delta":{"content":"x"}}]}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+    )
+    core = ChannelCore(session_socket="/tmp/x.sock", interval=10.0, idle_drain=0.0)
+    monkeypatch.setattr(core, "_session", _RecordingPostSession(resp), raising=False)
+    monkeypatch.setattr(core, "_endpoint", "http://localhost/chat/completions", raising=False)
+
+    texts = [c.text async for c in core.post([TextChunk("hi")]) if isinstance(c, TextChunk)]
+
+    assert texts == ["x"]
+
+
+@pytest.mark.anyio
+async def test_post_surfaces_bare_channel_error_with_idle_drain_on(monkeypatch):
+    """Parser errors must stay a bare ChannelError when idle drain is enabled.
+
+    Callers and the rest of this file catch ``ChannelError`` directly, so anything
+    that wrapped it (an ``ExceptionGroup`` from a task group, say) would slip past
+    every ``except ChannelError`` in the codebase.
+    """
+    resp = _RecordingResp(
+        [
+            b'data: {"choices":[{"delta":{"content":"[Upstream Error]: boom"},"finish_reason":"error"}]}\n\n',
+        ]
+    )
+    # interval>0 is required for the idle timeout to be armed at all.
+    core = ChannelCore(session_socket="/tmp/x.sock", interval=10.0, idle_drain=5.0)
+    monkeypatch.setattr(core, "_session", _RecordingPostSession(resp), raising=False)
+    monkeypatch.setattr(core, "_endpoint", "http://localhost/chat/completions", raising=False)
+
+    with pytest.raises(ChannelError, match="Upstream Error"):
+        async for _ in core.post([TextChunk("hi")]):
+            pass
+
+
+@pytest.mark.anyio
+async def test_post_early_break_releases_response_with_idle_drain(monkeypatch):
+    """Early break must unwind cleanly while the idle timeout is armed.
+
+    Regression for a real defect in the first cut of this feature: the idle timeout
+    was implemented with a pump task, and yielding out of a generator that owns a
+    task group blows up on early close — the cancel scope gets exited from a
+    different task and anyio raises ``RuntimeError: Attempted to exit cancel scope
+    in a different task``, leaving the upstream generator unfinalized. The timeout
+    must therefore sit on the raw byte read with no ``yield`` inside its scope.
+    """
+    resp = _StallingResp(
+        [
+            b'data: {"choices":[{"index":0,"delta":{"content":"first"}}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{"content":"second"}}]}\n\n',
+        ],
+        stall=30.0,
+        tail=[b"data: [DONE]\n\n"],
+    )
+    # A tiny interval still emits per delta (so there is something to break on) while
+    # keeping interval>0, which is what arms the idle timeout.
+    core = ChannelCore(session_socket="/tmp/x.sock", interval=0.01, idle_drain=0.2)
+    monkeypatch.setattr(core, "_session", _RecordingPostSession(resp), raising=False)
+    monkeypatch.setattr(core, "_endpoint", "http://localhost/chat/completions", raising=False)
+
+    async with aclosing(core.post([TextChunk("hi")])) as gen:
+        async for chunk in gen:
+            if isinstance(chunk, TextChunk):
+                break
+
+    assert resp.released
+
+
+@pytest.mark.anyio
+async def test_post_early_break_after_idle_tick_unwinds_cleanly(monkeypatch):
+    """Breaking *after* an idle tick has fired must not raise from the cancel scope.
+
+    Tightest form of the regression above: the break has to happen once at least one
+    ``move_on_after`` scope has already been entered and left, which is exactly the
+    state that made the task-group version raise during ``aclose()``.
+    """
+    resp = _StallingResp(
+        [b'data: {"choices":[{"index":0,"delta":{"content":"head"}}]}\n\n'],
+        stall=30.0,
+        tail=[b"data: [DONE]\n\n"],
+    )
+    core = ChannelCore(session_socket="/tmp/x.sock", interval=10.0, idle_drain=0.2)
+    monkeypatch.setattr(core, "_session", _RecordingPostSession(resp), raising=False)
+    monkeypatch.setattr(core, "_endpoint", "http://localhost/chat/completions", raising=False)
+
+    # The only TextChunk that can arrive here is the idle drain of "head".
+    async with aclosing(core.post([TextChunk("hi")])) as gen:
+        async for chunk in gen:
+            if isinstance(chunk, TextChunk):
+                assert chunk.text == "head"
+                break
+
+    assert resp.released

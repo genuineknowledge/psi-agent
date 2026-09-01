@@ -112,8 +112,8 @@ jobs:
         --output-dir=nuitka-dist
         --output-filename=psi-agent
         --assume-yes-for-downloads
-        --include-data-dir=src/psi_agent/gateway/spa/dist=psi_agent/gateway/spa/dist
-        --include-data-dir=src/psi_agent/gateway/spa-v2/dist=psi_agent/gateway/spa-v2/dist
+        --include-data-dir=src/psi_agent/gateway/desktop/spa/dist=psi_agent/gateway/desktop/spa/dist
+        --include-data-dir=src/psi_agent/gateway/desktop/spa-v2/dist=psi_agent/gateway/desktop/spa-v2/dist
         --include-package=any_llm
         --include-package=mcp
         --include-package=serper_mcp_server
@@ -144,13 +144,13 @@ jobs:
         with:
           node-version: "26"
       - run: npm ci
-        working-directory: src/psi_agent/gateway/spa
+        working-directory: src/psi_agent/gateway/desktop/spa
       - run: npm run build
-        working-directory: src/psi_agent/gateway/spa
+        working-directory: src/psi_agent/gateway/desktop/spa
       - run: npm ci
-        working-directory: src/psi_agent/gateway/spa-v2
+        working-directory: src/psi_agent/gateway/desktop/spa-v2
       - run: npm run build
-        working-directory: src/psi_agent/gateway/spa-v2
+        working-directory: src/psi_agent/gateway/desktop/spa-v2
       - shell: bash
         run: uv run python -m nuitka $NUITKA_COMMON_FLAGS src/psi_agent/cli.py
         if: matrix.os == 'ubuntu-latest'
@@ -186,7 +186,7 @@ jobs:
           name: psi-agent-nuitka-windows-latest
           path: dist-exe
       - shell: cmd
-        run: copy dist-exe\psi-agent.exe "examples\haitun-workspace\psi-agent.exe"
+        run: copy dist-exe\psi-agent.exe "agents\feishu\psi-agent.exe"
       - uses: msys2/setup-msys2@v2
         id: msys2
         with:
@@ -199,10 +199,10 @@ jobs:
             mingw-w64-ucrt-x86_64-nodejs mingw-w64-ucrt-x86_64-uv
       - shell: pwsh
         run: |
-          robocopy "${{ steps.msys2.outputs.msys2-location }}" "examples\haitun-workspace\msys64" /E /NFL /NDL /NJH /NJS /NP
+          robocopy "${{ steps.msys2.outputs.msys2-location }}" "agents\feishu\msys64" /E /NFL /NDL /NJH /NJS /NP
           if ($LASTEXITCODE -ge 8) { exit 1 } else { exit 0 }
       - shell: pwsh
-        run: Remove-Item -Recurse -Force "examples\haitun-workspace\msys64\var\cache\pacman\pkg\*" -ErrorAction SilentlyContinue
+        run: Remove-Item -Recurse -Force "agents\feishu\msys64\var\cache\pacman\pkg\*" -ErrorAction SilentlyContinue
       - run: choco install innosetup --no-progress
       - name: Build launcher with updater config
         shell: pwsh
@@ -214,17 +214,11 @@ jobs:
           Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=amd64"
           & ".github\inno-setup\build-haitun-launcher.ps1"
-      - name: Compute MSYS fingerprint
-        shell: pwsh
-        run: |
-          $fp = & ".github\inno-setup\compute-msys-fingerprint.ps1" -MsysDir "examples\haitun-workspace\msys64"
-          Set-Content -LiteralPath "examples\haitun-workspace\msys64\msys-version.txt" -Value $fp -Encoding UTF8 -NoNewline
-          Write-Output "MSYS_FINGERPRINT=$fp" >> $env:GITHUB_ENV
       - shell: pwsh
         run: |
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl" -OutFile ".github\inno-setup\ChineseSimplified.isl"
       - shell: pwsh
-        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp /DMSYS_FINGERPRINT="$env:MSYS_FINGERPRINT" /O"installer-output" ".github\inno-setup\haitun.iss"'
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp /O"installer-output" ".github\inno-setup\haitun.iss"'
       - uses: actions/upload-artifact@v7
         with:
           name: haitun-agent-installers-nuitka

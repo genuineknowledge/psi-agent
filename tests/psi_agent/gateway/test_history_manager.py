@@ -5,7 +5,7 @@ from pathlib import Path
 import anyio
 import pytest
 
-from psi_agent.gateway._history_manager import HistoryManager
+from psi_agent.runtime._history_manager import HistoryManager
 
 
 @pytest.fixture

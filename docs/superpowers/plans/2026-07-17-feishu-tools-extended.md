@@ -27,7 +27,7 @@
   （`.http_method`/`.uri`（`:name` 占位）/`.paths`/`.add_query`/`.body`/`.token_types`）。
 - **鉴权**：绝大多数用 **tenant_access_token**（机器人，读 `PSI_FEISHU_APP_ID/SECRET`）；
   唯独**文档搜索**需 **user_access_token（UAT，用户 OAuth）**。
-- **零新增依赖 / src 零改动**：全部落在 `examples/haitun-workspace/` 内。
+- **零新增依赖 / src 零改动**：全部落在 `agents/feishu/` 内。
 - **测试**：`tests/test_feishu.py`，`_CapturedInvoke`/`_PagedInvoke` mock `_invoke`，
   不打真实 API。门禁：`ruff check` + `ruff format --check` + `ty check` + pytest 全绿。
 
@@ -144,16 +144,16 @@ pyproject / nuitka / pyinstaller。
 scope（如 `drive:drive:drive:readonly`），飞书拒绝整个授权页。
 
 **Files:**
-- Modify: `examples/haitun-workspace/tools/_feishu_impl.py`
-- Modify: `examples/haitun-workspace/tools/feishu_auth.py`
-- Modify: `examples/haitun-workspace/tools/feishu_docs.py`
-- Modify: `examples/haitun-workspace/tools/feishu_wiki.py`
-- Modify: `examples/haitun-workspace/tools/feishu_doc.py`
-- Modify: `examples/haitun-workspace/tools/feishu_bitable.py`
-- Modify: `examples/haitun-workspace/tools/feishu_task.py`
-- Modify: `examples/haitun-workspace/tools/feishu_drive.py`
-- Modify: `examples/haitun-workspace/tests/test_feishu.py`
-- Modify: `examples/haitun-workspace/TOOLS.md`
+- Modify: `agents/feishu/tools/_feishu_impl.py`
+- Modify: `agents/feishu/tools/feishu_auth.py`
+- Modify: `agents/feishu/tools/feishu_docs.py`
+- Modify: `agents/feishu/tools/feishu_wiki.py`
+- Modify: `agents/feishu/tools/feishu_doc.py`
+- Modify: `agents/feishu/tools/feishu_bitable.py`
+- Modify: `agents/feishu/tools/feishu_task.py`
+- Modify: `agents/feishu/tools/feishu_drive.py`
+- Modify: `agents/feishu/tests/test_feishu.py`
+- Modify: `agents/feishu/TOOLS.md`
 - Modify: `docs/superpowers/specs/2026-07-17-feishu-tools-extended-design.md`（第 9 节）
 
 - [x] `auth_start_impl` / `auth_complete_impl` / `_get_valid_uat` / `search_docs_impl` 加 `user_key`；
@@ -189,10 +189,10 @@ state 两条已在第十二节解决。）
 与其它写入类一致：先用用户身份(UAT, `user_key`)，未传回退机器人 tenant token。
 
 **Files:**
-- Modify: `examples/haitun-workspace/tools/_feishu_impl.py`
-- Modify: `examples/haitun-workspace/tools/feishu_drive.py`
-- Modify: `examples/haitun-workspace/tests/test_feishu.py`
-- Modify: `examples/haitun-workspace/TOOLS.md`
+- Modify: `agents/feishu/tools/_feishu_impl.py`
+- Modify: `agents/feishu/tools/feishu_drive.py`
+- Modify: `agents/feishu/tests/test_feishu.py`
+- Modify: `agents/feishu/TOOLS.md`
 - Modify: `docs/superpowers/specs/2026-07-17-feishu-tools-extended-design.md`（第 10 节）
 
 - [x] `_build_delete_file_request` + `delete_file_impl(file_token, file_type, user_key="")`：
@@ -212,10 +212,10 @@ state 两条已在第十二节解决。）
 agent 误判"企业没有知识库"。读类 wiki 工具没接 user_key。
 
 **Files:**
-- Modify: `examples/haitun-workspace/tools/_feishu_impl.py`
-- Modify: `examples/haitun-workspace/tools/feishu_wiki.py`
-- Modify: `examples/haitun-workspace/tests/test_feishu.py`
-- Modify: `examples/haitun-workspace/TOOLS.md`
+- Modify: `agents/feishu/tools/_feishu_impl.py`
+- Modify: `agents/feishu/tools/feishu_wiki.py`
+- Modify: `agents/feishu/tests/test_feishu.py`
+- Modify: `agents/feishu/TOOLS.md`
 - Modify: `docs/superpowers/specs/2026-07-17-feishu-tools-extended-design.md`（第 11 节）
 
 - [x] `list_wiki_spaces_impl` / `get_wiki_node_impl` 加 `user_key`，走 `_invoke(..., user_key=...)`
@@ -234,10 +234,10 @@ agent 误判"企业没有知识库"。读类 wiki 工具没接 user_key。
 token，用户知识库里的文件机器人无权限。读类工具没接 user_key（与 list_spaces 同病）。
 
 **Files:**
-- Modify: `examples/haitun-workspace/tools/_feishu_impl.py`
-- Modify: `examples/haitun-workspace/tools/feishu_drive.py`
-- Modify: `examples/haitun-workspace/tests/test_feishu.py`
-- Modify: `examples/haitun-workspace/TOOLS.md`
+- Modify: `agents/feishu/tools/_feishu_impl.py`
+- Modify: `agents/feishu/tools/feishu_drive.py`
+- Modify: `agents/feishu/tests/test_feishu.py`
+- Modify: `agents/feishu/TOOLS.md`
 - Modify: `docs/superpowers/specs/2026-07-17-feishu-tools-extended-design.md`（第 12 节）
 
 - [x] `_download_media_bytes` / `download_file_impl` 加 `user_key`：非空走 UAT
@@ -258,13 +258,13 @@ token，用户知识库里的文件机器人无权限。读类工具没接 user_
 （`feishu_sheet_write` / `append` / `format`），缺的是**区域读 + 工作表寻址**。
 
 **Files:**
-- Modify: `examples/haitun-workspace/tools/_feishu_impl.py`
-- Modify: `examples/haitun-workspace/tools/feishu_sheet.py`
-- Add: `examples/haitun-workspace/skills/feishu-todo-board-sync/SKILL.md`
-- Modify: `examples/haitun-workspace/tests/test_feishu.py`
-- Add: `examples/haitun-workspace/tests/test_feishu_todo_board_sync.py`
-- Modify: `examples/haitun-workspace/TOOLS.md`
-- Modify: `examples/haitun-workspace/AGENTS.md`（工具表 + 技能列表）
+- Modify: `agents/feishu/tools/_feishu_impl.py`
+- Modify: `agents/feishu/tools/feishu_sheet.py`
+- Add: `agents/feishu/skills/feishu-todo-board-sync/SKILL.md`
+- Modify: `agents/feishu/tests/test_feishu.py`
+- Add: `agents/feishu/tests/test_feishu_todo_board_sync.py`
+- Modify: `agents/feishu/TOOLS.md`
+- Modify: `agents/feishu/AGENTS.md`（工具表 + 技能列表）
 - Modify: `docs/superpowers/specs/2026-07-17-feishu-tools-extended-design.md`（第 7、13 节）
 
 - [x] `list_sheet_tabs_impl` + 工具 `feishu_sheet_tabs`：`sheets/v3 .../sheets/query` 列工作表，
@@ -301,15 +301,15 @@ token，用户知识库里的文件机器人无权限。读类工具没接 user_
 - Modify: `src/psi_agent/gateway/_openapi.py`
 - Modify: `src/psi_agent/gateway/AGENTS.md`
 - Modify: `AGENTS.md`（目录树）
-- Add: `examples/haitun-workspace/tools/_oauth_receiver.py`
-- Modify: `examples/haitun-workspace/tools/_feishu_impl.py`
-- Modify: `examples/haitun-workspace/tools/feishu_auth.py`
-- Modify: `examples/haitun-workspace/TOOLS.md`
-- Modify: `examples/haitun-workspace/AGENTS.md`（工具表 + 环境变量表）
+- Add: `agents/feishu/tools/_oauth_receiver.py`
+- Modify: `agents/feishu/tools/_feishu_impl.py`
+- Modify: `agents/feishu/tools/feishu_auth.py`
+- Modify: `agents/feishu/TOOLS.md`
+- Modify: `agents/feishu/AGENTS.md`（工具表 + 环境变量表）
 - Add: `tests/psi_agent/gateway/test_oauth_manager.py`
 - Add: `tests/psi_agent/gateway/test_oauth_endpoints.py`
-- Add: `examples/haitun-workspace/tests/test_oauth_receiver.py`
-- Modify: `examples/haitun-workspace/tests/test_feishu.py`
+- Add: `agents/feishu/tests/test_oauth_receiver.py`
+- Modify: `agents/feishu/tests/test_feishu.py`
 - Modify: `docs/superpowers/specs/2026-07-17-feishu-tools-extended-design.md`（第 9、14 节）
 
 - [x] `OAuthRelay`：`state → {code, error}` 一次性信箱，TTL 600s、上限 256、进程内存不落盘。

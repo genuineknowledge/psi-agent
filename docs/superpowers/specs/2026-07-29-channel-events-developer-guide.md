@@ -50,7 +50,7 @@ Session 只负责 `POST /events` 统一转发 + 按 TRIGGER 开火，**没有**�
 ## 维护入口（在哪改）
 
 ```text
-examples/haitun-workspace/channel_events/     # 或其他 Session --agent 包根
+agents/feishu/channel_events/     # 或其他 Session --agent 包根
   README.md
   feishu/
     member_added/          # 官方：有人进群

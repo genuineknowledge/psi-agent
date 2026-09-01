@@ -12,7 +12,7 @@
 - **Workspace 即 Agent**：在 `workspace/` 下丢几个 Python 函数就是 tools，写个 system prompt 就是 agent 人格，加个 cron 就是定时任务
 - **流式交互**：REPL/CLI 实时显示 AI 思考过程（dim 样式）和最终回复
 - **一键启动**：`psi-agent run config.yml` 一个命令拉起全套 AI + Session + Channel
-- **Web 管理中枢**：`psi-agent gateway` 启动 REST API + Web Console SPA，可视化创建/管理/对话
+- **Web 管理中枢**：`psi-agent gateway --gateway desktop` 启动 REST API + Web Console SPA，可视化创建/管理/对话
 
 ## 架构
 
@@ -23,7 +23,7 @@
 
 AI 层无状态、Session 层维护对话历史、Channel 层是纯 UI 客户端——三个核心组件独立进程，通过 socket 通信，协议为 OpenAI Chat Completions HTTP/SSE。Gateway 为 Web UI 提供 HTTP 接入，内部复用 Channel socket 与 Session 通信。
 
-对开发者：三个组件可独立启动、任意组合，适合调试和定制。对使用者：`psi-agent run config.yml` 一键拉起全部，`psi-agent gateway` 在浏览器里可视化管理一切。
+对开发者：三个组件可独立启动、任意组合，适合调试和定制。对使用者：`psi-agent run config.yml` 一键拉起全部，`psi-agent gateway --gateway desktop` 在浏览器里可视化管理一切。
 
 ## 快速开始
 
@@ -103,9 +103,11 @@ Servers（ai、session）持续运行，channel 组件按需退出（CLI 发完�
 启动 Gateway 后，在浏览器里可视化管理一切：
 
 ```bash
-uv run psi-agent gateway                         # 默认 127.0.0.1 随机端口
-uv run psi-agent gateway --listen http://127.0.0.1:8080   # 指定端口
+uv run psi-agent gateway --gateway desktop       # 127.0.0.1 随机端口
+uv run psi-agent gateway --gateway desktop --listen http://127.0.0.1:8080   # 指定端口
 ```
+
+`--gateway` **必填**，指定挂哪些 HTTP 面：`desktop` 是这里说的 Web Console（ToC 那面），`feishu` 是飞书那面（ToB），两个都写则两面全挂。没有默认值是故意的——少挂一面不会报错，只是某个前端 404，所以要求启动时说清楚。
 
 打开浏览器访问印出的地址，就会看到一个 Material Design 3 的 Web Console。界面里可以：
 

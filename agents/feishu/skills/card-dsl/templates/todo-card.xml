@@ -1,0 +1,12 @@
+<!--
+  todo 卡模板(company-todo-sync 派发用)
+  {key} 为占位符,渲染时由 values_json 填充(值自动 XML 转义)。
+  使用方式:feishu_card_render(template="todo-card", values_json="{...}", context_json="{...}")
+  values:title(卡标题)/ rows(行数组,每行 {title, task_guid, detail, shape, bind_record, done})
+  context(注入 state):ledger_app_token / ledger_table_id
+-->
+<card title="{title}" template="blue">
+  <list>
+{rows}
+  </list>
+</card>

@@ -57,6 +57,18 @@ Session ── POST /chat/completions ──► AI
 
 Session 发送的 body 中，除 `model` 被启动配置覆盖、`messages` 被显式提取、`stream` 被剥离（AI 层始终强制 `stream=True`）、`provider`/`api_key`/`api_base`/`routing` 防御性剥离（避免与启动配置冲突）外，其余字段（`tools`, `temperature`, `max_tokens` 等）全部通过 `**body` 透传给 any-llm-sdk。
 
+`reasoning_effort` 是唯一被**补默认值**的字段（`setdefault("reasoning_effort", "medium")`，调用方给了就用它的，含 `"none"`）。
+
+### 为什么必须显式传 `reasoning_effort`
+
+any-llm 的 DeepSeek provider 把缺省值 `"auto"` 读成「调用方没要思维」，转而下发 `extra_body.thinking={"type": "disabled"}`（见 1.26.0 的 `providers/deepseek/deepseek.py`）。DeepSeek V4 官方默认是**开**思维，any-llm 为对齐旧版 `deepseek-chat` 行为主动反转成关。
+
+后果不是「字段丢了」而是「思维根本没生成」：模型被关掉思维通道后仍要推理，就把自我对话写进 `content` —— 即线上的 thinking 泄漏（复述提问 + 自问自答）。实测同一 prompt：不传 = 0/9 个 chunk 带思维链，传 `"medium"` = 24/33。
+
+该默认值在 1.21.0 之后引入（1.21.0 的同一文件里没有 `thinking` 分支），而依赖声明是 `any-llm-sdk>=1.21.0` —— 一次静默的上游行为变更改掉了线上语义。
+
+**ToC 装机版不受影响，但那是巧合**：它与 ToB 共用同一份代码与同一个 any-llm，只因 `spa-v2/src/services/bootstrapAi.ts` 的 `DEFAULT_REMOTE_AI` 配 `provider: 'openai'`（打的是云端 OpenAI 兼容网关）而绕开了这个默认值。改成 `deepseek` 泄漏立刻出现。
+
 ## Provider 支持
 
 any-llm-sdk 原生支持的 50+ provider 全部可用，无需额外代码。包括：OpenAI, Anthropic, Gemini, DeepSeek, Mistral, Groq, Ollama, Cerebras, Cohere, Perplexity, Fireworks, Together, xAI, Bedrock, Azure, VertexAI 等。

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from psi_agent.gateway._summary_manager import SummaryManager
+from psi_agent.runtime._summary_manager import SummaryManager
 
 
 @pytest.mark.anyio

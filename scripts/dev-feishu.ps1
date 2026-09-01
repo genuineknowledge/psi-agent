@@ -10,7 +10,7 @@
 $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$Agent = Join-Path $RepoRoot 'examples\haitun-workspace'
+$Agent = Join-Path $RepoRoot 'agents\feishu'
 $Listen = if ($env:GATEWAY_LISTEN) { $env:GATEWAY_LISTEN } else { 'http://127.0.0.1:8765' }
 $AiId = 'feishu-default'
 # Company proxy allowlist: deepseek-v4-flash | deepseek-v4-pro only.
@@ -20,7 +20,7 @@ $Model = 'deepseek-v4-flash'
 # 即将停用 —— 本行是它在本仓的最后一处依赖。
 $BaseUrl = 'https://account.genuineknowledge.cn/llm/v1'
 # 哨兵值,不是真 key。Gateway 在拉起 AI 子进程时换成当前登录 token
-# (见 gateway/_free_model.py) —— ** 所以跑这个脚本前要先在客户端登录 **,
+# (见 gateway/desktop/_free_model.py) —— ** 所以跑这个脚本前要先在客户端登录 **,
 # 否则上游回 401。改这个字面量要同时改 _free_model.py 与两份 SPA。
 $ApiKey = 'haitun-default'
 
@@ -37,8 +37,12 @@ if (-not $env:PSI_OAUTH_CALLBACK_BASE) {
 Set-Location $RepoRoot
 
 Write-Host "Starting Gateway on $Listen (agent=$Agent, feishu-ai-id=$AiId, oauth=$($env:PSI_OAUTH_CALLBACK_BASE))..."
+# --gateway is required (no default): which HTTP surfaces to mount is the caller's
+# call, and mounting one too few fails silently (some frontend just 404s). This
+# script serves SPA + Feishu + OAuth from one Gateway, so it needs BOTH surfaces.
 $gwArgs = @(
     'run', 'psi-agent', 'gateway',
+    '--gateway', 'desktop', 'feishu',
     '--listen', $Listen,
     '--browser',
     '--feishu-ai-id', $AiId,

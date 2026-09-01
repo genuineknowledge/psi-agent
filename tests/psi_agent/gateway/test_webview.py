@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from psi_agent.gateway._webview import GatewayWebView
+from psi_agent.gateway.desktop._webview import GatewayWebView
 
 
 def test_webview_init():

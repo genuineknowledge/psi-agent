@@ -63,6 +63,7 @@ class SystemPrompt:
         before_turn: Callable[..., Any] | None = None,
         after_turn: Callable[..., Any] | None = None,
         before_turn_timeout_seconds: float = 30.0,
+        agent_path: Path | None = None,
     ) -> None:
         self._builder: Callable[..., Any] = builder if builder is not None else self._default_builder
         self._checker: Callable[..., Any] = checker if checker is not None else self._default_checker
@@ -71,6 +72,7 @@ class SystemPrompt:
         self._before_turn: Callable[..., Any] = before_turn if before_turn is not None else self._default_before_turn
         self._after_turn: Callable[..., Any] = after_turn if after_turn is not None else self._default_after_turn
         self._before_turn_timeout_seconds = before_turn_timeout_seconds
+        self._agent_path = agent_path
 
     @property
     def compaction_fn(self) -> Callable[..., Any] | None:
@@ -79,7 +81,13 @@ class SystemPrompt:
     @classmethod
     async def from_workspace(cls, workspace_path: Path, session_id: str) -> SystemPrompt:
         """Load the system module.  Defaults are used when builder, checker,
-        compaction_fn, turn_context_builder, or lifecycle hooks are not found."""
+        compaction_fn, turn_context_builder, or lifecycle hooks are not found.
+
+        *workspace_path* is the **agent package** root here (``SessionAgent``
+        passes ``agent_root``), and it is retained so hooks can be told where
+        their package lives instead of deriving it from ``__file__`` — see
+        ``_agent_kwargs``.
+        """
         builder, checker, compaction_fn, turn_context_fn, before_turn, after_turn = await cls._load_module(
             workspace_path, session_id
         )
@@ -90,6 +98,7 @@ class SystemPrompt:
             turn_context_fn=turn_context_fn,
             before_turn=before_turn,
             after_turn=after_turn,
+            agent_path=workspace_path,
         )
 
     async def ensure(self, conversation: Conversation, user_message: dict[str, Any] | None = None) -> None:
@@ -107,8 +116,11 @@ class SystemPrompt:
         """
         if not conversation.messages:
             try:
+                kwargs = self._agent_kwargs(self._builder)
                 sp = (
-                    await self._builder(user_message) if self._accepts_message(self._builder) else await self._builder()
+                    await self._builder(user_message, **kwargs)
+                    if self._accepts_message(self._builder)
+                    else await self._builder(**kwargs)
                 )
                 logger.info(f"System prompt loaded ({len(sp)} chars)")
                 conversation.replace_system(sp)
@@ -117,12 +129,18 @@ class SystemPrompt:
             return
 
         try:
+            checker_kwargs = self._agent_kwargs(self._checker)
             should_rebuild = (
-                await self._checker(user_message) if self._accepts_message(self._checker) else await self._checker()
+                await self._checker(user_message, **checker_kwargs)
+                if self._accepts_message(self._checker)
+                else await self._checker(**checker_kwargs)
             )
             if should_rebuild:
+                builder_kwargs = self._agent_kwargs(self._builder)
                 sp = (
-                    await self._builder(user_message) if self._accepts_message(self._builder) else await self._builder()
+                    await self._builder(user_message, **builder_kwargs)
+                    if self._accepts_message(self._builder)
+                    else await self._builder(**builder_kwargs)
                 )
                 logger.info(f"System prompt rebuilt ({len(sp)} chars)")
                 conversation.replace_system(sp)
@@ -132,7 +150,7 @@ class SystemPrompt:
     async def run_after_turn(self, user_message: dict[str, Any], assistant_message: dict[str, Any]) -> None:
         """Run the optional recoverable workspace hook after a committed turn."""
         try:
-            await self._after_turn(user_message, assistant_message)
+            await self._after_turn(user_message, assistant_message, **self._agent_kwargs(self._after_turn))
             logger.debug("System after-turn hook completed")
         except Exception as e:
             logger.warning(f"System after-turn hook failed: {e!r}")
@@ -169,7 +187,7 @@ class SystemPrompt:
         if self._turn_context_fn is None:
             return ""
         try:
-            block = await self._turn_context_fn()
+            block = await self._turn_context_fn(**self._agent_kwargs(self._turn_context_fn))
         except Exception as e:
             logger.error(f"Turn context build failed: {e}")
             return ""
@@ -182,7 +200,7 @@ class SystemPrompt:
         """Run the optional bounded workspace hook before an agent turn."""
         try:
             with anyio.fail_after(self._before_turn_timeout_seconds):
-                result = await self._before_turn(user_message)
+                result = await self._before_turn(user_message, **self._agent_kwargs(self._before_turn))
         except TimeoutError:
             logger.warning(f"System before-turn hook timed out after {self._before_turn_timeout_seconds:.1f}s")
             return {}
@@ -261,6 +279,35 @@ class SystemPrompt:
         if func is None or not inspect.iscoroutinefunction(func):
             return None
         return func
+
+    def _agent_kwargs(self, func: Callable[..., Any]) -> dict[str, str]:
+        """``{"agent_raw": <package root>}`` when *func* opts in, else ``{}``.
+
+        The kernel knows where it loaded the workspace module from; the module
+        does not. Without this, a hook can only recover its own package root
+        from ``__file__``, which silently follows the file if the package is
+        ever re-laid-out (moving ``SOUL.md`` / ``USER.md`` out of the package
+        root does exactly that) and the kernel has no way to correct it.
+
+        Opt-in is by parameter name so no existing hook signature breaks: a
+        hook that declares ``agent_raw`` (or ``**kwargs``) is told, one that
+        does not is called exactly as before. Same shape as the pre-existing
+        ``workspace_raw`` convention, and it stays consistent with
+        ``runtime_context.get_agent()`` — explicit argument wins, ContextVar is
+        the fallback.
+        """
+        if self._agent_path is None:
+            return {}
+        try:
+            parameters = inspect.signature(func).parameters.values()
+        except TypeError, ValueError:  # pragma: no cover — builtins / C callables
+            return {}
+        accepts = any(
+            (parameter.name == "agent_raw" and parameter.kind is not parameter.POSITIONAL_ONLY)
+            or parameter.kind is parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+        return {"agent_raw": str(self._agent_path)} if accepts else {}
 
     @staticmethod
     def _accepts_message(func: Callable[..., Any]) -> bool:

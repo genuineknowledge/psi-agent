@@ -25,8 +25,8 @@
 - `src/psi_agent/session/agent.py` — create 加载；turn 开始 / `stop` 后 `trigger_registry.refresh()`
 - `src/psi_agent/session/trigger_registry.py` — 注释
 - `src/psi_agent/session/AGENTS.md`
-- `examples/haitun-workspace/tools/trigger_manage.py`、`_runtime_paths.py`
-- `examples/haitun-workspace/AGENTS.md`、`skills/feishu-event-remind/SKILL.md`
+- `agents/feishu/tools/trigger_manage.py`、`_runtime_paths.py`
+- `agents/feishu/AGENTS.md`、`skills/feishu-event-remind/SKILL.md`
 
 ### 1.3 含义（飞书多用户）
 
@@ -116,4 +116,4 @@ Catalog **仍禁止**海豚运行时写入生效表；可选后续「能力申�
 - [ ] 单根下 haitun 测试：`test_trigger_manage` / `test_event_protocol` 通过  
 - [ ] AGENTS.md（session + haitun）与 skill 表述一致  
 
-（实现后跑：`uv run pytest tests/psi_agent/session/test_event_protocol.py examples/haitun-workspace/tests/test_trigger_manage.py --override-ini="addopts="`）
+（实现后跑：`uv run pytest tests/psi_agent/session/test_event_protocol.py agents/feishu/tests/test_trigger_manage.py --override-ini="addopts="`）

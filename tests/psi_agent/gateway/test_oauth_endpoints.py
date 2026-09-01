@@ -6,8 +6,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
-from psi_agent.gateway._oauth_manager import OAuthRelay
-from psi_agent.gateway.server import _oauth_callback, _oauth_take_code
+from psi_agent.gateway.feishu._oauth_manager import OAuthRelay
+from psi_agent.gateway.feishu._routes import _oauth_callback, _oauth_take_code
 
 
 def _request(path: str, relay: OAuthRelay) -> web.Request:

@@ -25,6 +25,14 @@ class ChannelTelegram:
     interval: float = 1.0
     """SSE buffer merge window. 0 = no throttling."""
 
+    idle_drain: float = 5.0
+    """Seconds of upstream silence after which the buffered tail is emitted (0 = off).
+
+    The ``interval`` window is lazy — checked only when the next delta arrives — so a
+    model that goes quiet near the end of a reply leaves the last chars invisible in
+    the buffer and the reply looks cut off mid-sentence.
+    """
+
     allowed_user_ids: list[int] | None = None
     """Whitelist of Telegram user IDs. None = allow all."""
 
@@ -46,6 +54,7 @@ class ChannelTelegram:
             session_socket=self.session_socket,
             bot_token=token,
             interval=self.interval,
+            idle_drain=self.idle_drain,
             allowed_user_ids=self.allowed_user_ids,
             proxy=self.proxy or os.environ.get("PSI_TELEGRAM_PROXY", ""),
         )

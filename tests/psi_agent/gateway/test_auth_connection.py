@@ -17,7 +17,7 @@ import aiohttp
 import pytest
 from aiohttp.client_reqrep import ConnectionKey
 
-from psi_agent.gateway._auth_manager import (
+from psi_agent.gateway.desktop._auth_manager import (
     _DNS_CACHE_SECONDS,
     _KEEPALIVE_SECONDS,
     AuthManager,

@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": false,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+    // TS 7 删掉了 ``baseUrl``, 且 paths 的目标必须是相对路径。原来那对 baseUrl + "src/*"
+    // 在 TS 7 下直接让 tsc 拒绝加载配置 (报 TS5102/TS5090), 一个源文件都检不到 ——
+    // 而 spa-v2 的 build 是裸 ``vite build`` 不跑 tsc, 所以一直没暴露。
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src"]
+}

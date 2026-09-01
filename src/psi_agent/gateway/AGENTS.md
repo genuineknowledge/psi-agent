@@ -20,46 +20,70 @@ Gateway 进程
 ├── ChatManager        — SSE 流式对话管理
 ├── HistoryManager     — JSONL 历史读取（AppData `histories/` + legacy 双读）
 ├── TodoManager        — 会话 todo 列表只读（AppData `todos/` + legacy workspace 双读）
-├── OAuthRelay         — OAuth 回调中继（state → code 一次性信箱，免用户手工复制授权码）
 ├── GatewayState       — 状态持久化到 AppData `state/latest.json`（legacy cwd 双读）
 ├── aiohttp REST Server  — OpenAPI CRUD + Web UI chat
-├── spa/               — Vue 3 SPA 前端项目 (Vite + SFC)
-├── GatewayWebView     — 原生 webview 窗口 (pywebview)
-├── GatewayTray        — 系统托盘图标 (pystray)
-└── _openapi.py       — OpenAPI schema 提供
+├── desktop/           — **ToC 专属层**（托盘、webview、登录、盘符、SPA 静态资源）
+│   ├── _routes.py       — `register_desktop_routes()` + ToC 专属 handler（`/ui/*` `/workspace/*` `/auth/*`）
+│   ├── GatewayWebView   — 原生 webview 窗口 (pywebview)
+│   ├── GatewayTray      — 系统托盘图标 (pystray)
+│   ├── AttentionHub / UIPrefs / WorkspaceManager / AuthManager + AuthStore
+│   ├── spa/             — Vue 3 SPA v1 前端项目 (Vite + SFC)
+│   └── spa-v2/          — React SPA v2（默认）
+├── feishu/            — **ToB 专属层**（`FeishuManager` + `/feishu/*`，`OAuthRelay` + `/oauth/*`）
+│   ├── _routes.py       — `register_feishu_routes()` + `/feishu/*`（`route` `routes` 免登 `auth/*` `app-id` `defaults` 按身份过滤的 `sessions`/`titles`/`summaries`） + `/oauth/callback` `/oauth/code`
+│   ├── OAuthRelay       — OAuth 回调中继（state → code 一次性信箱，免用户手工复制授权码）
+│   └── feishu-web/      — ToB 前端（Vite + React 19）；**当前只是脚手架，零业务**
+└── _openapi*.py       — OpenAPI schema：公共片段在骨架，两份产品片段在各自子包，装配留骨架
 ```
 
+**目录分三层**（A5 落位，A7 收口）：骨架层（本目录顶层）只有 `server.py` 骨架 + `_defaults` / `_state` / `_openapi*` 装配（**6 个 `.py`**）；`desktop/` 与 `feishu/` 各自持产品专属模块**以及各自的路由装配函数**（`desktop/_routes.py` / `feishu/_routes.py`）。判据是「这段代码认识哪些概念」而不是「当前谁在调用」——`WorkspaceManager` 认识 Windows 盘符、`_tray` 认识 pystray，飞书容器里一个都用不上。
+
+**判据还有第二条：先问存在性。** `_oauth_manager` 是个反例——它 69 行里零飞书字样，按「认识哪些概念」该留骨架，但〔实测〕取件方全在 `agents/feishu/tools/` 一侧（`_oauth_receiver` / `_oauth_setup` / `feishu_auth` / `_feishu/auth`），ToC 那两处只是注释、零调用（ToC 登录走手机号 + 验证码，不经过 OAuth 跳转）。两条判据冲突时按存在性走：**当前只有一个消费者就跟着那个消费者放**，等第二条线真要用再往上提。
+
+### 依赖方向
+
+**单向：产品包 → 骨架。骨架不 import 任何产品包。** 产品包由 `register_*_routes()` 往 `create_core_app()` 产出的 app 上贴，反过来骨架对两条产品线一无所知；`desktop/_routes.py` 与 `feishu/_routes.py` 复用骨架的 `_json` / `_error` / `_read_json`，方向正是允许的那一向。这条边由判据命令守：
+
+```bash
+git grep -nE "^\s*(from|import)\s+.*gateway\.(desktop|feishu)" -- \
+    src/psi_agent/gateway/server.py src/psi_agent/gateway/_defaults.py \
+    src/psi_agent/gateway/_state.py \
+    src/psi_agent/gateway/_openapi_core.py            # 必须无输出
+```
+
+A5 把模块文件搬进两个子包后，这条曾**不成立**：两个 `register_*_routes()` 还留在 `server.py`，于是骨架为了给它们备料反向 import 了 7 个产品符号（`AttentionHub` / `AuthManager` / `is_cloud_free_model` / `inject_app_name` / `UIPrefs` / `WorkspaceManager` + `FeishuManager`）。缺口不在纪律上而在文件归属上——装配函数放在骨架，骨架就**必须**认识两条产品线。A7 把两个函数连同各自专属 handler 搬进产品包收掉，唯一调用点 `__init__.py` 改从两个产品包 import。
+
+**`_openapi.py` 是刻意的例外**（故不在上面判据的文件清单里）：它要同时认识三份 path 片段才能拼，放进任一产品包会让那个包被另一条线反向依赖，所以装配留骨架、`import` 两份产品片段。区别在于它只碰**数据**（dict 常量），不碰产品行为。
+
 ## 模块
+
+> **AI / Session / Router 三类实例的注册表与生命周期已搬到 `psi_agent.runtime`**（`_manager` / `_ai_manager` / `_router_manager` / `_session_manager` / `_scheduler_manager` / `_title_manager` / `_summary_manager` / `_chat_manager` / `_history_manager` / `_todo_manager` 共 10 个文件）。它们只认识内核，不认识网页界面 / 飞书 / 托盘 / 登录，因此不该和这些东西装在同一个包里。清单见 `runtime/AGENTS.md`；本文档余下各小节仍是这些 manager **行为细节与 REST 侧接线**的正本——拆开会让两边都读不完整。依赖方向单一：gateway → runtime，由 `git grep -n "from psi_agent.gateway" -- src/psi_agent/runtime/` 必须无输出来守。
 
 | 文件 | 职责 |
 |------|------|
 | `__init__.py` | `Gateway` dataclass + `run()` 入口 |
-| `_manager.py` | 共享 helpers（_new_uuid/_noop/_socket_path/_ensure_socket_dir/_remove_socket/_wait_socket） |
-| `_ai_manager.py` | `AIManager` — AI 实例注册表 + 生命周期 + AiInfo |
-| `_router_manager.py` | `RouterManager` — Router 实例注册表、类型化 AI/Router 依赖解析和生命周期管理 |
-| `_session_manager.py` | `SessionManager` — Session 实例注册表 + 生命周期 + SessionInfo（含 `agent`、`active_schedules` / `deactive_schedules`） |
-| `_scheduler_manager.py` | `SchedulerManager` — 每个 workspace 恰好一个**全量激活**（`active_schedules=("*",)`）的调度 Session，按需 spawn，对 SPA / state 隐藏 |
-| `_defaults.py` | `resolve_default_agent` / `resolve_default_workspace`；再导出 ``psi_agent._appdata`` 路径助手 — CLI / `GET /defaults` 用 |
-| `_feishu_manager.py` | `FeishuManager` — 飞书会话 → Session 路由表（私聊按 `open_id`、群聊按 `chat_id`；复用 SessionManager 按需 spawn）+ FeishuRoute |
-| `_oauth_manager.py` | `OAuthRelay` — OAuth 回调中继（`state → code` 一次性信箱，带 TTL；供 `GET /oauth/callback` + `GET /oauth/code`），让授权码免用户手工复制 |
-| `_auth_manager.py` | `AuthManager` — 云端账号服务的**转发层** + 登录态持有者；不持供应商密钥、不做授权判定（发码与鉴权全在云端）。两段式注册的 `tempToken` 扣在进程内不下发给页面，改回 `registrationRequired: true`；把云端 `Retry-After` 响应头抄进 body 供倒计时用；云端 `GET /sessions` 回**裸数组**，`_call` 装 `items` 信封、`list_devices` 统一成 `{"devices": [...]}`。`resolve_endpoint()` 定地址（显式参数 > `PSI_AUTH_ENDPOINT` > 内置默认；显式空串=关闭）。`bearer_token()` 是 token 的**唯一进程内取值口**，只给免费模型换算力用，不接任何下行响应（见 [免费模型的 key 替换](#免费模型的-key-替换)）。连接池 / 预热 / 重试边界见 [AuthManager 连接复用](#authmanager-连接复用) |
-| `_auth_store.py` | 本机凭证落盘 `{appdata}/auth.enc.json`（0600）+ `device_key`；密钥存 OS 钥匙串，钥匙串不可用则降级明文并记 warning、`credentialEncrypted: false` 如实上报。`load_token()` 读到明文且钥匙串此时可用会**就地重新加密**（用户装上 keyring 重启后凭证真的转密文，而不只是黄条消失）；`credentialEncrypted` 报的是**盘上真实形态**，没碰过盘时才退回“钥匙串可用性”做预测 |
-| `_title_manager.py` | 会话标题 CRUD + AI 自动生成 |
-| `_summary_manager.py` | 任务摘要 CRUD + AI 自动生成（spa-v2；与 title 同级持久化） |
+| `_defaults.py` | **只持 ToC 品牌字面量**（`haitun交付` / `agents/feishu` / 短名搜索目录 `agents`）+ 两个薄包装 `resolve_default_agent` / `resolve_default_workspace` — CLI / `GET /defaults` 用；机制在包外 ``psi_agent._workspace_paths``（见下方[工作区路径的机制与字面量分家](#工作区路径的机制与字面量分家)）。再导出 ``psi_agent._appdata`` 路径助手与 ``ensure_workspace_dir``（老调用方不破） |
+| `feishu/_feishu_manager.py` | `FeishuManager` — 飞书会话 → Session 路由表（私聊按 `open_id`、群聊按 `chat_id`；复用 SessionManager 按需 spawn）+ FeishuRoute |
+| `feishu/_oauth_manager.py` | `OAuthRelay` — OAuth 回调中继（`state → code` 一次性信箱，带 TTL；供 `GET /oauth/callback` + `GET /oauth/code`），让授权码免用户手工复制。**住 `feishu/` 是按存在性判据**：取件方〔实测〕全在 `agents/feishu/tools/` 一侧，ToC 登录走手机号 + 验证码不经过 OAuth 跳转（模块头有实测清单） |
+| `desktop/_auth_manager.py` | `AuthManager` — 云端账号服务的**转发层** + 登录态持有者；不持供应商密钥、不做授权判定（发码与鉴权全在云端）。两段式注册的 `tempToken` 扣在进程内不下发给页面，改回 `registrationRequired: true`；把云端 `Retry-After` 响应头抄进 body 供倒计时用；云端 `GET /sessions` 回**裸数组**，`_call` 装 `items` 信封、`list_devices` 统一成 `{"devices": [...]}`。`resolve_endpoint()` 定地址（显式参数 > `PSI_AUTH_ENDPOINT` > 内置默认；显式空串=关闭）。`bearer_token()` 是 token 的**唯一进程内取值口**，只给免费模型换算力用，不接任何下行响应（见 [免费模型的 key 替换](#免费模型的-key-替换)）。连接池 / 预热 / 重试边界见 [AuthManager 连接复用](#authmanager-连接复用) |
+| `desktop/_auth_store.py` | 本机凭证落盘 `{appdata}/auth.enc.json`（0600）+ `device_key`；密钥存 OS 钥匙串，钥匙串不可用则降级明文并记 warning、`credentialEncrypted: false` 如实上报。`load_token()` 读到明文且钥匙串此时可用会**就地重新加密**（用户装上 keyring 重启后凭证真的转密文，而不只是黄条消失）；`credentialEncrypted` 报的是**盘上真实形态**，没碰过盘时才退回“钥匙串可用性”做预测 |
 | `_state.py` | `GatewayState` — `{appdata}/state/latest.json` + 时间戳快照；缺则双读 cwd `state/latest.json` |
-| `_ui_prefs.py` | `UIPrefs` — SPA 的一次性 UI 标记（问卷是否已填），落 `{appdata}/ui-prefs.json`，读写经 `GET/POST /ui/prefs/survey`。**刻意不放 `localStorage`**：安装包不传 `--listen`，Gateway 每次启动 `_random_port()`，而 `localStorage` 按 origin（含端口）分桶 → 上次写的标记下次读不到，弹窗每次重启都再弹一遍。也不放 `_state.py`（那是 5 个固定 key 的 manager 快照 + 每启动一份时间戳副本，UI 偏好两头都不属于）；不像 `_auth_store` 加密（存布尔不存凭证）。按**机器**存不按登录用户：认证是旁挂且可整套关掉的，绑 `user_id` 会让纯本地模式无处落脚 |
-| `_spa_shell.py` | SPA 外壳注入 — `DEFAULT_APP_NAME`、`inject_app_name()`、`read_spa_index_template()`；`GET /spa/index.html` 替换 `__GATEWAY_APP_NAME__` |
-| `server.py` | aiohttp Application + REST handlers |
-| `_chat_manager.py` | SSE 流式对话管理（复用 ChannelCore） |
-| `_history_manager.py` | JSONL 历史读取（``{appdata}/histories/{session_id}.jsonl``，legacy ``{workspace}/histories/`` 双读；delete 两侧都清） |
-| `_todo_manager.py` | 会话 todo 列表读取（``{appdata}/todos/{session_id}.json``，legacy ``{workspace}/.psi/todos/`` 双读） |
-| `_workspace_manager.py` | 目录浏览 + 快捷路径列表 + cwd 查询 |
-| `spa/` | Vue 3 SPA v1（对话气泡），构建输出 `spa/dist/`；路径 `/spa/` |
-| `spa-v2/` | React SPA v2（任务工作台 + 宝箱），构建输出 `spa-v2/dist/`；**默认** `GET /` → `/spa-v2/`（无 dist 时回退 v1） |
-| `_tray.py` | 系统托盘图标（pystray + Pillow），由 `--tray` 参数开启，`--icon` 参数指定图标文件，左键打开浏览器或恢复 webview 窗口，右键菜单控制；`request_attention()` 脉冲高亮图标 |
-| `_webview.py` | 原生 webview 窗口（pywebview），`--webview` 参数开启。窗口关闭信号通过 `threading.Event` 传递给主 loop；`request_attention()` 在 Windows 上 FlashWindowEx |
-| `_attention.py` | `AttentionHub`：SPA `POST /ui/attention` → 绑定的 tray/webview 注意力提示（best-effort）。`schedule_notify()` 用 daemon thread 异步触发，**禁止**在 aiohttp handler 里同步等 tray（pystray 可能卡死事件循环） |
-| `_openapi.py` | `GET /openapi.json` schema 生成 |
+| `desktop/_ui_prefs.py` | `UIPrefs` — SPA 的一次性 UI 标记（问卷是否已填），落 `{appdata}/ui-prefs.json`，读写经 `GET/POST /ui/prefs/survey`。**刻意不放 `localStorage`**：安装包不传 `--listen`，Gateway 每次启动 `_random_port()`，而 `localStorage` 按 origin（含端口）分桶 → 上次写的标记下次读不到，弹窗每次重启都再弹一遍。也不放 `_state.py`（那是 5 个固定 key 的 manager 快照 + 每启动一份时间戳副本，UI 偏好两头都不属于）；不像 `_auth_store` 加密（存布尔不存凭证）。按**机器**存不按登录用户：认证是旁挂且可整套关掉的，绑 `user_id` 会让纯本地模式无处落脚 |
+| `desktop/_spa_shell.py` | SPA 外壳注入 — `DEFAULT_APP_NAME`、`inject_app_name()`、`read_spa_index_template()`；`GET /spa/index.html` 替换 `__GATEWAY_APP_NAME__` |
+| `server.py` | aiohttp Application + **骨架**装配 `create_core_app()`（内核 manager + 两条线都要的路由，**不认识**飞书/托盘/盘符/登录）与核心 handler（`/ais` `/routers` `/sessions*` `/titles*` `/summaries*` `/defaults` `/openapi.json`，与 `_openapi_core.py` 的 path 集合同源）。旧的单个 `create_app()` 收 17 个参数并**无条件**建 `FeishuManager` 与 `WorkspaceManager` —— 桌面端容器里建飞书管理器、飞书容器里建 Windows 盘符枚举器 |
+| `desktop/_routes.py` | **ToC 装配** `register_desktop_routes()` + ToC 专属 handler（SPA 外壳与静态、`/ui/*`、`/workspace/*`、`/auth/*` 与 `_refresh_free_models`）。A7 从 `server.py` 搬来：装配函数留在骨架里时，骨架必须反向 import 6 个本包符号 + 飞书 1 个，「骨架不认识产品线」只剩纪律没有结构 |
+| `feishu/_routes.py` | **ToB 装配** `register_feishu_routes()` + `/feishu/*` 一族 handler（`route` `routes`、免登 `auth/login` `auth/me` `auth/logout`、`app-id`、`defaults`、按身份过滤的 `sessions`/`titles`/`summaries`）。A7 同上从 `server.py` 搬来。**免登三条必须带 `/feishu/` 前缀**：裸 `/auth/me` `/auth/logout` 被 `desktop/` 占着，同 app 重复注册不报错、先注册者胜出，占了就静默失效。`defaults` 只回 `{ai_id}`（= `--feishu-ai-id`）：网页应用与机器人共用一个模型的唯一来源，前端因此不碰 `/ais`。装配时还会检查 `PSI_FEISHU_DEV_OPEN_ID` 打一条**启动期** WARNING（页面上那条常驻通栏已撤） |
+| `desktop/_workspace_manager.py` | 目录浏览 + 快捷路径列表 + cwd 查询 |
+| `desktop/spa/` | Vue 3 SPA v1（对话气泡），构建输出 `spa/dist/`；路径 `/spa/` |
+| `desktop/spa-v2/` | React SPA v2（任务工作台 + 宝箱），构建输出 `spa-v2/dist/`；**默认** `GET /` → `/spa-v2/`（无 dist 时回退 v1） |
+| `feishu/feishu-web/` | ToB 前端（Vite + React 19），构建输出 `feishu-web/dist/`；路径 `/feishu-web/`。**A6 只落脚手架**：能构建 / 能起 dev server / 能连本机 gateway（页面里一次 `fetch('/defaults')` 就是连通性判据），页面是占位、零业务。登录、会话列表、对话收发由后续开发。`vite.config.ts` 的 `base` 与后端 `add_static` 前缀是同一字面量，改一边忘另一边会静默 404。详见 `feishu-web/AGENTS.md` |
+| `desktop/_tray.py` | 系统托盘图标（pystray + Pillow），由 `--tray` 参数开启，`--icon` 参数指定图标文件，左键打开浏览器或恢复 webview 窗口，右键菜单控制；`request_attention()` 脉冲高亮图标 |
+| `desktop/_webview.py` | 原生 webview 窗口（pywebview），`--webview` 参数开启。窗口关闭信号通过 `threading.Event` 传递给主 loop；`request_attention()` 在 Windows 上 FlashWindowEx |
+| `desktop/_attention.py` | `AttentionHub`：SPA `POST /ui/attention` → 绑定的 tray/webview 注意力提示（best-effort）。`schedule_notify()` 用 daemon thread 异步触发，**禁止**在 aiohttp handler 里同步等 tray（pystray 可能卡死事件循环） |
+| `_openapi.py` | `GET /openapi.json` schema 装配 — `build_openapi_spec(desktop=, feishu=, oauth=)` 把下面四份片段按开关拼起来；`OPENAPI_SPEC` 是「全都要」的那份（path key 集合与拆分前一致）。**按 path key 分份、不按当前谁在调用**：路由注册分开后各线只贴自己那份。`render_openapi(...)` 由 handler 按 `app["openapi_desktop"]` / `app["openapi_feishu"]` / `app["openapi_oauth"]` 三面旗子传参（旗子由各 `register_*_routes` 立），所以 spec 报的就是本进程真注册了的那批 path |
+| `_openapi_core.py` | 两条线都注册的 16 个 path（`/ais` `/routers` `/sessions*` `/titles*` `/summaries*` `/defaults`）+ 公共 schema 与 `responses.Error`。`/oauth/*` 曾在这里，已随 `OAuthRelay` 挪去 `feishu/_openapi.py` |
+| `desktop/_openapi.py` | ToC 专属 6 个 path（`/ui/attention` `/ui/prefs/survey` `/workspace/*`）；背后 `AttentionHub` / `UIPrefs` / `WorkspaceManager` 都认识桌面概念。无专属 schema |
+| `feishu/_openapi.py` | ToB 专属 `FEISHU_PATHS` 2 个 path（`/feishu/route` `/feishu/routes`）+ 三个 `FeishuRoute*` schema；另有 `OAUTH_PATHS` 2 个（`/oauth/callback` `/oauth/code`）——代码归本包但**与挂了哪些 gateway 正交**，由独立开关控制，每种 `--gateway` 组合都报（路由侧同理，见 [OAuthRelay](#oauthrelay)） |
 
 ## Gateway 启动流程
 
@@ -74,7 +98,12 @@ Gateway 进程
    - **必须排在第 7 步之前**：交给 `Ai` 的 key 在 socket 构造时就定了，建晚了恢复出来的免费模型会带着哨兵起来，第一次对话必然 401（见 [免费模型的 key 替换](#免费模型的-key-替换)）
 7. 恢复 AI / Router / Session（Session 恢复时带 `agent`，缺省用 Gateway default）/ titles / summaries
 8. 创建 SchedulerManager（`--scheduler-ai-id`，空则回落 `--feishu-ai-id`）
-9. await create_app(..., default_agent=..., default_workspace=..., appdata=..., schedm=..., authm=...)  — 注册 REST（含 `GET /defaults`；`authm` 非 None 才注册 `/auth/*`）
+9. await create_core_app(aim, sm, tm, rm=..., default_agent=..., default_workspace=..., appdata=..., schedm=...)  — 骨架（`server.py`）：内核 manager + 两条线都要的路由（含 `GET /defaults`）
+9b. await register_desktop_routes(app, favicon_path=..., app_name=..., attention=..., authm=...)  — ToC（`desktop/_routes.py`）：SPA 静态 + `/ui/*` + `/workspace/*`（`authm` 非 None 才注册 `/auth/*`）。**仅当 `--gateway` 含 `desktop`**
+9c. register_feishu_routes(app, feishu_ai_id=..., feishu_workspace_root=...)  — ToB（`feishu/_routes.py`）：`FeishuManager` + `/feishu/*` + `/feishu-web/`。**仅当 `--gateway` 含 `feishu`**；只挂 ToB 时另注册 `GET /` → 302 `/feishu-web/index.html`
+9d. register_oauth_routes(app) — `/oauth/callback` + `/oauth/code`。**与挂了哪些 gateway 正交，每种组合都贴**：含 `feishu` 时由 9c 内部调用，只挂 ToC 时由 `Gateway.run` 自己调，恰好一处调到
+   - **`--gateway` 必填，没有默认值**：挂哪些面是部署方的决定，内核不替它猜。少挂一面不报错，只是某个前端 404，排查方向完全跑偏——必填把这个静默失败提前成启动期的显式失败（不传即非 0 退出）。各调用方都得显式写：装机版 `--gateway desktop`（`.github/inno-setup/haitun.c`），云端 `launch-gateway.sh` `--gateway feishu`
+   - `--gateway` 只决定挂哪些 HTTP 面；agent 包选哪个是**独立的一维**，走 `--default-agent`（见 [路径默认值](#路径默认值)），不另造一套。两维可自由组合，见 [gateway 与 agent 是两个独立维度](#gateway-与-agent-是两个独立维度)
 10. 为每个已恢复 Session 的 workspace `schedm.ensure(...)` — 按需拉起调度 Session（无 `schedules/` 则跳过）
 11. 创建 _do_persist 闭包（快照 managers → state.save，sessions 含 `agent`；`list_all()` 默认已排除调度 Session）
 12. 注入 _persist + 初始全量持久化
@@ -107,7 +136,7 @@ Gateway state → `{appdata}/state/`（双读旧 cwd `state/`）          ← �
 schedules → `{workspace}/schedules/`（归 workspace，非 agent 包 / 非 AppData）
 ```
 
-路径助手：``psi_agent._appdata``（Session / Gateway / haitun 共用；**刻意**放在 gateway 包外以免循环导入）。``gateway._defaults`` 再导出同名助手。Gateway 启动把解析后的根写入 ``PSI_APPDATA``，**同进程**工具与 ``GET /defaults.appdata`` 一致。**注意这个「同进程」是硬限制**：``os.environ`` 只对本进程及其之后 fork 的子进程有效，而飞书 channel 通常是**兄弟进程**（各自 `psi-agent gateway` / `psi-agent channel feishu`），继承不到这个 env。因此需要共享 AppData 的兄弟进程必须**要么**由启动脚本给**每一个**进程都传 `--appdata`/设 `PSI_APPDATA`，**要么**像 channel 那样经 ``GET /defaults`` 现问（见 `channel/AGENTS.md`「AppData 根向 Gateway 现问」）——`GET /defaults` 由此不只服务「建 Session 的调用方」，也是**跨进程 AppData 根的唯一权威**。**禁止**把 AppData 根塞进 Session ContextVar。
+路径助手：``psi_agent._appdata``（Session / Gateway / haitun 共用；**刻意**放在 gateway 包外以免循环导入）。``gateway._defaults`` 再导出同名助手（`_todo_manager` 已直接从 ``_appdata`` 取，再导出只为包外工具 `agents/feishu/tools/_todo_store.py:23` 留着）。Gateway 启动把解析后的根写入 ``PSI_APPDATA``，**同进程**工具与 ``GET /defaults.appdata`` 一致。**注意这个「同进程」是硬限制**：``os.environ`` 只对本进程及其之后 fork 的子进程有效，而飞书 channel 通常是**兄弟进程**（各自 `psi-agent gateway` / `psi-agent channel feishu`），继承不到这个 env。因此需要共享 AppData 的兄弟进程必须**要么**由启动脚本给**每一个**进程都传 `--appdata`/设 `PSI_APPDATA`，**要么**像 channel 那样经 ``GET /defaults`` 现问（见 `channel/AGENTS.md`「AppData 根向 Gateway 现问」）——`GET /defaults` 由此不只服务「建 Session 的调用方」，也是**跨进程 AppData 根的唯一权威**。**禁止**把 AppData 根塞进 Session ContextVar。
 
 | 已合 | 内容 |
 |------|------|
@@ -123,13 +152,32 @@ schedules → `{workspace}/schedules/`（归 workspace，非 agent 包 / 非 App
 
 | CLI | 含义 |
 |-----|------|
-| `--default-agent` | 新建 Session 的 Agent 包目录；空则软默认：① `cwd/examples/haitun-workspace`（仓库开发）；② cwd 自身含 `tools/`+`skills/`（Inno 安装布局 `{app}` 即能力包）；仍空则 Session `agent=""`（与 workspace 同根兼容）。Windows 安装包 `haitun.exe` **显式**传 `--default-agent {app}` |
+| `--default-agent` | 新建 Session 的 Agent 包目录。**非空**：先试值本身是目录，再试 `agents/<值>`（短名，如 `desktop`），都不是则**报错退出**并列出可选包名（详见下方[两形解析](#工作区路径的机制与字面量分家)）。**空**则软默认：① `cwd/agents/feishu`（仓库开发）；② cwd 自身含 `tools/`+`skills/`（Inno 安装布局 `{app}` 即能力包）；仍空则 Session `agent=""`（与 workspace 同根兼容）。Windows 安装包 `haitun.exe` **显式**传 `--default-agent {app}`（绝对路径，走第一档不变） |
 | `--default-workspace` | 新建 Session / `GET /defaults` 的用户工作区；空 → 软默认 `{Desktop}/haitun交付`（**只宣布路径**；目录在 `SessionManager.create` / 开始对话时才 mkdir。`platformdirs.user_desktop_dir`）。安装包 `haitun.exe` **显式**传该路径（运行时解析桌面，不写死用户名） |
 | `--appdata` | AppData 记忆区根；空 → `PSI_APPDATA` → `platformdirs`（**禁止**手写死 `%AppData%`） |
 | `--scheduler-ai-id` | 调度 Session 挂载的 AI 实例；空 → 回落 `--feishu-ai-id`；两者都空则有 `schedules/` 的 workspace 只记 warning 不启动调度 |
 | `--auth-endpoint` | 云端账号服务地址。**空 ≠ 关闭**：空则取内置默认（正式账号服务），装了包即能登录。要关掉整套认证（不创建 `AuthManager`、不注册 `/auth/*`、不读写本机凭证）须显式 `PSI_AUTH_ENDPOINT=""`。前缀另由 `PSI_AUTH_PREFIX` 覆盖（默认 `/auth`） |
 
 `POST /sessions` 可显式带 `agent` / `workspace`；省略时用上述默认。`SessionInfo` 与 `state/latest.json` 持久化含 `agent`。
+
+### 工作区路径的机制与字面量分家
+
+`_defaults.py` 曾经既定义机制又写死品牌名，于是 `SessionManager`（只想 mkdir）不得不 `from psi_agent.gateway._defaults import ensure_workspace_dir` —— 一个**创建 Session 的 manager 反向依赖了产品线包**。现在拆成两层：
+
+| 层 | 位置 | 内容 |
+|----|------|------|
+| 机制 | ``psi_agent/_workspace_paths.py``（**gateway 包外**） | `resolve_user_workspace(explicit, *, default_name)` / `ensure_workspace_dir(path)` / `resolve_agent_package(explicit, *, repo_candidate="", short_name_root="", label=...)`。桌面路径运算、mkdir、`tools/`+`skills/` 探测、短名查找 |
+| 字面量 | `gateway/_defaults.py` | `DEFAULT_USER_WORKSPACE_NAME = "haitun交付"`、`DEFAULT_AGENT_REPO_CANDIDATE = "agents/feishu"`、`DEFAULT_AGENT_SHORT_NAME_ROOT`（从上一个**推导**，不写第二份 `agents`），以及两个薄包装 `resolve_default_workspace` / `resolve_default_agent` |
+
+**`--default-agent` 的解析：非空值两形，解析不到就报错。** 先试值本身是目录（`/abs/path`、`agents/feishu` 两种老写法照旧），再试 `agents/<值>`（故 `--default-agent desktop` 选中 `agents/desktop`），都不是则 `FileNotFoundError` 退出并列出 `agents/` 下真实可选包名。顺序不能反：反了会让老写法在 `agents/` 下有同名目录时悄悄换地方。**空值仍是合法第三态**（回落 Session 自己的 workspace），走软默认链不报错。
+
+原先第一档非空就 `.resolve()` 不查存在性，`--default-agent desktop` 静默指向 `{cwd}/desktop`；启动期根本不碰这个路径，日志干净、端口正常监听，错要等建 Session 才暴露成「这个 Session 没有 tools/skills」，排查方向完全跑偏。故每一档都**无条件 INFO 打印**解析结果与命中哪一档（根 `AGENTS.md` 坑 22 那半条教训：凡「两处必须一致」的路径，各方都应在启动时无条件打印自己的解析结果）。
+
+判据是**这段代码认识谁**：`_workspace_paths` 不认识托盘、webview、Windows 盘符、桌面登录，也**不认识任何品牌名** —— 缺省文件夹名由调用方作为关键字参数传入，该模块自己没有缺省值。代价是多两个关键字参数；换来的是 workspace 改名只碰 `gateway/`。
+
+**坑：monkeypatch 的目标跟着机制走，不跟着包装走。** 打 `platformdirs.user_desktop_dir` 必须打 ``psi_agent._workspace_paths.platformdirs.user_desktop_dir``；照旧打 `gateway._defaults.platformdirs` 会 `AttributeError`（那个模块已不 import platformdirs）。`tests/psi_agent/test_workspace_paths.py` 另有一条断言：中立模块正文（去掉模块 docstring）里不许出现 `haitun` / `交付` / `examples/`，防止品牌缺省值日后又漏回中立层。
+
+对外兼容：`_defaults.py` 继续再导出 `ensure_workspace_dir`，`resolve_default_*` 签名与返回值不变，`GET /defaults`、CLI、包外工具的调用点一行都没改。
 
 **谁对接这套接口（调用方 = 谁 POST /sessions 或等价 spawn）**
 
@@ -186,8 +234,8 @@ Gateway 启动时可通过 `--tray` 开启系统托盘，图标由 `--icon` 指�
 - 托盘启动失败（无桌面环境、图标文件无效等）不阻塞 Gateway 启动，仅记录 warning
 - `self.browser` 参数（默认 False）：设为 True 时启动时自动打开一次浏览器，托盘提供后续手动"重新打开"
 - `self.webview` 参数（默认 False）：设为 True 时替代 `--browser`，使用原生 webview 窗口展示 Web Console。与 `--browser` 互斥。必须同时指定 `--icon`（否则报错）。`--tray` 开启时关闭窗口仅隐藏到托盘（托盘左键可恢复）；否则关闭窗口即终止 Gateway
-- **Favicon 复用托盘图标**：`--icon` 设置时，`create_app(..., favicon_path=self.icon)` 注册 `GET /favicon.ico`，用 `web.FileResponse` 直接返回该图标文件（content-type 由扩展名推断）。`--icon` 未设置时不注册该路由，浏览器请求 `/favicon.ico` 得 404（无 favicon）。SPA `index.html` 含 `<link rel="icon" href="/favicon.ico">`
-- **应用名称 `app_name`**：`Gateway.app_name`（CLI `--app-name`，默认 `Haitun Agent`）经 `create_app(..., app_name=...)` 写入 `app["app_name"]`；`GET /spa/index.html` 在静态路由之前注入 `<title>`（占位符 `__GATEWAY_APP_NAME__`）。同源传给 `GatewayWebView` 窗口标题与 `GatewayTray` tooltip/菜单文案。与 Session 标题 API（`/titles`、`TitleManager`）无关。
+- **Favicon 复用托盘图标**：`--icon` 设置时，`register_desktop_routes(..., favicon_path=self.icon)` 注册 `GET /favicon.ico`，用 `web.FileResponse` 直接返回该图标文件（content-type 由扩展名推断）。`--icon` 未设置时不注册该路由，浏览器请求 `/favicon.ico` 得 404（无 favicon）。SPA `index.html` 含 `<link rel="icon" href="/favicon.ico">`
+- **应用名称 `app_name`**：`Gateway.app_name`（CLI `--app-name`，默认 `Haitun Agent`）经 `register_desktop_routes(..., app_name=...)` 写入 `app["app_name"]`；`GET /spa/index.html` 在静态路由之前注入 `<title>`（占位符 `__GATEWAY_APP_NAME__`）。同源传给 `GatewayWebView` 窗口标题与 `GatewayTray` tooltip/菜单文案。与 Session 标题 API（`/titles`、`TitleManager`）无关。
 
 ## Socket 路径约定
 
@@ -253,7 +301,7 @@ AI 运行时 crash 时，`_run_ai` 的 except 块从 `_entries` 中移除该 ent
 
 ### 免费模型的 key 替换
 
-实现在 `_free_model.py`。C 端默认免费模型走云端转发（`https://account.genuineknowledge.cn/llm/v1`），供应商 key 只在云端的 litellm 容器里，客户端凭**登录态**换算力。但 token 全程由 Gateway 持有并加密落盘，前端拿不到也不该拿（`authFlow.ts` 更要求登录组件源码不出现 token 字面量，理由是 XSS）。
+实现在 `desktop/_free_model.py`。C 端默认免费模型走云端转发（`https://account.genuineknowledge.cn/llm/v1`），供应商 key 只在云端的 litellm 容器里，客户端凭**登录态**换算力。但 token 全程由 Gateway 持有并加密落盘，前端拿不到也不该拿（`authFlow.ts` 更要求登录组件源码不出现 token 字面量，理由是 XSS）。
 
 所以 SPA 填哨兵值 `haitun-default`，Gateway 在 `_spawn` 里换成真 token：
 
@@ -273,7 +321,7 @@ AI 运行时 crash 时，`_run_ai` 的 except 块从 `_entries` 中移除该 ent
 - **原地重建，不是删了重加**：同一个 `AiInfo` 原样放回，模型列表 / Session 的 `backend_id` / 快照全都不动，用户看不到模型消失又出现。变的只有 `Ai` 手里那份 key
 - **接线**（`server.py:_refresh_free_models`）：`_auth_verify` / `_auth_complete` 在 `status == 200` 时调；`_auth_logout` **无条件**调 —— `logout()` 即使云端不可达也会走 `logout_local()`，本机已经登出了
 
-哨兵值 `haitun-default` 是**跨边界契约**，共三处：`_free_model.py`、`spa-v2/src/services/bootstrapAi.ts`、`spa/src/bootstrapAi.js`。任改一处就静默失效（带着哨兵去请求，云端回 401）。
+哨兵值 `haitun-default` 是**跨边界契约**，共三处：`desktop/_free_model.py`、`desktop/spa-v2/src/services/bootstrapAi.ts`、`desktop/spa/src/bootstrapAi.js`。任改一处就静默失效（带着哨兵去请求，云端回 401）。
 
 ## RouterManager
 
@@ -315,7 +363,7 @@ AI → Router（按持久化顺序）→ Session；依赖缺失的 Router 记录
 **`_persist` 回调**：同 AIManager，默认 no-op，Gateway.run() 注入。
 
 **create(ai_id, *, id="", workspace="") 流程**：
-1. 解析 `workspace`（缺省用 Gateway `_default_workspace`）→ ``ensure_workspace_dir`` mkdir（**刻意为之**：`GET /defaults` 只宣布路径，目录到此才创建）
+1. 解析 `workspace`（缺省用 Gateway `_default_workspace`）→ ``psi_agent._workspace_paths.ensure_workspace_dir`` mkdir（**刻意为之**：`GET /defaults` 只宣布路径，目录到此才创建。取自 gateway 包外，本 manager 不反向依赖产品线包）
 2. 获取 lock，断言不重复
 3. `aimanager.get_socket(ai_id)` 查 AI socket（AI 不存在时计算路径返回，不抛异常——支持启动恢复时 AI 尚未就绪）
 4. `_socket_path(prefix, "channels", session_id)` 生成 channel socket
@@ -374,7 +422,7 @@ Gateway：``list_segments`` / ``get_segment`` 只读；``set_segment_label`` 允
 
 **字段**：
 - `_sm: SessionManager` — 复用其 spawn/查询能力管理 Session 生命周期
-- `_ai_id: str` — 飞书 Session 默认挂载的 AI 实例 id（`create_app(..., feishu_ai_id=...)` 注入，来自 `Gateway.feishu_ai_id`）
+- `_ai_id: str` — 飞书 Session 默认挂载的 AI 实例 id（`register_feishu_routes(..., feishu_ai_id=...)` 注入，来自 `Gateway.feishu_ai_id`）。经只读属性 `default_ai_id` 对外暴露，`GET /feishu/defaults` 读的就是它 —— 网页应用与机器人的模型因此出自同一个字段
 - `_workspace_root: str` — 各会话独立 workspace 的父目录（来自 `Gateway.feishu_workspace_root`；空则以 cwd 为父）
 - `_routes: dict[str, str]` — 路由键 → session_id 映射（内存态）
 - `_lock: anyio.Lock` — 首次路由才走，频率低，可接受串行
@@ -396,13 +444,17 @@ Gateway：``list_segments`` / ``get_segment`` 只读；``set_segment_label`` 允
 
 **list_routes() → list[FeishuRoute]**：`[{open_id, chat_id, session_id}]`，供观测（`GET /feishu/routes`）。群聊记录填 `chat_id` 而 `open_id` 留空，私聊反之——一条记录只有一个键有值。
 
-**未定义（已知留白）**：群 Session 的 workspace 只有一份，而 `user_access_token`（UAT）按发送者 `open_id` 存。群里多人时「以谁的身份写文档」由 workspace 侧工具按每条消息的 `sender_open_id` 决定（见 `examples/haitun-workspace/TOOLS.md`），Gateway 不做约定。
+**未定义（已知留白）**：群 Session 的 workspace 只有一份，而 `user_access_token`（UAT）按发送者 `open_id` 存。群里多人时「以谁的身份写文档」由 workspace 侧工具按每条消息的 `sender_open_id` 决定（见 `agents/feishu/TOOLS.md`），Gateway 不做约定。
 
 ## OAuthRelay
 
-OAuth 回调中继（`_oauth_manager.py`）：让**授权码自己回到发起方**，免用户从地址栏手工复制 code。
+OAuth 回调中继（`feishu/_oauth_manager.py`，路由与 handler 在 `feishu/_routes.py`）：让**授权码自己回到发起方**，免用户从地址栏手工复制 code。
 
 **为什么在 Gateway**：授权码流程里第三方只把 `code` 拼在 `redirect_uri` 上跳一次浏览器；若没人监听那个地址，用户只能自己抄 code。Gateway 本就是 HTTP 服务且用户浏览器可达（配 `PSI_OAUTH_CALLBACK_BASE` 后连手机端也可达），是回调的天然落点——这也是飞书多用户部署唯一可行的一条通道（浏览器与 agent 不同机）。
+
+**为什么在 `feishu/` 而不是骨架层**：〔实测〕取件方全在 ToB 一侧（`agents/feishu/tools/` 下 `_oauth_receiver` / `_oauth_setup` / `feishu_auth` / `_feishu/auth`），`desktop/_auth_manager.py` 那两处只是注释、零调用——ToC 登录走手机号 + 验证码，不经过 OAuth 跳转。这段代码本身零飞书字样，所以按「认识哪些概念」会判它留骨架；两条判据冲突时按**先问存在性**走。
+
+**归属（代码住哪）与可达性（哪个进程有这两条）是两件事。** 加 `--gateway` 之前这两件事被「唯一入口两面都贴」这个前提粘在一起；参数一加，那个前提就不成立了。现在由独立的 `register_oauth_routes()` 保证可达性——含 `feishu` 的组合由 `register_feishu_routes` 内部调，只挂 ToC 时由 `Gateway.run` 自己调，**每种组合恰好一次**。少这两条的表现是用户点完授权拿 404（回调地址登记在第三方应用后台，不随本进程挂了哪些 gateway 而变），不是某个功能没开。spec 侧同理自成 `OAUTH_PATHS`，挂在 feishu 开关上会出现「路由在、spec 里没有」的错报。
 
 **刻意不做的事**：Gateway 不碰 token 交换——不知道 app_secret、不知道 PKCE verifier、不知道是哪个飞书用户。那些都留在发起方（workspace 工具），中继只搬运一次性 code，故本模块**零持久化、无跨用户鉴权**（`state` 是发起方生成的高熵随机串，本身即取件码）。
 
@@ -511,7 +563,7 @@ OAuth 回调中继（`_oauth_manager.py`）：让**授权码自己回到发起�
 | POST | `/ui/attention` | 会话在后台完成时闪烁托盘/webview（best-effort，需 `--tray` / `--webview`） |
 | GET | `/ui/prefs/survey` | 问卷弹窗是否已关闭过 → `{"done": bool}`（按机器，落 `{appdata}/ui-prefs.json`） |
 | POST | `/ui/prefs/survey` | 记录问卷弹窗已关闭；body `{"done": bool}`，缺省/非 bool 视作 `true`（唯一调用方是"关闭"动作） |
-| GET | `/openapi.json` | OpenAPI schema |
+| GET | `/openapi.json` | OpenAPI schema。只含本进程真注册了的那些面的片段（`--gateway desktop feishu` 两面都贴时与拆分前一致；单挂一面时另一面的 path 不再出现，`/oauth/*` 每种组合都在） |
 | GET | `/favicon.ico` | 托盘图标（仅当 `--icon` 设置时注册，返回该图标文件） |
 
 AI 和 Session 的 `id` 字段可选，不传自动生成 UUID。
@@ -678,7 +730,7 @@ Session 标题由服务端 `/titles` 端点维护，不在浏览器 localStorage
 
 **启动加载流程**：
 ```
-GET /ais + GET /sessions → 恢复上次 AI/Session → 无 AI 时由 SPA 自行 POST /ais（打开即用，见 spa/AGENTS.md）
+GET /ais + GET /sessions → 恢复上次 AI/Session → 无 AI 时由 SPA 自行 POST /ais（打开即用，见 desktop/spa/AGENTS.md）
 → 仍无 AI 则弹窗 Hub「大模型」→ 恢复 titles / sidebar / theme / active IDs
 ```
 Chat SSE 在长空闲时写 `: keepalive` 注释，**不得**对上游 `agen.__anext__()` 使用 `fail_after`（会拆掉 ChatManager，导致前端「正在同步」挂死）。打开即用默认模型 / 域名由 SPA 维护，Gateway 不内置默认 AI。
@@ -793,10 +845,53 @@ AI 创建对话框支持从 provider 的 `/models` API 实时拉取可用模型�
 ## CLI 集成
 
 ```
-psi-agent gateway [--listen http://127.0.0.1:PORT] [--socket-path psi] [--icon PATH] [--app-name NAME] [--browser/--no-browser] [--webview/--no-webview] [--tray/--no-tray] [--feishu-ai-id ID] [--feishu-workspace-root DIR] [--default-agent DIR] [--default-workspace DIR] [--appdata DIR] [--auth-endpoint URL] [--verbose]
+psi-agent gateway --gateway {desktop,feishu} [{desktop,feishu} ...] [--listen http://127.0.0.1:PORT] [--socket-path psi] [--icon PATH] [--app-name NAME] [--browser/--no-browser] [--webview/--no-webview] [--tray/--no-tray] [--feishu-ai-id ID] [--feishu-workspace-root DIR] [--default-agent DIR] [--default-workspace DIR] [--appdata DIR] [--auth-endpoint URL] [--verbose]
 ```
 
 默认 listen 为空，会自动绑定 127.0.0.1 随机高端口。`--browser` 开启自动打开浏览器。
+
+`--listen` **必须带 scheme**〔实测〕：`_sockets.create_site()` 把非 `http://` 非 pipe 的地址当 Unix socket，Windows 上直接抛 `ValueError: Unix-socket transport is not supported on Windows`。`--listen 127.0.0.1:18080` 报这个错，`--listen http://127.0.0.1:18080` 才对。
+
+### `--gateway` —— 挂哪些 gateway 的 HTTP 面
+
+**可组合的列表，空格分隔**，取值来自 `ALL_GATEWAYS`（`gateway/__init__.py`）。tyro 渲染成 `--gateway [{desktop,feishu} [{desktop,feishu} ...]]`。
+
+| 取值 | 挂载的面 | `GET /` |
+| --- | --- | --- |
+| `desktop feishu` | ToC（`/spa/` `/spa-v2/` `/ui/*` `/workspace/*` `/auth/*`）+ ToB（`/feishu/*` `/feishu-web/`） | ToC 降级链：spa-v2 → spa |
+| `desktop` | 只 ToC。`/feishu/*` `/feishu-web/` 不注册（404） | 同上 |
+| `feishu` | 只 ToB。`/spa*` `/ui/*` `/workspace/*` `/auth/*` 不注册（404） | 302 → `/feishu-web/index.html` |
+
+开发时只写一个值单挂一面，省掉另一面的前端与 manager。值得记的几点：
+
+- **必填，且不要加回默认值**：挂哪些面是**部署方的决定**，内核不替它猜。曾经默认全集 `desktop feishu`，那是个「看起来安全实则最危险」的默认——少挂一面不报错，只是某个前端 404，出问题时排查方向完全跑偏。必填把这个静默失败变成启动期的显式失败。判据在 `tests/psi_agent/gateway/test_gateway_selection.py`
+- **为什么不按环境给默认值**（比如云上默认 `feishu`）：内核里**没有「产品线」这个概念**。要让内核默认 `feishu`，内核就得先知道自己跑在云上——那等于把产品线概念从参数名里赶出去，又从环境判断偷偷放回来。哪一面该挂是**部署脚本**的事，各调用方显式写：装机版 `--gateway desktop`（`.github/inno-setup/haitun.c`），云端 `launch-gateway.sh` `--gateway feishu`
+- **实现用 `tyro.MISSING` 而非省略默认值**〔实测〕：该字段前面的字段都带默认值，真省掉会撞 dataclass 的「非默认字段不能跟在默认字段后」而 `TypeError`。`tyro.MISSING` 在 tyro 眼里是必填，对 dataclass 而言又是个普通默认值，不必为一个约束重排字段顺序（字段顺序就是 `--help` 的显示顺序）。**副作用**：`dataclasses.fields()` 上该字段的 `default` 是 `tyro.MISSING`（`tyro._singleton.PropagatingMissingType`）而 **不是** `dataclasses.MISSING`，只查后者会误判成「有默认值」
+- **不传时的实际表现**〔实测，tyro 1.0.15 / Python 3.14.7〕：退出码 **2**，打一个 `Required options` 框，`Missing from <prog> gateway:` 后跟 `--gateway [{desktop,feishu} [{desktop,feishu} ...]]` 与该字段 docstring——缺什么、可选值是什么都在里面。**因此该字段的 docstring 刻意写短**：tyro 把它整段渲进这个报错框，写长了会把「你少给了一个参数」淹在几十行说明里；设计理由留在字段上方的注释里
+- **CLI 可见的文本一律英文**（本仓约定）：字段 docstring、报错文案、启动 INFO 都会显示给命令行用户，统一英文；**代码注释、本文件与其他 `AGENTS.md` 保持中文**，别顺手翻译。判据是把 `--help` 抓出来跑 CJK 正则命中 0——抓的时候要设宽 `COLUMNS`（如 400），否则输出被终端宽度截断、漏掉后面的字段。设计理由与实测记录搬到字段上方的 `#` 注释里（不进 `--help`），是搬位置不是删
+- **列表而非枚举**：「有哪些 gateway」将来会变，而 `both` 这种词只在恰好两个时成立，加第三个就得改枚举。上一版是个三选一枚举（`{both,desktop,feishu}`），改掉的正是这个
+- **两个边界 tyro 都不管，代码自己拦**〔实测〕：`--gateway` 后不跟值得到 `[]` 且**退出码 0**——必填拦不到这一种（tyro 认为参数「给过了」），所以 `resolve_gateways()` 那条空列表拦截仍是唯一防线，别以为必填替掉了它；它抛 `ValueError` 退出，**不**自己补一个取值（该挂哪面只有部署方知道，内核猜出来的那面一样是静默的）；`--gateway feishu feishu` 重复值照收不报错 → 去重保序（意图无歧义，但注册两次会叠同名路由）。校验点与 `--browser` / `--webview` 互斥那条并列，都在建 socket / 恢复 state 之前失败
+- **逗号形式不支持**〔实测〕：`--gateway desktop,feishu` 报错，只认空格分隔
+- **`GET /` 指向 `index.html` 而非目录**〔实测〕：`add_static(..., show_index=False)` 对 `/feishu-web/` 这个裸目录回 **403**（ToC 侧靠在 `add_static` 之前另注册三条 `→ index.html` 的 handler 绕过）。跳目录会让 ToB 单挂时的首页变成 403；直接跳文件即可，不给飞书侧补那三条——补了会改动两面全挂时的路由集合，而那一条要求逐条不变
+
+骨架 REST（`/ais` `/sessions` …）与 `/oauth/*` 在**每种组合下都在**：前者是各面共用的内核面，后者的回调地址登记在第三方应用后台，不随本进程挂了哪些 gateway 而变（见装配步骤 9d）。
+
+#### gateway 与 agent 是两个独立维度
+
+**内核里没有「产品线」这个概念**——产品线是人为划分，不该进内核词汇表。架构上 gateway 与 agent 可**自由组合**，这两维之间没有绑定关系：
+
+- `--gateway` 只决定挂哪些 **HTTP 面**（路由 + 前端 + 该面的 manager）。
+- `--default-agent` 只决定新 Session 用哪个 **agent 包**（tools / skills / system），见[路径默认值](#路径默认值)。
+
+所以交叉组合是合法的，不予阻止。例如 `psi-agent gateway --gateway desktop --default-agent <ToB 的 agent 包>`：挂 ToC 的桌面前端，但会话跑 ToB 那套能力包——调试 ToB 工具时不必起飞书那一整套。反向同理。
+
+这也是**为什么这个参数不按产品线命名**：那种名字暗示 gateway 与 agent 是绑定的（实际从来没有），还把 `both` 这种只在恰好两个时成立的词固化进了枚举。`psi-agent gateway --gateway feishu` 读起来有重复感，是已知且认可的取舍，不为此再改名。
+
+### 两个 Gateway 同时跑
+
+要么给不同 `--socket-path`，要么给不同 `--default-workspace`。冲突不来自共享前缀，而是**同一个完整管道名**〔实测〕：同 workspace 的调度 Session id 由 workspace 路径的 sha256 确定性派生（`runtime/_scheduler_manager.py`），两个进程必然算出同一个名字；`_session_manager` 的去重只在进程内，抓不到跨进程重名。Windows 上表现为 `PermissionError(13, ...)` / `[WinError 5] 拒绝访问`。
+
+〔实测记录〕`--gateway feishu --socket-path gw-feishu --default-workspace A`（:18081）与 `--gateway desktop --socket-path gw-desktop --default-workspace B`（:18082）并存，两侧 `GET /defaults` 均 200，两份日志 0 处 `PermissionError` / `WinError 5`。
 
 `--icon PATH` 指定图标文件路径（png/jpg/ico 等）。设置后该图标会作为 Web Console 的 favicon（`GET /favicon.ico`）。
 
@@ -810,7 +905,7 @@ psi-agent gateway [--listen http://127.0.0.1:PORT] [--socket-path psi] [--icon P
 
 ### Windows 安装包 launcher（`haitun.exe`）
 
-Inno 安装后 `{app}` **就是** haitun-workspace（`tools/` / `skills/` / `systems/` 在根下），不是仓库的 `examples/haitun-workspace` 嵌套布局。`.github/inno-setup/haitun.c` 编译的 `haitun.exe` 必须显式传：
+Inno 安装后 `{app}` **就是** tob workspace（`tools/` / `skills/` / `systems/` 在根下），不是仓库的 `agents/feishu` 嵌套布局。`.github/inno-setup/haitun.c` 编译的 `haitun.exe` 必须显式传：
 
 ```text
 psi-agent.exe gateway --tray --browser --icon haitun.ico --verbose

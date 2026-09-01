@@ -21,3 +21,10 @@ state/
 # See .plan/docs/board-branch-decoupling.md and .kanban/board-ref.
 /.kanban/*
 !/.kanban/board-ref
+
+# Gateway 飞书会话运行时数据 (--feishu-workspace-root 指向)
+feishu-sessions/
+
+# python_run 的临时脚本落点。放 workspace 而非系统 temp,是为了让被硬杀
+# 的那次运行留下现场;正常路径下每次跑完即删,目录本身可能空着。
+.psi-scratch/

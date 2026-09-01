@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from psi_agent.gateway import _oauth_manager
-from psi_agent.gateway._oauth_manager import OAuthRelay
+from psi_agent.gateway.feishu import _oauth_manager
+from psi_agent.gateway.feishu._oauth_manager import OAuthRelay
 
 
 @pytest.mark.anyio

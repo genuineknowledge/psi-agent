@@ -5,9 +5,9 @@ from pathlib import Path
 import anyio
 import pytest
 
-from psi_agent.gateway._ai_manager import AIManager
-from psi_agent.gateway._scheduler_manager import SchedulerManager
-from psi_agent.gateway._session_manager import SessionManager
+from psi_agent.runtime._ai_manager import AIManager
+from psi_agent.runtime._scheduler_manager import SchedulerManager
+from psi_agent.runtime._session_manager import SessionManager
 from psi_agent.session.schedule_registry import ACTIVATE_ALL
 
 

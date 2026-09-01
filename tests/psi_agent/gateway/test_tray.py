@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from PIL import Image as PILImage
 
-from psi_agent.gateway._tray import GatewayTray
+from psi_agent.gateway.desktop._tray import GatewayTray
 
 _IS_WINDOWS = sys.platform == "win32"
 

@@ -11,7 +11,7 @@ import anyio
 import pytest
 from anyio.abc import TaskGroup
 
-from psi_agent.gateway._ai_manager import AIManager
+from psi_agent.runtime._ai_manager import AIManager
 
 
 async def _close(tg: TaskGroup) -> None:

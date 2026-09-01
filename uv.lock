@@ -129,7 +129,7 @@ wheels = [
 
 [[package]]
 name = "any-llm-sdk"
-version = "1.21.0"
+version = "1.26.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anthropic" },
@@ -140,9 +140,9 @@ dependencies = [
     { name = "rich" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1d/f5/055dd5458d38fd77521b6f555468ef2ec656ebbbf81a59e21fd48e46fac3/any_llm_sdk-1.21.0.tar.gz", hash = "sha256:15fee01e543014245557d86a848e836a7d7cbbf67638eb626c181cfabef92017", size = 162165, upload-time = "2026-07-16T14:59:27.549Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/23/abf2deede89c7293467e1a62565c3b4b6a3272785ca6c4d3e784e03ea255/any_llm_sdk-1.26.0.tar.gz", hash = "sha256:a2458bce7601e7761ed067ffa784473a83f610fb011862baf3e9eea1cf84cd35", size = 199609, upload-time = "2026-08-17T10:13:41.608Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ac/cb/4140aa7f43e7ca6a6429ef5b50f3db7a2cbedb8ebe6eeb26780a161cb116/any_llm_sdk-1.21.0-py3-none-any.whl", hash = "sha256:793ce8a52d074a85ca6f393f07f1a5a7f2c6e473c8cf3d5e09b06286ae0c0928", size = 213440, upload-time = "2026-07-16T14:59:26.022Z" },
+    { url = "https://files.pythonhosted.org/packages/07/6d/1b3eff49eb77851ac525e62d48b305364de87a72e697cdb156325a03479f/any_llm_sdk-1.26.0-py3-none-any.whl", hash = "sha256:b65c5521c79ee974b39d837863532d41f024b768336e797817b2c310a33c73d6", size = 254205, upload-time = "2026-08-17T10:13:40.224Z" },
 ]
 
 [[package]]
@@ -1150,14 +1150,14 @@ wheels = [
 
 [[package]]
 name = "openresponses-types"
-version = "2.3.0.post1"
+version = "2.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d9/26/b612c3215f5599714fa94d63eb5ee59b4eb66dbdeeaf86bb4d848359484d/openresponses_types-2.3.0.post1.tar.gz", hash = "sha256:11b8896d3621d2ac2439f6ff106f34ddcb1bbd517c317a6c852a9df2e98a0753", size = 19254, upload-time = "2026-01-22T20:02:03.933Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/db/eb/cb4a855a27c6cf04af2d47c896b6549040a86bb75e6a59cb687a8bcf19aa/openresponses_types-2.4.0.tar.gz", hash = "sha256:cd55e7fa17230d8edd46e254ef34666ca6f250b7efa3712a110aac546c7dc8d5", size = 22101, upload-time = "2026-08-05T12:22:46.167Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b2/5f/e16dad89ed24f586da5b01b9b206d3adbf21fe1af8e4dc55d5b93158fde6/openresponses_types-2.3.0.post1-py3-none-any.whl", hash = "sha256:88f6abcef9cad839203abff420dd080978bf6eb33cc06ddc5d78da4ccdba7613", size = 13847, upload-time = "2026-01-22T20:02:02.582Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/ef/2605d7219b0fa648e66ab15043bae492f4e8d3c4de4fdad85fc5eadb95a3/openresponses_types-2.4.0-py3-none-any.whl", hash = "sha256:186406592bc115bf12d9ee88320f8051ab1ade0a8fa8941fd1e44b0be16684f1", size = 15097, upload-time = "2026-08-05T12:22:45.044Z" },
 ]
 
 [[package]]
@@ -1306,6 +1306,7 @@ dependencies = [
     { name = "antlr4-python3-runtime" },
     { name = "any-llm-sdk" },
     { name = "anyio" },
+    { name = "certifi" },
     { name = "croniter" },
     { name = "hikari" },
     { name = "json-repair" },
@@ -1346,8 +1347,9 @@ dev = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.1" },
     { name = "antlr4-python3-runtime", specifier = ">=4.13.2,<4.14" },
-    { name = "any-llm-sdk", specifier = ">=1.21.0" },
+    { name = "any-llm-sdk", specifier = ">=1.26.0,<1.27.0" },
     { name = "anyio", specifier = ">=4.14.2" },
+    { name = "certifi", specifier = ">=2026.6.17" },
     { name = "croniter", specifier = ">=6.2.4" },
     { name = "hikari", specifier = ">=2.5.0" },
     { name = "json-repair", specifier = ">=0.63.0,<0.64" },

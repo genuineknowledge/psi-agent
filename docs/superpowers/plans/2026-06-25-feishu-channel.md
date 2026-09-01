@@ -475,7 +475,7 @@ git add -A && git commit -m "test(feishu): add dataclass and token validation te
 **Files:**
 - Modify: `src/psi_agent/channel/feishu/client.py`
 - Modify: `tests/psi_agent/channel/feishu/test_feishu.py`
-- Modify: `examples/haitun-workspace/TOOLS.md`
+- Modify: `agents/feishu/TOOLS.md`
 - Modify: `src/psi_agent/channel/AGENTS.md`
 - Modify: `docs/superpowers/specs/2026-06-25-feishu-channel.md`（第 13 节）
 
@@ -520,8 +520,8 @@ git add -A && git commit -m "test(feishu): add dataclass and token validation te
 
 **Files:**
 - Modify: `src/psi_agent/channel/feishu/client.py`
-- Modify: `examples/haitun-workspace/tools/_feishu_impl.py`、`tools/feishu_approval.py`、`TOOLS.md`
-- Modify: `tests/psi_agent/channel/feishu/test_feishu.py`、`examples/haitun-workspace/tests/test_feishu.py`
+- Modify: `agents/feishu/tools/_feishu_impl.py`、`tools/feishu_approval.py`、`TOOLS.md`
+- Modify: `tests/psi_agent/channel/feishu/test_feishu.py`、`agents/feishu/tests/test_feishu.py`
 - Modify: `src/psi_agent/channel/AGENTS.md`
 - Modify: `docs/superpowers/specs/2026-06-25-feishu-channel.md`（第 15 节）、`docs/superpowers/specs/2026-07-17-feishu-tools-extended-design.md`（§5.5 + §8 非目标更正）
 

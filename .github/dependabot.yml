@@ -15,7 +15,7 @@ updates:
       interval: "weekly"
 
   - package-ecosystem: "npm"
-    directory: "/src/psi_agent/gateway/spa"
+    directory: "/src/psi_agent/gateway/desktop/spa"
     schedule:
       interval: "weekly"
     groups:
@@ -24,7 +24,7 @@ updates:
           - "*"
 
   - package-ecosystem: "npm"
-    directory: "/src/psi_agent/gateway/spa-v2"
+    directory: "/src/psi_agent/gateway/desktop/spa-v2"
     schedule:
       interval: "weekly"
     groups:

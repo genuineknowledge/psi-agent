@@ -7,7 +7,7 @@ import anyio
 import pytest
 from PIL import Image
 
-from psi_agent.gateway._attention import AttentionHub, _make_highlight_image
+from psi_agent.gateway.desktop._attention import AttentionHub, _make_highlight_image
 
 
 @pytest.mark.anyio

@@ -11,6 +11,7 @@ import pytest
 from lark_channel import PolicyConfig
 
 from psi_agent.channel._core import ChannelCore
+from psi_agent.channel._file_bytes import OutboundFileError
 from psi_agent.channel._types import FileChunk, TextChunk
 from psi_agent.channel.feishu import ChannelFeishu, client
 from psi_agent.channel.feishu._card_action import (
@@ -1194,3 +1195,453 @@ async def test_gateway_route_provider_group_cache_is_per_chat() -> None:
 
     assert (a, b) == ("/tmp/a.sock", "/tmp/b.sock")
     assert len(http.post_calls) == 2
+
+
+@pytest.mark.anyio
+async def test_gateway_route_provider_caches_external_flag() -> None:
+    """``external`` 随路由一起缓存, 且与 socket 一样是按路由键分开的。"""
+    http = _FakeHttp(
+        [
+            _FakeResp(201, {"channel_socket": "http://box:8081", "external": True}),
+            _FakeResp(201, {"channel_socket": "/tmp/local.sock", "external": False}),
+        ]
+    )
+    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http))
+
+    # 路由之前一律视作本地 —— 不知道就别声称在外面。
+    assert provider.is_external("ou_secret") is False
+
+    await provider.ensure("ou_secret")
+    await provider.ensure("ou_plain")
+
+    assert provider.is_external("ou_secret") is True
+    assert provider.is_external("ou_plain") is False
+
+
+@pytest.mark.anyio
+async def test_gateway_route_provider_external_defaults_false_on_old_gateway() -> None:
+    """老 gateway 的响应没有 ``external`` 字段 → 当本地处理 (维持升级前行为)。"""
+    http = _FakeHttp([_FakeResp(201, {"channel_socket": "/tmp/ou_1.sock"})])
+    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http))
+
+    await provider.ensure("ou_1")
+
+    assert provider.is_external("ou_1") is False
+
+
+@pytest.mark.anyio
+async def test_build_chunks_external_hands_off_instead_of_downloading(monkeypatch, tmp_path):
+    """跨容器会话: 一个字节都不下载, 改把 message_id/file_key 交给对端容器自取。
+
+    回归的是「文件明明收到了、对端 agent 却报 not found」—— 附件落在本容器的
+    ``~/Downloads``, 对端容器有独立文件系统, 那个路径在它那儿根本不存在。
+    """
+    monkeypatch.setattr(client.platformdirs, "user_downloads_dir", lambda: str(tmp_path))
+    channel = _fake_channel()
+    channel.download_resource_to_file = AsyncMock(side_effect=AssertionError("must not download"))
+    sources = [
+        _file_source("om_1", "fk_1", "洪德山-简历.pdf"),
+        _file_source("om_2", "fk_2", "b.docx"),
+    ]
+
+    chunks = await client._build_chunks(channel, _batched_ctx(sources), external=True)
+
+    channel.download_resource_to_file.assert_not_awaited()
+    assert not [c for c in chunks if isinstance(c, FileChunk)]
+    handoff = "\n".join(c.text for c in chunks if isinstance(c, TextChunk))
+    assert "<feishu_attachments>" in handoff
+    assert 'message_id="om_1" file_key="fk_1"' in handoff
+    assert 'message_id="om_2" file_key="fk_2"' in handoff
+    assert "洪德山-简历.pdf" in handoff
+    # 不能借用 [RECV:] —— 它的契约是路径本地可读, 跨容器时是假的。
+    assert "[RECV:" not in handoff
+    # 也别在本容器留下没人读的空目录。
+    assert not (tmp_path / ".psi").exists()
+
+
+def test_attachment_handoff_carries_pickup_instructions():
+    """块必须自带取件说明 —— 对端没有别的地方能知道该怎么取。
+
+    实测缺口: 对端 workspace 的 AGENTS.md / TOOLS.md 里没有一处提到
+    ``<feishu_attachments>``, 而 ``feishu_image_get`` 的 ``save_path`` 是必填无默认。
+    只发裸 XML, agent 就得猜工具名和落盘位置; 猜不中就又变成「跟用户说没收到」。
+    """
+    handoff = client._attachment_handoff([_file_source("om_1", "fk_1", "简历.pdf")])
+
+    assert "feishu_image_get" in handoff, "得点名工具, 别让对端猜"
+    assert "save_path" in handoff, "save_path 必填无默认, 必须给出落盘约定"
+    # 说明得解释「为什么没有文件」, 否则 agent 会先去找不存在的路径。
+    assert "不同容器" in handoff or "另一个容器" in handoff
+    # 说明是注释, 不能污染 file 条目的解析。
+    assert handoff.count("<file ") == 1
+
+
+@pytest.mark.anyio
+async def test_build_chunks_external_skips_audio_download(monkeypatch, tmp_path):
+    """语音同理: 不在本容器抓, 只把 audio key 交过去。"""
+    monkeypatch.setattr(client.platformdirs, "user_downloads_dir", lambda: str(tmp_path))
+    channel = _fake_channel()
+    channel.client.im.v1.message_resource.aget = AsyncMock(side_effect=AssertionError("must not download"))
+    ctx = SimpleNamespace(
+        message_id="om_1",
+        content_text='<audio key="ak_1" />',
+        resources=[],
+        raw_content_type="audio",
+        batched_sources=None,
+    )
+
+    chunks = await client._build_chunks(channel, ctx, external=True)
+
+    channel.client.im.v1.message_resource.aget.assert_not_awaited()
+    handoff = "\n".join(c.text for c in chunks if isinstance(c, TextChunk))
+    assert 'file_key="ak_1"' in handoff
+
+
+@pytest.mark.anyio
+async def test_build_chunks_external_text_only_has_no_handoff_block(monkeypatch, tmp_path):
+    """纯文本消息不该凭空多出一个空的 ``<feishu_attachments>`` 块。"""
+    monkeypatch.setattr(client.platformdirs, "user_downloads_dir", lambda: str(tmp_path))
+    channel = _fake_channel()
+    ctx = SimpleNamespace(
+        content_text="你好",
+        message_id="om_1",
+        resources=[],
+        raw_content_type="text",
+        batched_sources=None,
+    )
+
+    chunks = await client._build_chunks(channel, ctx, external=True)
+
+    assert "feishu_attachments" not in "\n".join(c.text for c in chunks if isinstance(c, TextChunk))
+
+
+@pytest.mark.anyio
+async def test_build_chunks_local_still_downloads(monkeypatch, tmp_path):
+    """external=False (其余十几位用户) 走原路径: 照旧下载成 FileChunk, 不出 handoff 块。"""
+    monkeypatch.setattr(client.platformdirs, "user_downloads_dir", lambda: str(tmp_path))
+    channel = _fake_channel()
+
+    async def _download(file_key: str, *, message_id: str, dest_dir: str, **kwargs: Any) -> str:
+        path = anyio.Path(dest_dir) / f"{file_key}.pdf"
+        await path.write_bytes(b"x")
+        return str(path)
+
+    channel.download_resource_to_file = AsyncMock(side_effect=_download)
+
+    chunks = await client._build_chunks(channel, _batched_ctx([_file_source("om_1", "fk_1", "a.pdf")]))
+
+    assert [c for c in chunks if isinstance(c, FileChunk)]
+    assert "feishu_attachments" not in "\n".join(c.text for c in chunks if isinstance(c, TextChunk))
+
+
+@pytest.mark.anyio
+async def test_handle_passes_external_to_build_chunks(monkeypatch, tmp_path):
+    """``_handle_and_stream`` 必须把谓词的答案传给 ``_build_chunks``。
+
+    这条盯的是接线: 谓词写好了但没接进调用点时, external 恒为 False, 修复完全空转。
+    """
+    build = AsyncMock(return_value=[TextChunk("hi")])
+    monkeypatch.setattr(client, "_build_chunks", build)
+    channel = _fake_channel()
+    core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
+    ctx = SimpleNamespace(sender_id="ou_secret", chat_id="oc_dm", chat_type="p2p", message_id="om_1")
+
+    await client._handle_and_stream(channel, _resolver(core), None, ctx, lambda open_id, **kw: True)
+
+    assert build.await_args is not None, "_build_chunks 根本没被 await"
+    assert build.await_args.kwargs["external"] is True
+
+
+@pytest.mark.anyio
+async def test_run_feishu_wires_is_external_into_message_handler(monkeypatch):
+    """``run_feishu`` 必须把 ``is_external`` 谓词接进消息处理器的实参。
+
+    盯的是接线本身: 谓词与 handoff 都写对、就是没传进去时, 参数默认 None → external
+    恒为 False, 整个修复静默空转 (而所有直接调 ``_handle_and_stream`` 的单测仍全绿)。
+    """
+    channel = MagicMock()
+    channel.on = MagicMock()
+    channel.start_background = AsyncMock()
+    channel.stop_background = AsyncMock()
+    channel.bot_identity = SimpleNamespace(open_id="ou_bot", name="Haitun")
+
+    started: list[tuple] = []
+
+    class _CapturingPortal(_FakePortal):
+        def start_task_soon(self, *args: object, **kwargs: object) -> None:
+            started.append(args)
+
+    monkeypatch.setattr(client, "FeishuChannel", lambda **kw: channel)
+    monkeypatch.setattr(client, "BlockingPortal", lambda: _CapturingPortal())
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(
+            partial(
+                run_feishu,
+                session_socket="/tmp/nonexistent.sock",
+                app_id="a",
+                app_secret="s",
+                gateway_url="http://127.0.0.1:9000",
+                # 显式给 appdata: 否则 run_feishu 会先向 gateway GET /defaults 要它,
+                # 那次真实 HTTP 在没人监听的端口上要等到超时, 处理器注册被推到 sleep 之后。
+                appdata="/tmp/psi-appdata",
+            )
+        )
+        await anyio.sleep(0.1)
+        handlers = {c.args[0]: c.args[1] for c in channel.on.call_args_list}
+        await handlers["message"](SimpleNamespace(sender_id="ou_1", chat_id="oc_1", message_id="om_1"))
+        tg.cancel_scope.cancel()
+
+    assert len(started) == 1
+    args = started[0]
+    assert args[0] is client._handle_and_stream
+    # 末位实参就是谓词: 可调用, 且没路由过的会话答 False。
+    predicate = args[-1]
+    assert callable(predicate)
+    assert predicate("ou_1", chat_id="oc_1", chat_type="p2p") is False
+
+
+def _driving_channel() -> MagicMock:
+    """``stream`` 真去跑 ``_produce`` 回调 —— 默认的 AsyncMock 只记录调用, 回调根本不执行,
+    于是任何盯 ``_produce`` 内部行为的断言都会假绿(实测本文件的 _fake_channel 即如此)。"""
+    channel = _fake_channel()
+
+    async def _stream(chat_id: str, payload: dict, options: dict | None = None) -> None:
+        produce = payload["markdown"]
+        stream = SimpleNamespace(append=AsyncMock())
+        await produce(stream)
+
+    channel.stream = AsyncMock(side_effect=_stream)
+    return channel
+
+
+@pytest.mark.anyio
+async def test_stream_reply_withholds_private_file_from_other_user(monkeypatch, tmp_path):
+    """私密区文件不许发给非主人 —— ``_send_file`` 一次都不该被调用。"""
+    monkeypatch.setenv("PSI_PRIVATE_OPEN_IDS", "ou_owner")
+    secret = tmp_path / ".private" / "ou_owner" / "s.md"
+    await anyio.Path(secret.parent).mkdir(parents=True, exist_ok=True)
+    await anyio.Path(secret).write_bytes(b"x")
+
+    sent = AsyncMock()
+    monkeypatch.setattr(client, "_send_file", sent)
+
+    async def _post(chunks):
+        yield FileChunk(str(secret))
+
+    core = cast(ChannelCore, SimpleNamespace(post=_post))
+    await client._stream_reply(_driving_channel(), core, "oc_1", [], reply_to=None, sender_open_id="ou_intruder")
+
+    assert sent.await_count == 0
+
+
+@pytest.mark.anyio
+async def test_stream_reply_sends_private_file_to_its_owner(monkeypatch, tmp_path):
+    """主人自己收得到自己的私密文件 —— 守卫是单向的, 不是一律拦。"""
+    monkeypatch.setenv("PSI_PRIVATE_OPEN_IDS", "ou_owner")
+    secret = tmp_path / ".private" / "ou_owner" / "s.md"
+    await anyio.Path(secret.parent).mkdir(parents=True, exist_ok=True)
+    await anyio.Path(secret).write_bytes(b"x")
+
+    sent = AsyncMock()
+    monkeypatch.setattr(client, "_send_file", sent)
+
+    async def _post(chunks):
+        yield FileChunk(str(secret))
+
+    core = cast(ChannelCore, SimpleNamespace(post=_post))
+    await client._stream_reply(_driving_channel(), core, "oc_1", [], reply_to=None, sender_open_id="ou_owner")
+
+    assert sent.await_count == 1
+
+
+@pytest.mark.anyio
+async def test_stream_reply_public_file_unaffected(monkeypatch, tmp_path):
+    """公共区文件照常发, 与升级前零行为差异。"""
+    monkeypatch.setenv("PSI_PRIVATE_OPEN_IDS", "ou_owner")
+    public = tmp_path / "pub.md"
+    await anyio.Path(public).write_bytes(b"x")
+
+    sent = AsyncMock()
+    monkeypatch.setattr(client, "_send_file", sent)
+
+    async def _post(chunks):
+        yield FileChunk(str(public))
+
+    core = cast(ChannelCore, SimpleNamespace(post=_post))
+    await client._stream_reply(_driving_channel(), core, "oc_1", [], reply_to=None, sender_open_id="ou_intruder")
+
+    assert sent.await_count == 1
+
+
+@pytest.mark.anyio
+async def test_handle_and_stream_wires_sender_into_stream_reply(monkeypatch, tmp_path):
+    """``_handle_and_stream`` 必须把发送者 open_id 接进 ``_stream_reply``。
+
+    盯的是接线: 守卫写对了但 sender_open_id 没传进来时, 它恒为 None,
+    于是主人自己也被拦、或私密文件照发 —— 两种都是静默错误。
+    """
+    monkeypatch.setattr(client, "_build_chunks", AsyncMock(return_value=[TextChunk("hi")]))
+    stream = AsyncMock()
+    monkeypatch.setattr(client, "_stream_reply", stream)
+    core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
+    ctx = SimpleNamespace(sender_id="ou_owner", chat_id="oc_dm", chat_type="p2p", message_id="om_1")
+
+    await client._handle_and_stream(_fake_channel(), _resolver(core), None, ctx, None)
+
+    assert stream.await_args is not None, "_stream_reply 根本没被 await"
+    assert stream.await_args.kwargs["sender_open_id"] == "ou_owner"
+
+
+# -- 出向跨容器发文件 -----------------------------------------------------------
+#
+# 独立容器的 agent 生成文件后, channel 跑在 gateway 容器里读不到那个路径 (各挂自己的卷)。
+# 修法是取字节再上传: SDK 的 ``{"source": <bytes>}`` 走 MediaSource(kind="buffer"),
+# 完全不碰文件系统。以下用例盯的就是「有地址取字节 / 无地址照旧交路径」这条分岔。
+
+
+def _ok_channel() -> MagicMock:
+    """``send`` 明确返回成功 —— 默认 AsyncMock 的返回值是 MagicMock, ``result.success``
+    恒真, 于是 file fallback 那条分支永远测不到。"""
+    channel = _fake_channel()
+    channel.send = AsyncMock(return_value=SimpleNamespace(success=True))
+    return channel
+
+
+def _image_rejecting_channel() -> MagicMock:
+    """第一次 (image) 失败、第二次 (file) 成功 —— 复现 md 之类非图片文件的真实路径。"""
+    channel = _fake_channel()
+    channel.send = AsyncMock(side_effect=[SimpleNamespace(success=False), SimpleNamespace(success=True)])
+    return channel
+
+
+@pytest.mark.anyio
+async def test_send_file_without_source_passes_path_and_makes_no_request(monkeypatch):
+    """本地 Session: 照旧把**路径**交给 SDK, 且一次 HTTP 都不发。
+
+    这是「不打扰本地链路」的判据 —— 本地路径本就可读, 多绕一趟 HTTP 纯属倒退。
+    """
+    fetched = AsyncMock()
+    monkeypatch.setattr(client, "fetch_file_bytes", fetched)
+    channel = _ok_channel()
+
+    await client._send_file(channel, "oc_1", "/workspace/x.md")
+
+    assert fetched.await_count == 0
+    assert channel.send.await_args.args[1] == {"image": {"source": "/workspace/x.md"}}
+
+
+@pytest.mark.anyio
+async def test_send_file_with_source_uploads_bytes(monkeypatch):
+    """跨容器: 取到的**字节**交给 SDK, 而不是那个本进程读不到的路径。"""
+    monkeypatch.setattr(client, "fetch_file_bytes", AsyncMock(return_value=b"BYTES"))
+    channel = _ok_channel()
+
+    await client._send_file(channel, "oc_1", "/workspace/x.md", "http://psi-agent-luolin:8081")
+
+    assert channel.send.await_args.args[1] == {"image": {"source": b"BYTES"}}
+
+
+@pytest.mark.anyio
+async def test_send_file_bytes_fallback_carries_file_name(monkeypatch):
+    """走字节的 file fallback **必须**带 file_name。
+
+    走路径时 SDK 从 basename 取名; 走字节时它只有 ``"upload"`` 可用, 用户会收到一个名为
+    upload 的附件 —— 「可点击下载的附件」也就废了一半。这条盯的正是那个易漏点。
+    """
+    monkeypatch.setattr(client, "fetch_file_bytes", AsyncMock(return_value=b"BYTES"))
+    channel = _image_rejecting_channel()
+
+    await client._send_file(channel, "oc_1", "/workspace/交付物.md", "http://psi-agent-chengxx:8081")
+
+    assert channel.send.await_count == 2
+    assert channel.send.await_args.args[1] == {"file": {"source": b"BYTES", "file_name": "交付物.md"}}
+
+
+@pytest.mark.anyio
+async def test_send_file_raises_instead_of_falling_back_when_fetch_fails(monkeypatch):
+    """跨容器取字节失败 → 抛 ``OutboundFileError``, **一次 send 都不发**。
+
+    刻意不回落到「交路径给 SDK」: 那条路在跨容器下必然失败 (路径在本容器不存在, 正是
+    本 bug 的成因), 走一遍只是把我们的错误换成 SDK 的静默失败 —— 用户看到的还是一句话
+    回复没有附件, 与修复前无区别。断言 send 零调用, 才能锁住「没有偷偷试一把」。
+    """
+    monkeypatch.setattr(client, "fetch_file_bytes", AsyncMock(return_value=None))
+    channel = _ok_channel()
+
+    with pytest.raises(OutboundFileError) as excinfo:
+        await client._send_file(channel, "oc_1", "/workspace/x.md", "http://psi-agent-luolin:8081")
+
+    assert channel.send.await_count == 0
+    # 报错要点到文件名, 用户才知道是哪个文件没发出来。
+    assert "x.md" in str(excinfo.value)
+
+
+@pytest.mark.anyio
+async def test_send_file_local_path_unaffected_by_fetch_failure(monkeypatch):
+    """``source`` 为空 (本地 Session) 时不受影响: 照旧交路径, 且根本不调取字节。"""
+    fetched = AsyncMock(return_value=None)
+    monkeypatch.setattr(client, "fetch_file_bytes", fetched)
+    channel = _ok_channel()
+
+    await client._send_file(channel, "oc_1", "/workspace/x.md")
+
+    assert fetched.await_count == 0
+    assert channel.send.await_args.args[1] == {"image": {"source": "/workspace/x.md"}}
+
+
+@pytest.mark.anyio
+async def test_stream_reply_reports_outbound_file_failure_to_user(monkeypatch, tmp_path):
+    """附件发不出去要**告诉用户**, 且不中断整条回复。
+
+    静默正是本 bug 的症状, 所以失败必须可见; 但就地告知而非抛出 —— 一个附件失败不该
+    让用户连文字也收不到。断言: 错误文本发了 (且点到文件名), 后面的 chunk 照旧流出。
+    """
+    monkeypatch.setattr(
+        client,
+        "_send_file",
+        AsyncMock(side_effect=OutboundFileError("/workspace/交付物.md")),
+    )
+    appended: list[str] = []
+    channel = _fake_channel()
+    channel.send = AsyncMock(return_value=SimpleNamespace(success=True))
+
+    async def _stream(chat_id: str, payload: dict, options: dict | None = None) -> None:
+        stream = SimpleNamespace(append=AsyncMock(side_effect=lambda t: appended.append(t)))
+        await payload["markdown"](stream)
+
+    channel.stream = AsyncMock(side_effect=_stream)
+
+    async def _post(chunks):
+        yield FileChunk("/workspace/交付物.md", source="http://psi-agent-luolin:8081")
+        yield TextChunk("后面还有")
+
+    core = cast(ChannelCore, SimpleNamespace(post=_post))
+    await client._stream_reply(channel, core, "oc_1", [], reply_to=None, sender_open_id="ou_1")
+
+    texts = [c.args[1].get("text", "") for c in channel.send.await_args_list if isinstance(c.args[1], dict)]
+    assert any("交付物.md" in t for t in texts), f"没把失败告诉用户: {texts}"
+    assert "后面还有" in "".join(appended), "一个附件失败不该中断后续内容"
+
+
+@pytest.mark.anyio
+async def test_stream_reply_forwards_file_chunk_source(monkeypatch, tmp_path):
+    """接线: ``FileChunk.source`` 必须一路传到 ``_send_file``。
+
+    断的是这条链最容易断的一节 —— 地址填对了但没传下去时, 表现与完全没修一样。
+    """
+    sent = AsyncMock()
+    monkeypatch.setattr(client, "_send_file", sent)
+
+    async def _post(chunks):
+        yield FileChunk("/workspace/x.md", "http://psi-agent-luolin:8081")
+
+    core = cast(ChannelCore, SimpleNamespace(post=_post))
+    await client._stream_reply(_driving_channel(), core, "oc_1", [], reply_to=None, sender_open_id="ou_1")
+
+    assert sent.await_args is not None, "_send_file 根本没被 await"
+    assert sent.await_args.args[3] == "http://psi-agent-luolin:8081"
+
+
+# 取字节本身 (含端到端跑真 session server) 的用例在 tests/psi_agent/channel/test__file_bytes.py
+# —— 那是 channel 通用层, 与飞书无关。此处只覆盖「飞书出向怎么用它」。

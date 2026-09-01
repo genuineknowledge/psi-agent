@@ -26,10 +26,13 @@ from lark_channel.core.model import BaseRequest
 from lark_channel.event.custom import CustomizedEventProcessor
 from loguru import logger
 
+from psi_agent import _private_space
 from psi_agent._appdata import resolve_appdata_root
+from psi_agent._card_markers import SILENT_REPLY
 from psi_agent._feishu_routing import is_group_chat, route_key
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._errors import ChannelError
+from psi_agent.channel._file_bytes import OutboundFileError, fetch_file_bytes
 from psi_agent.channel._types import FileChunk, InputChunk, ReasoningChunk, TextChunk
 from psi_agent.channel.feishu._agent_events import register_feishu_agent_events
 
@@ -37,7 +40,9 @@ from ._card_action import CardActionBatcher, handle_card_action
 
 _EMOJI_PROCESSING = "Typing"
 _EMOJI_FAILED = "CrossMark"
-_SILENT_REPLY_TOKEN = "NO_REPLY"
+# 与 session 侧直调共享一份定义(psi_agent._card_markers):两边各持一份曾导致
+# 静默漂移——改名后 session 直调静默失效、或 token 直出对话。
+_SILENT_REPLY_TOKEN = SILENT_REPLY
 
 
 class ResolveCore(Protocol):
@@ -48,6 +53,16 @@ class ResolveCore(Protocol):
     """
 
     def __call__(self, open_id: str | None, *, chat_id: str = "", chat_type: str = "") -> Awaitable[ChannelCore]: ...
+
+
+class IsExternal(Protocol):
+    """同步谓词: 该会话的 Session 是否跑在别的容器里。
+
+    与 ``ResolveCore`` 分开而不是把返回值改成元组: 后者要同时改动卡片回调、文档评论等
+    三个调用点, 而它们都不收附件, 拿到这个事实也没用。
+    """
+
+    def __call__(self, open_id: str | None, *, chat_id: str = "", chat_type: str = "") -> bool: ...
 
 
 def _allowed(sender_id: str | None, allowed_ids: list[str] | None) -> bool:
@@ -66,8 +81,9 @@ class _CoreRegistry:
     所有 core 进同一 ``AsyncExitStack``, 退出时逐个 shielded 关闭。
     """
 
-    def __init__(self, interval: float, stack: AsyncExitStack) -> None:
+    def __init__(self, interval: float, stack: AsyncExitStack, idle_drain: float = 5.0) -> None:
         self._interval = interval
+        self._idle_drain = idle_drain
         self._stack = stack
         self._cores: dict[str, ChannelCore] = {}
         self._lock = anyio.Lock()
@@ -79,7 +95,9 @@ class _CoreRegistry:
         async with self._lock:  # 慢路径: double-checked
             core = self._cores.get(socket)
             if core is None:
-                core = await self._stack.enter_async_context(ChannelCore(socket, interval=self._interval))
+                core = await self._stack.enter_async_context(
+                    ChannelCore(socket, interval=self._interval, idle_drain=self._idle_drain)
+                )
                 self._cores[socket] = core
                 logger.debug(f"created ChannelCore for socket={socket!r} (total={len(self._cores)})")
             return core
@@ -106,7 +124,16 @@ class _GatewayRouteProvider:
         self._base = base_url.rstrip("/")
         self._http = http
         self._sockets: dict[str, str] = {}  # 路由键 -> channel_socket
+        self._external: dict[str, bool] = {}  # 路由键 -> Session 是否在别的容器里
         self._lock = anyio.Lock()
+
+    def is_external(self, open_id: str, *, chat_id: str = "", chat_type: str = "") -> bool:
+        """已知该会话的 Session 是否在别的容器里 (未路由过则视作本地)。
+
+        只读缓存、不发请求: 调用点在 ``ensure`` 之后, 缓存必然已填。未命中时返回
+        ``False`` (退回「自己下载」的老行为), 因为回退共享 socket 时确实是本地 Session。
+        """
+        return self._external.get(route_key(open_id, chat_id, chat_type), False)
 
     async def ensure(self, open_id: str, *, chat_id: str = "", chat_type: str = "") -> str:
         # 本地缓存键与 Gateway FeishuManager 的路由键共用 psi_agent._feishu_routing,
@@ -119,13 +146,19 @@ class _GatewayRouteProvider:
             hit = self._sockets.get(key)
             if hit is not None:
                 return hit
-            socket = await self._route(open_id, chat_id, chat_type)
+            socket, external = await self._route(open_id, chat_id, chat_type)
+            # external 先写: ensure 返回后调用方立刻会问 is_external, 两者必须同时可见。
+            self._external[key] = external
             self._sockets[key] = socket
-            logger.debug(f"routed {key!r} -> socket={socket!r}")
+            logger.debug(f"routed {key!r} -> socket={socket!r} external={external}")
             return socket
 
-    async def _route(self, open_id: str, chat_id: str, chat_type: str) -> str:
-        """POST /feishu/route 拿回该会话的 channel_socket (Gateway 幂等 spawn/复用)。"""
+    async def _route(self, open_id: str, chat_id: str, chat_type: str) -> tuple[str, bool]:
+        """POST /feishu/route 拿回 (channel_socket, external)。
+
+        ``external`` 缺失即视作 ``False`` —— 老版 Gateway 不返回该字段, 那时也没有跨容器
+        会话, 沿用「channel 自己下载」的老行为正确。
+        """
         async with self._http.post(
             f"{self._base}/feishu/route",
             json={"open_id": open_id, "chat_id": chat_id, "chat_type": chat_type},
@@ -133,7 +166,7 @@ class _GatewayRouteProvider:
         ) as resp:
             if resp.status == 201:
                 data = await resp.json()
-                return str(data["channel_socket"])
+                return str(data["channel_socket"]), bool(data.get("external", False))
             body = await resp.text()
             raise RuntimeError(f"Gateway POST /feishu/route failed (status={resp.status}): {body}")
 
@@ -164,14 +197,39 @@ async def _resolve_shared_appdata(base_url: str, http: aiohttp.ClientSession) ->
     return appdata.strip() if isinstance(appdata, str) else ""
 
 
-async def _send_file(channel: Any, chat_id: str, path: str) -> None:
-    logger.debug(f"path={path}")
-    result = await channel.send(chat_id, {"image": {"source": path}})
+async def _send_file(channel: Any, chat_id: str, path: str, source: str = "") -> None:
+    """把一个出向文件发进飞书会话。
+
+    ``source`` 非空 = 文件在**别的容器**里, 本进程读不到该路径 (见 ``FileChunk.source``)。
+    那时先取字节再上传: SDK 的 ``{"source": <bytes>}`` 走 ``MediaSource(kind="buffer")``,
+    完全不碰文件系统。留空则照旧交路径, 由 SDK 自己读 —— 本地 Session 一步 HTTP 都不多走。
+
+    走字节时**必须显式给 ``file_name``**: 走路径时 SDK 从 basename 取名, 走字节时它只有
+    ``"upload"`` 可用, 用户会收到一个名为 upload 的附件 —— 「可点击下载」也就废了一半。
+
+    **``source`` 非空而取字节失败时抛 ``OutboundFileError``, 不回落到交路径。** 回落在这里
+    是有害的: 那条路在跨容器下**必然**失败 (路径在本容器不存在, 正是本 bug 的成因), 走一遍
+    只是把「我们的错误」换成「SDK 的错误」, 而 SDK 那侧的失败恰恰是静默的 —— 用户看到的还是
+    一句话回复没有附件, 与修复前一模一样。宁可让调用方如实告诉用户「文件没发出去」。
+    ``source`` 为空 (本地 Session) 不受影响: 那时交路径本来就是正确路径, 一步 HTTP 都不多走。
+    """
+    logger.debug(f"path={path} source={source!r}")
+    payload: str | bytes = path
+    if source:
+        data = await fetch_file_bytes(source, path)
+        if data is None:
+            raise OutboundFileError(path)
+        payload = data
+
+    result = await channel.send(chat_id, {"image": {"source": payload}})
     if result.success:
         logger.debug("OK as image")
         return
     logger.debug("image rejected, trying file")
-    await channel.send(chat_id, {"file": {"source": path}})
+    file_spec: dict[str, Any] = {"source": payload}
+    if isinstance(payload, bytes):
+        file_spec["file_name"] = Path(path).name or "file"
+    await channel.send(chat_id, {"file": file_spec})
 
 
 async def _add_reaction(channel: Any, message_id: str, emoji_type: str) -> str | None:
@@ -271,12 +329,56 @@ class AttachmentDownloadError(ChannelError):
         super().__init__("以下文件未接收: " + ", ".join(missing) + " —— 请重新发送")
 
 
-async def _build_chunks(channel: Any, ctx: Any) -> list[InputChunk]:
+def _attachment_handoff(sources: list[Any]) -> str:
+    """把附件的**协议事实**编码成文本, 交由对端容器自己下载。
+
+    跨容器会话不能在本进程下载: 附件会落到本容器的 ``~/Downloads/.psi/<date>/``, 而对端
+    容器有独立文件系统, 那个路径在它那儿不存在 —— 实测表现为 agent 拿着完全正确的路径调
+    ``read_pdf`` 却得到 "not found", 于是对用户说「文件没收到」(文件其实好好躺在本容器里)。
+
+    所以这里只给出 ``message_id`` + ``file_key`` + 文件名: 对端 agent 用 ``feishu_image_get``
+    即可自取 (它有 tenant token, 走 REST 不需要 WS)。刻意不编成 ``[RECV:]`` —— 那个标记的
+    契约是"路径在本地可读", 跨容器时不成立, 混用只会让下游把不可读的路径当真。
+
+    块自带取件说明: 对端只看得见这段文本, 没有别处会告诉它该调哪个工具、存到哪
+    (``feishu_image_get`` 的 ``save_path`` 是必填、无默认)。少了这句, agent 只能猜, 而
+    "猜不到就跟用户说没收到"正是本函数要消灭的故障。
+    """
+    lines: list[str] = [
+        "<feishu_attachments>",
+        "<!-- 附件未下载: 你与飞书通道在不同容器, 它下的文件你读不到。用 "
+        "feishu_image_get(message_id=..., file_key=..., save_path=..., resource_type=...) "
+        "自取, save_path 建议 inbox/<今天日期>/<name>。取到后再 read_pdf / describe_image。 -->",
+    ]
+    for src in sources:
+        src_id = getattr(src, "message_id", "") or ""
+        for r in getattr(src, "resources", None) or []:
+            name = getattr(r, "file_name", "") or ""
+            lines.append(f'<file message_id="{src_id}" file_key="{r.file_key}" type="{r.type}" name="{name}"/>')
+        for m in re.finditer(r'<audio\s+key="([^"]+)"', getattr(src, "content_text", "") or ""):
+            lines.append(f'<file message_id="{src_id}" file_key="{m.group(1)}" type="file" name="语音"/>')
+    lines.append("</feishu_attachments>")
+    return "\n".join(lines)
+
+
+def _has_attachments(sources: list[Any]) -> bool:
+    """这批消息里有没有附件或语音 (决定要不要发 handoff 块)。"""
+    for src in sources:
+        if getattr(src, "resources", None):
+            return True
+        if re.search(r'<audio\s+key="', getattr(src, "content_text", "") or ""):
+            return True
+    return False
+
+
+async def _build_chunks(channel: Any, ctx: Any, *, external: bool = False) -> list[InputChunk]:
     chunks: list[InputChunk] = []
     downloads_dir = anyio.Path(platformdirs.user_downloads_dir()) / ".psi" / str(date.today())
-    await downloads_dir.mkdir(parents=True, exist_ok=True)
     downloads = str(downloads_dir)
-    logger.debug(f"downloads_dir={downloads} raw_content_type={ctx.raw_content_type}")
+    if not external:
+        # 跨容器会话不在本地落盘, 连目录都不建 —— 免得在主容器里留下永远没人读的空目录。
+        await downloads_dir.mkdir(parents=True, exist_ok=True)
+    logger.debug(f"downloads_dir={downloads} raw_content_type={ctx.raw_content_type} external={external}")
 
     chunks.append(TextChunk(_context_header(ctx)))
     header_only = len(chunks)
@@ -287,7 +389,8 @@ async def _build_chunks(channel: Any, ctx: Any) -> list[InputChunk]:
     missing: list[str] = []
 
     # 逐条源消息扫音频: audio key 只能配它自己那条消息的 message_id。
-    for src in sources:
+    # external 时整段跳过 —— 下载改由对端容器做 (见 _attachment_handoff)。
+    for src in [] if external else sources:
         src_id = src.message_id
         for m in re.finditer(r'<audio\s+key="([^"]+)"', getattr(src, "content_text", "") or ""):
             audio_key = m.group(1)
@@ -310,30 +413,39 @@ async def _build_chunks(channel: Any, ctx: Any) -> list[InputChunk]:
         logger.debug(f"content_text ({len(text)} chars)")
         chunks.append(TextChunk(text))
 
-    # 附件同理逐条下载 —— 不能读 ctx.resources, 那是全批拼接结果, 既丢了归属也会重复。
-    for src in sources:
-        src_id = src.message_id
-        for r in getattr(src, "resources", None) or []:
-            logger.debug(f"resource type={r.type} file_key={r.file_key} file_name={r.file_name} message_id={src_id}")
-            try:
-                if r.file_name:
-                    stem = anyio.Path(r.file_name).stem
-                    ext = anyio.Path(r.file_name).suffix
-                    name = f"{stem}-{r.file_key}{ext}"
-                else:
-                    name = None
-                saved = await channel.download_resource_to_file(
-                    r.file_key,
-                    resource_type=r.type,
-                    message_id=src_id,
-                    dest_dir=downloads,
-                    file_name=name,
+    if external:
+        # 跨容器: 只把协议事实交过去, 由对端容器自己下载 (见 _attachment_handoff)。
+        if _has_attachments(sources):
+            handoff = _attachment_handoff(sources)
+            logger.debug(f"external session, handing off attachments instead of downloading:\n{handoff}")
+            chunks.append(TextChunk(handoff))
+    else:
+        # 附件同理逐条下载 —— 不能读 ctx.resources, 那是全批拼接结果, 既丢了归属也会重复。
+        for src in sources:
+            src_id = src.message_id
+            for r in getattr(src, "resources", None) or []:
+                logger.debug(
+                    f"resource type={r.type} file_key={r.file_key} file_name={r.file_name} message_id={src_id}"
                 )
-                logger.debug(f"resource downloaded to {saved}")
-                chunks.append(FileChunk(str(saved)))
-            except Exception as e:
-                logger.error(f"resource download failed message_id={src_id} file_key={r.file_key} — {e}")
-                missing.append(r.file_name or r.file_key)
+                try:
+                    if r.file_name:
+                        stem = anyio.Path(r.file_name).stem
+                        ext = anyio.Path(r.file_name).suffix
+                        name = f"{stem}-{r.file_key}{ext}"
+                    else:
+                        name = None
+                    saved = await channel.download_resource_to_file(
+                        r.file_key,
+                        resource_type=r.type,
+                        message_id=src_id,
+                        dest_dir=downloads,
+                        file_name=name,
+                    )
+                    logger.debug(f"resource downloaded to {saved}")
+                    chunks.append(FileChunk(str(saved)))
+                except Exception as e:
+                    logger.error(f"resource download failed message_id={src_id} file_key={r.file_key} — {e}")
+                    missing.append(r.file_name or r.file_key)
 
     if missing:
         # fail-closed: 宁可整批重传, 也不给 agent 一个「文本提到 3 份、实际只有 1 份」的批次。
@@ -358,6 +470,7 @@ async def _stream_reply(
     *,
     reply_to: str | None,
     suppress_silent_reply: bool = False,
+    sender_open_id: str | None = None,
 ) -> None:
     """Stream agent text and files into one Feishu chat."""
 
@@ -400,7 +513,21 @@ async def _stream_reply(
                             checking_silent_reply = True
                     elif isinstance(chunk, FileChunk):
                         logger.debug(f"received FileChunk ({chunk.path})")
-                        await _send_file(channel, chat_id, chunk.path)
+                        # 私密区守卫: 只有主人自己收得到自己的私密文件, 其他人一律拦。
+                        # 放在发送前而非 session 侧 —— channel 手里就有发送者 open_id,
+                        # 按「发送者是不是该私密区的主人」判权比绕一圈更直接。
+                        if _private_space.blocks_send(chunk.path, sender_open_id):
+                            logger.warning(f"private file withheld from {sender_open_id!r}: {chunk.path}")
+                            continue
+                        try:
+                            await _send_file(channel, chat_id, chunk.path, chunk.source)
+                        except OutboundFileError as e:
+                            # 如实告诉用户这个文件没发出去, 而不是让它静默消失 (静默正是本 bug
+                            # 的症状)。就地告知而非抛出: 这里在卡片流式渲染的 _produce 里,
+                            # 抛出去会中断整条回复 —— 一个附件失败不该让用户连文字也收不到。
+                            # 其余 chunk 继续处理, 多个文件失败就各报一次。
+                            logger.error(f"outbound file failed — {e}")
+                            await channel.send(chat_id, {"text": str(e)})
         except Exception:
             await flush_silent_candidate()
             raise
@@ -415,6 +542,7 @@ async def _handle_and_stream(
     resolve_core: ResolveCore,
     allowed_ids: list[str] | None,
     ctx: Any,
+    is_external: IsExternal | None = None,
 ) -> None:
     if not _allowed(ctx.sender_id, allowed_ids):
         logger.debug(f"sender {ctx.sender_id} blocked by whitelist")
@@ -425,14 +553,18 @@ async def _handle_and_stream(
     # session —— 判定归 Gateway, 这里只如实上报会话事实。
     chat_type = getattr(ctx, "chat_type", "") or ""
     core = await resolve_core(ctx.sender_id, chat_id=ctx.chat_id, chat_type=chat_type)
-    logger.debug(f"sender={ctx.sender_id} chat={ctx.chat_id} type={chat_type} socket={core.session_socket}")
+    # 必须在 resolve_core 之后问: 答案由那次路由填进缓存。
+    external = bool(is_external and is_external(ctx.sender_id, chat_id=ctx.chat_id, chat_type=chat_type))
+    logger.debug(
+        f"sender={ctx.sender_id} chat={ctx.chat_id} type={chat_type} socket={core.session_socket} external={external}"
+    )
 
     reaction_id = await _add_reaction(channel, ctx.message_id, _EMOJI_PROCESSING)
     failed = False
     try:
         try:
             try:
-                chunks = await _build_chunks(channel, ctx)
+                chunks = await _build_chunks(channel, ctx, external=external)
             except AttachmentDownloadError as e:
                 # 附件缺失是用户可自行处理的情况 (重发即可), 所以点名文件、不套通用报错前缀。
                 logger.error(f"attachment download incomplete — {e}")
@@ -453,7 +585,14 @@ async def _handle_and_stream(
             logger.debug(f"posting {len(chunks)} chunk(s) to ChannelCore")
 
             try:
-                await _stream_reply(channel, core, ctx.chat_id, chunks, reply_to=ctx.message_id)
+                await _stream_reply(
+                    channel,
+                    core,
+                    ctx.chat_id,
+                    chunks,
+                    reply_to=ctx.message_id,
+                    sender_open_id=getattr(ctx, "sender_id", "") or "",
+                )
                 logger.debug("stream completed")
             except Exception as e:
                 logger.error(f"Message handling error — {e!r}")
@@ -815,6 +954,7 @@ async def run_feishu(
     app_id: str,
     app_secret: str,
     interval: float = 1.0,
+    idle_drain: float = 5.0,
     allowed_user_ids: list[str] | None = None,
     require_mention: bool = True,
     respond_to_mention_all: bool = False,
@@ -837,7 +977,7 @@ async def run_feishu(
     # 顺序: portal 后进先出、先于 stack 关闭, 保证在飞的 handler 仍能用到活着的 core / http,
     # 与旧版 "core 在 stop_background 之后才关" 的取消安全性等价。
     async with AsyncExitStack() as stack, BlockingPortal() as portal:
-        registry = _CoreRegistry(interval, stack)
+        registry = _CoreRegistry(interval, stack, idle_drain=idle_drain)
 
         provider: _GatewayRouteProvider | None = None
         if gateway_url:
@@ -864,8 +1004,18 @@ async def run_feishu(
                     socket = session_socket
             return await registry.get(socket)
 
+        def is_external(open_id: str | None, *, chat_id: str = "", chat_type: str = "") -> bool:
+            """该会话是否由别的容器托管 —— 只读 provider 缓存, 无 gateway 时恒为 False。
+
+            路由失败回退共享 socket 时也返回 False: 那时用的确实是本进程的 Session,
+            自己下载附件是对的。
+            """
+            if provider is None:
+                return False
+            return provider.is_external(open_id or "", chat_id=chat_id, chat_type=chat_type)
+
         async def _on_message(ctx: Any) -> None:
-            portal.start_task_soon(_handle_and_stream, channel, resolve_core, allowed_user_ids, ctx)
+            portal.start_task_soon(_handle_and_stream, channel, resolve_core, allowed_user_ids, ctx, is_external)
 
         async def _on_card_action(event: Any) -> None:
             portal.start_task_soon(

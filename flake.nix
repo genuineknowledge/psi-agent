@@ -61,9 +61,9 @@
           psi-agent-spa = pkgs.buildNpmPackage {
             pname = "psi-agent-spa";
             inherit version;
-            src = ./src/psi_agent/gateway/spa;
+            src = ./src/psi_agent/gateway/desktop/spa;
             npmDeps = pkgs.importNpmLock {
-              npmRoot = ./src/psi_agent/gateway/spa;
+              npmRoot = ./src/psi_agent/gateway/desktop/spa;
             };
             npmConfigHook = pkgs.importNpmLock.npmConfigHook;
             # vite build → dist/
@@ -95,7 +95,7 @@
               };
               # Inject the prebuilt SPA into the wheel's package data.
               postInstall = (old.postInstall or "") + ''
-                spa_dist="$out/${python.sitePackages}/psi_agent/gateway/spa/dist"
+                spa_dist="$out/${python.sitePackages}/psi_agent/gateway/desktop/spa/dist"
                 mkdir -p "$spa_dist"
                 cp -r ${psi-agent-spa}/* "$spa_dist/"
               '';

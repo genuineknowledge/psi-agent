@@ -6,13 +6,10 @@
 ;   - (default)        -> HaiTun_Agent_Setup.exe (full install)
 
 #define MyAppName "HaiTun Agent"
-#define MyAppVersion "1.0.10"
+#define MyAppVersion "1.0.12"
+#define MyMsysVersion "env-1"
 #define MyAppPublisher "Hefei Zhenzhi Artificial Intelligence Application Software Co., Ltd"
 #define MyAppExeName "haitun.exe"
-
-#ifndef MSYS_FINGERPRINT
-#define MSYS_FINGERPRINT "msys-unknown"
-#endif
 
 [Setup]
 AppId={{234DFAA2-39F9-4E4C-92C7-680728ADDA4A}
@@ -64,15 +61,20 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 #ifdef COMPONENT_MSYS
-Source: "..\..\examples\haitun-workspace\msys64\*"; DestDir: "{app}\msys64"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\agents\feishu\msys64\*"; DestDir: "{app}\msys64"; Flags: ignoreversion recursesubdirs createallsubdirs
 #else
-; .env 由 CI 打包前从 GitHub Secret SERPER_API_KEY 注入到 examples\haitun-workspace\.env，随 workspace 一并安装到 {app}\app。
-Source: "..\..\examples\haitun-workspace\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "msys64"
+; .env 由 CI 打包前从 GitHub Secret SERPER_API_KEY 注入到 agents\feishu\.env，随 workspace 一并安装到 {app}\app。
+;
+; 出厂内容与用户数据 (SOUL.md / USER.md / schedules) 目前仍在这一条通配里, 结构上分不出来。
+; 分包内 / 包外的改法已在 B3 试过又撤回 —— 它牵动升级时的保数据语义, 归属讨论后单独开 PR,
+; 不在本轮架构重排范围内。讨论项见
+; docs/superpowers/specs/2026-08-28-gateway-workspace-refactor-report.md 第九章。
+Source: "..\..\agents\feishu\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "msys64"
 Source: "haitun.ico"; DestDir: "{app}\app"
 Source: "haitun.exe"; DestDir: "{app}\app"
 #ifdef COMPONENT_APP
 #else
-Source: "..\..\examples\haitun-workspace\msys64\*"; DestDir: "{app}\msys64"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\agents\feishu\msys64\*"; DestDir: "{app}\msys64"; Flags: ignoreversion recursesubdirs createallsubdirs
 #endif
 #endif
 Source: "rollback.cmd"; DestDir: "{app}"
@@ -81,9 +83,9 @@ Source: "rollback-state.json"; DestDir: "{app}"; Flags: onlyifdoesntexist
 ; 协议页要读的三个文件。dontcopy = 只打进安装包供向导页临时解出, 不装到 {app}
 ; —— 产品内那份走 spa-v2/dist（vite 会把 public/* 拷进去）, 装两份必有一份过时。
 ; 这三个是 scripts/gen_legal_html.py 的产物, 改 docs/ 下的 md 后需重新生成。
-Source: "..\..\src\psi_agent\gateway\spa-v2\public\terms.html"; Flags: dontcopy
-Source: "..\..\src\psi_agent\gateway\spa-v2\public\privacy.html"; Flags: dontcopy
-Source: "..\..\src\psi_agent\gateway\spa-v2\public\legal.css"; Flags: dontcopy
+Source: "..\..\src\psi_agent\gateway\desktop\spa-v2\public\terms.html"; Flags: dontcopy
+Source: "..\..\src\psi_agent\gateway\desktop\spa-v2\public\privacy.html"; Flags: dontcopy
+Source: "..\..\src\psi_agent\gateway\desktop\spa-v2\public\legal.css"; Flags: dontcopy
 
 #ifndef COMPONENT_MSYS
 [Icons]
@@ -380,13 +382,13 @@ begin
 
 #ifdef COMPONENT_MSYS
   AppTo := '';
-  MsysTo := '{#MSYS_FINGERPRINT}';
+  MsysTo := '{#MyMsysVersion}';
 #else
   AppTo := '{#MyAppVersion}';
 #ifdef COMPONENT_APP
   MsysTo := '';
 #else
-  MsysTo := '{#MSYS_FINGERPRINT}';
+  MsysTo := '{#MyMsysVersion}';
 #endif
 #endif
 

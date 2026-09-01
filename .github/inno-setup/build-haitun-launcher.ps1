@@ -2,7 +2,7 @@
 param(
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')),
     [string]$InnoSetupDir = (Join-Path $RepoRoot '.github\inno-setup'),
-    [string]$WorkspaceDir = (Join-Path $RepoRoot 'examples\haitun-workspace')
+    [string]$WorkspaceDir = (Join-Path $RepoRoot 'agents\feishu')
 )
 
 $issPath = Join-Path $InnoSetupDir 'haitun.iss'
@@ -13,6 +13,11 @@ if (-not $match.Success) {
 }
 
 $version = $match.Groups[1].Value
+$msysMatch = [regex]::Match($issText, '#define\s+MyMsysVersion\s+"([^"]+)"')
+if (-not $msysMatch.Success) {
+    throw "Could not parse MyMsysVersion from $issPath"
+}
+$msysVersion = $msysMatch.Groups[1].Value
 $baseUrl = [Environment]::GetEnvironmentVariable('HAITUN_DOWNLOAD_BASE_URL')
 if ([string]::IsNullOrWhiteSpace($baseUrl)) {
     $baseUrl = ''
@@ -40,6 +45,13 @@ $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     "HAITUN_UPDATE_INTERVAL_HOURS=$intervalHours"
 ), $utf8NoBom)
 [System.IO.File]::WriteAllText($versionPath, $version + "`r`n", $utf8NoBom)
+
+$msysVersionPath = Join-Path $WorkspaceDir 'msys64\msys-version.txt'
+if (-not (Test-Path -LiteralPath (Split-Path -Parent $msysVersionPath))) {
+    throw "msys64 directory not found; cannot write $msysVersionPath"
+}
+[System.IO.File]::WriteAllText($msysVersionPath, $msysVersion + "`r`n", $utf8NoBom)
+Write-Host "Wrote $msysVersionPath (msys=$msysVersion)"
 
 Write-Host "Wrote $confPath and $versionPath (version=$version)"
 
