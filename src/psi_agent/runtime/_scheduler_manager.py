@@ -145,10 +145,7 @@ class SchedulerManager:
             await (dst_dir / task_dir.name).mkdir(parents=True, exist_ok=True)
             await dst_task.write_text(await src_task.read_text(encoding="utf-8"), encoding="utf-8")
             seeded = True
-            logger.info(
-                f"SchedulerManager: seeded schedule {task_dir.name!r} from agent package "
-                f"into {workspace!r}"
-            )
+            logger.info(f"SchedulerManager: seeded schedule {task_dir.name!r} from agent package into {workspace!r}")
         return seeded
 
     async def _do_ensure(self, workspace: str, *, ai_id: str, agent: str) -> str:

@@ -432,9 +432,7 @@ async def test_blacklist_is_recorded_and_keeps_scheduler_flag(tmp_path: Path) ->
 async def _write_agent_schedule(agent_pkg: Path, name: str, body: str = "seed body") -> None:
     task_dir = anyio.Path(agent_pkg) / "schedules" / name
     await task_dir.mkdir(parents=True, exist_ok=True)
-    await (task_dir / "TASK.md").write_text(
-        f'---\nname: {name}\ncron: "0 12 * * *"\n---\n{body}', encoding="utf-8"
-    )
+    await (task_dir / "TASK.md").write_text(f'---\nname: {name}\ncron: "0 12 * * *"\n---\n{body}', encoding="utf-8")
 
 
 def _sched_dir(workspace: Path) -> anyio.Path:
@@ -470,9 +468,7 @@ async def test_seed_copies_missing_tasks_to_seed_workspace(tmp_path: Path) -> No
         agent_pkg = tmp_path / "agent-pkg"
         await _write_agent_schedule(agent_pkg, "todo-remind")
         await _write_agent_schedule(agent_pkg, "mentor-check-remind")
-        schedm = SchedulerManager(
-            _sm=sm, _ai_id="ai1", seed_workspace=str(seed_ws), seed_agent=str(agent_pkg)
-        )
+        schedm = SchedulerManager(_sm=sm, _ai_id="ai1", seed_workspace=str(seed_ws), seed_agent=str(agent_pkg))
 
         sid = await schedm.ensure(str(seed_ws))
         assert sid  # seed 落盘后有 schedules, 调度 Session 照常拉起
@@ -496,9 +492,7 @@ async def test_seed_never_overwrites_existing(tmp_path: Path) -> None:
         await _write_schedule(seed_ws, "todo-remind")  # workspace 已有一份
         local_task = _sched_dir(seed_ws) / "todo-remind" / "TASK.md"
         local_before = await local_task.read_text(encoding="utf-8")
-        schedm = SchedulerManager(
-            _sm=sm, _ai_id="ai1", seed_workspace=str(seed_ws), seed_agent=str(agent_pkg)
-        )
+        schedm = SchedulerManager(_sm=sm, _ai_id="ai1", seed_workspace=str(seed_ws), seed_agent=str(agent_pkg))
 
         await schedm.ensure(str(seed_ws))
         assert await local_task.read_text(encoding="utf-8") == local_before
@@ -519,9 +513,7 @@ async def test_seed_skips_other_workspaces(tmp_path: Path) -> None:
         other_ws.mkdir()
         agent_pkg = tmp_path / "agent-pkg"
         await _write_agent_schedule(agent_pkg, "todo-remind")
-        schedm = SchedulerManager(
-            _sm=sm, _ai_id="ai1", seed_workspace=str(seed_ws), seed_agent=str(agent_pkg)
-        )
+        schedm = SchedulerManager(_sm=sm, _ai_id="ai1", seed_workspace=str(seed_ws), seed_agent=str(agent_pkg))
 
         assert await schedm.ensure(str(other_ws)) == ""  # 无 schedules, 不 spawn
         assert not await _sched_dir(other_ws).is_dir()
@@ -560,9 +552,7 @@ async def test_seed_ignores_entries_without_task_md(tmp_path: Path) -> None:
         await stray.mkdir(parents=True, exist_ok=True)
         await (stray / "notes.txt").write_text("not a task", encoding="utf-8")
         await _write_agent_schedule(agent_pkg, "todo-remind")
-        schedm = SchedulerManager(
-            _sm=sm, _ai_id="ai1", seed_workspace=str(seed_ws), seed_agent=str(agent_pkg)
-        )
+        schedm = SchedulerManager(_sm=sm, _ai_id="ai1", seed_workspace=str(seed_ws), seed_agent=str(agent_pkg))
 
         await schedm.ensure(str(seed_ws))
         assert await (_sched_dir(seed_ws) / "todo-remind" / "TASK.md").exists()
@@ -582,9 +572,7 @@ async def test_sweep_seeds_cold_seed_workspace(tmp_path: Path) -> None:
         seed_ws = tmp_path / "seed-ws"
         agent_pkg = tmp_path / "agent-pkg"
         await _write_agent_schedule(agent_pkg, "todo-remind")
-        schedm = SchedulerManager(
-            _sm=sm, _ai_id="ai1", seed_workspace=str(seed_ws), seed_agent=str(agent_pkg)
-        )
+        schedm = SchedulerManager(_sm=sm, _ai_id="ai1", seed_workspace=str(seed_ws), seed_agent=str(agent_pkg))
 
         await schedm._sweep_once()
         assert await (_sched_dir(seed_ws) / "todo-remind" / "TASK.md").exists()
