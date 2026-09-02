@@ -388,7 +388,14 @@ class Gateway:
                 await sum_m.set(row["id"], row["summary"])
 
             attention = AttentionHub()
-            schedm = SchedulerManager(_sm=sm, _ai_id=self.scheduler_ai_id or self.feishu_ai_id)
+            schedm = SchedulerManager(
+                _sm=sm,
+                _ai_id=self.scheduler_ai_id or self.feishu_ai_id,
+                # 公司级种子任务: 部署时经 PSI_SEED_SCHEDULES_WORKSPACE 指定落点
+                # workspace, 种子来源是 agent 包自带的 schedules/。空 = 关闭 seed。
+                seed_workspace=os.environ.get("PSI_SEED_SCHEDULES_WORKSPACE", ""),
+                seed_agent=agent_default,
+            )
             # 首个定时任务由 watch_loop 自动拉起: ensure 只会在「schedules 已存在」时
             # spawn, 而 schedule_manage 写第一个 TASK.md 不会触发 ensure —— 没有这个
             # 常驻协程, 用户新建的定时任务要等下一次 ensure 碰巧发生才生效 (到点不触发)。

@@ -67,6 +67,12 @@ class SchedulerManager:
     _lock: anyio.Lock = field(default_factory=anyio.Lock)
     # workspace_key -> (workspace, ai_id, agent); 仅记「有 AI 可用但暂无 schedules」的。
     _pending: dict[str, tuple[str, str, str]] = field(default_factory=dict)
+    # 公司级种子任务的落点与来源: agent 包内置的 ``schedules/*/TASK.md`` 幂等 seed 进
+    # *seed_workspace* (部署时经 ``PSI_SEED_SCHEDULES_WORKSPACE`` 指定, 空 = 关闭)。
+    # 只 seed 这一个 workspace: 飞书每用户一个 workspace, 全 seed 会让每个在线用户的
+    # 调度 Session 各跑一遍「提醒全表所有人」, 消息按在线人数翻倍。
+    seed_workspace: str = ""
+    seed_agent: str = ""
 
     @staticmethod
     async def _workspace_key(workspace: str) -> str:
@@ -105,11 +111,57 @@ class SchedulerManager:
             logger.warning(f"SchedulerManager: failed to ensure scheduler for {workspace!r}: {e!r}")
             return ""
 
+    async def _seed_missing_schedules(self, workspace: str, agent: str) -> bool:
+        """把 agent 包内置的种子任务幂等落进 seed workspace 的 ``schedules/``。
+
+        只补 workspace 里**没有同名目录**的任务, 已存在的一律不覆盖 —— 用户改过的
+        口径、删掉的任务都不许被 seed 回来。仅当 *workspace* 恰好是配置的
+        ``seed_workspace`` 时执行 (公司级任务只跑一份, 见字段注释); 返回是否落入了
+        至少一个新任务。
+        """
+        if not self.seed_workspace.strip():
+            return False
+        # agent 包来源优先取构造时的 seed_agent; ensure 传的 agent 是会话自己的包路径,
+        # 常常为空或指向别的包, 不能拿它当种子来源。
+        agent = agent or self.seed_agent
+        if not agent.strip():
+            return False
+        if await self._workspace_key(workspace) != await self._workspace_key(self.seed_workspace):
+            return False
+        src_dir = anyio.Path(agent) / "schedules"
+        if not await src_dir.is_dir():
+            return False
+        dst_dir = anyio.Path(workspace) / "schedules"
+        seeded = False
+        async for task_dir in src_dir.iterdir():
+            if not await task_dir.is_dir():
+                continue
+            src_task = task_dir / "TASK.md"
+            if not await src_task.exists():
+                continue
+            dst_task = dst_dir / task_dir.name / "TASK.md"
+            if await dst_task.exists():
+                continue
+            await (dst_dir / task_dir.name).mkdir(parents=True, exist_ok=True)
+            await dst_task.write_text(await src_task.read_text(encoding="utf-8"), encoding="utf-8")
+            seeded = True
+            logger.info(
+                f"SchedulerManager: seeded schedule {task_dir.name!r} from agent package "
+                f"into {workspace!r}"
+            )
+        return seeded
+
     async def _do_ensure(self, workspace: str, *, ai_id: str, agent: str) -> str:
         key = await self._workspace_key(workspace)
         sid = self._session_id_from_key(key)
         async with self._lock:
             logger.debug(f"SchedulerManager: acquired lock for ensure {workspace!r}")
+            # 公司级种子任务随 agent 包部署: 每次 ensure 都幂等补一遍 (已 spawn 的
+            # Session 也受益 —— 它自己的 _watch_dir 会在 30s 内拾取新落盘的任务)。
+            try:
+                await self._seed_missing_schedules(workspace, agent)
+            except Exception as e:
+                logger.warning(f"SchedulerManager: failed to seed schedules into {workspace!r}: {e!r}")
             cached = self._routes.get(key)
             if cached is not None and self._sm.has(cached):
                 return cached
@@ -181,7 +233,15 @@ class SchedulerManager:
             logger.info("SchedulerManager: watch_loop stopped")
 
     async def _sweep_once(self) -> None:
-        """一轮 pending 重查: 有 schedules 的 workspace 立即拉起调度 Session。"""
+        """一轮 pending 重查: 有 schedules 的 workspace 立即拉起调度 Session。
+
+        同时兜底 seed workspace 的冷启动 —— 它可能从没被任何用户消息 ensure 过
+        (不在 ``_pending`` 里), 不在这里主动 ensure 的话, 部署后种子任务永远不落盘。
+        """
+        if self.seed_workspace.strip():
+            seed_sid = self._session_id_from_key(await self._workspace_key(self.seed_workspace))
+            if not self._sm.has(seed_sid):
+                await self.ensure(self.seed_workspace, ai_id=self._ai_id, agent=self.seed_agent)
         for key, (workspace, ai_id, agent) in list(self._pending.items()):
             sid = self._session_id_from_key(key)
             if self._sm.has(sid):
