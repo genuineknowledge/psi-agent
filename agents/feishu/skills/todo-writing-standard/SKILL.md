@@ -241,11 +241,19 @@ mentor check 的标记**只认载体段指定的 mentor check 列** —— 聊�
 ```text
 schedule_manage(action="create", schedule_name="todo-remind",
                 cron="30 14 * * 1,3,5", description="TODO 填报提醒",
-                content="按 todo-writing-standard 的提醒流程执行")
+                content="数据源=看板表<按载体段抄真实链接>;请假=feishu_leave_query(approval_code=<按参数段抄>);判定口径按本文规则集段逐项;未填且无已通过请假者私聊提醒,文案按提醒流程节")
 schedule_manage(action="create", schedule_name="todo-check",
                 cron="50 14 * * 1,3,5", description="TODO 填报规范检查",
-                content="按 todo-writing-standard 的检查流程执行")
+                content="数据源=看板表<按载体段抄真实链接>;请假=feishu_leave_query(approval_code=<按参数段抄>);已填者按本文规则集段逐项检查,违规项私聊本人只报缺项")
 ```
+
+**`content` 必须自包含 —— 定时触发是一个全新回合,正文是它唯一的输入。**
+建任务发生在对话里,表链接、请假 code、判定口径此时都在上下文中,模型容易只写一句
+「按 XX 流程执行」就建了;但触发回合没有这些上下文,拿不到链接会找错表、拿不到 code 会
+漏查假、拿不到口径会判定松紧不一。所以 content 必须写全:看板表链接、请假
+`approval_code`、判定口径要点、目标人员 open_id、私聊文案口径。禁止「读那张表」
+「按上次口径」这类依赖上下文的话术 —— 触发回合无从解析。上面示例只是骨架,
+照抄本文各段的真实值再建。
 
 两条都要走 `fire=prompt`(默认):提醒要先查表和请假才知道催谁,检查要读表做结构判定,
 都需要模型参与 —— `fire=tool` 是直接调一个工具、不过模型,套不进来。
@@ -256,9 +264,10 @@ schedule_manage(action="create", schedule_name="todo-check",
 (改参数段的时间点即可,例如 `25 14`),别让两个 prompt-fire 任务撞在一起。
 两套体系的关系见 [与 TODO 管理体系的分工](#与-todo-管理体系的分工)。
 
-**cron 用调度器时区解释,不是裸机墙钟。** 建完立刻 `action="view"` 核一遍写进去的 cron 与
-下次触发时间;时区没配对会整体偏移(仓里踩过 `once_at` 按裸机墙钟读、与调度器时区差 8h 的坑)。
-`cron` 与 `once_at` 不许同时传。
+**cron 用调度器时区解释,不是裸机墙钟。** 建完立刻 `action="view"` 核一遍写进去的 cron、
+下次触发时间与 content 是否写全执行参数(自包含,见上),核对无误再收工;时区没配对会整体
+偏移(仓里踩过 `once_at` 按裸机墙钟读、与调度器时区差 8h 的坑)。`cron` 与 `once_at` 不许
+同时传。
 
 ## 引擎段:通用闭环
 

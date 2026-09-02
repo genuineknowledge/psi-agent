@@ -286,6 +286,16 @@ async def schedule_manage(
     - ``fire=tool``: Session calls ``tool(**tool_args)`` directly at fire time —
       no LLM. Required for one-shot and for Feishu IM reminders.
 
+    **Self-contained ``content`` is mandatory for ``fire=prompt``.** At fire time
+    the TASK body is the model's *only* input — a fresh turn with no conversation
+    context, so anything not written into the body simply does not exist there.
+    ``content`` must carry every execution parameter itself: document / sheet
+    links, approval codes, judgment criteria and thresholds, target people's
+    open_ids, and message wording. Never write context-dependent prose like
+    「读那张表」 or 「按上次口径执行」 — the firing turn has nothing to resolve
+    those against. After create, call ``action=view`` and check the saved body
+    stands alone before finishing.
+
     Do not pass both ``cron`` and ``once_at`` on create.
 
     Args:
@@ -293,7 +303,9 @@ async def schedule_manage(
         schedule_name: Schedule directory name for view/create/patch/delete.
         cron: Cron expression for recurring create, or to change it on patch.
         description: One-line description used on create/patch.
-        content: Optional TASK.md body notes (ignored for tool execution).
+        content: TASK.md body for ``fire=prompt`` — the firing turn's only input,
+            must be self-contained (links, codes, criteria, open_ids, wording);
+            ignored for ``fire=tool`` execution.
         once_at: One-shot fire time — 'YYYY-MM-DD HH:MM' (local) or ISO-8601.
         visibility: ``display`` (default; may surface in chat) or ``silent``.
         fire: ``prompt`` (LLM turn) or ``tool`` (direct tool call).
