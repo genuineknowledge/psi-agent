@@ -132,6 +132,10 @@ jobs:
       # 这一步防的是「改了 md 忘了重新生成」—— 那会让安装器与产品内展示过时协议。
       - name: Check legal HTML is in sync with docs
         run: uv run python scripts/gen_legal_html.py --check
+      # macOS 图标源 (haitun-1024.png) 是 Windows ico 的生成物, 同样入库守同步:
+      # 改了 ico 忘了重新生成, dmg 的图标就是旧的。
+      - name: Check macOS icon PNG is in sync with haitun.ico
+        run: uv run python scripts/gen_haitun_icon_png.py --check
       - run: uv pip install pyinstaller "mcp[cli,rich,ws]" "any-llm-sdk[all]"
       - uses: actions/setup-node@v7
         with:
@@ -325,8 +329,9 @@ jobs:
           path: macos-dist/HaiTun_Agent.dmg
       # 版本号元数据单独一个 artifact, 只给 oss-publish.yml 消费。
       #
-      # 不设 `if: always()`: 版本文件由 build-dmg.sh 在成功路径上写出, 构建挂了就
-      # 该缺席 —— oss-publish 那边下载失败会让整条 publish 红, 这正是要的效果
+      # 不设 `if: always()`: build-dmg.sh 在打包早期就会写出版本文件, 但只有整个
+      # Build dmg step 成功这个 artifact 才会上传 —— 构建挂了 (如 smoke 硬闸) 它
+      # 就缺席, oss-publish 那边下载失败会让整条 publish 红, 这正是要的效果
       # (见 oss-publish.yml 里"两平台共用版本文件"那段注释)。
       - uses: actions/upload-artifact@v7
         with:

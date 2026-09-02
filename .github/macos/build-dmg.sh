@@ -59,28 +59,28 @@ install -m 755 "$PSI_AGENT_BIN" "$CONTENTS/MacOS/psi-agent"
 install -m 755 "$MACOS_DIR/updater.sh" "$CONTENTS/Resources/updater.sh"
 install -m 755 "$MACOS_DIR/rollback.sh" "$CONTENTS/Resources/rollback.sh"
 
-# ---- icon: haitun.ico -> haitun.icns ----
-# Reuses the Windows icon so both platforms stay visually identical and there is
-# only one icon asset to keep in sync.
+# ---- icon: haitun-1024.png -> haitun.icns ----
+# Source is a committed 1024x1024 PNG generated from the Windows haitun.ico
+# (scripts/gen_haitun_icon_png.py, kept in sync by the CI `--check` step) so
+# both platforms stay visually identical with one source of truth. sips cannot
+# be relied on to read .ico -- it is not in its documented format list -- so
+# the source is a real PNG, and every step below fails the build instead of
+# silently shipping an unrenderable icon.
 log "converting icon"
 ICONSET="$BUILD_DIR/haitun.iconset"
 mkdir -p "$ICONSET"
-ICO_SRC="$REPO_ROOT/.github/inno-setup/haitun.ico"
-PNG_TMP="$BUILD_DIR/haitun-1024.png"
-if sips -s format png "$ICO_SRC" --out "$PNG_TMP" >/dev/null 2>&1; then
-    for size in 16 32 64 128 256 512; do
-        sips -z "$size" "$size" "$PNG_TMP" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null 2>&1 || true
-        double=$((size * 2))
-        sips -z "$double" "$double" "$PNG_TMP" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null 2>&1 || true
-    done
-    iconutil -c icns "$ICONSET" -o "$CONTENTS/Resources/haitun.icns" 2>/dev/null || true
-fi
-# Fall back to the raw .ico: the Gateway accepts ico for --icon, and a missing
-# icon must not fail the build.
-if [ ! -f "$CONTENTS/Resources/haitun.icns" ]; then
-    log "icns conversion unavailable, shipping .ico as-is"
-    cp "$ICO_SRC" "$CONTENTS/Resources/haitun.icns"
-fi
+PNG_SRC="$MACOS_DIR/haitun-1024.png"
+[ -f "$PNG_SRC" ] || die "icon source missing: $PNG_SRC (regenerate with scripts/gen_haitun_icon_png.py)"
+for size in 16 32 64 128 256 512; do
+    sips -z "$size" "$size" "$PNG_SRC" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null \
+        || die "sips failed to make ${size}px icon"
+    double=$((size * 2))
+    sips -z "$double" "$double" "$PNG_SRC" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null \
+        || die "sips failed to make ${size}px@2x icon"
+done
+iconutil -c icns "$ICONSET" -o "$CONTENTS/Resources/haitun.icns" \
+    || die "iconutil failed to build haitun.icns"
+[ -s "$CONTENTS/Resources/haitun.icns" ] || die "iconutil produced an empty haitun.icns"
 
 # ---- agent package + runtime config ----
 # Seeded into Resources and copied out to Application Support on first run: a
@@ -584,7 +584,15 @@ if hdiutil attach "$DMG_PATH" -mountpoint "$MNT" -nobrowse -readonly >/dev/null 
     if [ "$ALIVE" = "1" ]; then
         smoke "process still alive after 40s (expected: launcher waits on the Gateway)"
         SMOKE_OK=1
-        kill -TERM "-$SMOKE_PID" 2>/dev/null || kill -TERM "$SMOKE_PID" 2>/dev/null || true
+        # The launcher `wait`s on the Gateway it backgrounded, so killing the
+        # launcher alone orphans the Gateway. A negative-pid group kill does
+        # not help: with no job control on a CI shell the backgrounded pair
+        # shares this script's own process group, so `kill -TERM -$PID`
+        # targets a group that does not exist (observed) and the fallback
+        # killed only the launcher. Reap both explicitly instead.
+        kill -TERM "$SMOKE_PID" 2>/dev/null || true
+        wait "$SMOKE_PID" 2>/dev/null || true
+        pkill -f "$APP_NAME.app/Contents/MacOS/psi-agent" 2>/dev/null || true
     else
         # Exit status is the diagnosis: 2 is the CLI refusing its arguments
         # (tyro prints a "Required options" box and never starts the Gateway),

@@ -34,10 +34,20 @@ mkdir -p "$SUPPORT_ROOT" "$LOG_DIR"
 # and refresh only what the build owns: .env (CI-injected secrets) and the
 # version/update config. Without this an update would silently keep serving the
 # old config out of a stale copy.
+#
+# A failed seed is a broken install -- the Gateway would start against an empty
+# agent package with no diagnostics -- so it is fatal here, with a line in
+# $LOG_DIR/launcher.log rather than a silent `|| true`.
 if [ ! -d "$AGENT_DIR" ]; then
-    mkdir -p "$AGENT_DIR"
+    if ! mkdir -p "$AGENT_DIR" 2>/dev/null; then
+        echo "launcher: ERROR cannot create $AGENT_DIR" >>"$LOG_DIR/launcher.log" 2>/dev/null || true
+        exit 1
+    fi
     # -R rather than rsync: rsync is not guaranteed present on stock macOS 15+.
-    cp -R "$BUNDLE_RESOURCES_DIR/haitun-workspace/." "$AGENT_DIR/" 2>/dev/null || true
+    if ! cp -R "$BUNDLE_RESOURCES_DIR/haitun-workspace/." "$AGENT_DIR/" 2>/dev/null; then
+        echo "launcher: ERROR seeding agent package from bundle to $AGENT_DIR" >>"$LOG_DIR/launcher.log" 2>/dev/null || true
+        exit 1
+    fi
 fi
 for owned in .env haitun-update.conf haitun-version.txt; do
     if [ -f "$BUNDLE_RESOURCES_DIR/haitun-workspace/$owned" ]; then

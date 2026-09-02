@@ -20,6 +20,9 @@ jobs:
       # ubuntu runner 预装 shellcheck, macOS runner 没有。放在打包 job 里会让
       # 「装 shellcheck」这一步拖慢每次发版, 而 lint 本身与平台无关。
       - run: shellcheck .github/macos/*.sh
+      # macOS 图标源 (haitun-1024.png) 是 Windows ico 的生成物: 改了 ico 忘了
+      # 重新生成, 下一次 dmg 的图标就是旧的。与 gen_legal_html.py 同一套模式。
+      - run: uv run python scripts/gen_haitun_icon_png.py --check
 
   test:
     needs: lint

@@ -27,6 +27,18 @@ macOS 是单组件，所以没有 App/MSYS/Full 之分。原因是产品运行�
 文件的模型（两个包一个版本号），届时下载页也要让用户自己选芯片。universal2 不可行：
 matplotlib / pymupdf 这类含 C 扩展的依赖没有完整的 universal2 轮子。
 
+### 图标
+
+`haitun-1024.png`（`.github/macos/`）是 Windows `haitun.ico` 的 1024px PNG 派生品，
+由 `scripts/gen_haitun_icon_png.py` 生成，CI 用 `--check` 守同步（改 ico 忘了重新
+生成会红）。构建时 `build-dmg.sh` 用 sips 把 PNG 缩放到 iconset 各尺寸、`iconutil`
+合成 `haitun.icns`。
+
+早期实现曾让 sips 直接读 `.ico` —— ico 不在 sips 的文档格式列表里，失败后兜底把
+`.ico` 改名 `.icns` 塞进 bundle。那不是合法 icns 容器（魔数不同），macOS 无法渲染，
+应用图标静默退化成通用图标且构建照常绿。现在的源是真正的 PNG，任一步失败都会让
+构建红，不会再静默产出坏图标。
+
 ## 需要的 secrets
 
 签名与公证按 **secret 有无自动开关**。没配就产出未签名 dmg，配上就自动签名公证，
@@ -118,7 +130,7 @@ HaiTun Agent.app/Contents/
   Info.plist                        # 版本号从 haitun.iss 注入
   MacOS/haitun                      # launcher.sh，CFBundleExecutable
   MacOS/psi-agent                   # PyInstaller 产物
-  Resources/haitun.icns             # 由 haitun.ico 经 sips + iconutil 转换
+  Resources/haitun.icns             # 由 haitun-1024.png 经 sips + iconutil 生成（见「图标」）
   Resources/updater.sh              # 后台更新检查 + 换装
   Resources/rollback.sh             # 手动回滚
   Resources/haitun-workspace/       # agent 包（含 CI 注入的 .env）

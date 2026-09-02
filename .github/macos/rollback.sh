@@ -98,5 +98,8 @@ cat >"$tmp" <<EOF
 EOF
 mv -f "$tmp" "$STATE_FILE"
 
-open "$APP_PATH" 2>/dev/null && printf '海豚已重新启动。\n'
-printf '回滚完成。\n'
+if open "$APP_PATH" 2>/dev/null; then
+    printf '回滚完成，海豚已重新启动。\n'
+else
+    printf '回滚完成，但无法自动启动应用，请手动打开。\n'
+fi
