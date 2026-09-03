@@ -118,7 +118,20 @@ external_outcome:      # 个人与TPMF小组汇报与评级SOP v4.0「名词解�
   contribution: 对外部成果的贡献(未直接产生外部成果但直接对标其产生的贡献)
   annual_trajectory: 全年价值推进轨迹(关键拐点/偏差/成果)
   team_types: [融资, 专利, 资质申报, 媒体报道, 银行贷款资格, 雇员满意度, 节税]
+
 growth:
+  min_cycles: 3
+  indicators:
+    - 闭环率
+    - 按时率
+    - 回流次数
+    - 持续逾期段
+    - mentor打分趋势
+    - 承担层级迁移
+    - 外部成果累计
+
+peer:
+  same_level_by: mentor
   min_cycles: 3
   indicators:
     - 闭环率

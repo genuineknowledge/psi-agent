@@ -31,6 +31,7 @@ SOP_SKILLS = (
     "company-todo-review",
     "todo-alignment-check",
     "todo-growth-profile",
+    "todo-peer-contrast",
 )
 
 
@@ -110,6 +111,13 @@ def test_growth_section_is_present() -> None:
     growth = _config()["growth"]
     assert isinstance(growth["indicators"], list) and growth["indicators"], "growth.indicators must be a non-empty list"
     assert growth["min_cycles"] >= 1, "growth.min_cycles must be at least 1"
+
+
+def test_peer_section_is_present() -> None:
+    peer = _config()["peer"]
+    assert peer["same_level_by"] == "mentor"
+    assert peer["min_cycles"] >= 1
+    assert len(peer["indicators"]) == 7
 
 
 def test_judgment_skills_point_at_the_config() -> None:
