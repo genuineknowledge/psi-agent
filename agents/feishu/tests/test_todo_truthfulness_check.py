@@ -208,3 +208,10 @@ def test_sop_v11_clauses_are_cited_as_the_red_line_source() -> None:
     body = _body()
     for phrase in ("不能复制粘贴", "删除线", "小方案", "不宜过多"):
         assert phrase in body, f"missing SOP v1.1 clause {phrase}"
+
+
+def test_copy_paste_scopes_to_todo_items_not_the_whole_cell() -> None:
+    """防复制比较对象是 TODO 层条目, 不含大/小目标段(对齐相似不是应付信号)。"""
+    body = _body()
+    assert "TODO 段" in body, "must scope comparison to the TODO section"
+    assert "不含大/小目标段" in body, "must exclude goal paragraphs from similarity hits"

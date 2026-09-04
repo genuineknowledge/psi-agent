@@ -374,3 +374,11 @@ def test_sop_v11_clauses_are_in_the_rulebook() -> None:
     body = _body()
     for phrase in ("不能复制粘贴", "删除线", "小方案", "不宜过多"):
         assert phrase in body, f"missing SOP v1.1 clause {phrase}"
+
+
+def test_copy_paste_compares_todo_items_only() -> None:
+    """SOP v1.1 禁止复制只对 TODO 层条目逐条比较, 不比较整格(大/小目标因对齐相似不误伤)。"""
+    body = _body()
+    assert "TODO 段" in body, "must scope comparison to the TODO section of the cell"
+    assert "不含大/小目标段" in body, "must exclude 大目标/小目标 from the comparison"
+    assert "跨人" in body, "comparison must be across people in the same cycle"
