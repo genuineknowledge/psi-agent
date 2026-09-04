@@ -253,6 +253,23 @@ class RequestAssembler:
     calibrated: bool = False
     """Whether ``chars_per_token`` came from a real ``usage`` report yet."""
 
+    _turn_watermark: int | None = None
+    """Index into the stored history at which the current turn's output begins.
+
+    Set by ``agent.py`` right after this turn's user row lands, cleared in that
+    turn's ``finally``.  ``None`` means no turn is in flight and nothing is
+    exempt — the pre-existing behaviour, which is what non-turn callers get.
+
+    Why a turn boundary rather than a time window: history rows carry no
+    timestamp, and elapsed time is not the question anyway.  A 3-second turn is
+    covered by any window but never had the problem; a runaway 49-round turn
+    (which this deployment has produced) outruns any window worth setting.  The
+    watermark asks the question that actually matters — "did this generator call
+    produce this row?" — and gets an exact answer.
+
+    See :meth:`begin_turn`.
+    """
+
     _elided_row_ids: set[int] = field(default_factory=set)
     """Identity of rows already elided, by position-independent row identity.
 
@@ -272,6 +289,35 @@ class RequestAssembler:
         if self.max_context_tokens <= 0:
             return 0
         return int(self.max_context_tokens * self.chars_per_token)
+
+    def begin_turn(self, watermark: int) -> None:
+        """Mark where this turn's own output starts in the stored history.
+
+        ``watermark`` is ``len(conversation.messages)`` taken immediately after
+        this turn's user row was added, so every row from that index onward was
+        produced by the generator call now running.  Those rows are exempt from
+        elision for the duration of the turn: they include the reply the user has
+        not received yet, and eliding a reply before it is delivered makes the
+        upstream believe nothing was said.
+
+        Idempotent per turn, and deliberately last-write-wins: a re-entrant call
+        can only move the boundary forward onto a newer turn, which is the
+        correct answer if it ever happens.
+        """
+        self._turn_watermark = watermark
+
+    def end_turn(self) -> None:
+        """Drop the exemption.  Must run in the turn's ``finally``.
+
+        The assembler is per *session* and outlives any single turn, while the
+        watermark is per *turn*.  A turn that dies without clearing it — raised,
+        cancelled, or out of tool rounds — would pin the exemption at its own
+        index forever, and every later turn's elision range would be capped
+        there.  The symptom is not a crash but a budget that slowly stops being
+        enforceable, with nothing in the logs pointing at the cause, which is why
+        this matters more than the happy path.
+        """
+        self._turn_watermark = None
 
     def calibrate(self, sent_chars: int, prompt_tokens: int) -> None:
         """Update the ratio from one completed turn's own numbers.
@@ -349,6 +395,7 @@ class RequestAssembler:
         """
         paired = project_history_with_sources(history)
         messages = [projected for projected, _ in paired]
+        exempt = self._exempt_row_ids(history)
         elided = self._reapply_sticky_elisions(paired)
 
         body = self._compose(messages, tools, extra)
@@ -371,7 +418,7 @@ class RequestAssembler:
             f"Eliding oldest/largest rows down to {target} chars ({SHRINK_TARGET_FRACTION:.0%} of budget) "
             f"so the shrunk prefix can serve many later turns instead of one."
         )
-        elided += self._elide_until(paired, tools, extra, target)
+        elided += self._elide_until(paired, tools, extra, target, exempt)
 
         body = self._compose(messages, tools, extra)
         chars = payload_chars(body)
@@ -434,12 +481,30 @@ class RequestAssembler:
             count += 1
         return count
 
+    def _exempt_row_ids(self, history: list[dict[str, Any]]) -> frozenset[int]:
+        """Identities of the stored rows this turn produced.
+
+        Resolved from stored rows rather than from positions in the projected
+        list, because the two lists do not share an index space: the projection
+        drops invalid legacy assistant rows and deletes the whole span before the
+        last ``compacted``.  Comparing a stored-history watermark against a
+        projected position would therefore exempt the wrong rows — and it would
+        do so silently, exempting some arbitrary older row while leaving the
+        undelivered reply elidible, i.e. reintroducing the bug while looking
+        fixed.  ``id()`` is the same key hysteresis already uses.
+        """
+        watermark = self._turn_watermark
+        if watermark is None:
+            return frozenset()
+        return frozenset(id(row) for row in history[watermark:] if isinstance(row, dict))
+
     def _elide_until(
         self,
         paired: list[tuple[dict[str, Any], dict[str, Any] | None]],
         tools: list[dict[str, Any]],
         extra: dict[str, Any] | None,
         target_chars: int,
+        exempt: frozenset[int] = frozenset(),
     ) -> int:
         """Elide oldest-largest-first until the payload fits ``target_chars``.
 
@@ -454,7 +519,7 @@ class RequestAssembler:
         the delta content-dependent, and the number this returns has to be the
         real one — it is what the budget guarantee rests on.
         """
-        candidates = self._elidible_candidates(paired)
+        candidates = self._elidible_candidates(paired, exempt)
         count = 0
         for projected, source in candidates:
             if payload_chars(self._compose([p for p, _ in paired], tools, extra)) <= target_chars:
@@ -470,6 +535,7 @@ class RequestAssembler:
     @staticmethod
     def _elidible_candidates(
         paired: list[tuple[dict[str, Any], dict[str, Any] | None]],
+        exempt: frozenset[int] = frozenset(),
     ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
         """Elidible rows, oldest-half-largest-first.
 
@@ -480,6 +546,12 @@ class RequestAssembler:
         * the last two rows — the current user turn and the assistant/tool
           exchange in flight.  Eliding what the model is answering *right now*
           would break the turn rather than trim it.
+        * anything in ``exempt`` — rows this turn produced (see
+          :meth:`begin_turn`).  The last-two guard was the only protection these
+          had, and it stops covering them as soon as a third row lands: in a
+          multi-round turn the assistant row from round 1 sits well inside
+          ``paired[:-2]`` by round 3, behind several tool results.  Its content
+          is output the user has not received yet, ``[SEND:]`` markers included.
         * rows already handled, and rows below ``_MIN_ELIDIBLE_CHARS``.
         * rows with non-string content (multimodal block lists): there is no
           single place to put a handle, and mangling the blocks is worse than
@@ -490,6 +562,8 @@ class RequestAssembler:
         eligible: list[tuple[int, int, dict[str, Any], dict[str, Any]]] = []
         for position, (projected, source) in enumerate(paired[:-2]):
             if source is None:
+                continue
+            if id(source) in exempt:
                 continue
             if projected.get("role") not in _ELIDIBLE_ROLES:
                 continue

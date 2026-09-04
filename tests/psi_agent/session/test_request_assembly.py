@@ -321,6 +321,143 @@ def test_extra_params_cannot_displace_the_measured_payload() -> None:
     assert body["temperature"] == 0.3
 
 
+def test_rows_at_or_after_the_watermark_are_exempt() -> None:
+    """This turn's own output cannot be elided, however large it gets.
+
+    The bug this forbids: the assistant row a multi-round turn wrote in round 1
+    is no longer within the ``paired[:-2]`` guard by round 3 (several tool rows
+    have piled up behind it), so it became an ordinary elision candidate.  The
+    model then saw "my last message said nothing", apologised, and re-sent —
+    and the re-send was elided the same way on the next round.
+    """
+    assembler = RequestAssembler(max_context_tokens=20_000)
+    history = _history(20)
+    produced_this_turn = len(history)
+    history.append({"role": "assistant", "content": "本回合产出 " + "甲" * 2000})
+    for i in range(4):
+        history.append({"role": "tool", "tool_call_id": f"c{i}", "content": "工具结果 " + "乙" * 2000})
+
+    assembler.begin_turn(produced_this_turn)
+    result = _assemble(assembler, history)
+
+    messages = result.body["messages"]
+    assert result.elided_rows > 0, "fixture must still exercise elision"
+    for row in messages[produced_this_turn:]:
+        assert not row["content"].startswith("[已省略"), f"this turn's own row was elided: {row['content'][:60]}"
+    # And the exemption is not achieved by giving up on the budget.
+    assert result.chars <= result.budget_chars
+    assert result.within_budget
+
+
+def test_send_marker_in_this_turns_output_survives_assembly() -> None:
+    """The direct cause of users never receiving their document.
+
+    ``[SEND:/path]`` is how the assistant hands a file to the Channel.  When the
+    row carrying it was replaced by a handle, the upstream saw a turn in which
+    nothing was sent, so the model apologised and re-sent — forever.  Asserted on
+    the marker itself rather than on "some row was spared", because the marker is
+    the payload whose loss the user actually felt.
+    """
+    assembler = RequestAssembler(max_context_tokens=20_000)
+    history = _history(20)
+    watermark = len(history)
+    marker = "[SEND:/workspace/交付文档.md]"
+    history.append({"role": "assistant", "content": "文档写好了 " + "丙" * 3000 + marker})
+    for i in range(4):
+        history.append({"role": "tool", "tool_call_id": f"c{i}", "content": "结果 " + "丁" * 3000})
+
+    assembler.begin_turn(watermark)
+    result = _assemble(assembler, history)
+
+    wire = "".join(m["content"] for m in result.body["messages"] if isinstance(m.get("content"), str))
+    assert marker in wire, "the [SEND:] marker was elided out of the request"
+    assert result.elided_rows > 0, "fixture must still exercise elision"
+
+
+def test_no_watermark_keeps_the_previous_behaviour() -> None:
+    """Omitting the watermark elides exactly as before — the default is opt-out.
+
+    ``RequestAssembler`` is constructed in places that do not run turns (tests,
+    future callers), so "no watermark given" has to mean "nothing is exempt"
+    rather than "everything is".
+    """
+    history = _history(20)
+    with_default = RequestAssembler(max_context_tokens=20_000).build(history, _TOOLS, None)
+
+    ended = RequestAssembler(max_context_tokens=20_000)
+    ended.begin_turn(0)
+    ended.end_turn()
+    after_end = ended.build(history, _TOOLS, None)
+
+    at_end = RequestAssembler(max_context_tokens=20_000)
+    at_end.begin_turn(len(history))
+    at_end_result = at_end.build(history, _TOOLS, None)
+
+    assert with_default.elided_rows == after_end.elided_rows == at_end_result.elided_rows
+    assert with_default.elided_rows > 0
+
+
+def test_watermark_is_ignored_once_the_turn_is_over() -> None:
+    """Exemption is per-turn, so last turn's rows are elidible this turn.
+
+    Otherwise the exempt region would grow without bound and elision — the only
+    hard guarantee under the budget — would effectively be switched off.
+    """
+    assembler = RequestAssembler(max_context_tokens=20_000)
+    history = _history(20)
+    watermark = len(history)
+    # Round 1's assistant row, then tool rows behind it — so by the time the
+    # next turn runs, the row sits well inside ``paired[:-2]`` and the only
+    # thing that could still spare it is the exemption.
+    history.append({"role": "assistant", "content": "上个回合的长输出 " + "戊" * 4000})
+    for i in range(4):
+        history.append({"role": "tool", "tool_call_id": f"c{i}", "content": "结果 " + "庚" * 2000})
+
+    assembler.begin_turn(watermark)
+    during = assembler.build(history, _TOOLS, None)
+    assert not during.body["messages"][watermark]["content"].startswith("[已省略")
+    assembler.end_turn()
+
+    # Next turn: a new user row arrives and the watermark moves past it, so the
+    # rows above are ordinary history again.  It has to be big enough to put the
+    # payload back over budget — otherwise sticky re-elision alone keeps turn 2
+    # under the ceiling, no fresh elision is attempted at all, and the test would
+    # be asserting against hysteresis rather than against the exemption.
+    history.append({"role": "user", "content": "接着说 " + "续" * 20_000})
+    assembler.begin_turn(len(history))
+    after = assembler.build(history, _TOOLS, None)
+    assert after.elided_rows > during.elided_rows, "turn 2 must actually run fresh elision"
+
+    assert after.body["messages"][watermark]["content"].startswith("[已省略"), (
+        "the previous turn's row stayed exempt after its turn ended"
+    )
+
+
+def test_over_budget_is_still_reported_when_exemption_blocks_the_shrink() -> None:
+    """An unshrinkable turn reports ``within_budget=False`` instead of lying.
+
+    The exemption can itself put a turn over budget (one enormous tool result
+    produced *this* turn).  That is the accepted trade: the honest report is what
+    an operator can act on, and it is the same contract the un-elidible floor
+    already has.
+    """
+    assembler = RequestAssembler(max_context_tokens=2_000)
+    history = _history(2)
+    watermark = len(history)
+    # Produced by this turn, and past the per-row storage cap in aggregate:
+    # nothing elidible is left once the exemption is honoured.
+    history.append({"role": "assistant", "content": "开工 " + "己" * 4000})
+    for i in range(4):
+        history.append({"role": "tool", "tool_call_id": f"c{i}", "content": "巨大结果 " + "庚" * 4000})
+
+    assembler.begin_turn(watermark)
+    result = assembler.build(history, _TOOLS, None)
+
+    assert result.chars > result.budget_chars, "fixture must be genuinely unshrinkable"
+    assert not result.within_budget, "an unshrinkable turn must be reported, not silently accepted"
+    assert not result.body["messages"][watermark]["content"].startswith("[已省略")
+
+
 def test_resolve_max_context_tokens_reads_env(monkeypatch: Any) -> None:
     monkeypatch.setenv("PSI_MAX_CONTEXT_TOKENS", "12345")
     assert resolve_max_context_tokens(-1) == 12345
