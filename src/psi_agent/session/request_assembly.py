@@ -57,6 +57,7 @@ from psi_agent.session.history_display import (
     ELISION_HANDLE_PREFIX,
     ELISION_HANDLE_TEMPLATE,
     project_history_with_sources,
+    render_sent_files_note,
 )
 
 DEFAULT_MAX_CONTEXT_TOKENS = 200_000
@@ -492,7 +493,7 @@ class RequestAssembler:
             content = projected.get("content")
             if not isinstance(content, str) or content.startswith(_HANDLE_PREFIX):
                 continue
-            projected["content"] = self._handle_for(projected, source, len(content))
+            projected["content"] = self._handle_for(projected, source, content)
             count += 1
         return count
 
@@ -542,7 +543,7 @@ class RequestAssembler:
             content = projected.get("content")
             if not isinstance(content, str):
                 continue
-            projected["content"] = self._handle_for(projected, source, len(content))
+            projected["content"] = self._handle_for(projected, source, content)
             self._elided_row_ids.add(id(source))
             count += 1
         return count
@@ -605,7 +606,7 @@ class RequestAssembler:
         return [(projected, source) for _, _, projected, source in older + newer]
 
     @staticmethod
-    def _handle_for(projected: dict[str, Any], source: dict[str, Any], chars: int) -> str:
+    def _handle_for(projected: dict[str, Any], source: dict[str, Any], content: str) -> str:
         """The placeholder text left in a row's place.
 
         Carries the original length and a handle so the model can tell the
@@ -614,10 +615,30 @@ class RequestAssembler:
         identifier the model itself used to request the result) and otherwise
         the row's role plus its stored ordinal — enough to find the row in the
         session's history JSONL, which is where the original still is.
+
+        Plus, *only* for a row that delivered files, the names it delivered.
+        Without that, eliding last turn's assistant row leaves the model reading a
+        transcript in which it never sent the document, so it re-sends it or
+        denies having sent it — the cross-turn half of the bug whose same-turn
+        half ``begin_turn``'s exemption closes.  The exemption cannot be widened
+        to cover it: the span would have to reach back over a whole task, which
+        has no bound, whereas elision is the one hard budget guarantee.
+        Conditional and capped because the handle is paid once per elided row —
+        see ``ELISION_SENT_FILES_NOTE`` and ``render_sent_files_note``, which is
+        also where the reason it never renders a scannable ``[SEND:]`` lives.
+
+        Takes the content rather than its length because the note is decoded from
+        the text being replaced; this is the last point at which it is still here.
         """
         role = str(projected.get("role", "?"))
         call_id = source.get("tool_call_id")
         handle = str(call_id) if isinstance(call_id, str) and call_id else f"{role}#{id(source) % 1_000_000:06d}"
         name = source.get("name")
         label = f" ({name})" if isinstance(name, str) and name else ""
-        return ELISION_HANDLE_TEMPLATE.format(kind=role, chars=chars, label=label, handle=handle)
+        return ELISION_HANDLE_TEMPLATE.format(
+            kind=role,
+            chars=len(content),
+            label=label,
+            sent=render_sent_files_note(content),
+            handle=handle,
+        )
