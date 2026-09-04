@@ -112,6 +112,16 @@ def test_continuity_summary_counts_six_items() -> None:
     assert "不计逾期" in body, "leave-extension must not count toward overdue"
 
 
+def test_audit_e2_evidence_intake_is_wired() -> None:
+    """Iteration 2 B3: E1-less / uncertain rows get third-party confirmation evidence."""
+    body = _body()
+    assert "feishu_message_search" in body, "audit must name the E2 search tool"
+    assert "feishu_thread_read" in body, "audit must name the thread reader"
+    assert "user_key" in body, "message search is user-token-only"
+    assert "unavailable" in body, "failed E2 lookups must report unavailable"
+    assert "不替代" in body and "五要素要件" in body, "E2 evidence must not replace closure requirements"
+
+
 def test_only_references_real_tools() -> None:
     real = _public_tool_names()
     assert "feishu_bitable_create_records" in real
@@ -130,3 +140,11 @@ def test_indexed_in_agents_md() -> None:
     assert f"`{AUDIT}`" in agents, f"{AUDIT} must be listed in the AGENTS.md skills index"
     assert "评测落盘" in agents, "the index line must mention the eval dump"
     assert "前后对比摘要" in agents, "the index line must mention the continuity summary"
+
+
+def test_audit_connects_sop_v11_strike_through() -> None:
+    """SOP v1.1 删除线验收与五要素的衔接必须写明且不豁免硬要件。"""
+    body = _body()
+    assert "SOP v1.1" in body and "删除线" in body
+    assert "不豁免" in body, "strike-through must not waive the five closure elements"
+    assert "completed_at" in body, "E1 remains the completion hard evidence"

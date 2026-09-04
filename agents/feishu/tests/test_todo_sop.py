@@ -87,6 +87,24 @@ def test_alignment_section_is_present() -> None:
     assert list(cfg["dimensions"]) == ["A1", "A2", "A3", "A4", "A5", "A6"]
 
 
+def test_priority_importance_section() -> None:
+    pri = _config()["priority"]
+    importance = pri["importance"]
+    for tier in ("high", "high_examples", "medium", "medium_examples", "low", "low_examples", "judgment"):
+        assert importance.get(tier), f"priority.importance must carry {tier}"
+    assert pri["business_priority"], "must pin the business priority ordering"
+    assert "外部成果" in pri["seventy_three_rule"], "seventy_three_rule must tie to external outcomes"
+    assert isinstance(pri["urgency_trap"], list) and pri["urgency_trap"]
+
+
+def test_external_outcome_section() -> None:
+    ext = _config()["external_outcome"]
+    assert isinstance(ext["types"], list) and ext["types"], "external_outcome.types must be a non-empty list"
+    assert isinstance(ext["evidence"], list) and ext["evidence"], "external_outcome.evidence must be a non-empty list"
+    assert isinstance(ext["team_types"], list) and ext["team_types"]
+    assert ext["annual_trajectory"], "annual_trajectory must be present"
+
+
 def test_judgment_skills_point_at_the_config() -> None:
     for name in SOP_SKILLS:
         body = (SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")

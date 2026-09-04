@@ -101,6 +101,12 @@ def test_states_the_dimensions_a1_to_a6() -> None:
         assert phrase in body, f"missing SOP-coverage phrase {phrase}"
 
 
+def test_a5_uses_the_external_outcome_lexicon() -> None:
+    """A5 must point at the config external-outcome lexicon and evidence terms."""
+    body = _body()
+    assert "external_outcome" in body, "A5 must reference the external_outcome config section"
+
+
 def test_reuses_the_e1_e3_ladder() -> None:
     body = _body()
     for tier in ("E1", "E2", "E3"):

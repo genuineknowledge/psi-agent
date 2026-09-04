@@ -1,7 +1,11 @@
-# 公司 TODO SOP —— 用户可编辑的判定口径（真知 v1.0）
+# 公司 TODO SOP —— 用户可编辑的判定口径（真知TODO list SOP v1.1，2026-09-04 桌面版入库）
 # skills 与 tools 的判定要求一律读本文件，不要写死在 SKILL.md / 代码里。
 # 换一家公司 = 替换本文件；引擎段与执行流程零改动。
 # 字段名与结构是契约，不要改（引擎 / 工具按字段名读取）；只改值。
+# v1.1 增补（执行正文见 todo-writing-standard 规则集「不复制」「验收」两节及各技能出处）：
+#   - TODO 项定位为小方案，上级需要跟进与验收；验收方式暂定为删除线删除已完成且达标的 TODO（守住标准）
+#   - TODO 项不能复制粘贴，必须每次重写
+#   - 持续 TODO 简单写明即可，TODO 项不宜过多
 
 schema:
   levels:
@@ -19,12 +23,23 @@ schema:
       time_granularity: 1-2 天,最长 3 天
       count: 1 或多个
       required: [时间节点, 标准, 优先级]
-      relation: 小目标的拆解;不是「要干什么」而是「什么时间干成满足什么标准的什么事」
+      relation: 小目标的拆解;不是「要干什么」而是「什么时间干成满足什么标准的什么事」;定位为小方案,上级需跟进与验收;持续 TODO 简单写明即可,项不宜过多
 
 priority:
   terms: [重要且紧急, 重要不紧急, 紧急不重要, 不重要不紧急]
   order: 重要且紧急 > 重要不紧急 > 紧急不重要 > 不重要不紧急
   scope: 仅 TODO 层;大目标 / 小目标不强求
+  importance:            # 行事优先级执行SOP v1.4 重要度三档判定
+    high: 可折合成外部成果大的任务
+    high_examples: [训模型, 新功能上线, 留存提升, Bug 修复, 重要演示]
+    medium: 间接支撑外部成果, 或直接影响组织效率
+    medium_examples: [内部工具优化, 流程规范化, 文档建设]
+    low: 既不支撑外部成果也不影响他人效率
+    low_examples: [纯个人偏好, 无明确产出的探索]
+    judgment: 优先按能否折合成对用户/外部成果的贡献判定
+  business_priority: 用户 > 组织 > 员工 > 股东 > 领导 > 个人
+  seventy_three_rule: 7成取决于客观外部成果
+  urgency_trap: [无实质损失, 可延后, 可批量处理, 可委托他人]
 
 rules:
   todo_quota: 5
@@ -96,3 +111,10 @@ alignment:
     A4: 用户价值
     A5: 外部成果/友商对比
     A6: 验收
+
+external_outcome:      # 个人与TPMF小组汇报与评级SOP v4.0「名词解释」
+  types: [用户订单, 留存, 认可, 爆款, Star, 刷榜]
+  evidence: [数据, 截图, 链接, 付费, 口碑]
+  contribution: 对外部成果的贡献(未直接产生外部成果但直接对标其产生的贡献)
+  annual_trajectory: 全年价值推进轨迹(关键拐点/偏差/成果)
+  team_types: [融资, 专利, 资质申报, 媒体报道, 银行贷款资格, 雇员满意度, 节税]

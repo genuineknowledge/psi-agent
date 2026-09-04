@@ -164,6 +164,14 @@ def test_rules_keep_unfill_and_vanishing_out_of_truthfulness() -> None:
     assert "消失 ≠ 失实" in body, "vanishing is not evidence of a fabricated item"
 
 
+def test_copy_paste_similarity_never_rules_fabrication() -> None:
+    body = _body()
+    assert "feishu_text_similarity" in body, "the skill must drive the similarity tool"
+    assert "不判失实" in body, "a similarity hit must only go to 存疑, never to 失实"
+    assert "matched_fragment" in body, "the hit must carry the matched text as evidence"
+    assert "feishu_text_similarity" in _public_tool_names(), "the tool must actually exist"
+
+
 def test_only_references_real_tools() -> None:
     real = _public_tool_names()
     # sanity: the collector actually found the toolset
@@ -193,3 +201,17 @@ def test_sibling_skills_point_here_for_truthfulness() -> None:
 def test_indexed_in_agents_md() -> None:
     agents = (WORKSPACE_ROOT / "AGENTS.md").read_text(encoding="utf-8")
     assert f"`{SKILL}`" in agents, f"{SKILL} must be listed in the AGENTS.md skills index"
+
+
+def test_sop_v11_clauses_are_cited_as_the_red_line_source() -> None:
+    """SOP v1.1 的禁止复制/删除线验收/小方案定位要作为出处写在总纲里。"""
+    body = _body()
+    for phrase in ("不能复制粘贴", "删除线", "小方案", "不宜过多"):
+        assert phrase in body, f"missing SOP v1.1 clause {phrase}"
+
+
+def test_copy_paste_scopes_to_todo_items_not_the_whole_cell() -> None:
+    """防复制比较对象是 TODO 层条目, 不含大/小目标段(对齐相似不是应付信号)。"""
+    body = _body()
+    assert "TODO 段" in body, "must scope comparison to the TODO section"
+    assert "不含大/小目标段" in body, "must exclude goal paragraphs from similarity hits"

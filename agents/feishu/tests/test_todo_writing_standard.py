@@ -235,6 +235,16 @@ def test_priority_rule_pins_the_four_quadrant_order() -> None:
     assert "金字塔" in block, "must note the 70/25/5 pyramid is not yet in scope"
 
 
+def test_priority_importance_and_consistency_check_are_wired_in() -> None:
+    """SOP v1.4: importance by external-outcome tier; a TODO's priority must match its goal's."""
+    body = _body()
+    assert "priority.importance" in body, "importance judgment must read config priority.importance"
+    assert "urgency_trap" in body, "urgency must be judged against config urgency_trap"
+    block = _subsection("按优先级", within=_section("规则集段"))
+    assert "一致性" in block, "the rule must check todo-goal importance consistency"
+    assert "待人工确认" in block, "an uncertain consistency verdict must go to human confirmation"
+
+
 def test_params_section_pins_the_confirmed_values() -> None:
     params = _section("参数段")
     for value in PARAMS:
@@ -357,3 +367,18 @@ def test_completion_standard_states_the_two_are_independent() -> None:
 def test_indexed_in_agents_md() -> None:
     agents = (WORKSPACE_ROOT / "AGENTS.md").read_text(encoding="utf-8")
     assert f"`{SKILL}`" in agents, f"{SKILL} must be listed in the AGENTS.md skills index"
+
+
+def test_sop_v11_clauses_are_in_the_rulebook() -> None:
+    """真知TODO list SOP v1.1 增补必须落地成可执行规则, 不能只在文档里出现。"""
+    body = _body()
+    for phrase in ("不能复制粘贴", "删除线", "小方案", "不宜过多"):
+        assert phrase in body, f"missing SOP v1.1 clause {phrase}"
+
+
+def test_copy_paste_compares_todo_items_only() -> None:
+    """SOP v1.1 禁止复制只对 TODO 层条目逐条比较, 不比较整格(大/小目标因对齐相似不误伤)。"""
+    body = _body()
+    assert "TODO 段" in body, "must scope comparison to the TODO section of the cell"
+    assert "不含大/小目标段" in body, "must exclude 大目标/小目标 from the comparison"
+    assert "跨人" in body, "comparison must be across people in the same cycle"
