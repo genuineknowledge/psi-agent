@@ -902,13 +902,17 @@ class SessionAgent:
                                                 )
                                                 args = {}
                                         except json.JSONDecodeError, TypeError:
-                                            logger.warning(f"Failed to parse tool call arguments: {func_args_str[:1000]!r}")
+                                            logger.warning(
+                                                f"Failed to parse tool call arguments: {func_args_str[:1000]!r}"
+                                            )
                                             argument_error = f"Error: Tool '{func_name}' arguments must be valid JSON"
                                             args = {}
 
                                         logger.info(f"Executing tool: {func_name!r}({args!r})")
                                         yield AgentChunk(
-                                            reasoning=(f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"),
+                                            reasoning=(
+                                                f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"
+                                            ),
                                             kind=REASONING_KIND_TOOL_CALL,
                                         )
                                         tool_args.append((i, tc, func_name, args, argument_error))
@@ -1108,7 +1112,6 @@ class SessionAgent:
                     await self._abandon_incomplete_turn(turn_start)
                     raise
 
-
     async def _abandon_incomplete_turn(self, turn_start: int) -> None:
         """Drop an early-committed turn that never reached a terminal result.
 
@@ -1120,10 +1123,7 @@ class SessionAgent:
             return
         self._conversation.truncate_to(turn_start)
         await self._conversation.commit()
-        logger.info(
-            f"Abandoned incomplete turn; history truncated to {turn_start} message(s)"
-        )
-
+        logger.info(f"Abandoned incomplete turn; history truncated to {turn_start} message(s)")
 
     def _request_compaction(self, prompt_tokens: int = 0, threshold: int = 0) -> None:
         """Record that this turn saw the compaction signal.  Costs nothing.
