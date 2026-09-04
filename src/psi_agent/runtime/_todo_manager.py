@@ -140,9 +140,7 @@ class TodoManager:
                 json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
-            if await path.exists():
-                await path.unlink()
-            await tmp.rename(path)
+            await tmp.replace(path)
         except OSError as e:
             logger.warning(f"Failed to write todo segments label at {path!r}: {e!r}")
             return None

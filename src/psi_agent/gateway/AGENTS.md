@@ -82,7 +82,7 @@ A5 把模块文件搬进两个子包后，这条曾**不成立**：两个 `regis
 | `desktop/_attention.py` | `AttentionHub`：SPA `POST /ui/attention` → 绑定的 tray/webview 注意力提示（best-effort）。`schedule_notify()` 用 daemon thread 异步触发，**禁止**在 aiohttp handler 里同步等 tray（pystray 可能卡死事件循环） |
 | `_openapi.py` | `GET /openapi.json` schema 装配 — `build_openapi_spec(desktop=, feishu=, oauth=)` 把下面四份片段按开关拼起来；`OPENAPI_SPEC` 是「全都要」的那份（path key 集合与拆分前一致）。**按 path key 分份、不按当前谁在调用**：路由注册分开后各线只贴自己那份。`render_openapi(...)` 由 handler 按 `app["openapi_desktop"]` / `app["openapi_feishu"]` / `app["openapi_oauth"]` 三面旗子传参（旗子由各 `register_*_routes` 立），所以 spec 报的就是本进程真注册了的那批 path |
 | `_openapi_core.py` | 两条线都注册的 16 个 path（`/ais` `/routers` `/sessions*` `/titles*` `/summaries*` `/defaults`）+ 公共 schema 与 `responses.Error`。`/oauth/*` 曾在这里，已随 `OAuthRelay` 挪去 `feishu/_openapi.py` |
-| `desktop/_openapi.py` | ToC 专属 6 个 path（`/ui/attention` `/ui/prefs/survey` `/workspace/*`）；背后 `AttentionHub` / `UIPrefs` / `WorkspaceManager` 都认识桌面概念。无专属 schema |
+| `desktop/_openapi.py` | ToC 专属 path（`/ui/attention` `/ui/prefs/survey` `/ui/prefs/language` `/workspace/*` `/auth/*`）；背后 `AttentionHub` / `UIPrefs` / `WorkspaceManager` / `AuthManager` 都认识桌面概念。无专属 schema |
 | `feishu/_openapi.py` | ToB 专属 `FEISHU_PATHS` 2 个 path（`/feishu/route` `/feishu/routes`）+ 三个 `FeishuRoute*` schema；另有 `OAUTH_PATHS` 2 个（`/oauth/callback` `/oauth/code`）——代码归本包但**与挂了哪些 gateway 正交**，由独立开关控制，每种 `--gateway` 组合都报（路由侧同理，见 [OAuthRelay](#oauthrelay)） |
 
 ## Gateway 启动流程
@@ -577,6 +577,8 @@ OAuth 回调中继（`feishu/_oauth_manager.py`，路由与 handler 在 `feishu/
 | POST | `/ui/attention` | 会话在后台完成时闪烁托盘/webview（best-effort，需 `--tray` / `--webview`） |
 | GET | `/ui/prefs/survey` | 问卷弹窗是否已关闭过 → `{"done": bool}`（按机器，落 `{appdata}/ui-prefs.json`） |
 | POST | `/ui/prefs/survey` | 记录问卷弹窗已关闭；body `{"done": bool}`，缺省/非 bool 视作 `true`（唯一调用方是"关闭"动作） |
+| GET | `/ui/prefs/language` | SPA 界面语言偏好 |
+| POST | `/ui/prefs/language` | 设置 SPA 界面语言偏好 `{language}` |
 | GET | `/openapi.json` | OpenAPI schema。只含本进程真注册了的那些面的片段（`--gateway desktop feishu` 两面都贴时与拆分前一致；单挂一面时另一面的 path 不再出现，`/oauth/*` 每种组合都在） |
 | GET | `/favicon.ico` | 托盘图标（仅当 `--icon` 设置时注册，返回该图标文件） |
 

@@ -58,9 +58,9 @@ def test_four_fragments_partition_the_full_spec() -> None:
 
 def test_fragments_own_only_their_own_prefixes() -> None:
     """归属按 path 前缀可判: 产品前缀不许出现在公共片段里, 反之亦然。"""
-    assert all(k.startswith(("/ui/", "/workspace/")) for k in DESKTOP_PATHS)
+    assert all(k.startswith(("/ui/", "/workspace/", "/auth/")) for k in DESKTOP_PATHS)
     assert all(k.startswith("/feishu/") for k in FEISHU_PATHS)
-    assert not any(k.startswith(("/ui/", "/workspace/", "/feishu/", "/oauth/")) for k in CORE_PATHS)
+    assert not any(k.startswith(("/ui/", "/workspace/", "/feishu/", "/oauth/", "/auth/")) for k in CORE_PATHS)
     # /oauth/* 代码归 ToB (取件方全在 agents/feishu/tools 一侧, ToC 登录不走 OAuth 跳转),
     # 但**自成一份片段**: 路由侧每种 --gateway 组合都注册, 挂在 feishu 开关上会错报。
     assert set(OAUTH_PATHS) == {"/oauth/callback", "/oauth/code"}
