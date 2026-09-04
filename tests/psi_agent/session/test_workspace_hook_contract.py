@@ -55,6 +55,7 @@ EXPECTED: dict[str, tuple[str, ...]] = {
     "a-simple-windows-workspace": ("system_prompt_builder", "compact_history"),
     "fusion-flow-workspace": ("system_prompt_builder", "compact_history"),
     "fusion-haven-workspace": ("system_prompt_builder", "compact_history"),
+    "guoshu-weekly-workspace": ("system_prompt_builder", "compact_history"),
     "fusion-memory-workspace": (
         "system_prompt_builder",
         "system_prompt_rebuild_checker",
@@ -126,7 +127,7 @@ async def _resolved_hooks(system_py: Path) -> tuple[str, ...]:
 
 def test_every_workspace_is_covered() -> None:
     """The glob must not quietly stop matching — B2 lost 10 tests that way."""
-    assert len(WORKSPACES) == 13
+    assert len(WORKSPACES) == 14
     assert {p.parent.parent.name for p in WORKSPACES} == set(EXPECTED)
 
 

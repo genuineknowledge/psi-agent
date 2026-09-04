@@ -1,0 +1,32 @@
+; MySQL 8.4 config for the guoshu-weekly demo store.
+; Copy next to the extracted server directory and adjust the two paths.
+; Installed from the no-install ZIP, so uninstall = stop mysqld + delete the dir.
+
+[mysqld]
+basedir = D:/MySQL/mysql-8.4.11-winx64
+datadir = D:/MySQL/data
+port = 3306
+
+; Match the dump (utf8mb4 / utf8mb4_0900_ai_ci) so Chinese task names and
+; progress text stay byte-identical to the source.
+character-set-server = utf8mb4
+collation-server = utf8mb4_0900_ai_ci
+
+; Local-only demo instance. BOTH lines are needed: bind-address only covers the
+; classic 3306 protocol, while X Protocol has its own setting that defaults to
+; `*` (every interface). Setting just bind-address leaves 33060 world-open.
+bind-address = 127.0.0.1
+mysqlx_bind_address = 127.0.0.1
+
+max_connections = 64
+; NOT default_authentication_plugin: that variable was removed in MySQL 8.4
+; (it belonged to 8.0) and setting it makes --initialize fail outright.
+; caching_sha2_password is already the 8.4 default.
+
+; Small dataset (1.1 MB), so keep the memory footprint modest on a dev box.
+innodb_buffer_pool_size = 128M
+log_error = D:/MySQL/data/error.log
+
+[client]
+port = 3306
+default-character-set = utf8mb4

@@ -12,6 +12,7 @@ from psi_agent._appdata import (
 )
 from psi_agent.session.history_display import (
     KIND_CHAT,
+    compact_tool_result_for_event,
     extract_send_paths,
     is_displayable_chat_message,
     message_kind,
@@ -94,6 +95,11 @@ class HistoryManager:
         # Tool-round thinking / tools held until the next displayable assistant.
         pending_reasoning = ""
         pending_tools: list[dict[str, str]] = []
+        # Tool results (the JSONL ``role: tool`` rows) in global order.  They
+        # are paired with ``tools`` after the scan: results follow their
+        # assistant turn in the same order as the projected tool_calls, so the
+        # k-th result belongs to the k-th tool entry across the whole session.
+        tool_results: list[str] = []
         try:
             content = await path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -119,7 +125,17 @@ class HistoryManager:
             tools = _tool_calls_payload(msg)
 
             if not is_displayable_chat_message(msg):
-                # Tool rounds: assistant + tool_calls (+ optional thinking), no chat content.
+                # Tool rounds: assistant + tool_calls (+ optional thinking), no
+                # chat content.  ``role: tool`` rows carry the result text —
+                # compacted for the wire so history responses stay small while
+                # the provenance view still gets caliber/snapshot (the mock
+                # envelope now fronts those fields, so head-truncated payloads
+                # keep them too).
+                if role == "tool":
+                    raw_result = msg.get("content")
+                    if isinstance(raw_result, str) and raw_result.strip():
+                        tool_results.append(compact_tool_result_for_event(raw_result))
+                    continue
                 if role == "assistant" and kind == KIND_CHAT and (reasoning or tools):
                     if messages and messages[-1].get("role") == "assistant":
                         prev = messages[-1]
@@ -217,6 +233,19 @@ class HistoryManager:
                 prev["reasoning"] = _merge_reasoning(prev.get("reasoning"), pending_reasoning)
             if pending_tools:
                 prev["tools"] = _extend_tools(prev.get("tools"), pending_tools)
+
+        # Pair results with their tool entries, in global order: each row's
+        # tools take the next slice of the results stream.
+        if tool_results:
+            result_idx = 0
+            for row in messages:
+                row_tools = row.get("tools")
+                if not isinstance(row_tools, list) or not row_tools:
+                    continue
+                count = len(row_tools)
+                if result_idx < len(tool_results):
+                    row["tool_results"] = tool_results[result_idx : result_idx + count]
+                    result_idx += count
 
         logger.debug(f"History for session {session_id!r}: {len(messages)} displayable message(s)")
         return messages

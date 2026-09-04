@@ -60,6 +60,9 @@ dependencies = [
     "hikari>=2.5.0",
     "matplotlib>=3.11.0",
     "antlr4-python3-runtime>=4.13.2,<4.14",
+    # guoshu-weekly demo 的 mock 取数服务连 MySQL；CI 的 ty check 覆盖 examples/,
+    # 不声明就是三条 unresolved-import。
+    "pymysql>=1.1.1",
 ]
 
 [dependency-groups]

@@ -92,6 +92,7 @@ async def test_history_folds_tool_round_reasoning_into_next_assistant(
             "text": "\u5b8c\u6210",
             "reasoning": "\u5148\u8bfb\u6587\u4ef6\n\u518d\u603b\u7ed3",
             "tools": [{"name": "read", "arguments": '{"path": "a.py"}'}],
+            "tool_results": ["ok"],
         },
     ]
 
@@ -127,6 +128,54 @@ async def test_history_folds_tool_calls_without_reasoning(
             "role": "assistant",
             "text": "done",
             "tools": [{"name": "bash", "arguments": '{"command": "ls"}'}],
+            "tool_results": ["ok"],
+        },
+    ]
+
+
+@pytest.mark.anyio
+async def test_history_pairs_tool_results_in_call_order(
+    tmp_path: Path,
+    appdata: Path,
+) -> None:
+    """``role: tool`` rows surface as ``tool_results``, aligned with ``tools``
+    in global order even across parallel-call rounds (psi-agent streams all
+    calls first, then all results in the same order)."""
+    hm = HistoryManager()
+    hist_dir = anyio.Path(str(appdata)) / "histories"
+    await hist_dir.mkdir(parents=True)
+    content = "\n".join(
+        [
+            '{"role": "user", "content": "go", "kind": "chat"}',
+            (
+                '{"role": "assistant", "tool_calls": [{"id": "1", "type": "function", '
+                '"function": {"name": "weekly_a", "arguments": "{}"}}, '
+                '{"id": "2", "type": "function", '
+                '"function": {"name": "weekly_b", "arguments": "{}"}}], '
+                '"kind": "chat"}'
+            ),
+            '{"role": "tool", "content": "{\\"ok\\": true, \\"value\\": 1}", "tool_call_id": "1"}',
+            '{"role": "tool", "content": "{\\"ok\\": true, \\"value\\": 2}", "tool_call_id": "2"}',
+            '{"role": "assistant", "content": "done", "kind": "chat"}',
+        ]
+    )
+    await (hist_dir / "pair.jsonl").write_text(content, encoding="utf-8")
+
+    result = await hm.get(str(tmp_path / "ws"), "pair", appdata=str(appdata))
+
+    assert result == [
+        {"role": "user", "text": "go"},
+        {
+            "role": "assistant",
+            "text": "done",
+            "tools": [
+                {"name": "weekly_a", "arguments": "{}"},
+                {"name": "weekly_b", "arguments": "{}"},
+            ],
+            "tool_results": [
+                '{"ok": true, "value": 1}',
+                '{"ok": true, "value": 2}',
+            ],
         },
     ]
 

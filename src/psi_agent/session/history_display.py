@@ -25,6 +25,7 @@ to the AI, never rendered as part of a chat bubble.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -99,6 +100,75 @@ def truncate_tool_result(text: str, limit: int = MAX_TOOL_RESULT_CHARS) -> str:
     if len(text) <= limit or _TRUNCATION_MARKER in text:
         return text
     return text[:limit] + f"{_TRUNCATION_MARKER}{len(text)} 字符, 保留前 {limit}。如需完整内容请分页或缩小查询范围]"
+
+
+_EVENT_LINE_LIMIT = 1000
+"""Budget for the live SSE ``[Tool Result: ...]`` provenance line.
+
+That line is the frontend's provenance source: it must stay parseable so the
+SPA can render the server-side ``caliber`` / ``snapshot_note`` and the row
+count under 查看依据与来源.  Plain head-truncation cut into the JSON
+mid-array and, worse, dropped the trailing metadata fields the provenance
+view needs, so results showed as "内容过长已截断" without any caliber.
+"""
+
+# String fields, longest first, trimmed in order when the compact object
+# still exceeds the budget: provenance metadata first, sample rows last.
+_EVENT_TRIM_ORDER = ("caliber", "snapshot_note", "message")
+
+
+def compact_tool_result_for_event(text: str, limit: int = _EVENT_LINE_LIMIT) -> str:
+    """Make a tool result JSON-safe for the live provenance event line.
+
+    Best effort.  When *text* parses as a JSON object, rebuild it as a compact
+    object that keeps every scalar/metadata field (``caliber``,
+    ``snapshot_note``, ``snapshot_date``, ``source_tables``, ``total_count``,
+    ``error`` …), drops ``rows`` to an empty array, and reports the original
+    row count as ``_rows_truncated`` — the provenance view shows counts and
+    calibers, never the row bodies, and a couple of sample rows from a
+    wide-row payload (12+ fields each) can alone blow the line budget.
+    ``columns`` is capped to two entries; if the compact object still exceeds
+    *limit*, the longest string fields are trimmed in ``_EVENT_TRIM_ORDER``.
+    Non-JSON or unparsable text falls back to plain head truncation (previous
+    behaviour).
+    """
+    if len(text) <= limit:
+        return text
+    try:
+        payload = json.loads(text)
+    except TypeError, ValueError:
+        return text[:limit]
+    if not isinstance(payload, dict):
+        return text[:limit]
+
+    compact: dict[str, Any] = {}
+    for key, value in payload.items():
+        if isinstance(value, list):
+            if key == "rows" and value:
+                compact["_rows_truncated"] = len(value)
+                compact[key] = []
+            elif value:
+                compact[key] = value[:2]
+            else:
+                compact[key] = []
+        else:
+            compact[key] = value
+
+    rendered = json.dumps(compact, ensure_ascii=False)
+    if len(rendered) > limit:
+        for key in _EVENT_TRIM_ORDER:
+            if key not in compact or not isinstance(compact[key], str):
+                continue
+            while len(rendered) > limit and len(compact[key]) > 80:
+                compact[key] = compact[key][: int(len(compact[key]) * 0.6)]
+                rendered = json.dumps(compact, ensure_ascii=False)
+            if len(rendered) <= limit:
+                break
+    if len(rendered) > limit:
+        # Extremely wide payload (many scalar fields): last resort is the
+        # previous head-truncation behaviour.
+        return text[:limit]
+    return rendered
 
 
 _WIRE_ROLES = frozenset({"system", "user", "assistant", "tool"})
