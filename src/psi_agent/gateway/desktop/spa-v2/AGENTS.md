@@ -51,8 +51,9 @@
 
 ```text
 任务卡          ↔  Gateway Session（同 workspace；可选独立 agent 包）
-新建任务/聊天   ↔  POST /sessions（可带 agent）+ POST /titles + 首条 chat SSE（文案与附件同总览对话框：`File[]` multipart）；**首条发送后立刻进入分屏聚焦**（左上下文 / 右对话），不再停在新建页本地气泡
+新建任务/聊天   ↔  POST /sessions（可带 agent）+ POST /titles（先写默认「新任务」）+ 首条 chat SSE（文案与附件同总览对话框：`File[]` multipart）；**首条发送后立刻进入分屏聚焦**（左上下文 / 右对话），不再停在新建页本地气泡
 卡片内对话      ↔  POST /sessions/{id}/chat（multipart chunks）
+任务台标题      ↔  **刻意为之**：对标 DeepSeek——取 `/history` 投影后**首条** user 文案（`titleFromHistoryMessages`），在 `ensureHistory` / `refreshHistory` 同步 `POST /titles`；**Stop 撤回只按本地剩余气泡同步标题**，不立刻 `refreshHistory`（abandon 未完成时抢读会把草稿 user 灌回并被标成 failed）。新建时 UI 可乐观显示 prompt，但**不**把未落盘草稿写成服务端标题。**不再**用 `POST /titles/generate` 另开 LLM 起标题。
 任务历史文案    ↔  GET /sessions/{id}/history（AppData `histories/` 优先 + legacy 双读）
 任务卡中间步 N/M ↔  GET /sessions/{id}/todos（``todo`` tool → AppData `todos/{id}.json`，legacy `.psi/todos` 双读）
 分屏「任务历史」 ↔  GET /sessions/{id}/todo-segments（`todos/{id}.segments.json`；点选回放该段步骤）
@@ -106,7 +107,7 @@ Hub「使用免费模型」→ **保留**已连接真实模型；hydrateAiForSes
 
 - **用户消息**：悬停显示复制；发送失败（`failed`）时显示**红色回退箭头**（`RotateCcw`）。加载 `/history` 后经 `normalizeFailedTurns` 把「有 user、无完整 agent 回复」标成 `failed`/`incomplete`（与 spa v1 同款）。**点击箭头 ≠ 立刻重发**：效果对齐 Stop——撤回该 user（及空 agent stub），文案与附件**顶掉**输入框里半成品草稿并 focus，由用户再按发送。
 - **助手消息**：完整回复结束后显示操作栏——点赞 / 点踩（互斥切换）、重新生成（丢掉该助手气泡并用上一条用户消息重跑 SSE）、复制。
-- **停止生成**：流式进行中输入栏右侧为红色停止键（替换发送）。中止后撤回本轮乐观 user+agent，把原文案与附件还原到输入框（对齐 Cursor）。**刻意为之**：停止键用 `pointerdown` + 短时 `suppressSubmit`，避免 Stop 变回 Send 后同一次点击误触重发（旧逻辑清空输入框，误触 submit 是空操作所以「一点就停」；回填草稿后误触会立刻再跑一轮，看起来像打断后又在气泡里重出）。另用 `streamEpoch` / `signal.aborted` 丢掉中止后的迟到 SSE。网络等非 Abort 失败仍标记 `failed` / 可重试。
+- **停止生成**：流式进行中输入栏右侧为红色停止键（替换发送）。中止后撤回本轮乐观 user+agent，把原文案与附件还原到输入框（对齐 Cursor）——**不**标 `failed`、不留红箭头气泡。**刻意为之**：Stop 后不立刻 `refreshHistory`（会与 Session abandon 竞态，把尚未剥离的 user 灌回并被 `normalizeFailedTurns` 标成异常）；标题只按本地剩余气泡改。停止键用 `pointerdown` + 短时 `suppressSubmit`，避免 Stop 变回 Send 后同一次点击误触重发。另用 `streamEpoch` / `signal.aborted` 丢掉中止后的迟到 SSE。网络等非 Abort 失败仍标记 `failed` / 可重试。
 - **粘贴 / 拖放附件**：对话栏 / 新建任务/聊天输入支持 `Ctrl/Cmd+V` 粘贴，以及从资源管理器或其他窗口拖入文件——均等价于回形针选文件，进入同一附件 chip 再走 multipart；纯文字粘贴不拦截。识图等由 workspace tool 处理。拖入时输入区高亮并提示「松开以添加附件」（`useComposerFileDrop` + `filesFromClipboard`）。
 - **换行**：输入为 `textarea`；`Enter` 发送，`Ctrl/Cmd+Enter` 换行（`Shift+Enter` 亦换行）。
 - **流式吸底（对齐 spa v1 / Cursor）**：`FocusChatThread` 距底 ≤60px 才跟随新内容滚底；手动上拉后不打断阅读；滚回底部恢复跟随。**发消息必跳底**：无论当前滚动位置，新增气泡切片里出现 `role=user` 即强制吸底并重新粘滞（`sendMessage` 一次追加 user+空 agent，不能只看 `messages.at(-1)`）。**直播思考框**（`.focus-chat-live-thinking`）同一规则：贴底才粘滞跟随思考增长；上拖断开、内容在下方继续生成；再拉回底恢复粘滞——禁止每 token 无条件 `scrollTop=scrollHeight`（会把框「粘死」）。

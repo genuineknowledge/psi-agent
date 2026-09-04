@@ -73,8 +73,9 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
    - tool_calls → 累积（按 index 拼接 partial JSON）
     - `finish_reason="tool_calls"` → 逐个过 `ToolCallConvergence.refusal_for()`（见「回合收敛」，被拒的**不发出**，改把说明性字符串当结果）→ 执行余下 tool → 结果追加到 history → 回到步骤 4
     - finish_reason="stop" → 最终 content 追加到 history + `commit()` + 刷新 schedule registry + 若收到 compaction 信号则 `_request_compaction()` 记账 → 释放锁 → 锁外 `drain_pending_compaction()` 才真发压缩调用
-   - finish_reason="error" → 回滚到快照 → `raise AgentError(message)`
-   - 任何未捕获异常 → 回滚到快照 → 向上传播
+   - finish_reason="error" → 回滚到快照 → `raise AgentError(message)`（早期 `commit` 已清快照，**用户行保留**）
+   - Stop / 断开 / `aclose` → `_abandon_incomplete_turn` 截掉本回合再向上传播（**用户行不保留**）
+   - 其他未捕获异常 → 同 cancel（abandon）或随 `__aexit__` rollback，视是否走过早期 commit
 6. 最多 `max_tool_rounds` 轮 tool call（默认 `DEFAULT_MAX_TOOL_ROUNDS` = 20），达到上限时追加**面向用户**的说明性 assistant 消息 + commit
 7. **Turn 级别原子性**：``run()`` 所有正常出口调用 ``commit()``（save + clear snapshot）；异常时 ``async with`` 上下文管理器自动 ``rollback()``。内存和磁盘仅在同一检查点同步更新。
 
@@ -85,7 +86,7 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
 - `ChannelAdapter` 是纯无状态工具——不持有 agent/lock 引用。
 - Channel 请求中除 `messages` 外的不认识参数全部透传到 AI 层（`extra_params`）。
 - AI 返回多 choice 时报错（`finish_reason="error"`），0 choice 作为心跳跳过。
-- AI 返回非 200 或 `finish_reason="error"` 时，错误信息不写入 conversation history，且通过 turn 快照回滚机制保证本轮用户消息也不落盘。
+- AI 返回非 200 或 `finish_reason="error"` 时，错误信息不写入 conversation history；用户行因早期 `commit` **会**留在磁盘（崩溃重试基线）。Stop / 断开则走 `_abandon_incomplete_turn`，用户行一并去掉。
 
 ### 卡片回调直调短路（`_try_direct_card_dispatch`）
 
@@ -542,7 +543,7 @@ Session 支持将对话历史持久化到 AppData `histories/{session_id}.jsonl`
 - **读**：优先 AppData 文件；缺则双读 legacy `{workspace}/histories/{session_id}.jsonl`
 - `Session.session_id: str | None = None` — None 时自动生成 UUID，给定字符串时可 resume
 - 加载：`SessionAgent.create()` → `Conversation.from_workspace(..., appdata_root=…)` 双读
-- **Turn 级别原子性**：`SessionAgent.run()` 每次调用通过 ``async with self._conversation`` 进入上下文管理器，首次 `add()` / `replace_system()` 自动建立快照。user message 追加后立即 `commit()`（早期落盘，崩溃恢复基线），后续仅在对 AI 响应成功的检查点再次 `commit()` 更新；任何异常（AI error、连接断开、cancellation）都会通过 ``__aexit__`` 自动触发 `Conversation.rollback()` 恢复到快照，保证内存和磁盘始终同步于最近一个成功阶段。
+- **Turn 级别原子性**：`SessionAgent.run()` 每次调用通过 ``async with self._conversation`` 进入上下文管理器，首次 `add()` / `replace_system()` 自动建立快照。user message 追加后立即 `commit()`（早期落盘，崩溃恢复基线），后续仅在对 AI 响应成功的检查点再次 `commit()` 更新；`AgentError` 时 ``__aexit__`` 触发 `Conversation.rollback()`——但早期 `commit()` 已清快照，**用户行会保留**（崩溃重试基线，刻意为之）。**Stop / 客户端断开 / generator `aclose`（刻意为之）**：早期落盘之后取消不等于「保留用户问题」——SPA Stop 只撤回本地草稿，若不删 Session 侧那行，下一轮发送会看到「撤回前的问题 + 改写后的问题」，模型把两段一起想。故 cancel 路径调 `_abandon_incomplete_turn`：`truncate_to(turn_start)` 再 `commit()`，整回合（含中途已落盘的 tool 行）一并丢掉；`AgentError` 不走这条。
 - 保存时机（一致性检查点）：
   - `finish_reason="stop"` — assistant 响应追加后立即 `commit()`，随后刷新 schedule registry（完整回合）；若收到 compaction 信号则 `_request_compaction()` 记账，插入 `compacted` 消息与 `commit()` 由锁外的 `drain_pending_compaction()` 完成
   - `finish_reason="tool_calls"` — 所有 tool 结果追加后立即 `commit()`（子回合）
@@ -550,7 +551,7 @@ Session 支持将对话历史持久化到 AppData `histories/{session_id}.jsonl`
   - 达到 `max_tool_rounds` — 追加 `MAX_ROUNDS_NOTICE`（含实际轮数的中文说明，以 `[已达到单轮工具调用上限, 停在这里]` 开头）assistant 消息后 `commit()`
 - 只有 reasoning、没有 `content` / `tool_calls` 的最终 assistant 不写入 history；reasoning 仍可流式输出并传给 after-turn hook。读取旧 JSONL 时，`project_history_for_wire()` 同样过滤这类不符合 OpenAI wire contract 的遗留行，避免上游返回 `Invalid assistant message`
 - `Conversation.save()` 使用 tempfile + `os.replace()` 实现原子写入；`commit()` 封装 save + 清除快照
-- **部分保存**的场景：`finish_reason="error"`、AI 连接断开、channel 断开、schedule runner 异常——user message 已通过早期 `commit()` 落盘，AI 响应部分通过 `rollback()` 回滚，不写入磁盘
+- **部分保存**的场景：`finish_reason="error"`（及同类 `AgentError`）——user message 已通过早期 `commit()` 落盘，AI 响应不写入。**Stop / channel 断开**不在此列：走 `_abandon_incomplete_turn`，用户行也从磁盘去掉（见上「Turn 级别原子性」）。
 - 首次使用时自动创建 AppData `histories/` 目录 + `.gitignore`（忽略全部文件）
 
 ## Context Compaction

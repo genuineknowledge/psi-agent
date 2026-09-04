@@ -43,3 +43,30 @@ async def test_keepalive_does_not_cancel_slow_chunk_generator() -> None:
     assert events == ["start", "yield", "done"]
     assert any(w.startswith(b": keepalive") for w in resp.writes)
     assert any(b"hi" in w and b"text" in w for w in resp.writes)
+
+
+@pytest.mark.anyio
+async def test_keepalive_raises_when_client_gone() -> None:
+    """Keepalive write failure must cancel upstream (SPA Stop during idle)."""
+
+    async def idle_then_chunk() -> AsyncGenerator[dict[str, Any]]:
+        await anyio.sleep(0.35)
+        yield {"type": "text", "text": "late"}
+
+    class _DeadResp:
+        def __init__(self) -> None:
+            self.writes: list[bytes] = []
+
+        async def write(self, data: bytes) -> None:
+            if data.startswith(b": keepalive"):
+                raise ConnectionResetError("client gone")
+            self.writes.append(data)
+
+    with pytest.raises(BaseExceptionGroup) as eg:
+        await _write_chat_sse_with_keepalive(
+            cast(web.StreamResponse, _DeadResp()),
+            idle_then_chunk(),
+            session_id="test",
+            keepalive_sec=0.1,
+        )
+    assert any(isinstance(e, ConnectionResetError) for e in eg.value.exceptions)

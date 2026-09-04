@@ -51,6 +51,20 @@ async def test_trim_after_rollback_restores() -> None:
 
 
 @pytest.mark.anyio
+async def test_truncate_to_keeps_prefix() -> None:
+    conv = Conversation(
+        messages=[
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+        ]
+    )
+    conv.truncate_to(1)
+    assert len(conv.messages) == 1
+    assert conv.messages[0]["role"] == "system"
+
+
+@pytest.mark.anyio
 async def test_trim_after_empty_is_noop() -> None:
     conv = Conversation()
     conv.trim_after(0)
