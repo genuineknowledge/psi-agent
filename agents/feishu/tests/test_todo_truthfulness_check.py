@@ -164,6 +164,14 @@ def test_rules_keep_unfill_and_vanishing_out_of_truthfulness() -> None:
     assert "消失 ≠ 失实" in body, "vanishing is not evidence of a fabricated item"
 
 
+def test_copy_paste_similarity_never_rules_fabrication() -> None:
+    body = _body()
+    assert "feishu_text_similarity" in body, "the skill must drive the similarity tool"
+    assert "不判失实" in body, "a similarity hit must only go to 存疑, never to 失实"
+    assert "matched_fragment" in body, "the hit must carry the matched text as evidence"
+    assert "feishu_text_similarity" in _public_tool_names(), "the tool must actually exist"
+
+
 def test_only_references_real_tools() -> None:
     real = _public_tool_names()
     # sanity: the collector actually found the toolset

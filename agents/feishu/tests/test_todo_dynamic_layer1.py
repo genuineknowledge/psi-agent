@@ -112,6 +112,16 @@ def test_continuity_summary_counts_six_items() -> None:
     assert "不计逾期" in body, "leave-extension must not count toward overdue"
 
 
+def test_audit_e2_evidence_intake_is_wired() -> None:
+    """Iteration 2 B3: E1-less / uncertain rows get third-party confirmation evidence."""
+    body = _body()
+    assert "feishu_message_search" in body, "audit must name the E2 search tool"
+    assert "feishu_thread_read" in body, "audit must name the thread reader"
+    assert "user_key" in body, "message search is user-token-only"
+    assert "unavailable" in body, "failed E2 lookups must report unavailable"
+    assert "不替代" in body and "五要素要件" in body, "E2 evidence must not replace closure requirements"
+
+
 def test_only_references_real_tools() -> None:
     real = _public_tool_names()
     assert "feishu_bitable_create_records" in real
