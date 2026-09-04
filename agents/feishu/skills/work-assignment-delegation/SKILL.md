@@ -61,7 +61,7 @@ category: productivity
 2. 不要重复输出卡片已经完整展示的详情，也不要让接收者等待模型重新组织同一份内容。
 3. 明确区分事实、假设和待确认事项；缺失信息只标成缺口，不补写成事实。
 4. 接收者确认收到时，调用 `assignment_accept`。成功后不再经 `feishu_api` 另建 task v2 任务（`POST /open-apis/task/v2/tasks`），也不再调用 `assignment_transition`，避免重复任务和重复状态迁移。
-5. 需要方案时，协助接收者形成可评审方案，至少包括目标理解、影响范围、关键步骤、风险、验证方式和需要评审的问题。
+5. 需要方案时：先按 [`proposal-need-remind`](../proposal-need-remind/SKILL.md) 做中事/大事提醒(可跳过)；用户同意写方案后再用 [`proposal-writing-standard`](../proposal-writing-standard/SKILL.md) 协助形成可评审草案(多方案+分析；结构与硬闸门按该 skill)。不要在未提醒分级的情况下直接当成普通转达。
 6. 接收者确认方案后，调用 `assignment_transition`，其中 `transition_type: "submit_plan"`，并把方案写入 `plan`。
 7. 如果接收者明确不形成方案或任务不需要方案，调用 `assignment_transition`，其中 `transition_type: "close"`，并写入 `closure_reason`。不要调用 `closed_without_plan`，Memory 没有这个 transition。
 
