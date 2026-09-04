@@ -139,8 +139,8 @@ def test_recipient_task_questions_use_feedback_instead_of_relay() -> None:
     assert "任务范围" in guidance
     assert "验收标准" in guidance
     assert "assignment_feedback" in guidance
-    assert "不要调用 `feishu_user_get`" in guidance
     assert "不要调用 `feishu_message_send`" in guidance
+    assert "不要调用 `feishu_topic_start`" in guidance
     assert "不要等待安排者" in guidance
     assert "已提交反馈" in guidance
     assert '"notification_strategy": "blocking"' in guidance

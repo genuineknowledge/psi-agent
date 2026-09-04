@@ -117,7 +117,7 @@ message_id / sender_open_id）。需要群里之前的上下文时：
 哪些操作**必须**用户本人授权（机器人权限天生做不了，直接 `need_auth`）：
 - `feishu_docs_search`（全库搜「当前用户能看到的文档」，需 `docs_read`）；
 - `feishu_wiki_create_space`（新建知识库，新库归授权用户，需 `wiki_write`）；
-- `feishu_contact_search`（全组织按名搜人，需 `contact_read`）。
+- 全组织**按名搜人**（`feishu_api` 打 `GET /open-apis/search/v1/user`，只吃 user token，需 `contact_read`）。
 
 ### 问归属（一次问清，之后不再问）
 
@@ -392,13 +392,16 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
     停止推送用 `feishu_api POST /open-apis/approval/v4/approvals/:approval_code/unsubscribe(approval_code)`。
 12. **卡点找人（判定归属 + 给联系方式）**：员工私聊说"工作上卡在某个点了"，按 [`feishu-blocker-routing`]
     技能给他指路。先读一张**职责归属多维表格**（业务领域/职责 → 负责人 open_id）
-    （`feishu_api` 打 `GET /open-apis/bitable/v1/apps/:app_token/tables/:table_id/records`）把卡点匹配到负责人，再用
-    `feishu_user_get(user_ids=<负责人 open_id>)` 取其**联系方式**（`mobile`/`email`/`enterprise_email`/
+    （`feishu_api` 打 `GET /open-apis/bitable/v1/apps/:app_token/tables/:table_id/records`）把卡点匹配到负责人，再
+    `feishu_api` 打 `GET /open-apis/contact/v3/users/:user_id`（`user_id_type=open_id`，见 `feishu-contact`
+    技能「查人」表）取负责人**联系方式**（`mobile`/`email`/`enterprise_email`/
     `job_title`），回员工"①这归谁负责 ②去找谁 ③怎么联系"。台账里存的是姓名不是 open_id 时，
-    最省事是 `feishu_contact_search(query=<姓名>)` **全局按名搜人**（不必先知道他在哪个群/部门，
-    直接把姓名解析成 open_id）——这一步走用户身份，返回 `need_auth=True` 时才引导授权；退而求其次用
+    最省事是按名全局搜人 `feishu_api` 打 `GET /open-apis/search/v1/user`（`query=<姓名>`，**只吃 user token**，
+    必须带 `user_key`；不必先知道他在哪个群/部门，直接把姓名解析成 open_id）——这一步走用户身份，
+    返回 `need_auth=True` 时才引导授权；退而求其次用
     `feishu_department_members(recursive=True)` 或 `feishu_chat_find_member` 按名反查 open_id。
-    要一次拿到某群**全部**成员（不是按名找某个人）时，用 `feishu_chat_list_members(chat_id)` 列全员花名册。
+    要一次拿到某群**全部**成员（不是按名找某个人）时，用 `feishu_api` 打 `GET /open-apis/im/v1/chats/:chat_id/members`
+    列全员花名册。
     **联系方式只在私聊回给来问的本人，不群发**；`mobile`/`email` 读到空多是缺
     `contact:user.phone:readonly`/`contact:user.email:readonly` 或通讯录权限范围没覆盖，**如实说明**并
     退回到"在飞书里 @他"，不编号码；台账查不到归属就如实说查不到，别硬安负责人。
