@@ -45,7 +45,7 @@ dependencies = [
     # makes ``import serper_mcp_server`` raise AttributeError and takes every
     # search down. Upstream recommends pinning below 2 until callers migrate. We
     # only use mcp's *client* APIs, so 1.x costs us nothing.
-    "mcp>=1.28.1,<2.0.0",
+    "mcp>=1.28.1,<3.0.0",
     "serper-mcp-server>=0.0.10",
     "pystray>=0.19.5",
     "pillow>=12.3.0",
