@@ -530,7 +530,13 @@ provider 只认 `reasoning_content`（any-llm 的 `REASONING_FIELD_NAMES` 首项
 | `schedule.silent` / `trigger.silent` / `compacted` | 否 |
 | 遗留 `chat_type=schedule` / `*_schedule` role | 视为 silent |
 
-Gateway ``HistoryManager`` 同时投影剥掉 ``[SEND:]``/``[RECV:]`` 标记。本节这几个符号（``KIND_CHAT`` / ``message_kind`` / ``wire_role`` / ``is_displayable_chat_message`` / ``strip_transfer_markers`` / ``extract_send_paths``）经 ``session/__init__.py`` 的 ``__all__`` 正式导出给 Gateway（同表还有 ``Session`` / ``SessionAgent`` / ``ACTIVATE_ALL``，共 9 个）——**依赖是刻意的**：Gateway 的展示投影必须与 Session 的落盘语义逐字一致，否则同一条历史两处渲染会分叉。此前 Gateway 按内部模块路径导入（依赖刻意、通道非正式），现已补上公开门面；旧 import 路径仍然有效，这是新增通道而非强制迁移。
+Gateway ``HistoryManager`` 同时投影剥掉 ``[SEND:]``/``[RECV:]`` 标记**与省略句柄
+``[已省略 N 字符, 句柄 X]``**（`strip_transfer_markers`）。句柄只对模型有意义（它靠句柄知道有内容被省略、
+可以去捞），对用户是看着像 bug 的噪音 —— 生产实测一个会话里 4 条 assistant 行把句柄带进了可见文本。
+**只剥展示这一侧**：送往模型的请求必须保留句柄，剥了就把「可恢复的省略」变成「静默删除」。句柄字面量与
+剥离正则同源于 `history_display`（`ELISION_HANDLE_PREFIX` / `ELISION_HANDLE_TEMPLATE`，`request_assembly`
+从这里 import），不在两处各写一份 —— 同 `[SEND:]` 曾经两处正则写法不同的教训，而这里一旦漂移是 fail-open：
+剥不中，句柄又回到用户眼前。本节这几个符号（``KIND_CHAT`` / ``message_kind`` / ``wire_role`` / ``is_displayable_chat_message`` / ``strip_transfer_markers`` / ``extract_send_paths``）经 ``session/__init__.py`` 的 ``__all__`` 正式导出给 Gateway（同表还有 ``Session`` / ``SessionAgent`` / ``ACTIVATE_ALL``，共 9 个）——**依赖是刻意的**：Gateway 的展示投影必须与 Session 的落盘语义逐字一致，否则同一条历史两处渲染会分叉。此前 Gateway 按内部模块路径导入（依赖刻意、通道非正式），现已补上公开门面；旧 import 路径仍然有效，这是新增通道而非强制迁移。
 
 ``[SEND:]`` 的解码（正则 + 空路径过滤）归属顶层 ``psi_agent/_send_markers.py`` 的 ``iter_send_paths()``，本层不再自持正则——两处正则曾经写法不同，而 Channel 侧没有空路径过滤。放在顶层而非 ``channel/`` 内，是为了不让本层 import Channel 的私有模块（同 ``_feishu_routing``）。
 
@@ -674,6 +680,9 @@ async def compact_history(
   「完整原文仍在会话历史文件中，可用文件工具检索」的说明、约 220 字符，34 行就是 7.5KB，自己变成新的
   不可省略下限 —— 实测撞到过「省略完全部行仍超预算」。那句说明属于 system prompt，付一次就够。
 - **不删行、只换 `content`**：`tool_calls` 与其 `tool` 返回必须成对，删任一半请求就非法。
+- **句柄在请求里正当、在用户可见投影里要剥掉**：句柄的设计用途是让模型知道有内容被省略、可以去捞，所以
+  请求侧必须保留（剥掉等于把可恢复的省略变成静默删除）；Gateway 的 `/history` 投影则剥掉它，见上文
+  「History 展示白名单」。字面量与正则同源于 `history_display`，本模块 import 而不另写一份。
 - **回合水位线：本回合自己的产出整轮豁免省略**（`begin_turn` / `end_turn`）。`agent.py` 在本回合
   user 行落库后取 `len(conversation.messages)` 作为水位线，索引 >= 水位线的行是本回合产出，不可省略。
   没有水位线（非回合调用方）= 什么都不豁免，即改动前的行为。

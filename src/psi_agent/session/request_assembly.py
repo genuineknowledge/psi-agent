@@ -53,7 +53,11 @@ from typing import Any
 
 from loguru import logger
 
-from psi_agent.session.history_display import project_history_with_sources
+from psi_agent.session.history_display import (
+    ELISION_HANDLE_PREFIX,
+    ELISION_HANDLE_TEMPLATE,
+    project_history_with_sources,
+)
 
 DEFAULT_MAX_CONTEXT_TOKENS = 200_000
 """Fallback token ceiling, read from the same ``PSI_MAX_CONTEXT_TOKENS`` as the
@@ -128,8 +132,14 @@ fact) rather than at the assembly point.  This constant is where that instinct
 belongs, because this is the layer that can act before sending.
 """
 
-_HANDLE_PREFIX = "[已省略"
-"""Sentinel that makes elision idempotent.
+_HANDLE_PREFIX = ELISION_HANDLE_PREFIX
+"""Sentinel that makes elision idempotent (re-exported for local readability).
+
+Defined in ``history_display`` because that module also strips handles back out
+for the user-visible projection, and two literals facing each other across a
+layer boundary is how ``[SEND:]`` drifted into two disagreeing regexes.  Here a
+drift would fail open: the strip would stop matching and the handle would reach
+the user again.
 
 Elision is re-applied on every turn (that is what makes it stick), so a row's
 content is fed back through the same code path that produced it.  Without this
@@ -138,26 +148,31 @@ check the second pass would elide the handle itself, reporting an ever-shrinking
 ``_TRUNCATION_MARKER`` guards against in ``history_display``.
 """
 
-ELISION_HANDLE_TEMPLATE = _HANDLE_PREFIX + " {chars} 字符{label}, 句柄 {handle}]"
-"""Placeholder left where a row's content was.
-
-The row is never *removed*: an OpenAI ``tool`` row must stay paired with the
-``tool_calls`` entry that requested it, and dropping either half makes the
-request malformed.  Equally important, the model must be told that something
-was dropped — a silent cut leaves it answering from data it believes complete,
-the same trap ``truncate_tool_result`` documents.  The handle names where the
-original still lives, so elision is recoverable rather than destructive.
-
-Deliberately terse, and that terseness is load-bearing rather than a style
-choice.  The handle is paid **once per elided row**, so a sentence explaining
-what a handle is and how to retrieve it — which the first draft of this module
-carried, at ~220 chars — turns into tens of kilobytes on exactly the histories
-that were already too big, and becomes an un-elidible floor of its own: a first
-run against a deliberately tight budget could not get under it no matter how
-many rows it elided.  That explanation belongs in the system prompt, where it is
-paid once.  Here only the two facts that vary per row are worth the bytes: how
-much was dropped, and the key to find it again.
-"""
+# ``ELISION_HANDLE_TEMPLATE`` is defined alongside the prefix and the display
+# strip in ``history_display``; imported above and re-exported here, because this
+# is the module that applies it and the reasoning below is about applying it.
+#
+# Placeholder left where a row's content was.
+#
+# The row is never *removed*: an OpenAI ``tool`` row must stay paired with the
+# ``tool_calls`` entry that requested it, and dropping either half makes the
+# request malformed.  Equally important, the model must be told that something
+# was dropped — a silent cut leaves it answering from data it believes complete,
+# the same trap ``truncate_tool_result`` documents.  The handle names where the
+# original still lives, so elision is recoverable rather than destructive.
+#
+# Deliberately terse, and that terseness is load-bearing rather than a style
+# choice.  The handle is paid **once per elided row**, so a sentence explaining
+# what a handle is and how to retrieve it — which the first draft of this module
+# carried, at ~220 chars — turns into tens of kilobytes on exactly the histories
+# that were already too big, and becomes an un-elidible floor of its own: a first
+# run against a deliberately tight budget could not get under it no matter how
+# many rows it elided.  That explanation belongs in the system prompt, where it is
+# paid once.  Here only the two facts that vary per row are worth the bytes: how
+# much was dropped, and the key to find it again.
+#
+# The handle is stripped from the *display* projection only
+# (``history_display.strip_transfer_markers``); on the wire it must survive.
 
 _ELIDIBLE_ROLES = frozenset({"tool", "user", "assistant"})
 """Roles elision may touch.  ``system`` is excluded on purpose.
