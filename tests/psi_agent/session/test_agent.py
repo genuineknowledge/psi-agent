@@ -1494,18 +1494,17 @@ async def test_agent_abandons_user_message_on_cancel(tmp_path: Path) -> None:
     await conv.save()
 
     gate = anyio.Event()
+    # Hold the mock AI open until cleanup; do not sleep a wall clock —
+    # AppRunner.cleanup waits for in-flight handlers. (ty: Request has no
+    # wait_for_disconnection in stubs.)
+    hold = anyio.Event()
 
     async def handler(request: web.Request) -> web.StreamResponse:
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
         await resp.prepare(request)
         await resp.write(_sse_chunk(reasoning="thinking about 述职报告").encode())
         gate.set()
-        # Stay open until the client cancels; do not sleep a long wall clock —
-        # AppRunner.cleanup waits for in-flight handlers.
-        try:
-            await request.wait_for_disconnection()
-        except Exception:
-            await anyio.sleep(2)
+        await hold.wait()
         return resp
 
     mock_server = MockAIServer(tmp_path)
@@ -1529,6 +1528,7 @@ async def test_agent_abandons_user_message_on_cancel(tmp_path: Path) -> None:
         assert len(loaded) == 1
         assert loaded[0]["role"] == "system"
     finally:
+        hold.set()
         await mock_server.cleanup()
 
 
