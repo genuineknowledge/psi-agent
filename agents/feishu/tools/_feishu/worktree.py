@@ -34,10 +34,7 @@ def _build_mindnote_nodes_request(mindnote_token: str) -> BaseRequest:
 def _build_user_get_request(user_id: str) -> BaseRequest:
     req = BaseRequest()
     req.http_method = HttpMethod.GET
-    req.uri = (
-        "/open-apis/contact/v3/users/:user_id"
-        "?user_id_type=open_id&department_id_type=open_department_id"
-    )
+    req.uri = "/open-apis/contact/v3/users/:user_id?user_id_type=open_id&department_id_type=open_department_id"
     req.paths["user_id"] = user_id
     req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
     return req
@@ -97,9 +94,7 @@ def build_people(nodes: list[dict[str, Any]], names: dict[str, str]) -> tuple[li
             if p and p not in entry["items"]:
                 entry["items"].append(p)
 
-    out_people = [
-        {**v, "count": len(v["items"])} for v in sorted(people.values(), key=lambda x: -len(x["items"]))
-    ]
+    out_people = [{**v, "count": len(v["items"])} for v in sorted(people.values(), key=lambda x: -len(x["items"]))]
     return out_people, mentioned
 
 
