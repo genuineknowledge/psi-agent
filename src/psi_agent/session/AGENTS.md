@@ -531,7 +531,9 @@ provider 只认 `reasoning_content`（any-llm 的 `REASONING_FIELD_NAMES` 首项
 | 遗留 `chat_type=schedule` / `*_schedule` role | 视为 silent |
 
 Gateway ``HistoryManager`` 同时投影剥掉 ``[SEND:]``/``[RECV:]`` 标记**与省略句柄
-``[已省略 N 字符, 句柄 X]``**（`strip_transfer_markers`）。句柄只对模型有意义（它靠句柄知道有内容被省略、
+``[已省略 N 字符, 句柄 X]``**（`strip_transfer_markers`；带自述的形态是
+``[已省略 N 字符, 含已送达文件: 方案.pdf, 句柄 X]``，自述在同一对 ``[…]`` 内所以同一条正则照旧剥得掉）。
+句柄只对模型有意义（它靠句柄知道有内容被省略、
 可以去捞），对用户是看着像 bug 的噪音 —— 生产实测一个会话里 4 条 assistant 行把句柄带进了可见文本。
 **只剥展示这一侧**：送往模型的请求必须保留句柄，剥了就把「可恢复的省略」变成「静默删除」。句柄字面量与
 剥离正则同源于 `history_display`（`ELISION_HANDLE_PREFIX` / `ELISION_HANDLE_TEMPLATE`，`request_assembly`
@@ -697,7 +699,21 @@ async def compact_history(
   被 anyio 取消 / 撞满 `_max_tool_rounds` 三种退出都要清。漏了这一笔，一个死掉的回合会把水位线永久钉
   在那儿，后续每回合的省略范围都被锁死 —— 症状是预算慢慢失控而日志里没有任何线索。
   豁免区**刻意只覆盖一次生成器调用的产出**：跨回合的交付物记忆不靠扩大豁免解决（豁免区随「一件事」
-  的长度无上限增长，最后等于关掉省略，而省略是预算的唯一硬保证）。
+  的长度无上限增长，最后等于关掉省略，而省略是预算的唯一硬保证）。跨回合那一半改由下一条解决。
+- **被省略的行自己说清发过什么文件**（`render_sent_files_note`，句柄里的 `含已送达文件: 方案.pdf`）：
+  上个回合那条带 `[SEND:]` 的 assistant 行到了这个回合已是句柄，模型读到的是「我从没发过东西」，于是
+  重发、或者否认发过 —— 生产症状是用户反复问「文档呢」。这条路**被动生效**（不依赖模型起意）、**总量有界**，
+  所以能解上一条解不了的跨回合部分。
+  **绝不能写成字面 `[SEND:…]`**：渠道侧是扫模型输出流触发发送的（`channel/_markers.SendMarkerScanner`），
+  而这个模型演示过会照抄句柄格式（生产 line 5874）。抄出一个真标记就会把文件**再发一遍**给用户 —— 比原
+  bug 更糟。故只取 basename（顺带丢掉目录这几十个没人读的字节，也拆掉 `/w/[SEND:x].md` 这种把标记藏在
+  文件名里的路径），残留的 `[` `]` 一律删掉。判据 `test_delivery_note_is_not_scannable_as_a_send_marker`
+  直接拿渠道侧的 scanner 去扫自述文本 —— 变异复核里去掉删括号那一步，scanner 确实吐出了 `FileChunk`。
+  **只有真含标记的行才加，且长度有上限**（`_SENT_FILES_NOTE_MAX_NAMES = 3` / `_SENT_FILES_NAME_MAX_CHARS = 24`）：
+  句柄每条被省略的行付一次，无条件加就是上一条「220 字符说明变成不可省略下限」的重演；不封顶则下限随内容
+  增长，预算又不成保证。不含标记的行句柄**逐字节不变**，有判据钉着。
+  **必须是确定性的**：`_reapply_sticky_elisions` 每回合用同一行重算句柄，自述一变就等于每回合重写早期行、
+  前缀缓存全量 miss —— 即滞回要避免的那个结果。解码统一走 `iter_send_paths()`，不另写正则。
 - **预算以字符计，比值每回合用上游自己的 `prompt_tokens` 校准**（`calibrate`）。不引 tokenizer、不加
   依赖。实测同一仓库内字符/token 跨度 **2.6 倍**（中文散文 1.56，ASCII 工具 JSON 3.5-4），所以单一
   硬编码系数必然对某一类内容是错的。首回合用保守默认 1.5（保守 = **偏低**，因为预算 = token x 比值，

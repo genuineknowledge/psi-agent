@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from psi_agent.session.history_display import (
+    ELISION_HANDLE_TEMPLATE,
     KIND_CHAT,
     KIND_SCHEDULE_DISPLAY,
     KIND_SCHEDULE_SILENT,
@@ -8,6 +9,7 @@ from psi_agent.session.history_display import (
     is_displayable_chat_message,
     message_kind,
     project_history_for_wire,
+    render_sent_files_note,
     strip_transfer_markers,
     with_chat_type,
     with_kind,
@@ -112,6 +114,40 @@ def test_strip_transfer_markers() -> None:
     assert strip_transfer_markers("[RECV:/only.png]") == ""
     assert strip_transfer_markers("see attachment\n[ SEND:/tmp/a.html ]\n\n") == "see attachment"
     assert strip_transfer_markers("see attachment\n[Send:/tmp/a.html]\n\n") == "see attachment"
+
+
+def test_render_sent_files_note_names_files_without_emitting_a_marker() -> None:
+    """The note tells the model what it delivered; it must not re-trigger delivery.
+
+    Base name only — the directory is bytes nobody reads, and stripping it is
+    also what disarms a path built to smuggle a marker through the file name.
+    """
+    assert render_sent_files_note("见附件\n[SEND:/workspace/out/方案.pdf]") == ", 含已送达文件: 方案.pdf"
+    assert render_sent_files_note("[SEND:C:\\Users\\Z\\报告.docx]") == ", 含已送达文件: 报告.docx"
+    assert render_sent_files_note("[SEND:a.pdf]\n[ send: b.md ]") == ", 含已送达文件: a.pdf, b.md"
+    # Same path twice is one delivery, not two.
+    assert render_sent_files_note("[SEND:/w/a.pdf][SEND:/w/a.pdf]") == ", 含已送达文件: a.pdf"
+    # Nothing delivered, nothing paid.
+    assert render_sent_files_note("普通回复") == ""
+    assert render_sent_files_note("[RECV:/in.png]") == ""
+    assert render_sent_files_note("[SEND:]") == ""
+    assert render_sent_files_note("") == ""
+
+
+def test_sent_files_note_survives_no_scanner_and_no_display() -> None:
+    """Two layers must both refuse the note: the Channel scanner and the user.
+
+    The scanner is the dangerous one — a note it recognised would deliver the
+    file a second time. The display strip is the fail-open one: the note lives
+    inside an elision handle, so if it broke the handle's ``[…]`` shape the user
+    would start seeing it as noise (measured in production: four assistant rows
+    leaked a bare handle into the visible transcript).
+    """
+    note = render_sent_files_note("[SEND:/w/[SEND:偷渡.pdf].md][SEND:/w/正常.pdf]")
+
+    assert extract_send_paths(note) == [], note
+    handle = ELISION_HANDLE_TEMPLATE.format(kind="assistant", chars=3000, label="", sent=note, handle="a#1")
+    assert strip_transfer_markers("文档写好了" + handle) == "文档写好了"
 
 
 def test_extract_send_paths() -> None:
