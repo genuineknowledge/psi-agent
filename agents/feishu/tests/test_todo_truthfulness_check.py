@@ -201,3 +201,10 @@ def test_sibling_skills_point_here_for_truthfulness() -> None:
 def test_indexed_in_agents_md() -> None:
     agents = (WORKSPACE_ROOT / "AGENTS.md").read_text(encoding="utf-8")
     assert f"`{SKILL}`" in agents, f"{SKILL} must be listed in the AGENTS.md skills index"
+
+
+def test_sop_v11_clauses_are_cited_as_the_red_line_source() -> None:
+    """SOP v1.1 的禁止复制/删除线验收/小方案定位要作为出处写在总纲里。"""
+    body = _body()
+    for phrase in ("不能复制粘贴", "删除线", "小方案", "不宜过多"):
+        assert phrase in body, f"missing SOP v1.1 clause {phrase}"

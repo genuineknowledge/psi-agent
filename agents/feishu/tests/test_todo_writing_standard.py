@@ -367,3 +367,10 @@ def test_completion_standard_states_the_two_are_independent() -> None:
 def test_indexed_in_agents_md() -> None:
     agents = (WORKSPACE_ROOT / "AGENTS.md").read_text(encoding="utf-8")
     assert f"`{SKILL}`" in agents, f"{SKILL} must be listed in the AGENTS.md skills index"
+
+
+def test_sop_v11_clauses_are_in_the_rulebook() -> None:
+    """真知TODO list SOP v1.1 增补必须落地成可执行规则, 不能只在文档里出现。"""
+    body = _body()
+    for phrase in ("不能复制粘贴", "删除线", "小方案", "不宜过多"):
+        assert phrase in body, f"missing SOP v1.1 clause {phrase}"

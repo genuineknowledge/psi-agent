@@ -140,3 +140,11 @@ def test_indexed_in_agents_md() -> None:
     assert f"`{AUDIT}`" in agents, f"{AUDIT} must be listed in the AGENTS.md skills index"
     assert "评测落盘" in agents, "the index line must mention the eval dump"
     assert "前后对比摘要" in agents, "the index line must mention the continuity summary"
+
+
+def test_audit_connects_sop_v11_strike_through() -> None:
+    """SOP v1.1 删除线验收与五要素的衔接必须写明且不豁免硬要件。"""
+    body = _body()
+    assert "SOP v1.1" in body and "删除线" in body
+    assert "不豁免" in body, "strike-through must not waive the five closure elements"
+    assert "completed_at" in body, "E1 remains the completion hard evidence"
