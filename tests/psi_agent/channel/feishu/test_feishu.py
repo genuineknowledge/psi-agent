@@ -11,9 +11,10 @@ import pytest
 from lark_channel import PolicyConfig
 from loguru import logger
 
+from psi_agent._card_markers import SILENT_REPLY
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._file_bytes import OutboundFileError
-from psi_agent.channel._types import FileChunk, TextChunk
+from psi_agent.channel._types import FileChunk, ReasoningChunk, TextChunk
 from psi_agent.channel.feishu import ChannelFeishu, client
 from psi_agent.channel.feishu._card_action import (
     _card_has_action_value,
@@ -1781,3 +1782,165 @@ async def test_stream_reply_forwards_file_chunk_source(monkeypatch, tmp_path):
 
 # 取字节本身 (含端到端跑真 session server) 的用例在 tests/psi_agent/channel/test__file_bytes.py
 # —— 那是 channel 通用层, 与飞书无关。此处只覆盖「飞书出向怎么用它」。
+
+
+# -- NO_REPLY 静默抑制 ----------------------------------------------------------
+#
+# 抑制逻辑本体在 ``_stream_reply`` 里, 但开关 ``suppress_silent_reply`` 长期只有卡片回调
+# 那一处传 True; 普通聊天走默认 False, 于是整个抑制分支压根不进 —— 生产实测某用户历史里
+# 含 NO_REPLY 的 assistant 行有 231 条, 其中两条整条就是 8 字符裸 "NO_REPLY" 发给了用户。
+# 以下用例两侧都盯: 普通对话要吞掉, 卡片回调的 tool_result 时钟信号不许被打乱。
+
+
+def _recording_channel() -> tuple[MagicMock, list[str]]:
+    """``stream`` 真跑 ``_produce`` 并记下每次 ``stream.append`` 的文本。
+
+    与 ``_driving_channel`` 的区别只是把 append 的内容留下来 —— 判据要断言的正是
+    「什么被发出去了」, 而默认 AsyncMock 连 ``_produce`` 都不执行 (那样一律假绿)。
+    """
+    channel = _fake_channel()
+    appended: list[str] = []
+
+    async def _stream(chat_id: str, payload: dict, options: dict | None = None) -> None:
+        stream = SimpleNamespace(append=AsyncMock(side_effect=lambda t: appended.append(t)))
+        await payload["markdown"](stream)
+
+    channel.stream = AsyncMock(side_effect=_stream)
+    return channel, appended
+
+
+def _chat_ctx() -> SimpleNamespace:
+    return SimpleNamespace(sender_id="ou_1", chat_id="oc_1", chat_type="p2p", message_id="om_1")
+
+
+def _core_yielding(*chunks: Any) -> ChannelCore:
+    """吐固定 chunk 序列的假 core。
+
+    必须带 ``session_socket``: ``_handle_and_stream`` 一进门就记它, 缺了会以
+    AttributeError 提前退出 —— 那样用例是红的, 但红在 handler 门口, 根本没跑到抑制逻辑
+    (本文件实测踩过: 三条判据的首次 RED 就红在这儿, 与被测行为无关)。
+    """
+
+    async def _post(_chunks):
+        for chunk in chunks:
+            yield chunk
+
+    return cast(ChannelCore, SimpleNamespace(post=_post, session_socket="/tmp/fake.sock"))
+
+
+@pytest.mark.anyio
+async def test_normal_chat_swallows_bare_no_reply(monkeypatch, tmp_path):
+    """普通对话(不是卡片回调)也必须吞掉裸 NO_REPLY, 一个字符都不许发出去。
+
+    这条落在 ``_handle_and_stream`` 这一层 —— 缺陷正是在这里: 抑制逻辑本体早就写对了,
+    但这条路没把开关打开。只测 ``_stream_reply(suppress_silent_reply=True)`` 会假绿。
+    """
+    monkeypatch.setattr(client.platformdirs, "user_downloads_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(client, "_build_chunks", AsyncMock(return_value=[TextChunk("hi")]))
+
+    core = _core_yielding(TextChunk(SILENT_REPLY))
+    channel, appended = _recording_channel()
+
+    await client._handle_and_stream(channel, _resolver(core), None, _chat_ctx(), None)
+
+    assert appended == [], f"裸 {SILENT_REPLY} 被原样发给了用户: {appended}"
+
+
+@pytest.mark.anyio
+async def test_normal_chat_swallows_no_reply_split_across_chunks(monkeypatch, tmp_path):
+    """流式下 NO_REPLY 是逐 token 到的, 攒够才认得出 —— 分片同样要吞掉。
+
+    盯的是「边流边猜」这条分支真的在普通对话里生效, 而不是只在整段一次到达时碰巧对。
+    """
+    monkeypatch.setattr(client.platformdirs, "user_downloads_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(client, "_build_chunks", AsyncMock(return_value=[TextChunk("hi")]))
+
+    core = _core_yielding(TextChunk("NO"), TextChunk("_RE"), TextChunk("PLY"))
+    channel, appended = _recording_channel()
+
+    await client._handle_and_stream(channel, _resolver(core), None, _chat_ctx(), None)
+
+    assert appended == [], f"分片到达的 {SILENT_REPLY} 漏了出去: {appended}"
+
+
+@pytest.mark.anyio
+async def test_normal_chat_still_delivers_real_reply(monkeypatch, tmp_path):
+    """反向判据: 正常回复必须照旧完整送达, 抑制不许把普通对话一起吞了。
+
+    没有这条, 「把所有文本都当 NO_REPLY 吞掉」也能让上面两条变绿。
+    """
+    monkeypatch.setattr(client.platformdirs, "user_downloads_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(client, "_build_chunks", AsyncMock(return_value=[TextChunk("hi")]))
+
+    core = _core_yielding(TextChunk("好的"), TextChunk(", 已经办完了"))
+    channel, appended = _recording_channel()
+
+    await client._handle_and_stream(channel, _resolver(core), None, _chat_ctx(), None)
+
+    assert "".join(appended) == "好的, 已经办完了", f"正常回复被抑制逻辑吃掉了: {appended}"
+
+
+@pytest.mark.anyio
+async def test_normal_chat_no_reply_after_tool_result_is_swallowed(monkeypatch, tmp_path):
+    """普通对话里「先答一段 → 调工具 → 再答 NO_REPLY」: 前段照发, 后段吞掉。
+
+    ``tool_result`` 是「这次动作办完、下一段重新开始攒」的时钟信号。它若仍被某个
+    只有卡片回调才为真的标志把着, 这条就会红 —— 而普通对话恰恰是 231 条泄漏的来源。
+    """
+    monkeypatch.setattr(client.platformdirs, "user_downloads_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(client, "_build_chunks", AsyncMock(return_value=[TextChunk("hi")]))
+
+    core = _core_yielding(
+        TextChunk("先给你查一下"),
+        ReasoningChunk("tool call", kind="tool_call"),
+        ReasoningChunk("done", kind="tool_result"),
+        TextChunk(SILENT_REPLY),
+    )
+    channel, appended = _recording_channel()
+
+    await client._handle_and_stream(channel, _resolver(core), None, _chat_ctx(), None)
+
+    assert "先给你查一下" in "".join(appended), f"工具调用前的正常回复丢了: {appended}"
+    assert SILENT_REPLY not in "".join(appended), f"工具调用后的裸 {SILENT_REPLY} 漏了出去: {appended}"
+
+
+@pytest.mark.anyio
+async def test_card_action_tool_result_clock_still_resets(monkeypatch, tmp_path):
+    """卡片回调这一侧不许被打乱: ``tool_result`` 仍然重新开始攒。
+
+    直接调 ``_stream_reply(suppress_silent_reply=True)`` —— 卡片回调走的就是这个入口
+    (``_card_action.py`` 传 True)。时钟信号一旦丢掉, 卡片按钮场景会开始冒出多余回复。
+    """
+
+    async def _post(chunks):
+        yield TextChunk("已记下")
+        yield ReasoningChunk("done", kind="tool_result")
+        yield TextChunk(SILENT_REPLY)
+
+    core = cast(ChannelCore, SimpleNamespace(post=_post))
+    channel, appended = _recording_channel()
+
+    await client._stream_reply(
+        channel, core, "oc_1", [], reply_to=None, suppress_silent_reply=True, sender_open_id="ou_1"
+    )
+
+    assert "已记下" in "".join(appended), f"tool_result 前的正常回复丢了: {appended}"
+    assert SILENT_REPLY not in "".join(appended), f"tool_result 后的裸 {SILENT_REPLY} 漏了出去: {appended}"
+
+
+@pytest.mark.anyio
+async def test_handle_and_stream_turns_on_silent_reply_suppression(monkeypatch, tmp_path):
+    """接线判据: ``_handle_and_stream`` 必须显式把开关打开。
+
+    与上面的行为判据分开写 —— 行为判据经 ``_produce`` 间接吃劲, 这条直接点名缺陷本体
+    (``suppress_silent_reply`` 用了默认 False), 回归时能一眼看出断在接线还是断在逻辑。
+    """
+    monkeypatch.setattr(client, "_build_chunks", AsyncMock(return_value=[TextChunk("hi")]))
+    stream = AsyncMock()
+    monkeypatch.setattr(client, "_stream_reply", stream)
+    core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
+
+    await client._handle_and_stream(_fake_channel(), _resolver(core), None, _chat_ctx(), None)
+
+    assert stream.await_args is not None, "_stream_reply 根本没被 await"
+    assert stream.await_args.kwargs.get("suppress_silent_reply") is True
