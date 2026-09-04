@@ -460,6 +460,8 @@ Cross-session work uses workspace session tools (not Fusion Memory transcripts):
 - `sessions_export` — save transcript to file (default markdown = user/assistant dialogue only)
 - `sessions_create` — new Gateway session runtime
 - `sessions_handoff` — structured task + context transfer to a **running** target session
+- `history_recall` — 上文里出现 `[已省略 N 字符…, 句柄 X]` 时，那是被省略的原文占位，不是内容本身；\
+需要原文就用该句柄调 `history_recall`。形如 `assistant#466000` 的句柄取不回来（进程内地址，重启即失效）。
 
 LOAD `skills/session-management/SKILL.md` when the user references another chat, exports a transcript, \
 hands off work to another session, or asks for session list/status. Follow its recipes (search → inspect → \

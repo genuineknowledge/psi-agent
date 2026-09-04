@@ -1262,6 +1262,11 @@ this workspace, generated workflows, instruction files, or committed `.env` file
             "sessions_export",
             "sessions_create",
             "sessions_handoff",
+            # Included so the elision-handle guidance in that section ships with
+            # the tool that acts on it: a handle the model cannot redeem reads as
+            # content (production line 6370), and the guidance is the only place
+            # naming the redemption path.
+            "history_recall",
         }
         budget.add_if(_session_tools & set(tools), "static: session management", "", SESSION_MANAGEMENT_SECTION)
         budget.add_if("todo" in tools, "static: task planning", "", TASK_PLANNING_SECTION)
