@@ -258,4 +258,15 @@ describe('titleFromHistoryMessages', () => {
   it('falls back to default when history has no user text', () => {
     expect(titleFromHistoryMessages([{ role: 'agent', text: '你好' }])).toBe('新任务')
   })
+
+  it('uses the first sentence of a long first user message (capped at 30)', () => {
+    expect(
+      titleFromHistoryMessages([
+        {
+          role: 'user',
+          text: '目前你的前端有一个待您处理功能，该功能根据你的代码，它在什么时候会显示有待您处理事项？',
+        },
+      ]),
+    ).toBe('目前你的前端有一个待您处理功能，该功能根据你的代码，它在什么')
+  })
 })

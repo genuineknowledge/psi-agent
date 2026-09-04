@@ -51,9 +51,9 @@
 
 ```text
 任务卡          ↔  Gateway Session（同 workspace；可选独立 agent 包）
-新建任务/聊天   ↔  POST /sessions（可带 agent）+ POST /titles（先写默认「新任务」）+ 首条 chat SSE（文案与附件同总览对话框：`File[]` multipart）；**首条发送后立刻进入分屏聚焦**（左上下文 / 右对话），不再停在新建页本地气泡
+新建任务/聊天   ↔  POST /sessions（可带 agent）+ POST /titles（首条文案的 `titleFromPrompt`，与乐观 UI 一致）+ 首条 chat SSE（文案与附件同总览对话框：`File[]` multipart）；**首条发送后立刻进入分屏聚焦**（左上下文 / 右对话），不再停在新建页本地气泡
 卡片内对话      ↔  POST /sessions/{id}/chat（multipart chunks）
-任务台标题      ↔  **刻意为之**：对标 DeepSeek——取 `/history` 投影后**首条** user 文案（`titleFromHistoryMessages`），在 `ensureHistory` / `refreshHistory` 同步 `POST /titles`；**Stop 撤回只按本地剩余气泡同步标题**，不立刻 `refreshHistory`（abandon 未完成时抢读会把草稿 user 灌回并被标成 failed）。新建时 UI 可乐观显示 prompt，但**不**把未落盘草稿写成服务端标题。**不再**用 `POST /titles/generate` 另开 LLM 起标题。
+任务台标题      ↔  **刻意为之**：对标 DeepSeek——取聊天里**首条** user 文案（`titleFromHistoryMessages`）。`ensureHistory` / `refreshHistory` / 回合成功后同步 `POST /titles`；**无 user 的空 chat 默认不改标题**（避免首条落盘前抢读把乐观标题盖成「新任务」）。**Stop 撤回**传 `emptyMeansDefault` 才回落「新任务」。**不再**用 `POST /titles/generate` 另开 LLM 起标题。
 任务历史文案    ↔  GET /sessions/{id}/history（AppData `histories/` 优先 + legacy 双读）
 任务卡中间步 N/M ↔  GET /sessions/{id}/todos（``todo`` tool → AppData `todos/{id}.json`，legacy `.psi/todos` 双读）
 分屏「任务历史」 ↔  GET /sessions/{id}/todo-segments（`todos/{id}.segments.json`；点选回放该段步骤）

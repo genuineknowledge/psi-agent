@@ -384,9 +384,16 @@ export default function HaiTunAgentWorkspace({
       .catch(() => {});
   }, []);
 
-  /** DeepSeek-style: title = first user bubble in history (not an uncommitted / withdrawn draft). */
+  /**
+   * DeepSeek-style: title = first user bubble.
+   * 刻意为之: 无 user 时默认**不**写成「新任务」——`ensureHistory` / `refreshHistory`
+   * 若在首条落盘前抢跑会得到空 chat，把 createTask 的乐观标题盖掉；只有 Stop 撤回后
+   * 明确传 `emptyMeansDefault` 才回落默认标题。
+   */
   const applyTitleFromChat = useCallback(
-    (taskId: string, chat: ChatMessage[]) => {
+    (taskId: string, chat: ChatMessage[], opts?: { emptyMeansDefault?: boolean }) => {
+      const hasUser = chat.some((m) => m.role === "user" && (m.text ?? "").trim());
+      if (!hasUser && !opts?.emptyMeansDefault) return;
       const title = titleFromHistoryMessages(chat, language);
       void setTitle(taskId, title).catch(() => {});
       setTasks((current) =>
@@ -990,7 +997,7 @@ export default function HaiTunAgentWorkspace({
       remaining = list;
       return { ...current, [cardId]: list };
     });
-    applyTitleFromChat(cardId, remaining);
+    applyTitleFromChat(cardId, remaining, { emptyMeansDefault: true });
     // Allow a later ensureHistory to re-read after abandon has committed.
     historyLoadedRef.current.delete(cardId);
     const fileNames = files.map((f) => f.name).join("、");
@@ -1200,7 +1207,6 @@ export default function HaiTunAgentWorkspace({
           ),
         );
       }
-      // Title is synced from /history in refreshHistory (first user message), not LLM generateTitle.
     } catch (e) {
       if (isAbortError(e) || controller.signal.aborted) {
         if (epoch === streamEpochByCardRef.current[cardId]) restoreStoppedTurn(cardId, text, files);
@@ -1294,7 +1300,13 @@ export default function HaiTunAgentWorkspace({
             4200,
           );
         }
-        // 服务端已提交本轮 history；回读 sends，补齐历史交付物（含路径）
+        // Title from local bubbles first (first user), then /history for sends + authority.
+        let localChat: ChatMessage[] = [];
+        setMessages((current) => {
+          localChat = current[cardId] ?? [];
+          return current;
+        });
+        applyTitleFromChat(cardId, localChat);
         await refreshHistory(cardId);
       })();
     }
@@ -1328,14 +1340,17 @@ export default function HaiTunAgentWorkspace({
     }
 
     const storedFiles = pendingFiles.length ? await filesToChatFiles(pendingFiles) : [];
+    const nextChat: ChatMessage[] = [
+      ...(messages[cardId] ?? []),
+      { role: "user", text: userVisible, files: storedFiles.length ? storedFiles : undefined },
+      { role: "agent", text: "" },
+    ];
     setMessages((current) => ({
       ...current,
-      [cardId]: [
-        ...(current[cardId] ?? []),
-        { role: "user", text: userVisible, files: storedFiles.length ? storedFiles : undefined },
-        { role: "agent", text: "" },
-      ],
+      [cardId]: nextChat,
     }));
+    // First user bubble → title immediately (covers cards still stuck at「新任务」).
+    applyTitleFromChat(cardId, nextChat);
     setChatDrafts((current) => ({ ...current, [cardId]: "" }));
     setChatAttachments((current) => ({ ...current, [cardId]: [] }));
     await runChatTurn(cardId, clean, pendingFiles, userVisible);
@@ -1536,8 +1551,8 @@ export default function HaiTunAgentWorkspace({
     }
     setAiId(resolvedAiId);
     writeStoredAiId(resolvedAiId);
-    // Optimistic UI title only — do not POST /titles from the draft. Withdrawn
-    // first messages must never stick; title is rewritten from /history after the turn.
+    // First-turn title: same string as the optimistic UI. Stop on an empty chat
+    // resets via applyTitleFromChat(..., { emptyMeansDefault: true }).
     const title = titleFromPrompt(clean || userVisible, language);
     let session;
     try {
@@ -1549,7 +1564,7 @@ export default function HaiTunAgentWorkspace({
       showToast(e instanceof Error ? e.message : t("app.toastCreateTaskFailed"));
       throw e;
     }
-    await setTitle(session.id, t("app.newTaskDefault")).catch(() => {});
+    await setTitle(session.id, title).catch(() => {});
     const summarySeed = clean || userVisible;
     const newTask = {
       ...sessionToTask(session, title, {
