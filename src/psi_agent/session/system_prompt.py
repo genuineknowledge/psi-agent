@@ -283,6 +283,16 @@ class SystemPrompt:
             logger.error(f"Failed to extract functions from {system_py!r}: {e!r}")
             sys.modules.pop(module_name, None)
             return None, None, None, None, None, None
+        hooks = {
+            "system_prompt_builder": builder,
+            "system_prompt_rebuild_checker": checker,
+            "compact_history": compaction_fn,
+            "turn_context_builder": turn_context_fn,
+            "system_before_turn": before_turn,
+            "system_after_turn": after_turn,
+        }
+        status = " ".join(f"{name}={'loaded' if func is not None else 'missing'}" for name, func in hooks.items())
+        logger.info(f"System hooks loaded from {system_py}: {status}")
         return builder, checker, compaction_fn, turn_context_fn, before_turn, after_turn
 
     @staticmethod
