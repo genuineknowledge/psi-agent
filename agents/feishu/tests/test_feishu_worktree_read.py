@@ -97,3 +97,43 @@ def test_node_text_strips_zero_width_space() -> None:
 def test_node_text_plain_text_only() -> None:
     node = _node("x", [_text("普通文本")])
     assert _node_text(node, {}) == "普通文本"
+
+
+def test_same_person_parent_child_mentions_merge_into_one() -> None:
+    """任务节点 @ 负责人,子分支又 @ 一遍同一人 → 只算一项(任务不是两件)。"""
+    nodes = [
+        _node("r", [_text("根")]),
+        _node("a", [_text("Todo List"), _mention("ou_A")], parent_id="r"),
+        _node("b", [_mention("ou_A")], parent_id="a"),  # 子分支重复 @,无文本
+    ]
+    people, _ = build_people(nodes, {"ou_A": "张三"})
+    assert len(people) == 1
+    assert people[0]["count"] == 1
+    assert people[0]["items"] == ["根 / Todo List@张三"]
+
+
+def test_child_mention_of_another_person_stays_separate() -> None:
+    """父层 @ 甲、子分支 @ 乙 → 甲、乙各算一项,互不吞并。"""
+    nodes = [
+        _node("r", [_text("根")]),
+        _node("a", [_text("demo"), _mention("ou_A")], parent_id="r"),
+        _node("b", [_mention("ou_B")], parent_id="a"),
+    ]
+    people, _ = build_people(nodes, {"ou_A": "甲", "ou_B": "乙"})
+    by_open_id = {p["open_id"]: p for p in people}
+    assert by_open_id["ou_A"]["count"] == 1
+    assert by_open_id["ou_B"]["count"] == 1
+    assert by_open_id["ou_B"]["items"] == ["根 / demo@甲 / @乙"]
+
+
+def test_deep_chain_mentions_merge_to_topmost_named_node() -> None:
+    """三层链 @ 同一人 → 保留最浅的带名字节点,深层无文本节点并入。"""
+    nodes = [
+        _node("r", [_text("根")]),
+        _node("a", [_text("任务"), _mention("ou_A")], parent_id="r"),
+        _node("b", [_mention("ou_A")], parent_id="a"),
+        _node("c", [_mention("ou_A")], parent_id="b"),
+    ]
+    people, _ = build_people(nodes, {"ou_A": "张三"})
+    assert len(people) == 1
+    assert people[0]["count"] == 1

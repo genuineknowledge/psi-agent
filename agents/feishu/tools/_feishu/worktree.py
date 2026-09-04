@@ -81,18 +81,42 @@ def build_people(nodes: list[dict[str, Any]], names: dict[str, str]) -> tuple[li
             cur = by_id.get(pid) if pid else None
         return " / ".join(reversed(chain))
 
-    people: dict[str, dict[str, Any]] = {}
+    # 每个被 @ 的节点先归到人; 同一人「父子两层都 @ 同一人」只算一项:
+    # 一个任务展开子分支时会再 @ 一遍负责人, 那是对同一任务的强调, 不是两件事。
+    # 归并规则: 对同一人, 若节点 X 的祖先链上已有同样 @ 此人的节点, 则 X 并入祖先
+    # (取祖先那一项, 祖先通常带任务名; 子分支只带 @)。子分支 @ 了别人不受影响。
+    per_person_nodes: dict[str, list[dict[str, Any]]] = {}
     for n in nodes:
         for t in n.get("texts", []) or []:
-            if t.get("element_type") != "user":
-                continue
-            uid = t.get("mention_user", {}).get("user", "")
-            if not uid:
-                continue
-            entry = people.setdefault(uid, {"name": names.get(uid, uid), "open_id": uid, "items": []})
+            if t.get("element_type") == "user":
+                uid = t.get("mention_user", {}).get("user", "")
+                if uid:
+                    per_person_nodes.setdefault(uid, []).append(n)
+
+    people: dict[str, dict[str, Any]] = {}
+    for uid, ns in per_person_nodes.items():
+        ns_by_id = {n.get("node_id"): n for n in ns}
+        kept: list[dict[str, Any]] = []
+        for n in ns:
+            # 祖先链上有没有同样 @ 此人的节点? 有 → 此节点并入祖先, 不算独立一项。
+            merged = False
+            pid = n.get("parent_id")
+            while pid:
+                anc = by_id.get(pid)
+                if anc is None:
+                    break
+                if anc.get("node_id") in ns_by_id:
+                    merged = True
+                    break
+                pid = anc.get("parent_id")
+            if not merged:
+                kept.append(n)
+        entry = {"name": names.get(uid, uid), "open_id": uid, "items": []}
+        for n in kept:
             p = path_of(n)
             if p and p not in entry["items"]:
                 entry["items"].append(p)
+        people[uid] = entry
 
     out_people = [{**v, "count": len(v["items"])} for v in sorted(people.values(), key=lambda x: -len(x["items"]))]
     return out_people, mentioned
