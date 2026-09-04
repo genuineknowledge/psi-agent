@@ -44,6 +44,15 @@ category: agent
 | **导出** transcript 到文件 | `sessions_export` | `output_path=…`, 可选 `session_id` / `export_format` |
 | **新建 session**（Gateway） | `sessions_create` | `workspace`, 可选 `ai_id` / `session_id` |
 | **工作交接** | `sessions_handoff` | `target_session_id`, `task`, 见下文 |
+| **捞回被省略的原文** | `history_recall` | `handle="call_…"` 或整段 `[已省略 …]` 文本，见下文 |
+
+### `history_recall`：句柄不是内容
+
+上文里的 `[已省略 N 字符 (工具名), 句柄 X]` 是**占位符**，不是那一行的内容 —— 不要把它当结果读给用户。
+需要原文就拿句柄调 `history_recall`（只读会话历史 JSONL；返回值有 2 万字符上限，超了 `truncated=true`）。
+
+**捞不回来的一种句柄**：形如 `assistant#466000` 的句柄取自进程内内存地址，从不落盘，重启后也不指同一行，
+工具会返回 `error="handle_not_on_disk"`。这种情况不要猜，用 `sessions_history` 看该会话，或直接问用户。
 
 ### `session_task_search` 的 category
 

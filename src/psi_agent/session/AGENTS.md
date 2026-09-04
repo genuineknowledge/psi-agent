@@ -685,6 +685,12 @@ async def compact_history(
 - **句柄在请求里正当、在用户可见投影里要剥掉**：句柄的设计用途是让模型知道有内容被省略、可以去捞，所以
   请求侧必须保留（剥掉等于把可恢复的省略变成静默删除）；Gateway 的 `/history` 投影则剥掉它，见上文
   「History 展示白名单」。字面量与正则同源于 `history_display`，本模块 import 而不另写一份。
+- **「去捞」那把工具在 workspace 侧**：`agents/feishu/tools/history_recall.py` 按句柄从本会话历史 JSONL
+  读回原文（只读、返回值按 `MAX_TOOL_RESULT_CHARS` 截断，否则捞回一行就把省下的预算全退回去）。
+  **只有 `tool_call_id` 形态的句柄捞得回来**：`_handle_for` 的回落形态 `role#ordinal` 取自
+  `id(source) % 1_000_000`，是**进程内内存地址**，从不落盘、重启后也不再指同一行，故工具直接报
+  `handle_not_on_disk` 而不按 role 猜行。触发权在模型自己（它得看懂句柄才会想到去捞），所以这把工具
+  **不是**「丢文档」缺陷的修法 —— 那个由回合水位线与句柄自述关掉。
 - **回合水位线：本回合自己的产出整轮豁免省略**（`begin_turn` / `end_turn`）。`agent.py` 在本回合
   user 行落库后取 `len(conversation.messages)` 作为水位线，索引 >= 水位线的行是本回合产出，不可省略。
   没有水位线（非回合调用方）= 什么都不豁免，即改动前的行为。

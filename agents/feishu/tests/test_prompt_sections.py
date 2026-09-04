@@ -160,3 +160,20 @@ def test_assignment_feedback_tool_contract_documents_actions_and_payload() -> No
     assert '"notification_strategy": "blocking"' in source
     assert '"attempts": ["已核查内容"]' in source
     assert '"options": [{"label": "选项 A", "value": "option_a", "recommended": true}]' in source
+
+
+def test_session_management_tells_the_model_how_to_recall_an_elided_row() -> None:
+    """Elision is recoverable, but only if the model knows the tool exists.
+
+    ``request_assembly`` leaves ``[已省略 … 句柄 X]`` where a row's content was,
+    and production log line 6370 shows this model reading such a handle as if it
+    were the content itself -- it wrote "返回了 [已省略]" and glossed it as the
+    option text the elided row had contained. The prompt therefore has to
+    name the retrieval path; the handle alone does not teach it.
+    """
+    guidance = sections.SESSION_MANAGEMENT_SECTION
+
+    assert "history_recall" in guidance
+    assert "[已省略" in guidance
+    # Must not read as "the handle is the content".
+    assert "句柄" in guidance
