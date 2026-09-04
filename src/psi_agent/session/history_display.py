@@ -124,6 +124,54 @@ _KNOWN_KINDS = frozenset(
 _TRANSFER_MARKER_RE = re.compile(r"\[\s*(?:SEND|RECV)\s*:\s*[^\]]*?\]", re.IGNORECASE)
 
 
+ELISION_HANDLE_PREFIX = "[已省略"
+"""Opening literal of an elision handle.  Also the idempotence sentinel.
+
+Lives here rather than in ``request_assembly`` (which produces the handles)
+because this module both defines the format and, below, strips it back out for
+display — and ``request_assembly`` already imports from here, so this direction
+keeps one authority instead of two literals facing each other across a layer
+boundary.  Same arrangement as ``_TRUNCATION_MARKER``.
+
+Elision is re-applied on every turn (that is what makes it stick), so a row's
+content is fed back through the code path that produced it.  Without a sentinel
+check the second pass would elide the handle itself, reporting an
+ever-shrinking "original length" and losing the real one.
+"""
+
+ELISION_HANDLE_TEMPLATE = ELISION_HANDLE_PREFIX + " {chars} 字符{label}, 句柄 {handle}]"
+"""Placeholder left where a row's content was — see ``request_assembly``.
+
+Rationale for the format (why it is this terse, why the row is not simply
+dropped) stays with the code that applies it; this is only where the literal
+is defined so both sides agree on it.
+"""
+
+# Display-only strip of elision handles (Gateway history projection).
+#
+# Derived from ``ELISION_HANDLE_TEMPLATE`` rather than retyped: a hand-written
+# second copy is how ``[SEND:]`` ended up with two regexes that disagreed (see
+# ``psi_agent/_send_markers``) — there the Channel copy used ``(.+?)`` and the
+# Gateway copy ``([^\]]*?)``, and only one of them filtered empty paths.  Here a
+# drifted copy would fail *open*, i.e. leak the handle to the user again, which
+# is exactly the bug this strip exists to fix.
+#
+# The body is ``[^\]\n]*`` for the same reason ``SEND_RE`` excludes both: a
+# handle never spans lines, and allowing newlines would let one unclosed
+# ``[已省略`` swallow through to a ``]`` several lines down, deleting real text
+# the user was supposed to read.
+#
+# The leading ``[ \t]*`` is what keeps spacing right without a global whitespace
+# collapse: a handle removed from mid-sentence would otherwise leave two spaces
+# where one belongs.  Collapsing all runs of horizontal whitespace afterwards
+# would fix that spacing and silently flatten the indentation of every fenced
+# code block in the message — damage to text the user *is* supposed to read, in
+# the name of tidying text they are not.
+_ELISION_HANDLE_RE = re.compile(
+    r"[ \t]*" + re.escape(ELISION_HANDLE_PREFIX) + r"[^\]\n]*\]",
+)
+
+
 def normalize_kind(raw: object) -> str:
     """Return a known ``kind``; unknown / empty → ``chat``."""
     if not isinstance(raw, str):
@@ -362,8 +410,24 @@ def _fold_turn_context(content: Any, turn_context: str) -> Any:
 
 
 def strip_transfer_markers(text: str) -> str:
-    """Remove ``[SEND:…]`` / ``[RECV:…]`` from display text (Gateway projection)."""
+    """Remove internal-only markers from display text (Gateway projection).
+
+    Two kinds, both of which are addressed to a machine and meaningless to a
+    reader:
+
+    - ``[SEND:…]`` / ``[RECV:…]`` — transport instructions for the Channel.
+    - ``[已省略 N 字符, 句柄 X]`` — elision handles. The model needs these (they
+      say content was dropped and name where to fetch it); a user has no such
+      affordance, so to them it reads as a bug. Measured in production: four
+      assistant rows in one session carried a handle into the visible
+      transcript. **Display side only** — the request keeps its handles, or
+      elision would become silent deletion.
+
+    Spacing around a removed handle is handled by the pattern itself rather than
+    by collapsing whitespace afterwards — see ``_ELISION_HANDLE_RE``.
+    """
     cleaned = _TRANSFER_MARKER_RE.sub("", text)
+    cleaned = _ELISION_HANDLE_RE.sub("", cleaned)
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
