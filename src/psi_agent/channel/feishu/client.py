@@ -632,6 +632,11 @@ async def _handle_and_stream(
                     ctx.chat_id,
                     chunks,
                     reply_to=ctx.message_id,
+                    # 普通对话同样要抑制: NO_REPLY 是「本轮无需回复」的内部约定, 任何一条
+                    # 路径把它原样发出去都是把内部记号当成回复内容。此前只有卡片回调传
+                    # True, 于是普通聊天走默认 False —— 生产实测某用户历史里含该 token 的
+                    # assistant 行有 231 条, 其中两条整条就是 8 字符裸 token 发给了用户。
+                    suppress_silent_reply=True,
                     sender_open_id=getattr(ctx, "sender_id", "") or "",
                 )
                 logger.debug("stream completed")
