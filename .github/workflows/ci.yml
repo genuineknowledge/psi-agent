@@ -13,9 +13,9 @@ jobs:
         with:
           python-version: "3.14"
       - run: uv sync
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run ty check .
+      - run: uv run ruff check src tests
+      - run: uv run ruff format --check src tests
+      - run: uv run ty check src tests
       # macOS 打包脚本(.github/macos/)只在 macos runner 上执行, 但静态检查放这里:
       # ubuntu runner 预装 shellcheck, macOS runner 没有。放在打包 job 里会让
       # 「装 shellcheck」这一步拖慢每次发版, 而 lint 本身与平台无关。
