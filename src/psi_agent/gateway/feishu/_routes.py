@@ -100,7 +100,7 @@ async def _feishu_route(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error routing feishu open_id: {e!r}")
+        logger.exception(f"Unexpected error routing feishu open_id: {e!r}")
         return _error(str(e), status=500)
 
 
@@ -164,7 +164,7 @@ async def _auth_feishu(request: web.Request) -> web.Response:
         logger.info(f"Feishu login rejected: {e}")
         return _error(str(e), status=400)
     except Exception as e:
-        logger.error(f"Unexpected error during Feishu login: {e!r}")
+        logger.exception(f"Unexpected error during Feishu login: {e!r}")
         return _error("login failed", status=500)
     return _issue_login(identity, auth)
 
@@ -249,7 +249,7 @@ async def _feishu_jsapi_config(request: web.Request) -> web.Response:
     except JsapiError as e:
         return _error(str(e), status=400)
     except Exception as e:
-        logger.error(f"Unexpected error while signing Feishu JSAPI config: {e!r}")
+        logger.exception(f"Unexpected error while signing Feishu JSAPI config: {e!r}")
         return _error("jsapi config failed", status=500)
     return _json(config)
 

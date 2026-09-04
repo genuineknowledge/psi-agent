@@ -310,20 +310,59 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | POST | `/ais` | 创建 AI 实例 |
 | DELETE | `/ais/{ai_id}` | 删除 AI |
 | GET | `/ais` | 列出所有 AI |
-| POST | `/sessions` | 创建 Session |
-| DELETE | `/sessions/{session_id}` | 删除 Session |
+| POST | `/routers` | 创建并启动 Router |
+| DELETE | `/routers/{router_id}` | 停止并删除 Router |
+| GET | `/routers` | 列出所有 Router |
+| POST | `/sessions` | 创建 Session（可选 `agent` / `workspace`） |
+| DELETE | `/sessions/{session_id}` | 删除 Session + history JSONL + 标题 + 摘要 |
 | GET | `/sessions` | 列出所有 Session |
 | POST | `/sessions/{session_id}/chat` | Web UI 对话（SSE 流式） |
 | GET | `/sessions/{session_id}/history` | 获取会话历史 |
-| POST | `/feishu/route` | 幂等路由飞书会话到 Session：群聊按 chat_id（整群共用），私聊按 open_id（一人一个），首次按需 spawn |
+| GET | `/sessions/{session_id}/todos` | 读取会话 todos 清单 |
+| GET | `/sessions/{session_id}/todo-segments` | 读取子任务分段列表 |
+| GET/POST | `/sessions/{session_id}/todo-segments/{segment_id}` | 获取/设置子任务分段标题 |
+| POST | `/feishu/route` | 幂等路由飞书会话到 Session（首次按需 spawn） |
 | GET | `/feishu/routes` | 列出飞书会话 → Session 路由 |
+| POST | `/feishu/sessions/{session_id}/chat` | 飞书网页应用带鉴权的聊天流（SSE） |
+| GET | `/feishu/defaults` | 网页应用缺省 AI 实例 id |
+| GET | `/feishu/app-id` | 飞书应用免登 App ID |
+| GET | `/feishu/jsapi/config` | 飞书 JSAPI 签名配置 |
+| POST | `/feishu/auth/login` | 飞书网页免登 |
+| GET | `/feishu/auth/me` | 当前飞书登录身份 |
+| POST | `/feishu/auth/logout` | 飞书网页登出 |
+| GET | `/feishu/sessions` | 当前身份可见的飞书会话列表 |
+| POST | `/feishu/sessions` | 创建飞书网页应用新会话 |
+| GET | `/feishu/sessions/{session_id}/history` | 获取飞书网页应用会话历史 |
+| GET | `/feishu/titles` | 当前身份可见的会话标题表 |
+| GET | `/feishu/summaries` | 当前身份可见的任务摘要表 |
+| GET | `/oauth/callback` | OAuth 授权重定向回调落地 |
+| GET | `/oauth/code` | 发起方按 state 取回 OAuth 授权码 |
+| GET | `/auth/status` | 云端账号认证状态与链路自检 |
+| POST | `/auth/send-code` | 请云端发送验证码 |
+| POST | `/auth/verify` | 校验验证码并登录 |
+| POST | `/auth/complete` | 注册补充展示名 |
+| POST | `/auth/bind` | 绑定手机号或邮箱 |
+| DELETE | `/auth/identities/{provider}` | 解绑指定登录方式 |
+| GET | `/auth/me` | 获取当前账号信息与绑定身份 |
+| POST | `/auth/logout` | 撤销云端会话并清除本机凭证 |
+| GET | `/auth/devices` | 获取已登录设备列表 |
+| DELETE | `/auth/devices/{device_id}` | 剔除指定已登录设备 |
+| GET | `/defaults` | 默认 agent、workspace 及 appdata 路径 |
+| GET | `/workspace/cwd` | 获取 Gateway 工作目录 |
+| GET | `/workspace/places` | PathPicker 快捷位置与盘符 |
+| GET | `/workspace/browse` | 浏览目录（`?path=...`） |
+| GET | `/workspace/file` | 读取文件为 Base64 |
+| POST | `/workspace/reveal` | 本地文件管理器显示指定路径 |
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
-| POST | `/titles/generate` | AI 自动生成标题 |
-| GET | `/workspace/browse` | 浏览目录（`?path=...`） |
-| GET | `/workspace/cwd` | 获取工作目录 |
-| GET | `/openapi.json` | OpenAPI schema |
-| GET | `/favicon.ico` | favicon（仅当 `--icon` 设置时有效，否则返回 404） |
+| POST | `/titles/generate` | AI 自动生成会话标题 |
+| GET | `/summaries` | 获取所有会话任务摘要 |
+| POST | `/summaries` | 设置会话任务摘要 |
+| POST | `/summaries/generate` | AI 自动生成任务摘要 |
+| POST | `/ui/attention` | 触发系统托盘/Webview 闪烁提醒 |
+| GET/POST | `/ui/prefs/survey` | 获取/记录问卷弹窗完成状态 |
+| GET | `/openapi.json` | OpenAPI Schema |
+| GET | `/favicon.ico` | Favicon（仅设置 `--icon` 时可用） |
 
 ### Web Console 聊天协议
 
