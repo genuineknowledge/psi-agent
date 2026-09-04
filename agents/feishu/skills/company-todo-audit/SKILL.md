@@ -140,6 +140,9 @@ E2 通道 = `feishu_message_search`（**user-token-only，必须带 `user_key`**
   mentor 打分评语（第 4 项）、wiki 回写（第 5 项）仍是置「已闭环」的硬要件，聊天里说过不顶用；
 - 检索失败 / 无权限 → 照报 `unavailable`，取证对称性不变（见 `todo-completion-standard`）；
 - E2 硬证据与自填 / 推断冲突时以硬证据为准，把冲突明写出来。
+- **该用户没授权**（工具返回 `need_auth` / 缺 `user_key` 授权）→ 先走 `feishu_auth_request` 随用随授；
+  若发现成批成员都缺授权，按 [`feishu-user-auth-onboarding`](../feishu-user-auth-onboarding/SKILL.md)
+  做周期性全员普及，别等每条都撞一次 `need_auth`。
 
 ## 给 boss 的整体统计
 
