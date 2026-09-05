@@ -6,6 +6,7 @@ import pytest
 from aiohttp import web
 
 from psi_agent.ai import Ai, _build_http_client, serve_ai
+from psi_agent.protocol import DEFAULT_MAX_CONTEXT_TOKENS
 
 
 def test_ai_backend_env_fallback(monkeypatch) -> None:
@@ -40,6 +41,30 @@ def test_ai_backend_defaults() -> None:
     assert config.api_key == ""
     assert config.base_url == ""
     assert config.verbose is False
+
+
+@pytest.mark.anyio
+async def test_ai_layer_falls_back_to_the_shared_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no env var set, the AI layer must land on ``protocol``'s number.
+
+    This exercises ``Ai.run``'s own resolution rather than re-deriving it, so
+    reintroducing a private literal here fails.  The AI and Session layers
+    shipped 100000 and 200000 respectively, and production ran for a day against
+    the lower one — below its own fixed overhead, so compaction fired on every
+    turn and could never get under the ceiling.  The identity is asserted rather
+    than the value, so raising the ceiling later does not touch this criterion.
+    """
+    monkeypatch.delenv("PSI_MAX_CONTEXT_TOKENS", raising=False)
+    seen: list[object] = []
+
+    async def _capture_serve_ai(*, max_context_tokens: int, **_rest: object) -> None:
+        seen.append(max_context_tokens)
+
+    monkeypatch.setattr("psi_agent.ai.serve_ai", _capture_serve_ai)
+
+    await Ai(session_socket="/tmp/s.sock").run()
+
+    assert seen == [DEFAULT_MAX_CONTEXT_TOKENS]
 
 
 @pytest.mark.anyio

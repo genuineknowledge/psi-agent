@@ -62,8 +62,8 @@ def browser() -> dict[str, object]:
     scrolling to reveal content, reading console/network activity, handling dialogs, or
     seeing the page via a screenshot. Call ``browser_navigate`` first to open a page,
     then ``browser_snapshot`` to get ref IDs for clicking/typing. State persists across
-    calls — the same browser window stays open for the whole conversation and is NOT
-    closed between messages.
+    calls — the same browser window stays open for the whole conversation (one window per
+    session), and is NOT closed between messages.
 
     When a page looks blank:
     - Right after ``browser_navigate`` a page may still be rendering (this is common on
@@ -83,7 +83,11 @@ def browser() -> dict[str, object]:
       open window"), and let the USER decide how to proceed. Pause and wait for the user
       rather than abandoning or closing the page.
     - When you finish a task, never silently close the tab. Ask the user whether they want
-      the page closed, and call ``browser_close`` only after they confirm."""
+      the page closed, and call ``browser_close`` only after they confirm.
+    - **The user may close the browser window at any time.** If a tool call reports the
+      window is gone (a message like「浏览器窗口已被关闭」), do NOT immediately retry or
+      reopen it. Stop, tell the user the window was closed, and ask whether they want you
+      to continue with a fresh browser; reopen only after they confirm."""
     endpoint = _b.ensure_server()
     # Playwright MCP binds the open browser tab to the HTTP session; don't terminate the
     # session when a per-call connection closes, or the page resets between tool calls.

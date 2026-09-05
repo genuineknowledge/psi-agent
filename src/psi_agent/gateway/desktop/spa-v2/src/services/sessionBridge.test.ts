@@ -4,6 +4,7 @@ import {
   extractSendPaths,
   historyToChat,
   historyToDeliverables,
+  titleFromHistoryMessages,
   withCompletedTurn,
   withDeliverables,
   withTodoProgress,
@@ -240,5 +241,32 @@ describe('withCompletedTurn', () => {
     expect(next.turnSettled).toBe(true)
     expect(next.steps.every((s) => s.state === 'done')).toBe(true)
     expect(next.progress).toBe(100)
+  })
+})
+
+describe('titleFromHistoryMessages', () => {
+  it('uses the first user message (DeepSeek-style), not the last', () => {
+    expect(
+      titleFromHistoryMessages([
+        { role: 'user', text: '帮我概括一下飞书端的海豚跟目前的你有什么区别' },
+        { role: 'user', text: '介绍一下你的功能，简短一点说' },
+        { role: 'agent', text: '…' },
+      ]),
+    ).toBe('帮我概括一下飞书端的海豚跟目前的你有什么区别')
+  })
+
+  it('falls back to default when history has no user text', () => {
+    expect(titleFromHistoryMessages([{ role: 'agent', text: '你好' }])).toBe('新任务')
+  })
+
+  it('uses the first sentence of a long first user message (capped at 30)', () => {
+    expect(
+      titleFromHistoryMessages([
+        {
+          role: 'user',
+          text: '目前你的前端有一个待您处理功能，该功能根据你的代码，它在什么时候会显示有待您处理事项？',
+        },
+      ]),
+    ).toBe('目前你的前端有一个待您处理功能，该功能根据你的代码，它在什么')
   })
 })

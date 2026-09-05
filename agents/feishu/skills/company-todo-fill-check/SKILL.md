@@ -1,6 +1,6 @@
 ---
 name: company-todo-fill-check
-description: "查询/汇报团队 TODO LIST 表格的填写情况时,判定某人某期到底算不算「没填」—— 空白格子必须先用 feishu_leave_query 查该日期是否落在已通过的请假区间内,查完才下结论。产出统一分成 缺写 / 请假免填 / 待人工确认 三类,并给出每一类的日期与依据。Use when someone asks 「我的 todo 是否满足 SOP」「谁没填 todo」「本周 todo 填报情况」「XX 连续几期没写」「todo 连续性/合规性检查」, or any question whose answer would name a person as having missed a TODO entry. NOT for 把个人 ToDoList 搬进看板表(feishu-todo-board-sync)、发送 todo 卡片(feishu-todo-card)、审批本身的审计(feishu-leave-audit-board)。Reads the board with feishu_sheet_read / feishu_bitable_records, leave facts with feishu_leave_query (假勤审批模板 code), names with feishu_user_get."
+description: "查询/汇报团队 TODO LIST 表格的填写情况时,判定某人某期到底算不算「没填」—— 空白格子必须先用 feishu_leave_query 查该日期是否落在已通过的请假区间内,查完才下结论。产出统一分成 缺写 / 请假免填 / 待人工确认 三类,并给出每一类的日期与依据。Use when someone asks 「我的 todo 是否满足 SOP」「谁没填 todo」「本周 todo 填报情况」「XX 连续几期没写」「todo 连续性/合规性检查」, or any question whose answer would name a person as having missed a TODO entry. NOT for 把个人 ToDoList 搬进看板表(feishu-todo-board-sync)、发送 todo 卡片(feishu-todo-card)、审批本身的审计(feishu-leave-audit-board)。Reads the board with feishu_sheet_read / feishu_bitable_search_records, leave facts with feishu_leave_query (假勤审批模板 code, names go into names_json as-is)."
 category: productivity
 ---
 

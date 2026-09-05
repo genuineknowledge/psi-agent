@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from psi_agent.protocol import DEFAULT_MAX_CONTEXT_TOKENS as PROTOCOL_DEFAULT_MAX_CONTEXT_TOKENS
 from psi_agent.session.request_assembly import (
     DEFAULT_CHARS_PER_TOKEN,
     DEFAULT_MAX_CONTEXT_TOKENS,
@@ -349,11 +350,12 @@ def test_adopt_threshold_converges_with_the_ai_layer() -> None:
 def test_adopt_threshold_refuses_a_ceiling_under_the_fixed_overhead() -> None:
     """Converging downward onto an unsatisfiable ceiling is worse than diverging.
 
-    The AI layer ships a 100000 default while this deployment's system prompt
-    alone measures ~117k tokens.  Adopting 100000 would put every request
-    permanently over budget, so elision would strip all history every turn and
-    still fail — the arithmetic behind the 50-times-compacted task in the design
-    doc.  So the floor wins and the divergence is logged instead.
+    100000 was the AI layer's default until 2026-09-04 and remains a value an
+    operator can set by hand, while this deployment's system prompt alone
+    measures ~117k tokens.  Adopting it would put every request permanently over
+    budget, so elision would strip all history every turn and still fail — the
+    arithmetic behind the 50-times-compacted task in the design doc.  So the
+    floor wins and the divergence is logged instead.
     """
     assembler = RequestAssembler(max_context_tokens=DEFAULT_MAX_CONTEXT_TOKENS)
 
@@ -361,3 +363,26 @@ def test_adopt_threshold_refuses_a_ceiling_under_the_fixed_overhead() -> None:
 
     assert assembler.max_context_tokens == DEFAULT_MAX_CONTEXT_TOKENS
     assert DEFAULT_MAX_CONTEXT_TOKENS >= MIN_ADOPTABLE_TOKENS, "the shipped default must clear its own floor"
+
+
+def test_both_layers_share_one_fallback_ceiling() -> None:
+    """The AI and Session layers must not drift back into separate defaults.
+
+    They shipped 100000 and 200000 respectively, which is how production ran for
+    a day against a ceiling below its own fixed overhead.  ``protocol`` owns the
+    number now; this asserts the identity rather than the value, so raising the
+    ceiling later does not require editing this criterion.
+    """
+    assert DEFAULT_MAX_CONTEXT_TOKENS == PROTOCOL_DEFAULT_MAX_CONTEXT_TOKENS
+
+
+def test_resolver_falls_back_to_the_shared_ceiling(monkeypatch: Any) -> None:
+    """With no env var, this layer's resolver must land on ``protocol``'s number.
+
+    Covers the Session side only.  The AI layer's own resolution path is asserted
+    in ``tests/psi_agent/ai/test_ai.py`` — a criterion here cannot see it, and
+    claiming otherwise would leave a reintroduced literal there green.
+    """
+    monkeypatch.delenv("PSI_MAX_CONTEXT_TOKENS", raising=False)
+
+    assert resolve_max_context_tokens(-1) == PROTOCOL_DEFAULT_MAX_CONTEXT_TOKENS

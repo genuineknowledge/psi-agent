@@ -52,7 +52,7 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
 - System prompt 在首次 `run()` 调用时惰性构建（通过 `system_prompt_builder`）
 - `system_prompt_builder` 和 `system_prompt_rebuild_checker` 兼容旧的零参形式；如定义了位置参数，Session 会传入当前原始 `user_message`。这一显式参数只用于本轮动态 prompt，不会改变写入 history 的 `kind` 标记副本
 - 后续请求可调用 `system_prompt_rebuild_checker()`（如果定义），返回 True 则用同一条当前 `user_message` 重建 system prompt
-- 可选 `system_after_turn(user_message, assistant_message)` 在 `finish_reason="stop"` 的最终 assistant 消息已 commit 后执行。它是可恢复的 workspace hook：普通异常记 WARNING，不回滚已成功交付的回合；取消信号仍向外传播。未定义时使用 no-op 默认值
+- 可选 `system_after_turn(user_message, assistant_message)` 在 `finish_reason="stop"` 的最终 assistant 消息已 commit 后执行。它是可恢复的 workspace hook：普通异常记 WARNING，不回滚已成功交付的回合；取消信号仍向外传播。内核在 user 参数的 `_psi_history_provenance` 中附带可信的 history 路径、AppData 根及本回合 user/assistant 行号；同名请求字段会被过滤且不会写入 history。未定义时使用 no-op 默认值
 - 未整段重建时，提示词一字不改；若 agent 包定义了 `turn_context_builder()`，则每回合把易变块挂到**本回合 user 消息**上（见下方「每回合易变上下文」）
 - 可选生命周期顺序为 `system_before_turn` → `system_prompt_builder` → AI/tool loop → `system_after_turn`。`system_before_turn` 接收当前回合的临时 hook context（含额外请求参数副本）；普通异常、非 dict 返回值和超时降级为 `{}`，但绝不吞掉取消。其结果仅用于本轮 prompt 构建且不写入 history；除 OpenAI 保留字段外，原始请求参数仍透传给 AI。`schedule.*` 回合跳过该 hook。
 
@@ -72,9 +72,10 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
    - tool 执行起止 → 仍写入 **同一** `reasoning` 槽（刻意压缩，便于 Session↔AI OpenAI 形同构），`kind="tool_call"|"tool_result"`；正文可继续带 `[Tool Call:]`/`[Tool Result:]` 过渡标记
    - tool_calls → 累积（按 index 拼接 partial JSON）
     - `finish_reason="tool_calls"` → 逐个过 `ToolCallConvergence.refusal_for()`（见「回合收敛」，被拒的**不发出**，改把说明性字符串当结果）→ 执行余下 tool → 结果追加到 history → 回到步骤 4
-    - finish_reason="stop" → 最终 content 追加到 history + `commit()` + 刷新 schedule registry + 若收到 compaction 信号则调用 `_maybe_compact()` → 释放锁
-   - finish_reason="error" → 回滚到快照 → `raise AgentError(message)`
-   - 任何未捕获异常 → 回滚到快照 → 向上传播
+    - finish_reason="stop" → 最终 content 追加到 history + `commit()` + 刷新 schedule registry + 若收到 compaction 信号则 `_request_compaction()` 记账 → 释放锁 → 锁外 `drain_pending_compaction()` 才真发压缩调用
+   - finish_reason="error" → 回滚到快照 → `raise AgentError(message)`（早期 `commit` 已清快照，**用户行保留**）
+   - Stop / 断开 / `aclose` → `_abandon_incomplete_turn` 截掉本回合再向上传播（**用户行不保留**）
+   - 其他未捕获异常 → 同 cancel（abandon）或随 `__aexit__` rollback，视是否走过早期 commit
 6. 最多 `max_tool_rounds` 轮 tool call（默认 `DEFAULT_MAX_TOOL_ROUNDS` = 20），达到上限时追加**面向用户**的说明性 assistant 消息 + commit
 7. **Turn 级别原子性**：``run()`` 所有正常出口调用 ``commit()``（save + clear snapshot）；异常时 ``async with`` 上下文管理器自动 ``rollback()``。内存和磁盘仅在同一检查点同步更新。
 
@@ -85,7 +86,7 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
 - `ChannelAdapter` 是纯无状态工具——不持有 agent/lock 引用。
 - Channel 请求中除 `messages` 外的不认识参数全部透传到 AI 层（`extra_params`）。
 - AI 返回多 choice 时报错（`finish_reason="error"`），0 choice 作为心跳跳过。
-- AI 返回非 200 或 `finish_reason="error"` 时，错误信息不写入 conversation history，且通过 turn 快照回滚机制保证本轮用户消息也不落盘。
+- AI 返回非 200 或 `finish_reason="error"` 时，错误信息不写入 conversation history；用户行因早期 `commit` **会**留在磁盘（崩溃重试基线）。Stop / 断开则走 `_abandon_incomplete_turn`，用户行一并去掉。
 
 ### 卡片回调直调短路（`_try_direct_card_dispatch`）
 
@@ -423,7 +424,7 @@ provider 只认 `reasoning_content`（any-llm 的 `REASONING_FIELD_NAMES` 首项
   while True:
     _seconds_until_next(cron)   ← 本地墙钟下次触发（勿用 time.time() 作 croniter base；TZ 设了则按该时区）
     await anyio.sleep(wait)     ← 睡到触发
-    async with agent._lock:       ← 等当前请求完成
+    async with agent.turn_lock():  ← 等当前请求完成; 出块后补做欠下的压缩(锁外)
       if fire == tool:
         ToolRegistry.get(tool)(**tool_args)  ← 直调，不跑 LLM（飞书提醒等）
       else:  # fire == prompt（缺省）
@@ -456,7 +457,7 @@ provider 只认 `reasoning_content`（any-llm 的 `REASONING_FIELD_NAMES` 首项
 
 - **按 session id 索引，不设全局「当前 agent」**：Gateway 一进程多 Session，全局量会续跑到最后注册的那个。调用方传自己从 `runtime_context.get_session_id()` 拿到的 id
 - **注册与「正在服务」同生命周期**（`register` 是上下文管理器）：过期句柄会续跑一个没人听的对话
-- **续跑照样拿 `agent._lock`**：续跑不是特权。真用户的轮次在跑就等它，跳锁会让两轮交错写同一份 conversation
+- **续跑照样拿 `agent.turn_lock()`**：续跑不是特权。真用户的轮次在跑就等它，跳锁会让两轮交错写同一份 conversation。取 `turn_lock` 而非裸 `_lock`，是因为续跑就是个普通回合，它欠下的压缩同样要在锁外补做
 - **投递是调用方的事**：这里 yield 的 chunk 没人在流式接收（不是任何请求打开的轮次），所以续跑那一轮要说话必须调 `feishu_message_send` 之类的工具——与 `fire: prompt` 的 schedule 同理（见上节）
 - **`kind` 缺省 `trigger.silent`（刻意为之，勿"改成 `chat` 让它显示出来"）**：续跑是**带外回合**，与 trigger / silent schedule 同类，所以注入的 `<event>` 块和它的回答都不进 Gateway `/history` 的聊天气泡。给 `chat` 会有两处后果——那段给模型的指令正文会像用户亲手打的一样出现在记录里，而回合已经用工具把话说过一遍了，气泡是第二遍。要让回答进 Web Console 就显式传 `trigger.display`（`response_kind` 与 user 行的 `kind` 同值，与 `_fire_prompt` 一致）
 - 起不了回合时（无在服务的 live agent）返回 `False`，调用方必须退回它力所能及的方式（通常一条通知），否则活会被静默丢掉
@@ -542,15 +543,15 @@ Session 支持将对话历史持久化到 AppData `histories/{session_id}.jsonl`
 - **读**：优先 AppData 文件；缺则双读 legacy `{workspace}/histories/{session_id}.jsonl`
 - `Session.session_id: str | None = None` — None 时自动生成 UUID，给定字符串时可 resume
 - 加载：`SessionAgent.create()` → `Conversation.from_workspace(..., appdata_root=…)` 双读
-- **Turn 级别原子性**：`SessionAgent.run()` 每次调用通过 ``async with self._conversation`` 进入上下文管理器，首次 `add()` / `replace_system()` 自动建立快照。user message 追加后立即 `commit()`（早期落盘，崩溃恢复基线），后续仅在对 AI 响应成功的检查点再次 `commit()` 更新；任何异常（AI error、连接断开、cancellation）都会通过 ``__aexit__`` 自动触发 `Conversation.rollback()` 恢复到快照，保证内存和磁盘始终同步于最近一个成功阶段。
+- **Turn 级别原子性**：`SessionAgent.run()` 每次调用通过 ``async with self._conversation`` 进入上下文管理器，首次 `add()` / `replace_system()` 自动建立快照。user message 追加后立即 `commit()`（早期落盘，崩溃恢复基线），后续仅在对 AI 响应成功的检查点再次 `commit()` 更新；`AgentError` 时 ``__aexit__`` 触发 `Conversation.rollback()`——但早期 `commit()` 已清快照，**用户行会保留**（崩溃重试基线，刻意为之）。**Stop / 客户端断开 / generator `aclose`（刻意为之）**：早期落盘之后取消不等于「保留用户问题」——SPA Stop 只撤回本地草稿，若不删 Session 侧那行，下一轮发送会看到「撤回前的问题 + 改写后的问题」，模型把两段一起想。故 cancel 路径调 `_abandon_incomplete_turn`：`truncate_to(turn_start)` 再 `commit()`，整回合（含中途已落盘的 tool 行）一并丢掉；`AgentError` 不走这条。
 - 保存时机（一致性检查点）：
-  - `finish_reason="stop"` — assistant 响应追加后立即 `commit()`，随后刷新 schedule registry（完整回合）；若收到 compaction 信号则 `_maybe_compact()` 插入 `compacted` 消息并 `commit()`
+  - `finish_reason="stop"` — assistant 响应追加后立即 `commit()`，随后刷新 schedule registry（完整回合）；若收到 compaction 信号则 `_request_compaction()` 记账，插入 `compacted` 消息与 `commit()` 由锁外的 `drain_pending_compaction()` 完成
   - `finish_reason="tool_calls"` — 所有 tool 结果追加后立即 `commit()`（子回合）
   - unexpected `finish_reason` — 累积 content 追加后 `commit()`
   - 达到 `max_tool_rounds` — 追加 `MAX_ROUNDS_NOTICE`（含实际轮数的中文说明，以 `[已达到单轮工具调用上限, 停在这里]` 开头）assistant 消息后 `commit()`
 - 只有 reasoning、没有 `content` / `tool_calls` 的最终 assistant 不写入 history；reasoning 仍可流式输出并传给 after-turn hook。读取旧 JSONL 时，`project_history_for_wire()` 同样过滤这类不符合 OpenAI wire contract 的遗留行，避免上游返回 `Invalid assistant message`
 - `Conversation.save()` 使用 tempfile + `os.replace()` 实现原子写入；`commit()` 封装 save + 清除快照
-- **部分保存**的场景：`finish_reason="error"`、AI 连接断开、channel 断开、schedule runner 异常——user message 已通过早期 `commit()` 落盘，AI 响应部分通过 `rollback()` 回滚，不写入磁盘
+- **部分保存**的场景：`finish_reason="error"`（及同类 `AgentError`）——user message 已通过早期 `commit()` 落盘，AI 响应不写入。**Stop / channel 断开**不在此列：走 `_abandon_incomplete_turn`，用户行也从磁盘去掉（见上「Turn 级别原子性」）。
 - 首次使用时自动创建 AppData `histories/` 目录 + `.gitignore`（忽略全部文件）
 
 ## Context Compaction
@@ -559,17 +560,51 @@ Session 支持将对话历史持久化到 AppData `histories/{session_id}.jsonl`
 
 1. `AiClient.stream()` 解析 `psi_compaction` → `AiDelta.compaction_needed=True`，并把
    `prompt_tokens` / `threshold` 一并透出（经 `AiClient._as_int`，缺失或非法为 0）
-2. Agent loop 在 `finish_reason="stop"` 后调用 `_maybe_compact(prompt_tokens, threshold)`
+2. Agent loop 在 `finish_reason="stop"` 后调用 `_request_compaction(prompt_tokens, threshold)`
+   —— **只记账，不发起调用**（同步方法，此时仍持锁）。真正的 LLM 调用由
+   `turn_lock()` 在**释放锁之后**通过 `drain_pending_compaction()` 发起（见下「压缩不占会话锁」）
 3. 从 `{agent}/systems/system.py` 提取 `compact_history()` 函数（`getattr` 按名字查找，见下
    「默认实现的归属」）
 4. **冷却门槛**：`_compaction_cooldown_elapsed()` 不过则直接返回（见下）
 5. 构造 `complete_fn`（使用现有 `AiClient` 做流式调用并收集全部 content 的闭包）
-6. `summary = await compact_history(conversation.messages, complete_fn)`
+6. **先取快照** `snapshot = list(conversation.messages)`，`covers = len(snapshot)`，
+   然后 `summary = await compact_history(snapshot, complete_fn)`。取快照是因为此时**不持锁**，
+   新回合可以往 `messages` 追加行；摘要只描述快照那一段
 7. **落盘前校验** `_summary_looks_hijacked()`（见下「摘要落盘校验」）：判为劫持则重试一次，
-   仍失败则不写入；通过后插入独立的 `compacted` 消息（`role="compacted"`, `kind="compacted"`）
-8. `commit()` 落盘——历史消息**保留**，不删除；随后记录水位线
-   `_tokens_at_last_compaction`（**仅成功时**记，失败没缩小任何东西，下次信号仍应放行）
-9. 下次发送 AI 请求时，`project_history_for_wire()` 负责：找到 system prompt 和最后一个 compacted，删除中间消息，将 compacted 内容合并到 system prompt
+   仍失败则不写入；通过后插入独立的 `compacted` 消息（`role="compacted"`, `kind="compacted"`,
+   `covers=<快照长度>`）
+8. **重新取锁**（只包住写入）后 `commit()` 落盘——历史消息**保留**，不删除；随后记录水位线
+   `_tokens_at_last_compaction`（**仅成功时**记，失败没缩小任何东西，下次信号仍应放行）。
+   写入是纯尾部追加，所以走 `Conversation.save()` 的追加路径，不触发全量重写
+9. 下次发送 AI 请求时，`project_history_for_wire()` 负责：找到 system prompt 和最后一个 compacted，
+   删除**摘要覆盖到的那一段**（按 `covers` 切，不是按 compacted 行自身的下标切），
+   将 compacted 内容合并到 system prompt
+
+### 压缩不占会话锁（件四，2026-09-03）
+
+压缩是一次 LLM 调用，实测 41.5 秒。它发生在回合**正常完成之后**——回复已流式发出、
+assistant 行已写历史、`commit()` 已落盘（见 `agent.py` 的调用点：`_finish` 前最后一句）。
+所以这 41.5 秒对已完成的那个回合**毫无贡献**，却被完整记在**下一条消息**的等待里：
+实测排队 p50 曾达 169 秒，2026-08-31 恶化到 774 秒。尾部工作没有理由持锁。
+
+改法：`SessionAgent.turn_lock()` 取代裸 `self._lock`，语义是「持锁跑一个回合，
+**释放锁之后**再补上这个回合欠下的压缩」。四个驱动回合的入口全部改用它
+（`handle_request` / `handle_event` / `schedule_registry` 的 schedule 触发 / `live_agent` 的续跑）——
+**不是四处各自记得 drain**：漏一处的后果是那条路径永不压缩，而且不会有任何用例变红
+（件一A 的省略保证请求始终合法，唯一症状是质量在数周里烂掉）。
+
+并发上的四个明确答复：
+
+| 问题 | 答复 |
+|---|---|
+| 压缩期间来的新消息基于哪个版本的历史？ | 未压缩的那版。它照常拿锁跑完整回合，与今天一致——本来也拿不到还没生成的摘要 |
+| 压缩完成时历史已变，摘要还能用吗？ | 能，但**只对它覆盖的那一段**有效。`covers` 记下快照长度，投影按它切。若按 compacted 行自身下标切，压缩期间落的行会从 wire 上消失却仍留在 JSONL 里——静默丢历史，且单独测压缩永远看不见 |
+| 压缩失败/超时？ | `_maybe_compact` 内 `except` 吞掉并只打日志：不写 `compacted` 行、不记水位线、回合本身不受影响、会话继续可用。件一A 之后压缩只管质量不管正确性，所以失败只等于「这次省略糙一点」，判据 `test_compaction_failure_does_not_break_the_turn` 锁住这条 |
+| 同一会话并发触发两次压缩？ | `_compaction_in_flight` 让第二个 drain 直接返回。两份 `compacted` 行的后果不只是白花一次调用（投影取最后一行），而是两行的 `covers` 不同时，存活那行可能切掉存活摘要从没描述过的行。跳过是安全的——信号是电平触发，仍超阈值则下个回合再报 |
+
+判据在 `tests/psi_agent/session/test_compaction_off_lock.py`，四条全做过变异复核。
+其中最要紧的一条不测「摘要对不对」，而测**压缩堵在半路时第二个回合能否跑完**——
+那才是本件的全部意义。
 
 JSONL 留存：``system, u1, a1, u2, a2, compacted(summary), u3, a3, ...``
 发给 AI：``[system+summary, u3, a3, ...]``

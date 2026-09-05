@@ -80,6 +80,11 @@ class Conversation:
         """Identifier derived from the history file path stem."""
         return self._path.stem if self._path else ""
 
+    @property
+    def history_path(self) -> Path | None:
+        """Backing history path used for the most recent successful commit."""
+        return self._path
+
     # -- construction ----------------------------------------------------------
 
     @classmethod
@@ -141,6 +146,20 @@ class Conversation:
         # Dropped lines have to leave the file; appending cannot remove anything.
         self._rewrite_needed = True
 
+    def truncate_to(self, length: int) -> None:
+        """Keep only ``messages[:length]`` (drop the rest).
+
+        Used when an early-committed turn is abandoned (Stop / disconnect):
+        the user row was already on disk, so ``rollback()`` alone cannot
+        remove it — the snapshot was cleared by that early ``commit()``.
+        """
+        if length < 0:
+            raise ValueError(f"truncate_to length must be >= 0, got {length}")
+        self._begin_if_needed()
+        if length < len(self.messages):
+            del self.messages[length:]
+            self._rewrite_needed = True
+
     def replace_system(self, content: str) -> None:
         """Replace the system message (``messages[0]``) in-place,
         or add it if the conversation is empty.  Automatically
@@ -178,12 +197,17 @@ class Conversation:
             self._snapshot_messages = list(self.messages)
             self._snapshot_pending = list(self._pending)
 
-    async def commit(self) -> None:
-        """Persist the current messages to disk and clear the snapshot.
-        The next mutation will automatically create a new snapshot."""
-        await self.save()
+    async def commit(self) -> bool:
+        """Persist the current messages and report whether it succeeded.
+
+        The next mutation will automatically create a new snapshot.  A failed
+        persistence attempt is recoverable by callers, but must not be treated
+        as a committed turn by provenance-sensitive hooks.
+        """
+        persisted = await self.save()
         self._snapshot_messages = None
         self._snapshot_pending = None
+        return persisted
 
     def rollback(self) -> None:
         """Restore messages and pending chunks to the most recent
@@ -218,7 +242,7 @@ class Conversation:
 
     # -- persistence -----------------------------------------------------------
 
-    async def save(self) -> None:
+    async def save(self) -> bool:
         """Persist ``messages`` to the JSONL file.  Errors are caught and
         logged — a failed save does not interrupt the session.
 
@@ -226,7 +250,7 @@ class Conversation:
         lines are **appended**; a commit then costs the new messages instead of
         the whole file (a 66MB session used to write 66MB per commit, and one
         turn commits several times).  When anything before the tail changed —
-        ``replace_system`` / ``trim_after`` / ``rollback`` — or the file no
+        ``replace_system`` / ``trim_after`` / ``truncate_to`` / ``rollback`` — or the file no
         longer looks the way we left it, the file is rewritten in full through
         a tempfile + ``replace``.
 
@@ -239,7 +263,7 @@ class Conversation:
         so the next save rewrites in full and heals the file.
         """
         if self._path is None:
-            return
+            return True
         try:
             parent = anyio.Path(str(self._path.parent))
             if not await parent.is_dir():
@@ -248,8 +272,10 @@ class Conversation:
                 await self._append_new_lines()
             else:
                 await self._rewrite_all()
+            return True
         except Exception as e:
             logger.error(f"Failed to save history: {e}")
+            return False
 
     async def _can_append(self) -> bool:
         """True when the file on disk is still the prefix we last wrote.

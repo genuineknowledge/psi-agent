@@ -37,6 +37,21 @@ KIND_TRIGGER_SILENT = "trigger.silent"
 KIND_TRIGGER_DISPLAY = "trigger.display"
 KIND_COMPACTED = "compacted"
 
+COMPACTED_COVERS_KEY = "covers"
+"""On a ``compacted`` row: how many leading history rows the summary covers.
+
+Compaction reads the history, spends ~40s in an LLM call, then appends its
+summary row.  It does that **without holding the session lock**, so rows can
+land while it runs.  Without this field the projection deletes everything before
+the summary row's own index — including those late rows, which the summary never
+saw.  They would vanish from the wire while still sitting in the JSONL: history
+loss that no test of compaction-in-isolation can see.
+
+So the row records the boundary it actually summarized, and the projection cuts
+there instead of at the row's position.  Absent (older rows written before this
+field existed) means "cut at my index", which is what those rows meant.
+"""
+
 KIND_KEY = "kind"
 
 # Legacy field from the preliminary design (session层设计.txt).
@@ -201,10 +216,11 @@ def project_history_for_wire(messages: list[dict[str, Any]]) -> list[dict[str, A
     - Folds ``turn_context`` into the message's ``content`` (see
       ``_fold_turn_context``) — the volatile block is stored out-of-band so
       that it lands at the request tail without ever rewriting a stored row.
-    - If a ``compacted`` message exists: deletes all messages between
-      the first ``system`` (index 0) and the last ``compacted`` (exclusive),
-      merges the compaction summary into the system message, and drops the
-      ``compacted`` message itself.
+    - If a ``compacted`` message exists: deletes the messages the summary
+      covers (see ``COMPACTED_COVERS_KEY`` — its recorded boundary, which is its
+      own index unless rows arrived while compaction ran), merges the compaction
+      summary into the system message, and drops the ``compacted`` message
+      itself.
     """
     return [projected for projected, _ in project_history_with_sources(messages)]
 
@@ -233,11 +249,15 @@ def project_history_with_sources(
 
     compacted_idx: int | None = None
     compacted_content: str = ""
+    compacted_covers: int | None = None
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
         if isinstance(msg, dict) and msg.get("role") == "compacted":
             compacted_idx = i
             compacted_content = msg.get("content", "")
+            raw_covers = msg.get(COMPACTED_COVERS_KEY)
+            if isinstance(raw_covers, int) and not isinstance(raw_covers, bool):
+                compacted_covers = raw_covers
             break
 
     if compacted_idx is not None:
@@ -248,7 +268,19 @@ def project_history_with_sources(
                 break
 
         if system_idx is not None and system_idx < compacted_idx:
-            after = messages[compacted_idx + 1 :]
+            # Cut where the summary's coverage ends, not at the summary row.  The
+            # two are the same index unless rows landed while compaction ran (see
+            # ``COMPACTED_COVERS_KEY``); when they do, those rows are kept because
+            # the summary does not describe them.  Clamped to stay after the
+            # system row and inside the list: a stale ``covers`` from a later
+            # ``trim_after`` must not resurrect the prompt or index off the end.
+            if compacted_covers is None:
+                cut = compacted_idx + 1
+            else:
+                cut = max(system_idx + 1, min(compacted_covers, len(messages)))
+            # The summary row itself is skipped by the loop below — ``compacted``
+            # is not a wire role — so slicing from ``cut`` cannot re-emit it.
+            after = messages[cut:]
             result: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
 
             system_msg = messages[system_idx]

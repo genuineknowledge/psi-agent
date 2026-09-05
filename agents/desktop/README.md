@@ -1,12 +1,12 @@
 # agents/desktop — 桌面版 (ToC) 能力包 🐬
 
-**这是 `agents/feishu` 的抽取产物**: 保留通用能力, 去掉飞书那一路 (工具 / 技能 / 提示词
-段落 / 事件源 / 长期记忆)。两个包的 `systems/` 除三处提示词文字外逐字节相同, 内核对两者
-都解析出全部 6 个 hook。ToB 版原文与被去掉的部分见 `agents/feishu/`。
+**这是 `agents/feishu` 的抽取产物**: 保留通用能力并加入 desktop 专用的本地长期记忆，
+去掉依赖飞书身份的工具、技能、提示词和事件源。内核对两个包都解析出全部 6 个 hook。
 
 它的 agent 是 **Haitun (海豚)**, 组成:
 
 - a de-branded OpenClaw-style system-prompt engine (all config kept **inside** the workspace),
+- an embedded, same-process Fusion Memory runtime isolated by normalized workspace path,
 - full **Workflow** authoring (the formal language defined by
   `FusionFlow.g4`, hosted by the `workflow` skill, with an explicit
   TypeScript fallback under `fusion-flow-legacy`, plus `flow_manage` + `flows/`),
@@ -67,15 +67,13 @@ uv run psi-agent channel repl --session-socket /tmp/ch.sock
 - Never put API keys in this workspace or in generated `.flow.ts` / `.env` files.
   The same rule applies to instruction payloads and generated `.workflow` / `.g4` files.
 
-## Fusion Memory: 本能力包没有
+## Fusion Memory
 
-跨会话长期记忆那组工具不在 `agents/desktop` 里 —— 它们经
-`_fusion_memory_mcp.py` → `_fusion_memory_membership.py` → `_feishu_impl.py`
-落到飞书, 「谁的身份写记忆」是拿飞书 `open_id` 认的, 桌面版没有飞书身份。
+Desktop Fusion Memory runs inside the existing Session process. Sessions using the same normalized workspace path share durable evidence; different workspaces remain isolated. The default files are `<workspace>/.fusion-memory/evidence.jsonl` and `<workspace>/.fusion-memory/memory.sqlite3`. JSONL is authoritative, while SQLite is a rebuildable FTS/dense index.
 
-ToB 版这一节原有约 68 行配置说明 (8 个 `FUSION_MEMORY_*` 变量 + 信任边界), 见
-`agents/feishu/README.md`。桌面版要做记忆需另设计按本机用户认身份的方案, 属讨论项:
-`docs/superpowers/specs/2026-08-28-gateway-workspace-refactor-report.md` 第九章。
+Only ordinary user/assistant chat text confirmed by the successful after-turn hook is ingested. Trigger, schedule, heartbeat, system/tool rows, reasoning, transfer markers, compaction output, and incomplete turns stay out of the journal. Histories created before this hook was active are not guessed or backfilled because their rows have no finish provenance. The runtime adds no extra process. Model or SQLite failures degrade without failing the completed chat.
+
+Use `memory_search` for raw evidence and provenance, `memory_answer_context` for a bounded evidence pack, and `memory_add` only to promote existing source span IDs. Vector requests read `DASHSCOPE_API_KEY`; LLM configuration uses `FUSION_MEMORY_MODEL_*` or a complete `PSI_AI_*` fallback. Secrets are launcher-managed and never written to memory files.
 
 ## Smoke test
 

@@ -393,7 +393,10 @@ class ScheduleRegistry:
                             KIND_SCHEDULE_DISPLAY if schedule.visibility == "display" else KIND_SCHEDULE_SILENT
                         )
 
-                        async with agent._lock:
+                        # ``turn_lock`` rather than the raw lock: a schedule-only
+                        # session (the 380k-token attendance task) would never
+                        # compact otherwise, and nothing would fail loudly.
+                        async with agent.turn_lock():
                             if schedule.fire == FIRE_TOOL:
                                 pending_chunks = await ScheduleRegistry._fire_tool(schedule, agent, response_kind)
                             else:

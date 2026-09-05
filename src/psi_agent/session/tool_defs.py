@@ -51,6 +51,81 @@ def build_tool_defs(tools: Mapping[str, _ToolLike]) -> list[dict[str, Any]]:
     ]
 
 
+# TMPFIX-20260902 (M2), deploy-only — NOT part of the merged batch.
+#
+# Kept because production measured 285566 → 83725 chars, 省 70.7% with this gate
+# on, and the merged batch deliberately scoped trimming out (see this module's
+# docstring: "Freezing is deliberately *not* trimming"). Deploying without it
+# would hand that 70.7% back on every turn.
+#
+# Correctness does not depend on this list: dispatch resolves names through
+# ``ToolRegistry``, not through the ``tools`` array, so an omitted tool stays
+# callable once ``tool_search`` surfaces its name. What narrows is discovery,
+# not capability. Names measured from 3h of production traffic (496 calls, 44
+# distinct). Remove together with the rest of tmpfix-20260902.
+TMPFIX_M2_CORE_TOOLS = frozenset(
+    {
+        "bash",
+        "read",
+        "edit",
+        "write",
+        "list_dir",
+        "find_files",
+        "search_content",
+        "fetch",
+        "todo",
+        "clarify",
+        "tool_search",
+        "tool_describe",
+        "tool_search_code",
+        "serper_google_search",
+        "wiki_search",
+        "describe_image",
+        "read_document",
+        "read_pdf",
+        "write_word",
+        "write_word_from_markdown",
+        "session_keyword_search",
+        "sessions_history",
+        "session_status",
+        "memory_search",
+        "memory_answer_context",
+        "feishu_api",
+        "feishu_attendance_query",
+        "feishu_doc_read",
+        "feishu_doc_update_block",
+        "feishu_doc_list_blocks",
+        "feishu_doc_append_content",
+        "feishu_doc_create",
+        "feishu_docs_search",
+        "feishu_sheet_read",
+        "feishu_sheet_write",
+        "feishu_sheet_read_grid",
+        "feishu_sheet_find_columns",
+        "feishu_wiki_list_nodes",
+        "feishu_wiki_list_spaces",
+        "feishu_message_list",
+        "feishu_message_send",
+        "feishu_image_get",
+        "feishu_identity_get",
+        "feishu_department_members",
+        "feishu_permission_list_members",
+        "trigger_manage",
+    }
+)
+
+
+def tmpfix_m2_gate(tools: Mapping[str, _ToolLike]) -> dict[str, _ToolLike]:
+    """Narrow a registry to the M2 core set, leaving dispatch untouched.
+
+    Returns the registry unchanged when no core tool is present at all — that
+    is the async-load window where the registry is still filling, and gating it
+    there would freeze a Session onto a near-empty array.
+    """
+    kept = {name: tool for name, tool in tools.items() if name in TMPFIX_M2_CORE_TOOLS}
+    return kept or dict(tools)
+
+
 class ToolDefsCache:
     """Holds one Session's ``tools`` array still after its first assembly.
 

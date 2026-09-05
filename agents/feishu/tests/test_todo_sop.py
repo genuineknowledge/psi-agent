@@ -30,6 +30,7 @@ SOP_SKILLS = (
     "todo-completion-standard",
     "company-todo-review",
     "todo-alignment-check",
+    "todo-growth-profile",
 )
 
 
@@ -85,6 +86,30 @@ def test_alignment_section_is_present() -> None:
     cfg = _config()["alignment"]
     assert len(cfg["verdicts"]) == 4
     assert list(cfg["dimensions"]) == ["A1", "A2", "A3", "A4", "A5", "A6"]
+
+
+def test_priority_importance_section() -> None:
+    pri = _config()["priority"]
+    importance = pri["importance"]
+    for tier in ("high", "high_examples", "medium", "medium_examples", "low", "low_examples", "judgment"):
+        assert importance.get(tier), f"priority.importance must carry {tier}"
+    assert pri["business_priority"], "must pin the business priority ordering"
+    assert "外部成果" in pri["seventy_three_rule"], "seventy_three_rule must tie to external outcomes"
+    assert isinstance(pri["urgency_trap"], list) and pri["urgency_trap"]
+
+
+def test_external_outcome_section() -> None:
+    ext = _config()["external_outcome"]
+    assert isinstance(ext["types"], list) and ext["types"], "external_outcome.types must be a non-empty list"
+    assert isinstance(ext["evidence"], list) and ext["evidence"], "external_outcome.evidence must be a non-empty list"
+    assert isinstance(ext["team_types"], list) and ext["team_types"]
+    assert ext["annual_trajectory"], "annual_trajectory must be present"
+
+
+def test_growth_section_is_present() -> None:
+    growth = _config()["growth"]
+    assert isinstance(growth["indicators"], list) and growth["indicators"], "growth.indicators must be a non-empty list"
+    assert growth["min_cycles"] >= 1, "growth.min_cycles must be at least 1"
 
 
 def test_judgment_skills_point_at_the_config() -> None:

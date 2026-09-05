@@ -17,6 +17,20 @@ export function titleFromPrompt(description: string, language: Language = DEFAUL
   return clean.slice(0, 30)
 }
 
+/**
+ * Task title from chat history — DeepSeek-style: first user message.
+ * Withdrawn / abandoned turns must not appear in history, so they cannot
+ * become the title either.
+ */
+export function titleFromHistoryMessages(
+  messages: Array<{ role: string; text?: string }>,
+  language: Language = DEFAULT_LANGUAGE,
+): string {
+  const firstUser = messages.find((m) => m.role === 'user' && (m.text ?? '').trim())
+  if (!firstUser?.text?.trim()) return translate(language, 'app.newTaskDefault')
+  return titleFromPrompt(firstUser.text, language)
+}
+
 export function workspaceLabel(path: string, language: Language = DEFAULT_LANGUAGE): string {
   const p = path.replace(/\\/g, '/').replace(/\/+$/, '')
   const parts = p.split('/').filter(Boolean)

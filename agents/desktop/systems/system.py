@@ -59,7 +59,6 @@ import logging
 import os
 import platform
 import re
-import types
 from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -68,8 +67,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
 
+from psi_agent.session.history_display import message_kind as _message_kind
+
+get_runtime: Any = importlib.import_module("_fusion_memory.runtime").get_runtime
+
 try:
     from psi_agent.session.runtime_context import get_agent as _runtime_agent
+    from psi_agent.session.runtime_context import get_session_id as _runtime_session_id
     from psi_agent.session.runtime_context import get_workspace as _runtime_workspace
 except ImportError:  # pragma: no cover — standalone import without editable install
 
@@ -77,6 +81,9 @@ except ImportError:  # pragma: no cover — standalone import without editable i
         return ""
 
     def _runtime_agent() -> str:
+        return ""
+
+    def _runtime_session_id() -> str:
         return ""
 
 
@@ -1237,15 +1244,15 @@ this workspace, generated workflows, instruction files, or committed `.env` file
         ):
             budget.add(label, "", section)
 
-        # 刻意为之: Fusion Memory 那一整段只在记忆服务真的配了的时候才注入。
-        # 它原先无条件进稳定前缀, 于是每个会话、每次构建提示都要带上约 30 行 ——
-        # 包括「不要改 .env / 去读 fusion-memory-setup 恢复指南」这类只对运维有用的话,
-        # 而记忆服务没配时模型压根用不上这些工具。
-        # 判据用 FUSION_MEMORY_MCP_URL 而不是工具名: _scan_tool_names 是按
-        # tools/*.py 的文件名扫的, memory_*.py 永远在磁盘上, 所以
-        # "memory_add" in tools 恒为真, 拿它做开关等于没开关。
+        memory_tools = {"memory_add", "memory_search", "memory_answer_context"}
+        memory_enabled = os.environ.get("FUSION_MEMORY_ENABLE_JOURNAL", "1").strip().casefold() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
         budget.add_if(
-            os.environ.get("FUSION_MEMORY_MCP_URL", "").strip(),
+            memory_enabled and memory_tools <= set(tools),
             "memory: Fusion Memory guidance",
             "",
             FUSION_MEMORY_SECTION,
@@ -1432,6 +1439,18 @@ def _resolve_workspace(workspace_raw: str = "", agent_raw: str = "") -> anyio.Pa
     return anyio.Path(os.path.realpath(os.path.abspath(raw)))
 
 
+def _memory_recall_allowed(message: dict[str, Any] | None) -> bool:
+    """Fail closed for explicitly tagged non-chat or unknown turns."""
+    if not isinstance(message, dict):
+        return False
+    if "kind" in message:
+        return isinstance(message["kind"], str) and message["kind"].strip().casefold() == "chat"
+    if "chat_type" in message:
+        return message["chat_type"] == "common"
+    role = message.get("role")
+    return role not in {"user_schedule", "assistant_schedule", "user_trigger", "assistant_trigger"}
+
+
 def _get_supervisor_manager(workspace: anyio.Path) -> Any:
     key = os.path.realpath(os.path.abspath(str(workspace)))
     manager = _SUPERVISOR_MANAGERS.get(key)
@@ -1592,7 +1611,6 @@ async def system_prompt_builder(
     raw = (workspace_raw or _runtime_workspace() or "").strip()
     if raw:
         user_workspace = anyio.Path(raw)
-    await _activate_fusion_memory(agent_dir)
     system = System(agent_dir, user_workspace=user_workspace)
     prompt = await system.build_system_prompt()
 
@@ -1641,6 +1659,16 @@ async def turn_context_builder(
     if raw:
         user_workspace = anyio.Path(raw)
     system = System(agent_dir, user_workspace=user_workspace)
+    recall_text = ""
+    content = user_message.get("content") if isinstance(user_message, dict) else ""
+    user_text = content if isinstance(content, str) else ""
+    kind = _message_kind(user_message) if isinstance(user_message, dict) else "chat"
+    if kind == "chat" and _memory_recall_allowed(user_message):
+        try:
+            runtime = await get_runtime(str(user_workspace))
+            recall_text = await runtime.first_turn_recall(_runtime_session_id(), user_text)
+        except Exception as exc:
+            logger.warning("Fusion Memory turn recall degraded after %s", type(exc).__name__)
 
     # Charged like the prompt is, for the same reason: this block is per-turn
     # cost that reaches the model, so it needs its own itemisation rather than
@@ -1648,6 +1676,7 @@ async def turn_context_builder(
     # residual honest about the join.
     budget = PromptBudget()
     budget.add("turn context: clock", await system.build_turn_context())
+    budget.add_if(recall_text, "turn context: Fusion Memory recall", recall_text)
     budget.add_if(
         volatile := await _build_volatile_turn_blocks(user_message, user_workspace),
         "turn context: profile/advice/policy",
@@ -1663,9 +1692,7 @@ async def system_prompt_rebuild_checker(
     *,
     agent_raw: str = "",
 ) -> bool:
-    """Activate Memory and rebuild for the current topic-specific profile."""
-    agent_dir = _resolve_agent(agent_raw)
-    await _activate_fusion_memory(agent_dir)
+    """Rebuild for the current topic-specific profile."""
     return True
 
 
@@ -1677,8 +1704,14 @@ async def system_after_turn(
     agent_raw: str = "",
 ) -> None:
     """Persist profile signals and warm the background supervisor."""
-    profile_module = importlib.import_module("_user_profile")
     workspace = _resolve_workspace(workspace_raw, agent_raw)
+    try:
+        runtime = await get_runtime(str(workspace))
+        await runtime.ingest_current_session(_runtime_session_id(), user_message, assistant_message)
+    except Exception as exc:
+        logger.warning("Fusion Memory after-turn ingestion degraded after %s", type(exc).__name__)
+
+    profile_module = importlib.import_module("_user_profile")
     identity = {
         name: value
         for name in ("profile_id", "user_id", "session_id")
@@ -1697,29 +1730,6 @@ async def system_after_turn(
             await _get_supervisor_manager(workspace).prime(user_message)
         except Exception as exc:
             logger.warning("Background supervisor warmup failed: %r", exc, exc_info=True)
-
-
-async def _activate_fusion_memory(workspace_dir: anyio.Path) -> None:
-    mcp_path = Path(str(workspace_dir)) / "tools" / "_fusion_memory_mcp.py"
-    module_name = f"fusion_memory_tool__fusion_memory_mcp_{hashlib.sha256(str(mcp_path).encode()).hexdigest()[:12]}"
-    module = sys.modules.get(module_name)
-    created = False
-    try:
-        if module is None:
-            source = await anyio.Path(str(mcp_path)).read_text(encoding="utf-8")
-            module = types.ModuleType(module_name)
-            module.__file__ = str(mcp_path)
-            sys.modules[module_name] = module
-            created = True
-            exec(compile(source, str(mcp_path), "exec"), module.__dict__)
-        client = module.__dict__.get("CLIENT")
-        activate = getattr(client, "activate_current_session", None)
-        if activate is not None:
-            await activate(workspace_dir)
-    except Exception as exc:
-        if created:
-            sys.modules.pop(module_name, None)
-        logger.warning("Fusion Memory activation skipped after %s", type(exc).__name__)
 
 
 if __name__ == "__main__":

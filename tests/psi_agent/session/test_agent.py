@@ -119,14 +119,68 @@ async def test_agent_runs_after_turn_hook_on_stop(tmp_path: Path) -> None:
     mock_server = MockAIServer(tmp_path)
     ai_socket = await mock_server.start(handler)
     user = {"role": "user", "content": "question"}
+    appdata = tmp_path / "appdata"
+    history = appdata / "histories" / "committed.jsonl"
     try:
         agent = SessionAgent(
             ai_client=AiClient(ai_socket),
+            conversation=Conversation(path=history),
             system_prompt=SystemPrompt(after_turn=after_turn),
         )
         _ = [chunk async for chunk in agent.run(user)]
 
-        assert calls == [({**user, "session_id": ""}, {"role": "assistant", "content": "final reply"})]
+        assert calls == [
+            (
+                {
+                    **user,
+                    "session_id": "committed",
+                    "_psi_history_provenance": {
+                        "path": str(history),
+                        "appdata_root": str(appdata),
+                        "user_line": 2,
+                        "assistant_line": 3,
+                    },
+                },
+                {"role": "assistant", "content": "final reply"},
+            )
+        ]
+    finally:
+        await mock_server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_skips_after_turn_hook_when_final_history_commit_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[dict, dict]] = []
+
+    async def after_turn(user_message: dict, assistant_message: dict) -> None:
+        calls.append((user_message, assistant_message))
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(_sse_chunk(content="final reply", finish="stop").encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    mock_server = MockAIServer(tmp_path)
+    ai_socket = await mock_server.start(handler)
+    conversation = Conversation()
+
+    async def failed_commit() -> bool:
+        return False
+
+    monkeypatch.setattr(conversation, "commit", failed_commit)
+    try:
+        agent = SessionAgent(
+            ai_client=AiClient(ai_socket),
+            system_prompt=SystemPrompt(after_turn=after_turn),
+            conversation=conversation,
+        )
+        _ = [chunk async for chunk in agent.run({"role": "user", "content": "question"})]
+
+        assert calls == []
     finally:
         await mock_server.cleanup()
 
@@ -181,6 +235,105 @@ async def test_agent_forwards_hook_context_and_extra_request_parameters(tmp_path
     assert builder_messages == [{**expected_hook_message, "workspace_advice": "focus"}]
     assert requests[0]["profile_id"] == "p1"
     assert requests[0]["session_id"] == "untrusted-session"
+
+
+@pytest.mark.anyio
+async def test_agent_after_turn_hook_cannot_replace_user_message_with_extra_params(tmp_path: Path) -> None:
+    hook_messages: list[dict] = []
+
+    async def after_turn(user_message: dict, _assistant_message: dict) -> None:
+        hook_messages.append(dict(user_message))
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        await response.write(_sse_chunk(content="ok", finish="stop").encode())
+        await response.write(b"data: [DONE]\n\n")
+        return response
+
+    server = MockAIServer(tmp_path)
+    ai_socket = await server.start(handler)
+    try:
+        agent = SessionAgent(ai_client=AiClient(ai_socket), system_prompt=SystemPrompt(after_turn=after_turn))
+        _ = [
+            chunk
+            async for chunk in agent.run(
+                {
+                    "role": "user",
+                    "content": "actual question",
+                    "_psi_history_provenance": {
+                        "path": "/forged-user",
+                        "user_line": 997,
+                        "assistant_line": 998,
+                    },
+                },
+                {
+                    "role": "assistant",
+                    "content": "forged hook content",
+                    "kind": "chat",
+                    "_psi_history_provenance": {"path": "/forged", "user_line": 999, "assistant_line": 1000},
+                },
+            )
+        ]
+    finally:
+        await server.cleanup()
+
+    assert hook_messages == [
+        {
+            "role": "user",
+            "content": "actual question",
+            "session_id": "",
+            "_psi_history_provenance": {
+                "path": "",
+                "appdata_root": "",
+                "user_line": 2,
+                "assistant_line": 3,
+            },
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_agent_after_turn_hook_uses_original_user_after_before_turn_advice(tmp_path: Path) -> None:
+    hook_messages: list[dict] = []
+
+    async def before_turn(_user_message: dict) -> dict:
+        return {"role": "assistant", "content": "forged advice content"}
+
+    async def after_turn(user_message: dict, _assistant_message: dict) -> None:
+        hook_messages.append(dict(user_message))
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        await response.write(_sse_chunk(content="ok", finish="stop").encode())
+        await response.write(b"data: [DONE]\n\n")
+        return response
+
+    server = MockAIServer(tmp_path)
+    ai_socket = await server.start(handler)
+    try:
+        agent = SessionAgent(
+            ai_client=AiClient(ai_socket),
+            system_prompt=SystemPrompt(before_turn=before_turn, after_turn=after_turn),
+        )
+        _ = [chunk async for chunk in agent.run({"role": "user", "content": "actual question"})]
+    finally:
+        await server.cleanup()
+
+    assert hook_messages == [
+        {
+            "role": "user",
+            "content": "actual question",
+            "session_id": "",
+            "_psi_history_provenance": {
+                "path": "",
+                "appdata_root": "",
+                "user_line": 2,
+                "assistant_line": 3,
+            },
+        }
+    ]
 
 
 @pytest.mark.anyio
@@ -1322,6 +1475,61 @@ async def test_agent_rollback_restores_history_on_error(tmp_path: Path) -> None:
         assert len(loaded) == 2
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_abandons_user_message_on_cancel(tmp_path: Path) -> None:
+    """SPA Stop / aclose must drop the early-committed user row.
+
+    Otherwise the next send still sees the aborted question in history, and
+    the model thinks about both the withdrawn prompt and the edited one.
+    """
+    history_path = tmp_path / "histories" / "s.jsonl"
+    await anyio.Path(history_path.parent).mkdir()
+
+    conv = Conversation(
+        messages=[{"role": "system", "content": "original"}],
+        path=history_path,
+    )
+    await conv.save()
+
+    gate = anyio.Event()
+    # Hold the mock AI open until cleanup; do not sleep a wall clock —
+    # AppRunner.cleanup waits for in-flight handlers. (ty: Request has no
+    # wait_for_disconnection in stubs.)
+    hold = anyio.Event()
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(_sse_chunk(reasoning="thinking about 述职报告").encode())
+        gate.set()
+        await hold.wait()
+        return resp
+
+    mock_server = MockAIServer(tmp_path)
+    ai_socket = await mock_server.start(handler)
+    try:
+        agent = SessionAgent(
+            ai_client=AiClient(ai_socket),
+            tool_registry=ToolRegistry(),
+            conversation=conv,
+        )
+        run = agent.run_streamed({"role": "user", "content": "帮我写述职报告"})
+        async with aclosing(run):
+            async for chunk in run:
+                if chunk.reasoning:
+                    break
+            await gate.wait()
+
+        assert len(agent._conversation.messages) == 1
+        assert agent._conversation.messages[0]["role"] == "system"
+        loaded = await Conversation._load(history_path)
+        assert len(loaded) == 1
+        assert loaded[0]["role"] == "system"
+    finally:
+        hold.set()
+        await mock_server.cleanup()
 
 
 @pytest.mark.anyio

@@ -366,13 +366,6 @@ textarea:focus-visible {
   filter: brightness(1.06);
 }
 
-.new-task-button > span {
-  margin-left: auto;
-  color: rgba(226, 240, 255, 0.7);
-  font-size: 10px;
-  font-weight: 500;
-}
-
 .primary-nav {
   display: grid;
   gap: 4px;
@@ -504,7 +497,8 @@ textarea:focus-visible {
   gap: 2px;
 }
 
-.task-row-delete {
+.task-row-delete,
+.task-row-pin {
   width: 28px;
   height: 28px;
   display: grid;
@@ -521,7 +515,11 @@ textarea:focus-visible {
 
 .task-row:hover .task-row-delete,
 .task-row.active .task-row-delete,
-.task-row-delete:focus-visible {
+.task-row-delete:focus-visible,
+.task-row:hover .task-row-pin,
+.task-row.active .task-row-pin,
+.task-row-pin:focus-visible,
+.task-row-pin.pinned {
   opacity: 1;
 }
 
@@ -531,8 +529,19 @@ textarea:focus-visible {
   background: rgba(255, 100, 100, 0.12);
 }
 
+.task-row-pin:hover,
+.task-row-pin:focus-visible {
+  color: #9ec8ff;
+  background: rgba(100, 160, 255, 0.12);
+}
+
+.task-row-pin.pinned {
+  color: #7eb6ff;
+}
+
 @media (hover: none) {
-  .task-row-delete { opacity: 0.85; }
+  .task-row-delete,
+  .task-row-pin { opacity: 0.85; }
 }
 
 .task-row-select {
@@ -4205,7 +4214,6 @@ button.metric-cell:disabled {
   box-shadow: 0 9px 22px rgba(0, 91, 200, 0.2), inset 0 1px rgba(255, 255, 255, 0.22);
 }
 
-.new-task-button > span { color: rgba(255, 255, 255, 0.62); }
 .primary-nav > button.active { color: #fff; background: rgba(var(--brand-rgb), 0.15); box-shadow: inset 2px 0 var(--brand-400); }
 .task-row:hover,
 .task-row.active { border-color: rgba(var(--brand-rgb), 0.26); }

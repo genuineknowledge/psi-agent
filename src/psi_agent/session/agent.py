@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import inspect
 import json
-from collections.abc import AsyncGenerator, Callable
-from contextlib import aclosing
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import aclosing, asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
@@ -36,6 +36,7 @@ from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.event_protocol import EventProtocolError, parse_event_envelope
 from psi_agent.session.history_display import (
+    COMPACTED_COVERS_KEY,
     KIND_COMPACTED,
     TURN_CONTEXT_KEY,
     message_kind,
@@ -57,7 +58,7 @@ from psi_agent.session.runtime_context import runtime_scope
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.system_prompt import SystemPrompt
 from psi_agent.session.tool_convergence import ToolCallConvergence
-from psi_agent.session.tool_defs import ToolDefsCache, build_tool_defs
+from psi_agent.session.tool_defs import ToolDefsCache, build_tool_defs, tmpfix_m2_gate
 from psi_agent.session.tool_registry import ToolRegistry
 from psi_agent.session.trigger_registry import TriggerRegistry
 
@@ -113,6 +114,8 @@ _CURRENT_TOOL_AI_SOCKET: ContextVar[str | None] = ContextVar(
     "psi_agent_current_tool_ai_socket",
     default=None,
 )
+
+_HISTORY_PROVENANCE_KEY = "_psi_history_provenance"
 
 
 RECENT_TURNS_MARKER = "\n[Recent turns]\n"
@@ -283,6 +286,12 @@ class SessionAgent:
         self._workspace_path = workspace_path
         self._agent_path = agent_path
         self._tokens_at_last_compaction: int | None = None
+        # Compaction is deferred out of the lock: the turn records the signal
+        # here and ``drain_pending_compaction`` spends the LLM call after the
+        # lock is released.  ``_compaction_in_flight`` keeps two drains from
+        # summarizing the same conversation at once.
+        self._pending_compaction: tuple[int, int] | None = None
+        self._compaction_in_flight = False
         # One per session: it carries the calibrated chars/token ratio and the
         # set of rows already elided, both of which must persist across turns
         # for hysteresis to mean anything.
@@ -382,6 +391,40 @@ class SessionAgent:
         )
 
     # -- delegation -----------------------------------------------------------
+
+    @asynccontextmanager
+    async def turn_lock(self) -> AsyncIterator[None]:
+        """Hold the session lock for one turn, then compact **after** releasing it.
+
+        Every path that drives a turn takes this instead of ``self._lock``
+        directly, because the deferral only works if it is impossible to forget:
+        a call site that acquires the raw lock and never drains would leave the
+        session permanently un-compacted, and nothing would fail loudly —
+        elision keeps the requests legal, so the only symptom is quality
+        rotting over weeks.
+
+        Why it is worth deferring at all: compaction runs *after* the reply is
+        already streamed and committed (see ``_request_compaction``'s call site —
+        it is the last statement before ``_finish``). Its ~40s therefore buys the
+        finished turn nothing and is charged entirely to whoever asks next; the
+        measured queueing was p50 169s, and 774s on 2026-08-31. Tail work has no
+        business holding a lock.
+
+        Draining inside the ``finally`` keeps it on the cancellation path too: a
+        client disconnect mid-turn should not silently drop a compaction that
+        the conversation still needs.
+        """
+        try:
+            async with self._lock:
+                yield
+        finally:
+            # Reached only after the ``async with`` released the lock, so a
+            # waiting turn can start while the summary is still being generated.
+            # Under cancellation this ``await`` is itself cancelled and the drain
+            # is skipped — the request stays pending and the next turn performs
+            # it, which is why the pending flag is cleared by the drain rather
+            # than by the turn that recorded it.
+            await self.drain_pending_compaction()
 
     def start_all(self, task_group: object) -> None:
         """Start schedule runners — called by ``Session.run()``.
@@ -508,7 +551,7 @@ class SessionAgent:
             },
         )
 
-        async with self._lock:
+        async with self.turn_lock():
             try:
                 await response.prepare(request)
             except Exception:
@@ -545,7 +588,7 @@ class SessionAgent:
             logger.warning(f"POST /events rejected: {e}")
             return web.json_response({"error": str(e)}, status=400)
 
-        async with self._lock:
+        async with self.turn_lock():
             with runtime_scope(
                 session_id=self._conversation.session_id,
                 workspace=str(self._workspace_path) if self._workspace_path is not None else "",
@@ -631,15 +674,24 @@ class SessionAgent:
                 )
 
         request_params = dict(extra_params or {})
-        hook_message = dict(user_message)
-        hook_message |= request_params
+        hook_message = {key: value for key, value in user_message.items() if key != _HISTORY_PROVENANCE_KEY}
+        hook_message.update(
+            {
+                key: value
+                for key, value in request_params.items()
+                if key not in {"role", "content", "kind", "turn_context", "session_id", _HISTORY_PROVENANCE_KEY}
+            }
+        )
         # Hooks must see the trusted Conversation identity. Request extras still
         # pass through to the AI, but cannot impersonate another Session here.
         hook_message["session_id"] = self._conversation.session_id
+        after_turn_message = dict(hook_message)
 
         user_kind = message_kind(user_message)
         turn_response_kind = response_kind if response_kind is not None else user_kind
-        stored_user_message = with_kind(user_message, user_kind)
+        stored_user_message = with_kind(
+            {key: value for key, value in user_message.items() if key != _HISTORY_PROVENANCE_KEY}, user_kind
+        )
 
         # Gateway embeds many Sessions in one process — bind this turn so
         # tools can read session id / workspace / agent paths via ContextVars.
@@ -692,332 +744,426 @@ class SessionAgent:
                 if turn_context:
                     stored_user_message = stored_user_message | {TURN_CONTEXT_KEY: turn_context}
 
+                # Index before the early-committed user row — cancel/abandon
+                # truncates back here so SPA Stop does not leave the question
+                # for the next send to still see.
+                turn_start = len(self._conversation.messages)
                 self._conversation.add(stored_user_message)
                 await self._conversation.commit()
+                history_path = self._conversation.history_path
+                after_turn_message[_HISTORY_PROVENANCE_KEY] = {
+                    "path": str(history_path or ""),
+                    "appdata_root": (
+                        str(history_path.parent.parent)
+                        if history_path is not None and history_path.parent.name == "histories"
+                        else ""
+                    ),
+                    "user_line": len(self._conversation.messages),
+                }
                 logger.debug(f"History now has {len(self._conversation.messages)} messages")
 
-                model_turns = 0
-                # One tracker per turn, so a refusal earned by this question is
-                # never inherited by the next one (``tool_convergence``).
-                convergence = ToolCallConvergence()
-                for _round in range(self._max_tool_rounds):
-                    logger.debug(f"Agent loop round {_round + 1}/{self._max_tool_rounds}")
-                    model_turns = _round + 1
+                try:
+                    model_turns = 0
+                    # One tracker per turn, so a refusal earned by this question is
+                    # never inherited by the next one (``tool_convergence``).
+                    convergence = ToolCallConvergence()
+                    for _round in range(self._max_tool_rounds):
+                        logger.debug(f"Agent loop round {_round + 1}/{self._max_tool_rounds}")
+                        model_turns = _round + 1
 
-                    # Frozen after the first non-empty assembly: a tool that shows
-                    # up mid-Session would otherwise rewrite this array and
-                    # re-prefill every cached turn behind it.
-                    tool_defs = self._tool_defs_cache.freeze(build_tool_defs(self._tool_registry.tools))
+                        # Frozen after the first non-empty assembly: a tool that shows
+                        # up mid-Session would otherwise rewrite this array and
+                        # re-prefill every cached turn behind it.
+                        # TMPFIX-20260902 (M2), deploy-only: see ``tool_defs`` module.
+                        _gated_tools = tmpfix_m2_gate(self._tool_registry.tools)
+                        tool_defs = self._tool_defs_cache.freeze(build_tool_defs(_gated_tools))
+                        logger.info(f"TMPFIX-M2 tools_exposed={len(tool_defs)} of {len(self._tool_registry.tools)}")
 
-                    # Logged next to the prompt breakdown, not inside it: these
-                    # schemas are their own request field, so they are a
-                    # per-turn fixed cost the prompt total does not include.
-                    log_tool_schema_size(tool_defs, context=f"session={self._conversation.session_id}")
+                        # Logged next to the prompt breakdown, not inside it: these
+                        # schemas are their own request field, so they are a
+                        # per-turn fixed cost the prompt total does not include.
+                        log_tool_schema_size(tool_defs, context=f"session={self._conversation.session_id}")
 
-                    # The budget is enforced *here*, at the one place a request
-                    # is assembled, rather than observed downstream after the
-                    # fact: an over-budget payload can no longer be built, so it
-                    # can no longer be sent. See ``request_assembly``.
-                    extra: dict[str, Any] = dict(request_params) if request_params else {}
-                    extra["routing"] = {"session_id": self._conversation.session_id}
-                    assembled = self._request_assembler.build(
-                        self._conversation.messages,
-                        tool_defs,
-                        extra,
-                    )
-                    request_body = assembled.body
-                    ai_messages = assembled.body["messages"]
-                    _sent_chars = assembled.chars
+                        # The budget is enforced *here*, at the one place a request
+                        # is assembled, rather than observed downstream after the
+                        # fact: an over-budget payload can no longer be built, so it
+                        # can no longer be sent. See ``request_assembly``.
+                        extra: dict[str, Any] = dict(request_params) if request_params else {}
+                        extra["routing"] = {"session_id": self._conversation.session_id}
+                        assembled = self._request_assembler.build(
+                            self._conversation.messages,
+                            tool_defs,
+                            extra,
+                        )
+                        request_body = assembled.body
+                        ai_messages = assembled.body["messages"]
+                        _sent_chars = assembled.chars
 
-                    logger.info("Sending request to AI via AiClient")
-                    logger.debug(f"Request messages count: {len(ai_messages)}, tools: {len(tool_defs)}")
+                        logger.info("Sending request to AI via AiClient")
+                        logger.debug(f"Request messages count: {len(ai_messages)}, tools: {len(tool_defs)}")
 
-                    finish_reason: str | None = None
-                    accumulated_tool_calls: dict[int, dict[str, Any]] = {}
-                    accumulated_content: str = ""
-                    accumulated_reasoning: str = ""
-                    _compaction_needed = False
-                    _compaction_prompt_tokens = 0
-                    _compaction_threshold = 0
-                    _usage_prompt_tokens = 0
+                        finish_reason: str | None = None
+                        accumulated_tool_calls: dict[int, dict[str, Any]] = {}
+                        accumulated_content: str = ""
+                        accumulated_reasoning: str = ""
+                        _compaction_needed = False
+                        _compaction_prompt_tokens = 0
+                        _compaction_threshold = 0
+                        _usage_prompt_tokens = 0
 
-                    async with aclosing(self._ai_client.stream(request_body)) as stream:
-                        async for delta in stream:
-                            logger.debug(
-                                f"AI delta: content={delta.content!r}, reasoning={delta.reasoning!r}, "
-                                f"finish_reason={delta.finish_reason!r}, "
-                                f"tools={len(delta.tool_calls) if delta.tool_calls else 0}"
-                            )
-                            if delta.content:
-                                yield AgentChunk(content=delta.content)
-                                accumulated_content += delta.content
-                            if delta.reasoning:
-                                # Compressed process slot: model thinking stays in
-                                # ``reasoning``; tag provenance for Channel/SPA filter.
-                                r_kind = delta.kind or REASONING_KIND_THINKING
-                                yield AgentChunk(reasoning=delta.reasoning, kind=r_kind)
-                                accumulated_reasoning += delta.reasoning
+                        async with aclosing(self._ai_client.stream(request_body)) as stream:
+                            async for delta in stream:
+                                logger.debug(
+                                    f"AI delta: content={delta.content!r}, reasoning={delta.reasoning!r}, "
+                                    f"finish_reason={delta.finish_reason!r}, "
+                                    f"tools={len(delta.tool_calls) if delta.tool_calls else 0}"
+                                )
+                                if delta.content:
+                                    yield AgentChunk(content=delta.content)
+                                    accumulated_content += delta.content
+                                if delta.reasoning:
+                                    # Compressed process slot: model thinking stays in
+                                    # ``reasoning``; tag provenance for Channel/SPA filter.
+                                    r_kind = delta.kind or REASONING_KIND_THINKING
+                                    yield AgentChunk(reasoning=delta.reasoning, kind=r_kind)
+                                    accumulated_reasoning += delta.reasoning
 
-                            if delta.usage_prompt_tokens:
-                                # Calibrate as soon as the number arrives, not at
-                                # the end of the round: the tool-calls branch
-                                # ``break``s out of this loop, so anything left
-                                # for afterwards would never run on the very
-                                # turns that spend the most context.
-                                _usage_prompt_tokens = delta.usage_prompt_tokens
-                                self._request_assembler.calibrate(_sent_chars, _usage_prompt_tokens)
+                                if delta.usage_prompt_tokens:
+                                    # Calibrate as soon as the number arrives, not at
+                                    # the end of the round: the tool-calls branch
+                                    # ``break``s out of this loop, so anything left
+                                    # for afterwards would never run on the very
+                                    # turns that spend the most context.
+                                    _usage_prompt_tokens = delta.usage_prompt_tokens
+                                    self._request_assembler.calibrate(_sent_chars, _usage_prompt_tokens)
 
-                            if delta.compaction_needed:
-                                _compaction_needed = True
-                                _compaction_prompt_tokens = delta.prompt_tokens
-                                _compaction_threshold = delta.compaction_threshold
-                                # The signal carries the AI layer's own ceiling.
-                                # Adopting it keeps the two layers on one number
-                                # even if only one of them was configured.
-                                self._request_assembler.adopt_threshold(delta.compaction_threshold)
+                                if delta.compaction_needed:
+                                    _compaction_needed = True
+                                    _compaction_prompt_tokens = delta.prompt_tokens
+                                    _compaction_threshold = delta.compaction_threshold
+                                    # The signal carries the AI layer's own ceiling.
+                                    # Adopting it keeps the two layers on one number
+                                    # even if only one of them was configured.
+                                    self._request_assembler.adopt_threshold(delta.compaction_threshold)
 
-                            if delta.finish_reason and not finish_reason:
-                                finish_reason = delta.finish_reason
+                                if delta.finish_reason and not finish_reason:
+                                    finish_reason = delta.finish_reason
 
-                            if delta.tool_calls:
-                                for tc in delta.tool_calls:
-                                    idx = tc.get("index", 0)
-                                    if idx not in accumulated_tool_calls:
-                                        accumulated_tool_calls[idx] = {
-                                            "id": tc.get("id", ""),
-                                            "type": "function",
-                                            "function": {"name": "", "arguments": ""},
-                                        }
-                                    acc = accumulated_tool_calls[idx]
-                                    if tc.get("id"):
-                                        acc["id"] = tc["id"]
-                                    func = tc.get("function", {})
-                                    if func.get("name"):
-                                        acc["function"]["name"] = func["name"]
-                                    if func.get("arguments"):
-                                        acc["function"]["arguments"] += func["arguments"]
+                                if delta.tool_calls:
+                                    for tc in delta.tool_calls:
+                                        idx = tc.get("index", 0)
+                                        if idx not in accumulated_tool_calls:
+                                            accumulated_tool_calls[idx] = {
+                                                "id": tc.get("id", ""),
+                                                "type": "function",
+                                                "function": {"name": "", "arguments": ""},
+                                            }
+                                        acc = accumulated_tool_calls[idx]
+                                        if tc.get("id"):
+                                            acc["id"] = tc["id"]
+                                        func = tc.get("function", {})
+                                        if func.get("name"):
+                                            acc["function"]["name"] = func["name"]
+                                        if func.get("arguments"):
+                                            acc["function"]["arguments"] += func["arguments"]
 
-                            if finish_reason == FINISH_REASON_ERROR:
-                                logger.warning("AI returned error, stopping without saving to history")
-                                raise AgentError(accumulated_content or accumulated_reasoning or "Unknown AI error")
+                                if finish_reason == FINISH_REASON_ERROR:
+                                    logger.warning("AI returned error, stopping without saving to history")
+                                    raise AgentError(accumulated_content or accumulated_reasoning or "Unknown AI error")
 
-                            if finish_reason == FINISH_REASON_TOOL_CALLS:
-                                logger.info("AI requested tool calls, processing...")
-                                ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
+                                if finish_reason == FINISH_REASON_TOOL_CALLS:
+                                    logger.info("AI requested tool calls, processing...")
+                                    ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
 
-                                assistant_msg: dict[str, Any] = {"role": "assistant"}
-                                if accumulated_content:
-                                    assistant_msg["content"] = accumulated_content
-                                if ordered_calls:
-                                    assistant_msg["tool_calls"] = ordered_calls
-                                if accumulated_reasoning:
-                                    assistant_msg["reasoning"] = accumulated_reasoning
-                                if accumulated_content or ordered_calls:
-                                    self._conversation.add(with_kind(assistant_msg, turn_response_kind))
+                                    assistant_msg: dict[str, Any] = {"role": "assistant"}
+                                    if accumulated_content:
+                                        assistant_msg["content"] = accumulated_content
+                                    if ordered_calls:
+                                        assistant_msg["tool_calls"] = ordered_calls
+                                    if accumulated_reasoning:
+                                        assistant_msg["reasoning"] = accumulated_reasoning
+                                    if accumulated_content or ordered_calls:
+                                        self._conversation.add(with_kind(assistant_msg, turn_response_kind))
 
-                                # pre-compute args + yield tool-call intent
-                                tool_args: list[tuple[int, dict[str, Any], str, dict[str, Any], str | None]] = []
-                                for i, tc in enumerate(ordered_calls):
-                                    func_info = tc.get("function", {})
-                                    func_name = func_info.get("name", "")
-                                    func_args_str = func_info.get("arguments", "{}")
-                                    argument_error: str | None = None
+                                    # pre-compute args + yield tool-call intent
+                                    tool_args: list[tuple[int, dict[str, Any], str, dict[str, Any], str | None]] = []
+                                    for i, tc in enumerate(ordered_calls):
+                                        func_info = tc.get("function", {})
+                                        func_name = func_info.get("name", "")
+                                        func_args_str = func_info.get("arguments", "{}")
+                                        argument_error: str | None = None
 
-                                    try:
-                                        args = json.loads(func_args_str)
-                                        if not isinstance(args, dict):
-                                            logger.warning(f"Tool arguments is not a dict: {type(args).__name__}")
-                                            argument_error = (
-                                                f"Error: Tool '{func_name}' arguments must be a JSON object"
-                                            )
-                                            args = {}
-                                    except json.JSONDecodeError, TypeError:
-                                        logger.warning(f"Failed to parse tool call arguments: {func_args_str[:1000]!r}")
-                                        argument_error = f"Error: Tool '{func_name}' arguments must be valid JSON"
-                                        args = {}
-
-                                    logger.info(f"Executing tool: {func_name!r}({args!r})")
-                                    yield AgentChunk(
-                                        reasoning=(f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"),
-                                        kind=REASONING_KIND_TOOL_CALL,
-                                    )
-                                    tool_args.append((i, tc, func_name, args, argument_error))
-
-                                # execute all tools concurrently
-                                results: list[str] = [""] * len(ordered_calls)
-
-                                async def _execute_one(idx: int, fn: str, a: dict[str, Any], r: list[str]) -> None:
-                                    func = self._tool_registry.get(fn)
-                                    if func is None:
-                                        r[idx] = f"Error: Tool '{fn}' not found"
-                                        logger.error(f"Tool not found: {fn!r}")
-                                    else:
-                                        # ** elapsed_ms 就记在结果行上 **: 工具在一个 task
-                                        # group 里**并发**执行, 所以「Executing tool」与
-                                        # 「Tool result」在日志里是交错的 —— 靠配对时间戳
-                                        # 反推单个工具的耗时会把别人的等待算进来, 并发度一
-                                        # 高就彻底错。测量点与被测区间同在一个函数里, 这个
-                                        # 数就不可能配错对。
-                                        #
-                                        # ``anyio.current_time`` 是单调时钟 (与 wall clock
-                                        # 无关), 校时不会让耗时变成负数。
-                                        started = anyio.current_time()
                                         try:
-                                            token = _CURRENT_TOOL_AI_SOCKET.set(self._ai_client.ai_socket)
-                                            try:
-                                                raw = await func(**a)
-                                            finally:
-                                                _CURRENT_TOOL_AI_SOCKET.reset(token)
-                                            r[idx] = str(raw)
-                                            elapsed_ms = int((anyio.current_time() - started) * 1000)
-                                            logger.info(
-                                                f"Tool result ({fn!r}) elapsed_ms={elapsed_ms}: {str(raw)[:1000]!r}"
+                                            args = json.loads(func_args_str)
+                                            if not isinstance(args, dict):
+                                                logger.warning(f"Tool arguments is not a dict: {type(args).__name__}")
+                                                argument_error = (
+                                                    f"Error: Tool '{func_name}' arguments must be a JSON object"
+                                                )
+                                                args = {}
+                                        except json.JSONDecodeError, TypeError:
+                                            logger.warning(
+                                                f"Failed to parse tool call arguments: {func_args_str[:1000]!r}"
                                             )
-                                        except Exception as e:
-                                            r[idx] = f"Error executing tool '{fn}': {e}"
-                                            # 失败也带耗时: 「工具卡了 30 秒才超时」与「立刻
-                                            # 报参数错」是两种完全不同的故障, 少了这个数就得
-                                            # 靠猜。
-                                            elapsed_ms = int((anyio.current_time() - started) * 1000)
-                                            logger.error(
-                                                f"Tool execution error ({fn!r}) elapsed_ms={elapsed_ms}: {e!r}"
-                                            )
+                                            argument_error = f"Error: Tool '{func_name}' arguments must be valid JSON"
+                                            args = {}
 
-                                # Refused calls are decided *before* the task
-                                # group so the tool never runs, and are tracked
-                                # by index so their outcome is not fed back into
-                                # the counters as if it were a real attempt.
-                                executed: list[tuple[int, str, dict[str, Any]]] = []
-                                async with anyio.create_task_group() as tg:
-                                    for i, _tc, func_name, args, argument_error in tool_args:
-                                        if not func_name:
-                                            results[i] = "Error: empty tool call name"
-                                        elif argument_error is not None:
-                                            results[i] = argument_error
-                                        elif (refusal := convergence.refusal_for(func_name, args)) is not None:
-                                            # Stated, not silent: the notice is
-                                            # the tool result the model reads.
-                                            results[i] = refusal
+                                        logger.info(f"Executing tool: {func_name!r}({args!r})")
+                                        yield AgentChunk(
+                                            reasoning=(
+                                                f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"
+                                            ),
+                                            kind=REASONING_KIND_TOOL_CALL,
+                                        )
+                                        tool_args.append((i, tc, func_name, args, argument_error))
+
+                                    # execute all tools concurrently
+                                    results: list[str] = [""] * len(ordered_calls)
+
+                                    async def _execute_one(idx: int, fn: str, a: dict[str, Any], r: list[str]) -> None:
+                                        func = self._tool_registry.get(fn)
+                                        if func is None:
+                                            r[idx] = f"Error: Tool '{fn}' not found"
+                                            logger.error(f"Tool not found: {fn!r}")
                                         else:
-                                            executed.append((i, func_name, args))
-                                            tg.start_soon(_execute_one, i, func_name, args, results)
+                                            # ** elapsed_ms 就记在结果行上 **: 工具在一个 task
+                                            # group 里**并发**执行, 所以「Executing tool」与
+                                            # 「Tool result」在日志里是交错的 —— 靠配对时间戳
+                                            # 反推单个工具的耗时会把别人的等待算进来, 并发度一
+                                            # 高就彻底错。测量点与被测区间同在一个函数里, 这个
+                                            # 数就不可能配错对。
+                                            #
+                                            # ``anyio.current_time`` 是单调时钟 (与 wall clock
+                                            # 无关), 校时不会让耗时变成负数。
+                                            started = anyio.current_time()
+                                            try:
+                                                token = _CURRENT_TOOL_AI_SOCKET.set(self._ai_client.ai_socket)
+                                                try:
+                                                    raw = await func(**a)
+                                                finally:
+                                                    _CURRENT_TOOL_AI_SOCKET.reset(token)
+                                                r[idx] = str(raw)
+                                                elapsed_ms = int((anyio.current_time() - started) * 1000)
+                                                logger.info(
+                                                    f"Tool result ({fn!r}) elapsed_ms={elapsed_ms}: {str(raw)[:1000]!r}"
+                                                )
+                                            except Exception as e:
+                                                r[idx] = f"Error executing tool '{fn}': {e}"
+                                                # 失败也带耗时: 「工具卡了 30 秒才超时」与「立刻
+                                                # 报参数错」是两种完全不同的故障, 少了这个数就得
+                                                # 靠猜。
+                                                elapsed_ms = int((anyio.current_time() - started) * 1000)
+                                                logger.error(
+                                                    f"Tool execution error ({fn!r}) elapsed_ms={elapsed_ms}: {e!r}"
+                                                )
 
-                                for i, func_name, args in executed:
-                                    convergence.record(func_name, args, results[i])
+                                    # Refused calls are decided *before* the task
+                                    # group so the tool never runs, and are tracked
+                                    # by index so their outcome is not fed back into
+                                    # the counters as if it were a real attempt.
+                                    executed: list[tuple[int, str, dict[str, Any]]] = []
+                                    async with anyio.create_task_group() as tg:
+                                        for i, _tc, func_name, args, argument_error in tool_args:
+                                            if not func_name:
+                                                results[i] = "Error: empty tool call name"
+                                            elif argument_error is not None:
+                                                results[i] = argument_error
+                                            elif (refusal := convergence.refusal_for(func_name, args)) is not None:
+                                                # Stated, not silent: the notice is
+                                                # the tool result the model reads.
+                                                results[i] = refusal
+                                            else:
+                                                executed.append((i, func_name, args))
+                                                tg.start_soon(_execute_one, i, func_name, args, results)
 
-                                # yield results in order, save
-                                for i, tc, func_name, _args, _argument_error in tool_args:
-                                    result = results[i]
-                                    yield AgentChunk(
-                                        reasoning=f"[Tool Result: {str(result)[:1000]}]",
-                                        kind=REASONING_KIND_TOOL_RESULT,
-                                    )
-                                    raw_result = str(result)
-                                    stored_result = truncate_tool_result(raw_result)
-                                    if len(stored_result) != len(raw_result):
-                                        logger.warning(
-                                            f"Tool result truncated ({func_name!r}): "
-                                            f"{len(raw_result)} -> {len(stored_result)} chars"
+                                    for i, func_name, args in executed:
+                                        convergence.record(func_name, args, results[i])
+
+                                    # yield results in order, save
+                                    for i, tc, func_name, _args, _argument_error in tool_args:
+                                        result = results[i]
+                                        yield AgentChunk(
+                                            reasoning=f"[Tool Result: {str(result)[:1000]}]",
+                                            kind=REASONING_KIND_TOOL_RESULT,
                                         )
-                                    self._conversation.add(
-                                        with_kind(
-                                            {
-                                                "role": "tool",
-                                                "tool_call_id": tc.get("id", ""),
-                                                "name": func_name,
-                                                "content": stored_result,
-                                            },
-                                            turn_response_kind,
+                                        raw_result = str(result)
+                                        stored_result = truncate_tool_result(raw_result)
+                                        if len(stored_result) != len(raw_result):
+                                            logger.warning(
+                                                f"Tool result truncated ({func_name!r}): "
+                                                f"{len(raw_result)} -> {len(stored_result)} chars"
+                                            )
+                                        self._conversation.add(
+                                            with_kind(
+                                                {
+                                                    "role": "tool",
+                                                    "tool_call_id": tc.get("id", ""),
+                                                    "name": func_name,
+                                                    "content": stored_result,
+                                                },
+                                                turn_response_kind,
+                                            )
                                         )
-                                    )
-                                await self._conversation.commit()
+                                    await self._conversation.commit()
 
-                                break
+                                    break
 
-                    if finish_reason == FINISH_REASON_STOP:
-                        logger.debug("AI finished with stop")
-                        logger.debug(
-                            f"Stop: content={len(accumulated_content)} chars, "
-                            f"reasoning={len(accumulated_reasoning)} chars"
-                        )
-                        assistant_msg: dict[str, Any] = {"role": "assistant"}
-                        if accumulated_content:
-                            assistant_msg["content"] = accumulated_content
-                        if accumulated_reasoning:
-                            assistant_msg["reasoning"] = accumulated_reasoning
-                        if accumulated_content:
-                            self._conversation.add(with_kind(assistant_msg, turn_response_kind))
-                        await self._conversation.commit()
-                        await self._system_prompt.run_after_turn(hook_message, assistant_msg)
-                        await self._schedule_registry.refresh()
-                        if _compaction_needed:
-                            await self._maybe_compact(_compaction_prompt_tokens, _compaction_threshold)
-                        _finish(
-                            AgentRunStatus.COMPLETED,
-                            AgentStopCause.MODEL_COMPLETED,
-                            finish_reason,
-                            model_turns,
-                        )
-                        return
-
-                    if finish_reason not in (
-                        FINISH_REASON_ERROR,
-                        FINISH_REASON_STOP,
-                        FINISH_REASON_TOOL_CALLS,
-                        FINISH_REASON_COMPACTION_NEEDED,
-                    ):
-                        logger.warning(
-                            f"Unexpected finish_reason={finish_reason!r}, "
-                            f"saving {len(accumulated_content)} chars of content and stopping"
-                        )
-                        if accumulated_content:
+                        if finish_reason == FINISH_REASON_STOP:
+                            logger.debug("AI finished with stop")
+                            logger.debug(
+                                f"Stop: content={len(accumulated_content)} chars, "
+                                f"reasoning={len(accumulated_reasoning)} chars"
+                            )
                             assistant_msg: dict[str, Any] = {"role": "assistant"}
-                            assistant_msg["content"] = accumulated_content
+                            if accumulated_content:
+                                assistant_msg["content"] = accumulated_content
                             if accumulated_reasoning:
                                 assistant_msg["reasoning"] = accumulated_reasoning
-                            self._conversation.add(with_kind(assistant_msg, turn_response_kind))
+                            if accumulated_content:
+                                self._conversation.add(with_kind(assistant_msg, turn_response_kind))
+                            committed = await self._conversation.commit()
+                            if committed:
+                                after_turn_message[_HISTORY_PROVENANCE_KEY]["assistant_line"] = len(
+                                    self._conversation.messages
+                                )
+                                await self._system_prompt.run_after_turn(after_turn_message, assistant_msg)
+                            else:
+                                logger.warning("Skipping system after-turn hook because history commit failed")
+                            await self._schedule_registry.refresh()
+                            if _compaction_needed:
+                                # Recorded, not performed: the reply is already
+                                # streamed and committed, so the summary is tail work
+                                # and must not be charged to the next message's wait.
+                                # ``turn_lock`` runs it once the lock is released.
+                                self._request_compaction(_compaction_prompt_tokens, _compaction_threshold)
+                            _finish(
+                                AgentRunStatus.COMPLETED,
+                                AgentStopCause.MODEL_COMPLETED,
+                                finish_reason,
+                                model_turns,
+                            )
+                            return
+
+                        if finish_reason not in (
+                            FINISH_REASON_ERROR,
+                            FINISH_REASON_STOP,
+                            FINISH_REASON_TOOL_CALLS,
+                            FINISH_REASON_COMPACTION_NEEDED,
+                        ):
+                            logger.warning(
+                                f"Unexpected finish_reason={finish_reason!r}, "
+                                f"saving {len(accumulated_content)} chars of content and stopping"
+                            )
+                            if accumulated_content:
+                                assistant_msg: dict[str, Any] = {"role": "assistant"}
+                                assistant_msg["content"] = accumulated_content
+                                if accumulated_reasoning:
+                                    assistant_msg["reasoning"] = accumulated_reasoning
+                                self._conversation.add(with_kind(assistant_msg, turn_response_kind))
+                            await self._conversation.commit()
+                            # No finish reason at all is a broken stream, not a model
+                            # decision — keep the two apart so triage can tell "the
+                            # model stopped early" from "we never heard why".
+                            _finish(
+                                AgentRunStatus.INCOMPLETE,
+                                AgentStopCause.MODEL_STOPPED
+                                if finish_reason is not None
+                                else AgentStopCause.INVALID_MODEL_STREAM,
+                                finish_reason,
+                                model_turns,
+                            )
+                            return
+
+                    else:
+                        logger.warning(
+                            f"Reached max tool rounds ({self._max_tool_rounds}), stopping; "
+                            f"stop_cause={AgentStopCause.AGENT_TURN_LIMIT}"
+                        )
+                        # The notice goes to the *user*, not just the log: with the
+                        # ceiling at DEFAULT_MAX_TOOL_ROUNDS this branch is reachable
+                        # in normal use, and the reply it terminates is by definition
+                        # half-finished (the model had just asked for more tools). A
+                        # bare marker here reads as a glitch; naming the cause and the
+                        # round count makes the stop explicable and actionable.
+                        notice = MAX_ROUNDS_NOTICE.format(rounds=self._max_tool_rounds)
+                        self._conversation.add(
+                            with_kind(
+                                {"role": "assistant", "content": notice},
+                                turn_response_kind,
+                            )
+                        )
                         await self._conversation.commit()
-                        # No finish reason at all is a broken stream, not a model
-                        # decision — keep the two apart so triage can tell "the
-                        # model stopped early" from "we never heard why".
+                        yield AgentChunk(content=notice)
+                        # Loop ran out of rounds; the last model turn asked for yet
+                        # more tools, so its finish reason is typically "tool_calls".
                         _finish(
                             AgentRunStatus.INCOMPLETE,
-                            AgentStopCause.MODEL_STOPPED
-                            if finish_reason is not None
-                            else AgentStopCause.INVALID_MODEL_STREAM,
+                            AgentStopCause.AGENT_TURN_LIMIT,
                             finish_reason,
                             model_turns,
                         )
-                        return
 
-                else:
-                    logger.warning(
-                        f"Reached max tool rounds ({self._max_tool_rounds}), stopping; "
-                        f"stop_cause={AgentStopCause.AGENT_TURN_LIMIT}"
-                    )
-                    # The notice goes to the *user*, not just the log: with the
-                    # ceiling at DEFAULT_MAX_TOOL_ROUNDS this branch is reachable
-                    # in normal use, and the reply it terminates is by definition
-                    # half-finished (the model had just asked for more tools). A
-                    # bare marker here reads as a glitch; naming the cause and the
-                    # round count makes the stop explicable and actionable.
-                    notice = MAX_ROUNDS_NOTICE.format(rounds=self._max_tool_rounds)
-                    self._conversation.add(
-                        with_kind(
-                            {"role": "assistant", "content": notice},
-                            turn_response_kind,
-                        )
-                    )
-                    await self._conversation.commit()
-                    yield AgentChunk(content=notice)
-                    # Loop ran out of rounds; the last model turn asked for yet
-                    # more tools, so its finish reason is typically "tool_calls".
-                    _finish(
-                        AgentRunStatus.INCOMPLETE,
-                        AgentStopCause.AGENT_TURN_LIMIT,
-                        finish_reason,
-                        model_turns,
-                    )
+                except AgentError:
+                    raise
+                except BaseException:
+                    # Cancel / disconnect / generator aclose: drop the early-
+                    # committed user (and any mid-turn tool rows). AgentError
+                    # keeps the user — that is the crash-retry baseline.
+                    await self._abandon_incomplete_turn(turn_start)
+                    raise
+
+    async def _abandon_incomplete_turn(self, turn_start: int) -> None:
+        """Drop an early-committed turn that never reached a terminal result.
+
+        Early ``commit()`` clears the conversation snapshot, so ``rollback()``
+        alone cannot remove the user row. Truncate back to ``turn_start`` and
+        commit so the next send does not still see the aborted question.
+        """
+        if len(self._conversation.messages) <= turn_start:
+            return
+        self._conversation.truncate_to(turn_start)
+        await self._conversation.commit()
+        logger.info(f"Abandoned incomplete turn; history truncated to {turn_start} message(s)")
+
+    def _request_compaction(self, prompt_tokens: int = 0, threshold: int = 0) -> None:
+        """Record that this turn saw the compaction signal.  Costs nothing.
+
+        Deliberately synchronous: it runs while the session lock is held, and the
+        whole point is that nothing expensive happens there.  The LLM call is
+        ``drain_pending_compaction``'s, after the lock is released.
+
+        A second signal before the drain runs simply overwrites the numbers —
+        they are only inputs to the cooldown gate, and the newer pair is the more
+        accurate description of how big the context now is.
+        """
+        self._pending_compaction = (prompt_tokens, threshold)
+
+    async def drain_pending_compaction(self) -> None:
+        """Perform a recorded compaction.  MUST be called with the lock released.
+
+        Calling this while holding ``self._lock`` would deadlock on the write
+        phase below. ``turn_lock`` is the only intended caller and gets the
+        ordering right by construction.
+
+        Concurrency: ``_compaction_in_flight`` makes a second entrant return
+        immediately rather than start a competing summary. Without it, two
+        overlapping drains would each summarize and each append a ``compacted``
+        row; the projection takes the *last* one, so the earlier LLM call would
+        be paid for and then discarded — and if their coverage boundaries
+        differed, the surviving row's boundary could cut away rows the surviving
+        summary never described. Skipping is safe because the signal is
+        level-triggered: if the context is still over the threshold, the next
+        turn raises it again.
+        """
+        pending = self._pending_compaction
+        if pending is None or self._compaction_in_flight:
+            return
+        self._pending_compaction = None
+        self._compaction_in_flight = True
+        try:
+            await self._maybe_compact(*pending)
+        finally:
+            self._compaction_in_flight = False
 
     async def _maybe_compact(self, prompt_tokens: int = 0, threshold: int = 0) -> None:
         """Invoke compact_history from system.py, insert compaction message
@@ -1030,6 +1176,12 @@ class SessionAgent:
         the threshold, every subsequent turn re-raises the signal, so without this
         gate the session would re-summarize constantly — each pass paying an LLM
         call and eroding older context.
+
+        Runs with the session lock **released**, so ``self._conversation.messages``
+        can grow underneath it.  Two consequences are handled explicitly: the
+        summary is generated from a snapshot taken up front, and the row it
+        writes records that snapshot's length so the projection cuts there rather
+        than at the row's own index.
         """
         compaction_fn = self._system_prompt.compaction_fn
         if compaction_fn is None:
@@ -1050,15 +1202,22 @@ class SessionAgent:
                         raise AgentError(delta.content or "Compaction AI call failed")
             return "".join(parts)
 
+        # Snapshot before the LLM call: the lock is not held, so the live list
+        # can grow while the summary is generated.  Everything below reasons
+        # about this snapshot, and ``covers`` records its length so the
+        # projection deletes exactly what was summarized.
+        snapshot = list(self._conversation.messages)
+        covers = len(snapshot)
+
         try:
-            summary = await compaction_fn(self._conversation.messages, complete_fn)
+            summary = await compaction_fn(snapshot, complete_fn)
             if not summary:
                 logger.debug("Compaction returned empty summary, skipping")
                 return
-            source_chars = _conversation_chars(self._conversation.messages)
+            source_chars = _conversation_chars(snapshot)
             if _summary_looks_hijacked(summary, source_chars):
                 logger.warning(f"Compaction summary looks hijacked ({len(summary)} chars), retrying once")
-                summary = await compaction_fn(self._conversation.messages, complete_fn)
+                summary = await compaction_fn(snapshot, complete_fn)
                 if not summary or _summary_looks_hijacked(summary, source_chars):
                     # Writing it would replace the whole conversation with the
                     # model's answer to the transcript, permanently.  Skipping
@@ -1067,8 +1226,25 @@ class SessionAgent:
                     return
             logger.info(f"Compaction summary generated ({len(summary)} chars)")
 
-            self._conversation.add({"role": "compacted", "content": summary, "kind": KIND_COMPACTED})
-            await self._conversation.commit()
+            # Re-take the lock for the write only.  A turn may have started
+            # during the LLM call and be mid-``add``/``commit``; interleaving
+            # with it would put this row inside that turn's snapshot window,
+            # where a rollback would take the summary down with it.  Cheap to
+            # hold: an append plus one commit, with no network in between.
+            #
+            # This is a pure append at the tail, so ``Conversation.save()`` takes
+            # its append path — the summary costs its own bytes, not a rewrite of
+            # the whole history.
+            async with self._lock:
+                self._conversation.add(
+                    {
+                        "role": "compacted",
+                        "content": summary,
+                        "kind": KIND_COMPACTED,
+                        COMPACTED_COVERS_KEY: covers,
+                    }
+                )
+                await self._conversation.commit()
             # Watermark only on success: a failed compaction did not shrink
             # anything, so the next signal should still be allowed through.
             self._tokens_at_last_compaction = prompt_tokens or None

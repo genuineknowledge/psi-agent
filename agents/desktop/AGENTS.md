@@ -61,20 +61,15 @@ ToB 没有安装器, 结构上不存在这个问题 —— 这一节只对 ToC �
 那份**不会被下一轮提示词读到** —— 它落在 workspace, 提示词读的是包根。想让自我改写真正
 生效, 得先决定 `SOUL.md` / `USER.md` 归哪个根, 那是一个行为变更, 不属于本步的分类落位。
 
-## Fusion Memory / 组织记忆: 本能力包没有
+## Fusion Memory
 
-跨会话长期记忆那组工具(ToB 版有 5 个)**不在**本能力包里 —— 本节刻意不写它们的名字,
-因为这段文字会整篇进系统提示词, 点名一个不存在的工具只会让模型去调它然后拿到报错。
+Desktop Fusion Memory is embedded in the existing Session process. Its durable scope is the normalized absolute workspace path, hashed as `workspace_id`: Sessions in that workspace share evidence, and other workspaces cannot read it. Files default to `<workspace>/.fusion-memory/evidence.jsonl` and `<workspace>/.fusion-memory/memory.sqlite3`.
 
-不带的原因: 那条链经 `_fusion_memory_mcp.py` → `_fusion_memory_membership.py` →
-`_feishu_impl.py` 落到飞书, 「谁的身份写记忆」是拿飞书 `open_id` 认的。桌面版没有飞书
-身份, 整条链落不了地。
+JSONL is the append-only authority for raw `evidence_span` and `scope_clear` records. SQLite contains only `evidence_spans`, `memory_items`, `summary_cards`, `ingest_checkpoints`, and the `fts_memory` virtual table, and can be rebuilt from JSONL. Ingestion keeps only ordinary chat user/assistant visible text confirmed by the successful module-level `system_after_turn` hook and never modifies psi-agent history. It deliberately does not guess or backfill older history rows that lack finish provenance.
 
-ToB 版 `AGENTS.md` 这一节列的 8 个 `FUSION_MEMORY_*` 变量与那套信任边界说明, 对本能力包
-一律不适用, 所以整节没有照抄 —— 要看原文去 `agents/feishu/AGENTS.md`。
+Do not add an MCP service, sidecar, watcher, daemon, subprocess, or model server. Model and SQLite errors must not fail a completed chat. `memory_search` returns raw evidence, `memory_answer_context` returns bounded evidence-grounded context, and `memory_add` promotes existing source IDs only.
 
-桌面版将来要做记忆, 是**另设计一套按本机用户认身份的**, 不是把这套搬过来。这一项列在
-`docs/superpowers/specs/2026-08-28-gateway-workspace-refactor-report.md` 第九章讨论项。
+Embedding and rerank read `DASHSCOPE_API_KEY` only. LLM extraction uses `FUSION_MEMORY_MODEL_*`, or the complete `PSI_AI_PROVIDER`/`PSI_AI_MODEL`/`PSI_AI_API_KEY`/`PSI_AI_BASE_URL` group. Credentials are launcher-managed and never persisted in memory files.
 
 ## Runtime display and service credentials
 
@@ -153,7 +148,7 @@ service tools:
 | `clarify` | Ask the user a question when you need clarification, feedback, or a decision before proceeding. Two modes: multiple choice (up to 4 `options` + an auto-appended "Other" free-text) or open-ended (omit `options`). Returns a formatted question block to show the user; then **end the turn** and wait — the reply arrives as the next message (the runtime has no blocking-input primitive). Pure-Python, no extra deps. |
 | `c_drive_cleanup` (`c_drive_cleanup.py` + `_c_drive_cleanup_impl.py`) | Windows C-drive `scan` / `status` / `clean` tool. The first scan in a Session requires confirmation; cleanup requires the user's affirmation and deletes only unchanged candidates from allowlisted temporary/cache locations. Large files, exact duplicates, and stale Downloads are report-only. See `skills/windows-c-drive-cleanup/SKILL.md` for the agent workflow. |
 
-本表比 ToB 版少 27 行: 飞书那批工具与依赖飞书身份的 `memory_*` / `assignment_*` /
+本表比 ToB 版少 27 行: 飞书那批工具与依赖飞书身份的组织记忆 / `assignment_*` /
 `handbook_onboarding_*` / `channel_event_check` 都不在本能力包里。原表在 `agents/feishu/AGENTS.md`。
 
 ## Skills (`skills/`)
@@ -215,8 +210,8 @@ service tools:
 - `flow` (`skills/fusion-flow-legacy/`) — immutable legacy Node/Fuclaw `.flow.ts` fallback.
 
 
-本节比 ToB 版少 43 个 skill 条目: 飞书域技能 (30 个 `feishu-*`) 与依赖飞书身份或
-`memory_*` 工具的合同 / 行政财务 / 组织记忆类技能都不在本能力包里。原文见
+本节比 ToB 版少 43 个 skill 条目: 飞书域技能 (30 个 `feishu-*`) 与依赖飞书身份的
+合同 / 行政财务 / 组织记忆类技能都不在本能力包里。原文见
 `agents/feishu/AGENTS.md`。
 ## Schedules (`schedules/`)
 
