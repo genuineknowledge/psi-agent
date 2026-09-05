@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from antlr4 import CommonTokenStream, InputStream, Token
@@ -33,6 +34,42 @@ class ParseContext:
 
     concepts: dict[str, Concept]
     operators: dict[str, Operator]
+    concept_supertypes: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def expand_concepts(self, names: tuple[str, ...]) -> tuple[Concept, ...]:
+        """Return declared concepts followed by their catalog supertypes.
+
+        FusionFlow source names only the most specific role.  Operator
+        signatures continue to use their stable base concepts, so the parser
+        materializes the catalog's transitive subtype closure on each
+        ``Constant`` while retaining the concrete role for later lowering.
+        """
+
+        expanded: list[Concept] = []
+        resolved: set[str] = set()
+        active: list[str] = []
+
+        def visit(name: str) -> None:
+            if name in active:
+                cycle = " -> ".join((*active[active.index(name) :], name))
+                raise ValueError(f"Cyclic FusionFlow concept hierarchy: {cycle}.")
+            if name in resolved:
+                return
+            try:
+                concept = self.concepts[name]
+            except KeyError:
+                raise ValueError(f"Unknown FusionFlow concept {name!r}.") from None
+
+            active.append(name)
+            expanded.append(concept)
+            resolved.add(name)
+            for supertype in self.concept_supertypes.get(name, ()):
+                visit(supertype)
+            active.pop()
+
+        for name in names:
+            visit(name)
+        return tuple(expanded)
 
 
 class _DiagnosticListener:
@@ -113,10 +150,8 @@ class _CoreIRVisitor:
 
     def visit_const_decl(self, context: Any) -> Constant:
         symbol = self._strip_quotes(context.constantName().getText())
-        concepts = tuple(
-            dict.fromkeys(
-                self._resolve_concept(concept.getText()) for concept in context.conceptNameList().conceptName()
-            )
+        concepts = self._context.expand_concepts(
+            tuple(dict.fromkeys(concept.getText() for concept in context.conceptNameList().conceptName()))
         )
         existing = self._constants.get(symbol)
         if existing is not None:
