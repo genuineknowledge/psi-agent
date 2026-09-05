@@ -1,0 +1,149 @@
+# 新人入职 SOP 清单（V3）—— 改这里不用改代码。
+#
+# window_days: SOP 的 Day 窗口天数（「Day 1-3」= 3）；截止日 = 入职日 + window_days - 1
+# dev_only:    true 表示仅研发适用（新人在入口卡上自选角色后生效）
+# url:         填了 url 的条目是**必读材料**，详情页渲染成链接 + 并排两个理解勾选
+#              （已完全理解 / 未完全理解），而不是笼统的「完成」——
+#              阅读类的验收是「读过并明确表示理解」，不是「已阅读」。
+#
+# 粒度取「混合」：第 0/1/2 件事是要动手做的，逐行为细拆；第 3-8 件事是制度类、
+# 只需知晓，每章一项「已阅读理解」。这样既漏不掉要办的事，清单也不至于太长。
+
+company_name: 真知
+card_title_prefix: 入职卡
+sop_doc_url: https://genuineknowledge.feishu.cn/docx/BFs4dmCxkohnMVxP47vc7Exonxf
+hr_notify_id: ou_f330a7e0874e53d4f3d1e08ba1d41853   # 罗霖（HRD）；留空则异常提醒不发
+hr_notify_id_type: open_id
+
+# 全组织共用**同一个**多维表格（总览表一人一行、明细表一人 28 行）。
+#
+# 刻意写在配置里而不是各人的 state 里: state 存在每个人自己的 workspace,
+# 于是每个新人首次发卡都会发现「我这儿没有 app_token」而各建一个新库 ——
+# 实测踩过, 16 个人建出 16 个互不相干的库, HR 打开只看得到最早那两个人,
+# 19:00 的异常提醒也只扫得到一个库。库坐标是全组织共享的事实, 不该按人存。
+#
+# 留空则首次发卡时自动建一个, 并把 id 打印在返回值里 —— 填回这里即可固定。
+shared_base:
+  app_token: VhCVbD84jagQQ6s9qQycrU9QnZO
+  overview_table_id: tbl1wCzB6WZRld7M
+  detail_table_id: tblzziivulX7jiFL
+
+modules:
+  # ── 第 0 件事：到办公室先搞定这些 ──────────────────────────
+  - name: 到岗准备
+    window_days: 1
+    items:
+      - id: wifi
+        title: 连上 WiFi
+        acceptance: 404 是 KCL_in_GX，412 是知识计算实验室；能上网即可
+      - id: campus_card
+        title: 领取校园卡
+        acceptance: 身份证+手机号+姓名发陈芃泽，南门师生活动中心 107 领；能进校
+      - id: desk
+        title: 确认工位与开门方式
+        acceptance: 问罗霖确认，知道「我的座位在哪」
+      - id: feishu_account
+        title: 登录飞书
+        acceptance: 能登录并看到团队群
+      - id: todo_account
+        title: 登录 TODO
+        acceptance: 能打开 TODO 库并能编辑
+
+  # ── 两处 🔗 必读材料 ───────────────────────────────────
+  - name: 必读材料
+    window_days: 3
+    items:
+      - id: read_culture
+        title: 企业文化总则
+        url: https://genuineknowledge.feishu.cn/wiki/JyCLwr60lineYBkkJmQcZf0PnTb
+      - id: read_todo_spec
+        title: TODO list 规范与填写范例
+        url: https://genuineknowledge.feishu.cn/wiki/KkJ8wstIZiD3Uck87PPcWgDdnmb
+
+  # ── 第 1 件事：搞清楚谁是谁 ────────────────────────────
+  - name: 搞清楚谁是谁
+    window_days: 1
+    items:
+      - id: know_leader
+        title: 确认小组负责人
+        acceptance: 派活的人，打你 70% 成果分
+      - id: know_mentor
+        title: 确认 Mentor
+        acceptance: 管你成长，打你 30% 价值观分；入职后会主动来找你
+      - id: know_managers
+        title: 知道管理负责人是张浩、周熠
+        acceptance: 决定谁留谁走
+      - id: know_functions
+        title: 记住三个行政对接人
+        acceptance: 人事找罗霖、钱和社保找郑伟丽、门禁合同找陈芃泽
+
+  # ── 第 2 件事：每天怎么干活 ────────────────────────────
+  - name: 每天怎么干活
+    window_days: 2
+    items:
+      - id: daily_rhythm
+        title: 记住每日节奏
+        acceptance: 9:00 打卡、10-11 点日会、12-14 午休、19:00 离岗前 Mentor 验收
+      - id: meeting_number
+        title: 存好日会会议号
+        acceptance: agent 日会 571-5278-7045；入口与本体日会 426-5469-9903
+      - id: weekly_rhythm
+        title: 记住每周节奏
+        acceptance: 周一三五 15:00 前更新 TODO；周六 15:00 线下周会 A450
+      - id: todo_writing
+        title: 会写合格的 TODO
+        acceptance: 做了什么 + 做到什么标准 + 截止时间，写「干成了什么」
+      - id: task_intake
+        title: 接任务当场确认三件事
+        acceptance: 做什么、什么标准、什么时候交；困难求助、风险立即上报
+
+  # ── 第 3-8 件事：制度类，每章一项「已阅读理解」──────────────
+  - name: 制度知晓
+    window_days: 3
+    items:
+      - id: understand_payroll
+        title: 工资和假期规则
+        acceptance: 每月 15 日发上月薪资；7:3 考核；系数 S/A/B/C/F
+      - id: understand_attendance
+        title: 考勤规则
+        acceptance: 每天两次卡；每周 2 次免审批补卡；异常 3 个工作日内申诉
+      - id: understand_positive_list
+        title: 正面行为清单
+        acceptance: 用户第一、实事求是等做到就能留下的行为
+      - id: understand_redlines
+        title: 六类红线
+        acceptance: 绝对不能碰的事，触碰即终止合作
+      - id: understand_probation
+        title: 怎么算「留下了」
+        acceptance: 2 周到 1 个月观察靠谱与向心力，通过后进战役大群
+      - id: sign_documents
+        title: 签完入职文件
+        acceptance: 信息登记表、协议/合同、保密协议、制度知悉确认书、两份签收页
+
+  # ── 第 2 件事末：研发专属 ──────────────────────────────
+  - name: 开发环境
+    window_days: 7
+    items:
+      - id: role_confirmed
+        title: 确认是否为技术人员
+        acceptance: 点一下即可，非研发无需完成下面几项
+      - id: read_dev_spec
+        title: 真知开发规范 SOP
+        url: https://genuineknowledge.feishu.cn/wiki/LXNYwmxaYiNcYDk9SHLc3xLEnAb
+        dev_only: true
+      - id: read_agents_md
+        title: 读项目的 AGENTS.md
+        acceptance: 用 code agent 读；链接问小组负责人要
+        dev_only: true
+      - id: setup_dev_env
+        title: 配好开发环境
+        acceptance: clone 代码能跑起来
+        dev_only: true
+      - id: git_workflow
+        title: 知道怎么提 PR、谁 Code Review
+        acceptance: 说得出流程与 reviewer
+        dev_only: true
+      - id: repo_access
+        title: 开通仓库权限
+        acceptance: 找小组负责人开通，能 push 代码
+        dev_only: true

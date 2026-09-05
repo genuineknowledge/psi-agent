@@ -19,12 +19,21 @@ import yaml
 from croniter import croniter
 
 
-def _schedules_dir() -> anyio.Path:
-    # Schedules are session/user data under the workspace (刻意为之: they belong to
-    # the user workspace, not the agent pack — the Gateway runs many Sessions in
-    # one process and Feishu gives each open_id its own, so putting them in the
-    # agent pack would make everyone share one set of scheduled tasks).
-    return _paths.resolve_workspace() / "schedules"
+def _schedules_dir(workspace: str = "") -> anyio.Path:
+    """定时任务目录; workspace 可显式指定。
+
+    Schedules are session/user data under the workspace (刻意为之: they belong to
+    the user workspace, not the agent pack — the Gateway runs many Sessions in one
+    process and Feishu gives each open_id its own, so putting them in the agent
+    pack would make everyone share one set of scheduled tasks).
+
+    workspace 必须能显式传入: HR 给新人发卡时本工具跑在 **HR 的** 会话里, 默认
+    resolve_workspace() 解析出的是 HR 的目录, 定时于是落在 HR 名下而不是新人名下。
+    后果不只是位置不对 —— 定时触发的工具会去读 HR 的 state, 同步报
+    「no block map for document ...」, 催办查的更是另一个人的多维表格。
+    实测踩过两轮: 每发一张新卡就多一个错落的定时, 手工纠正过的又会被新卡覆盖。
+    """
+    return _paths.resolve_workspace(workspace) / "schedules"
 
 
 def _validate_schedule_name(schedule_name: str) -> str | None:
@@ -267,6 +276,7 @@ async def schedule_manage(
     fire: str = "prompt",
     tool: str = "",
     tool_args: str = "",
+    workspace: str = "",
 ) -> str:
     """Create, patch, view, list, or delete workspace scheduled tasks.
 
@@ -310,12 +320,17 @@ async def schedule_manage(
         visibility: ``display`` (default; may surface in chat) or ``silent``.
         fire: ``prompt`` (LLM turn) or ``tool`` (direct tool call).
         tool: Tool name when ``fire=tool`` (e.g. ``feishu_message_send``).
+        workspace: Whose schedules to operate on. Empty = the calling session's own
+            (the normal case). Pass another user's workspace dir when creating a
+            schedule **on their behalf** — e.g. HR sending a new hire's onboarding
+            card must put that person's schedules under *their* workspace, not HR's,
+            or the fired tool reads HR's state and syncs the wrong person.
         tool_args: JSON object string of kwargs when ``fire=tool``.
 
     Returns:
         A result message, list output, or TASK.md content.
     """
-    schedules_dir = _schedules_dir()
+    schedules_dir = _schedules_dir(workspace)
     action = action.strip().lower()
 
     if err := _validate_visibility(visibility):

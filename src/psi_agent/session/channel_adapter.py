@@ -98,7 +98,12 @@ class ChannelAdapter:
 
     @staticmethod
     def _to_sse(chunk: AgentChunk) -> bytes:
-        delta = DeltaMessage(content=chunk.content, reasoning=chunk.reasoning, kind=chunk.kind)
+        delta = DeltaMessage(
+            content=chunk.content,
+            reasoning=chunk.reasoning,
+            kind=chunk.kind,
+            tool_name=chunk.tool_name,
+        )
         cc = ChatCompletionChunk(choices=[StreamChoice(index=0, delta=delta)])
         return cc.to_sse().encode()
 

@@ -39,10 +39,20 @@ class ReasoningChunk:
     ``kind`` is optional provenance inside the compressed ``reasoning`` wire
     slot (``thinking`` / ``tool_call`` / ``tool_result``). Missing kind keeps
     legacy behaviour (CLI dim-prints everything).
+
+    ``tool_name`` is the bare tool name for ``tool_call`` / ``tool_result``
+    kinds, carried **beside** ``text`` rather than parsed out of it. ``text`` is
+    ``[Tool Call: name({...})]`` with user arguments interpolated, so a regex
+    over it has to survive nested brackets and quotes inside those arguments —
+    and the one consumer that needs the name (the Feishu status line) uses it as
+    a whitelist key, where a mis-parse silently degrades to the generic
+    fallback. ``None`` for every other kind, and for streams produced before
+    this field existed.
     """
 
     text: str
     kind: str | None = None
+    tool_name: str | None = None
 
 
 InputChunk = FileChunk | TextChunk

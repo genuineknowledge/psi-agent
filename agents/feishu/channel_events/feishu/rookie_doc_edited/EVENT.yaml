@@ -1,0 +1,12 @@
+# Agent-package: 新人入职清单文档被编辑 → 同步勾选状态回明细表。
+name: haitun.rookie.doc_edited
+source: feishu
+kind: platform_map
+platform_event: drive.file.edit_v1
+description: >
+  新人在自己的入职清单文档里勾了项。事件只说「这个文档被编辑了」, 不说哪一项被勾,
+  所以 rookie_sop_sync_doc 收到后会整份读回来对比。
+  选事件而非轮询是量级差: 10 个新人按 5 分钟轮询是每天 2880 次调用,
+  事件驱动只有实际勾选那几十次。
+  文档需先调 POST /open-apis/drive/v1/files/:token/subscribe 订阅
+  (rookie_sop_card_send 建文档时已自动订阅)。

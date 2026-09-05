@@ -13,6 +13,36 @@ from psi_agent.channel._errors import ChannelError
 from psi_agent.channel._types import FileChunk, ReasoningChunk, TextChunk
 
 
+def test_buffer_key_round_trips_tool_name():
+    """``tool_name`` 必须能穿过 ``StreamBuffer`` 的 ``(kind, text)`` 二元组。
+
+    缓冲区只认一个字符串 key, 所以工具名得编进 key 再由 ``_to_chunk`` 还原。
+    这两个函数是一对: 只改一边就会静默丢名字或把名字当成 kind。
+
+    纯函数判据 —— 与走 unix socket 的用例分开, 那些在 Windows 上恒失败
+    (asyncio 子进程), 判据落在那里等于没有判据。
+    """
+    key = ChannelCore._buffer_key("tool_call", "feishu_doc_read")
+    chunk = ChannelCore._to_chunk(key, "[Tool Call: feishu_doc_read({})]")
+    assert isinstance(chunk, ReasoningChunk)
+    assert chunk.kind == "tool_call"
+    assert chunk.tool_name == "feishu_doc_read"
+
+
+def test_buffer_key_separates_two_tools():
+    """两个不同工具不能落进同一个桶 —— 否则并发调用会被合并成一条, 状态行少一个。"""
+    assert ChannelCore._buffer_key("tool_call", "read") != ChannelCore._buffer_key("tool_call", "bash")
+
+
+def test_to_chunk_tolerates_stream_without_tool_name():
+    """旧流(没有 ``tool_name``)必须照旧工作, 且 ``tool_name`` 为 None。"""
+    chunk = ChannelCore._to_chunk("reasoning:thinking", "hmm")
+    assert isinstance(chunk, ReasoningChunk)
+    assert chunk.kind == "thinking"
+    assert chunk.tool_name is None
+    assert ChannelCore._to_chunk("text", "hi") == TextChunk("hi")
+
+
 @pytest.mark.anyio
 async def test_channel_core_connect_unix(tmp_path):
     """Core can connect to a Unix socket server."""

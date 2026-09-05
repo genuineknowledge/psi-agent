@@ -35,12 +35,33 @@ class ChannelCore:
     """
 
     @staticmethod
+    def _buffer_key(provenance: str, tool_name: str) -> str:
+        """Build the ``StreamBuffer`` bucket key for one reasoning provenance.
+
+        Paired with :meth:`_to_chunk` — the buffer holds a single string key per
+        bucket, so the tool name has to travel *inside* that key and be split
+        back out on the way to a ``ReasoningChunk``. Changing one side alone
+        silently drops the name or mistakes it for the provenance.
+
+        The tool name is part of the key, not just cargo, because
+        ``StreamBuffer`` merges consecutive text sharing a key: tools run
+        concurrently, so two ``tool_call`` deltas arrive back to back, and a
+        key of ``reasoning:tool_call`` alone would fuse them into one block
+        whose single ``tool_name`` could only name one of the two.
+        """
+        return f"reasoning:{provenance}" + (f"\x1f{tool_name}" if tool_name else "")
+
+    @staticmethod
     def _to_chunk(kind: str, text: str) -> OutputChunk:
-        # Buffer keys: "text" | "reasoning" | "reasoning:<provenance>".
+        # Buffer keys: "text" | "reasoning" | "reasoning:<provenance>"
+        # | "reasoning:<provenance>\x1f<tool_name>".
         if kind == "text" or not kind.startswith("reasoning"):
             return TextChunk(text)
         provenance = kind.split(":", 1)[1] if ":" in kind else None
-        return ReasoningChunk(text=text, kind=provenance or None)
+        tool_name = None
+        if provenance and "\x1f" in provenance:
+            provenance, tool_name = provenance.split("\x1f", 1)
+        return ReasoningChunk(text=text, kind=provenance or None, tool_name=tool_name or None)
 
     @property
     def _byte_source(self) -> str:
@@ -136,9 +157,11 @@ class ChannelCore:
                     reasoning_text = delta.get("reasoning") or ""
                     content_text = delta.get("content") or ""
                     raw_kind = delta.get("kind")
+                    raw_tool = delta.get("tool_name")
                     reasoning_buf_kind = "reasoning"
                     if reasoning_text and isinstance(raw_kind, str) and raw_kind.strip():
-                        reasoning_buf_kind = f"reasoning:{raw_kind.strip()}"
+                        tool_name = raw_tool.strip() if isinstance(raw_tool, str) else ""
+                        reasoning_buf_kind = self._buffer_key(raw_kind.strip(), tool_name)
 
                     for incoming_kind, text in (
                         (reasoning_buf_kind, reasoning_text),

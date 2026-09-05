@@ -65,6 +65,15 @@ class DeltaMessage:
     role: str | None = None
     reasoning: str | None = None
     kind: str | None = None
+    tool_name: str | None = None
+    """Bare tool name accompanying a ``tool_call`` / ``tool_result`` ``reasoning``.
+
+    An extra field rather than something the consumer digs out of ``reasoning``:
+    that text embeds JSON-dumped arguments, so parsing it is brittle in exactly
+    the cases that matter.  Omitted from ``to_dict`` when unset, so a Channel
+    reading an older Session sees no key at all instead of a null it would have
+    to special-case.
+    """
     tool_calls: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -77,6 +86,8 @@ class DeltaMessage:
             d["reasoning"] = self.reasoning
         if self.kind is not None:
             d["kind"] = self.kind
+        if self.tool_name is not None:
+            d["tool_name"] = self.tool_name
         if self.tool_calls is not None:
             d["tool_calls"] = self.tool_calls
         return d

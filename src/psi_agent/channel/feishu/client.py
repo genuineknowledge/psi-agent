@@ -35,8 +35,10 @@ from psi_agent.channel._errors import ChannelError
 from psi_agent.channel._file_bytes import OutboundFileError, fetch_file_bytes
 from psi_agent.channel._types import FileChunk, InputChunk, ReasoningChunk, TextChunk
 from psi_agent.channel.feishu._agent_events import register_feishu_agent_events
+from psi_agent.protocol import REASONING_KIND_TOOL_CALL, REASONING_KIND_TOOL_RESULT
 
 from ._card_action import CardActionBatcher, handle_card_action
+from ._tool_status import ToolStatusTracker
 
 _EMOJI_PROCESSING = "Typing"
 _EMOJI_FAILED = "CrossMark"
@@ -513,11 +515,83 @@ async def _stream_reply(
     suppress_silent_reply: bool = False,
     sender_open_id: str | None = None,
 ) -> None:
-    """Stream agent text and files into one Feishu chat."""
+    """Stream agent text and files into one Feishu chat.
+
+    **Tool-progress status line.** A tool call can run for tens of seconds, during
+    which the card used to sit on the SDK's hardcoded ``Thinking...`` — users read
+    that as a dead bot and re-sent. One line at the top of the card names the tool
+    in Chinese and is rewritten in place at each tool boundary; the first body text
+    erases it. See :mod:`._tool_status` for why it is one line and not a checklist,
+    and why the tool name is whitelisted rather than formatted.
+
+    The card has exactly one markdown element (one ``_content`` string in
+    ``MarkdownStreamController``), so status line and body share it: the body goes
+    through ``append`` (keeping the SDK's 100ms/50char throttle), and the status
+    line through ``set_content(status + body_so_far)``. That means this function
+    has to keep its own copy of "the body half" — hence ``body``.
+
+    ``set_content`` forces an immediate HTTP flush, so it is only ever called at a
+    tool boundary (a handful per turn), never per character.
+
+    ``append`` runs ``merge_streaming_text(prev, chunk)``, which drops the longest
+    suffix of ``prev`` that prefixes ``chunk`` — with a status line sitting in
+    ``prev`` that dedup would eat the first characters of the reply. So the status
+    line is cleared via ``set_content(body)`` *before* the first body ``append``,
+    and ``prev`` is only ever body text, exactly as it was before this change.
+    """
 
     async def _produce(stream: Any) -> None:
         silent_candidate = ""
         checking_silent_reply = suppress_silent_reply
+        tools = ToolStatusTracker()
+        body = ""
+        status_shown = False
+
+        async def render_status(line: str | None) -> None:
+            """Rewrite the status line in place; ``None`` erases it.
+
+            Showing a line no-ops while ``checking_silent_reply`` is on. Two
+            reasons, and both are regressions on their own: ``set_content``
+            triggers ``_ensure_started``, so a silent turn (button click answered
+            with ``NO_REPLY``) would pop a card reading "正在整理待办…" where today
+            nothing appears at all; and the body half of ``_content`` must stay
+            empty while the reply is still being sniffed, or a suppressed
+            ``NO_REPLY`` would already be on the card by the time we recognise it.
+
+            Nothing is back-filled once the sniff clears: by then the tools have
+            finished (their results are what re-arms the check), so the status
+            would name work that is already done. The turn just renders body-only,
+            which is what it did before this change.
+
+            **Erasing is not gated**, and that asymmetry is load-bearing. A
+            visible status line means a card already exists and ``body`` holds
+            text already sent, so writing ``body`` neither creates a card nor
+            leaks an unsniffed candidate. Gating it stranded the line forever in
+            the one turn that mixes both paths: real reply → tool call → the
+            ``tool_result`` re-arms the check → the erase silently did nothing and
+            the card kept "⏳ 正在整理待办…" above the finished answer.
+            """
+            nonlocal status_shown
+            if line is None:
+                if not status_shown:
+                    return
+                status_shown = False
+                await stream.set_content(body)
+                logger.debug("status line cleared")
+                return
+            if checking_silent_reply:
+                return
+            status_shown = True
+            await stream.set_content(f"{line}\n\n{body}" if body else line)
+            logger.debug(f"status line: {line!r}")
+
+        async def append_body(text: str) -> None:
+            """Append body text, erasing the status line first if one is showing."""
+            nonlocal body
+            await render_status(None)
+            body += text
+            await stream.append(text)
+            logger.debug(f"stream.append ({len(text)} chars)")
 
         async def flush_silent_candidate() -> None:
             nonlocal silent_candidate
@@ -531,8 +605,7 @@ async def _stream_reply(
             elif normalized == _SILENT_REPLY_TOKEN:
                 logger.debug("suppressed standalone NO_REPLY from Feishu card action")
             else:
-                await stream.append(candidate)
-                logger.debug(f"stream.append ({len(candidate)} chars)")
+                await append_body(candidate)
 
         try:
             async with aclosing(core.post(chunks)) as gen:
@@ -546,12 +619,19 @@ async def _stream_reply(
                             await flush_silent_candidate()
                             checking_silent_reply = False
                         else:
-                            await stream.append(chunk.text)
-                            logger.debug(f"stream.append ({len(chunk.text)} chars)")
+                            await append_body(chunk.text)
                     elif isinstance(chunk, ReasoningChunk):
+                        # 两件事读同一个 chunk, 各走各的 —— 抑制那半段一个字没动。
+                        # ``tool_result`` 早已被征用为「上一次卡片动作办完了、下一段
+                        # 重新开始攒」的时钟信号; 状态行只是**另外**读一遍同一个
+                        # chunk, 不碰 checking_silent_reply 也不碰 silent_candidate。
                         if suppress_silent_reply and chunk.kind == "tool_result":
                             await flush_silent_candidate()
                             checking_silent_reply = True
+                        if chunk.kind == REASONING_KIND_TOOL_CALL:
+                            await render_status(tools.on_tool_call(chunk.tool_name))
+                        elif chunk.kind == REASONING_KIND_TOOL_RESULT:
+                            await render_status(tools.on_tool_result(chunk.tool_name))
                     elif isinstance(chunk, FileChunk):
                         logger.debug(f"received FileChunk ({chunk.path})")
                         # 私密区守卫: 只有主人自己收得到自己的私密文件, 其他人一律拦。
