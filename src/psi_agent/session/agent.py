@@ -914,6 +914,7 @@ class SessionAgent:
                                                 f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"
                                             ),
                                             kind=REASONING_KIND_TOOL_CALL,
+                                            tool_name=func_name,
                                         )
                                         tool_args.append((i, tc, func_name, args, argument_error))
 
@@ -985,6 +986,7 @@ class SessionAgent:
                                         yield AgentChunk(
                                             reasoning=f"[Tool Result: {str(result)[:1000]}]",
                                             kind=REASONING_KIND_TOOL_RESULT,
+                                            tool_name=func_name,
                                         )
                                         raw_result = str(result)
                                         stored_result = truncate_tool_result(raw_result)

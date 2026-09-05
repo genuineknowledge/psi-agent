@@ -174,11 +174,17 @@ class AgentChunk:
     ``tool_result``). Tool progress remains in the ``reasoning`` slot on purpose
     (compressed process stream for OpenAI-shaped Session↔AI reuse); UI filters
     by ``kind`` instead of splitting the wire field.
+
+    ``tool_name`` names the tool for the two tool kinds. It is the machine-
+    readable half of what ``reasoning`` says in prose: the text carries the
+    arguments (and so is unsafe to show a user and brittle to parse), while a UI
+    that wants to say "reading a doc" needs only the name.
     """
 
     content: str | None = None
     reasoning: str | None = None
     kind: str | None = None
+    tool_name: str | None = None
 
 
 @dataclass

@@ -33,6 +33,18 @@ def test_reasoning_chunk_construction():
     assert rc2.kind == "tool_call"
 
 
+def test_reasoning_chunk_carries_structured_tool_name():
+    """工具名必须是独立字段, 不能靠正则从 ``text`` 里抠。
+
+    ``text`` 是 ``[Tool Call: name({...})]``, 参数里可能带括号和引号, 解析是脆的;
+    而渲染侧要拿工具名去查白名单别名, 抠错就会 fallback 到兜底文案。
+    """
+    rc = ReasoningChunk("[Tool Call: read({})]", kind="tool_call", tool_name="read")
+    assert rc.tool_name == "read"
+    # 旧流没有该字段, 缺省必须是 None 而不是空串: 空串会被当成「有名字但为空」。
+    assert ReasoningChunk("x", kind="tool_call").tool_name is None
+
+
 def test_reasoning_chunk_union_isinstance():
     rc = ReasoningChunk("hmm")
     tc = TextChunk("hi")

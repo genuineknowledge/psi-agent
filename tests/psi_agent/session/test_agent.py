@@ -423,6 +423,13 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
         content = [c.content for c in chunks if c.content]
         assert any("sunny" in (c or "") for c in content)
 
+        # 两个工具 chunk 都要带结构化工具名 —— 下游(飞书状态行)拿它查白名单别名,
+        # 少了任一个, 那一段就退化成通用兜底文案。
+        assert [(c.kind, c.tool_name) for c in chunks if c.kind in {"tool_call", "tool_result"}] == [
+            ("tool_call", "get_weather"),
+            ("tool_result", "get_weather"),
+        ]
+
         assert request_count >= 2
     finally:
         await mock_server.cleanup()

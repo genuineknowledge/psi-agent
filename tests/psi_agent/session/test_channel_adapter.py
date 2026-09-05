@@ -48,6 +48,28 @@ async def test_write_streams_agent_chunks():
 
 
 @pytest.mark.anyio
+async def test_write_carries_tool_name_onto_the_wire():
+    """``AgentChunk.tool_name`` 必须写进 SSE delta。
+
+    这是 Session→Channel 的唯一出口: 这里漏字段, 飞书侧就永远收不到结构化工具名,
+    只能回退到解析 reasoning 文本 —— 而那正是本改动要消灭的脆解析。
+    """
+
+    async def chunks() -> AsyncGenerator[AgentChunk]:
+        yield AgentChunk(reasoning="[Tool Call: feishu_doc_read({})]", kind="tool_call", tool_name="feishu_doc_read")
+
+    response = _MockResponse()
+    await ChannelAdapter.write(response, chunks())
+
+    payloads = [
+        json.loads(line[len("data: ") :])
+        for line in b"".join(response.written).decode().splitlines()
+        if line.startswith("data: ") and not line.endswith("[DONE]")
+    ]
+    assert [p["choices"][0]["delta"].get("tool_name") for p in payloads] == ["feishu_doc_read"]
+
+
+@pytest.mark.anyio
 async def test_write_catches_agent_error():
     """write() catches AgentError and writes error chunk."""
 

@@ -131,6 +131,20 @@ def test_delta_message_omits_unset_fields() -> None:
     assert DeltaMessage().to_dict() == {}
 
 
+def test_delta_message_serializes_tool_name() -> None:
+    """``tool_name`` 必须上线; 漏了它 Channel 侧永远收不到结构化工具名。
+
+    与其余字段同样按「未设不出现」处理 —— 旧消费者见到多出的 ``tool_name: null``
+    会把它当成「工具名为空」。
+    """
+    assert DeltaMessage(reasoning="[Tool Call: read({})]", kind="tool_call", tool_name="read").to_dict() == {
+        "reasoning": "[Tool Call: read({})]",
+        "kind": "tool_call",
+        "tool_name": "read",
+    }
+    assert "tool_name" not in DeltaMessage(content="x").to_dict()
+
+
 def test_stream_choice_omits_null_finish_reason() -> None:
     assert StreamChoice(delta=DeltaMessage(content="x")).to_dict() == {
         "index": 0,
