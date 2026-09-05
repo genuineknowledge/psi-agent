@@ -572,10 +572,11 @@ ambiguous.\
 SKILLS_HEADER_TEMPLATE = """\
 ## Skills
 Scan <available_skills>. If one clearly applies, read its SKILL.md with `{read_tool}`, then follow it.
+**Decision-grade gate (hard — before any schedule/plan advice):** if the user message (or obvious context) involves changing an existing plan, pulling in other roles for collaboration, asking for extra resources/budget/machines, cross-person decisions, or 「能不能自己定 / 要不要写方案 / 算不算中事」, you **MUST** `read` `skills/proposal-need-remind/SKILL.md` first and follow its 大事/中事/小事 remind. Do **not** answer with only a project-management checklist and skip the skill. Soft-remind only (skippable); never block the turn. This gate overrides "if none clearly apply, read none" for those signals.
 **Before recommending 3+ products, brands, or parallel options, read `skills/structured-output-tables/SKILL.md`.**
 **Before `skill_manage(create)`:** read `skills/skill-authoring-when/SKILL.md` — always `list` first; if a similar skill exists, `patch` it (do not create a parallel skill). How to write: `skills/skill-authoring-how/SKILL.md`. This gate applies before self-evolution too.
-If several apply, choose the most specific. If none clearly apply, read none.
-One skill up front max. Never guess/fabricate skill paths.
+If several apply, choose the most specific. If none clearly apply, read none (except the decision-grade gate above).
+One skill up front max (when the decision-grade gate fires, that skill is the one). Never guess/fabricate skill paths.
 External API writes: batch when safe, avoid tight loops, respect 429/Retry-After.\
 """
 
