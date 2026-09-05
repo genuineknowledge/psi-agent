@@ -11,16 +11,16 @@ authors = [{name = "Hao Zhang", email = "hzhangxyz@outlook.com"}]
 license = {text = "MIT"}
 requires-python = ">=3.14"
 dependencies = [
-    "anyio>=4.14.2",
-    "aiohttp>=3.14.1",
+    "anyio>=4.15.1",
+    "aiohttp>=3.14.3",
     # 直接依赖而非传递依赖: psi_agent._tls 自己 import 它。冻结包在 macOS 上没有
     # 系统信任库可读, 根证书只能由它提供。
-    "certifi>=2026.6.17",
+    "certifi>=2026.7.22",
     "loguru>=0.7.3",
-    "tyro>=1.0.15",
+    "tyro>=1.0.16",
     "croniter>=6.2.4",
     "pyyaml>=6.0.3",
-    "prompt-toolkit>=3.0.52",
+    "prompt-toolkit>=3.0.53",
     "rich>=15.0.0",
     # 上界是承重的, 且必须卡到 minor: any-llm 会在 minor 版本里改**请求语义**。
     # 实测 1.21.0 的 providers/deepseek/deepseek.py 没有 thinking 分支, 1.26.0
@@ -34,10 +34,10 @@ dependencies = [
     # 下界同时抬到 1.26.0 对齐生产: 之前 lock 是 1.21.0 而生产镜像跑 1.26.0,
     # 本机与线上不在同一条 minor 线上 —— 这正是该变更没被本机测试发现的原因。
     "any-llm-sdk>=1.26.0,<1.27.0",
-    "json-repair>=0.63.0,<0.64",
-    "platformdirs>=4.10.1",
-    "keyring>=25.0.0",
-    "lark-channel-sdk>=1.2.0",
+    "json-repair>=0.63.4,<0.64",
+    "platformdirs>=4.11.7",
+    "keyring>=25.7.0",
+    "lark-channel-sdk>=1.4.0",
     "python-telegram-bot[socks]>=22.8",
     # Upper bound is load-bearing: mcp 2.0 removed the lowlevel
     # ``@server.list_tools()`` / ``@server.call_tool()`` decorators that
@@ -45,20 +45,20 @@ dependencies = [
     # makes ``import serper_mcp_server`` raise AttributeError and takes every
     # search down. Upstream recommends pinning below 2 until callers migrate. We
     # only use mcp's *client* APIs, so 1.x costs us nothing.
-    "mcp>=1.28.1,<2.0.0",
+    "mcp>=1.29.1,<2.0.0",
     "serper-mcp-server>=0.0.10",
     "pystray>=0.19.5",
     "pillow>=12.3.0",
-    "pymupdf>=1.28.0",
+    "pymupdf>=1.28.2",
     "python-docx>=1.2.0",
     "python-pptx>=1.0.2",
     "openpyxl>=3.1.5",
-    "readability-lxml>=0.8.4.1",
+    "readability-lxml>=0.9",
     "markdownify>=1.2.3",
     "pywebview>=6.2.1",
     "pygount>=3.2.0",
-    "hikari>=2.5.0",
-    "matplotlib>=3.11.0",
+    "hikari>=2.6.0",
+    "matplotlib>=3.11.1",
     "antlr4-python3-runtime>=4.13.2,<4.14",
 ]
 
@@ -67,8 +67,8 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.15.22",
-    "ty>=0.0.61",
+    "ruff>=0.16.6",
+    "ty>=0.0.78",
 ]
 
 [project.scripts]
