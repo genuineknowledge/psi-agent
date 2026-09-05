@@ -59,6 +59,7 @@
       <xs:attribute name="max" type="xs:positiveInteger" default="5"/>
       <xs:attribute name="rounds" type="xs:positiveInteger" default="20"/>
       <xs:attribute name="bind-record" type="xs:string" use="optional"/>
+      <xs:attribute name="bind-field" type="xs:string" use="optional"/>
       <xs:attribute name="selected" type="xs:positiveInteger" use="optional"/>
       <xs:attribute name="action" type="xs:string" use="optional"/>
     </xs:complexType>
@@ -70,6 +71,9 @@
       <xs:attribute name="placeholder" type="xs:string" use="optional"/>
       <xs:attribute name="bind-record" type="xs:string" use="optional"/>
       <xs:attribute name="action" type="xs:string" use="optional"/>
+      <!-- 确认弹窗文案:缺省按「评语」措辞;审批卡等卡型可覆盖,避免复用评价卡文案 -->
+      <xs:attribute name="confirm-title" type="xs:string" use="optional"/>
+      <xs:attribute name="confirm-text" type="xs:string" use="optional"/>
     </xs:complexType>
   </xs:element>
 
@@ -80,6 +84,9 @@
       <xs:attribute name="type" type="ButtonType" default="default"/>
       <xs:attribute name="action" type="xs:string" use="required"/>
       <xs:attribute name="bind-record" type="xs:string" use="optional"/>
+      <!-- confirm:声明即点击弹二次确认(弹窗正文);标题可选 confirm-title -->
+      <xs:attribute name="confirm" type="xs:string" use="optional"/>
+      <xs:attribute name="confirm-title" type="xs:string" use="optional"/>
     </xs:complexType>
   </xs:element>
 
@@ -92,7 +99,8 @@
     </xs:complexType>
   </xs:element>
 
-  <!-- 待办行:list 的一行;done="true" 的行发卡时即只读(无按钮) -->
+  <!-- 待办行:list 的一行;done="true" 的行发卡时即只读(无按钮);
+       link 为显式跳转链接(优先于 task-guid 生成的 applink) -->
   <xs:element name="row">
     <xs:complexType>
       <xs:attribute name="title" type="xs:string" use="required"/>
@@ -100,6 +108,7 @@
       <xs:attribute name="detail" type="xs:string" use="optional"/>
       <xs:attribute name="shape" type="xs:string" use="optional"/>
       <xs:attribute name="bind-record" type="xs:string" use="optional"/>
+      <xs:attribute name="link" type="xs:string" use="optional"/>
       <xs:attribute name="done" type="xs:boolean" default="false"/>
     </xs:complexType>
   </xs:element>
@@ -115,6 +124,77 @@
     </xs:complexType>
   </xs:element>
 
+  <!-- 分割线:纯排版,无属性(飞书 2.0 原生 hr,实卡验证通过) -->
+
+  <!-- 表格列:table 的子元素,field=多维表格字段名,label=显示标签(缺省=field),
+       width 是飞书 column 宽度(权重数字 1-5 或 auto)。 -->
+  <xs:element name="col">
+    <xs:complexType>
+      <xs:attribute name="field" type="xs:string" use="required"/>
+      <xs:attribute name="label" type="xs:string" use="optional"/>
+      <xs:attribute name="width" type="xs:string" default="auto"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- 多维表格数据块:把调用方预取的行(注入 context[source])渲染成卡片块。
+       引擎不做 I/O,行数据由 search_bitable_records 预取后经 context 注入。
+       单屏截断 max_rows(默认 10)行,超出时表格末尾追加 more 提示行
+       ({n} 替换为总行数)。空表渲染 empty 文案。 -->
+  <xs:element name="table">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="col" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="source" type="xs:string" default="rows"/>
+      <xs:attribute name="empty" type="xs:string" default="暂无数据"/>
+      <xs:attribute name="more" type="xs:string" default="共 {n} 行,完整数据见台账"/>
+      <xs:attribute name="max_rows" type="xs:positiveInteger" default="10"/>
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="divider">
+    <xs:complexType/>
+  </xs:element>
+
+  <!-- 图片:img-key 为上传素材后飞书返回的 key(飞书 2.0 原生 img) -->
+  <xs:element name="img">
+    <xs:complexType>
+      <xs:attribute name="img-key" type="xs:string" use="required"/>
+      <xs:attribute name="alt" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- 日期选择器:点选即回调(飞书 2.0 date_picker,实卡验证通过) -->
+  <xs:element name="date">
+    <xs:complexType>
+      <xs:attribute name="action" type="xs:string" use="required"/>
+      <xs:attribute name="placeholder" type="xs:string" use="optional"/>
+      <xs:attribute name="initial-date" type="xs:string" use="optional"/>
+      <xs:attribute name="bind-record" type="xs:string" use="optional"/>
+      <xs:attribute name="bind-field" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- 下拉候选项:select 的子元素 -->
+  <xs:element name="option">
+    <xs:complexType>
+      <xs:attribute name="text" type="xs:string" use="required"/>
+      <xs:attribute name="value" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- 下拉单选:option 子元素声明候选(飞书 2.0 select_static,实卡验证通过) -->
+  <xs:element name="select">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="option" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="action" type="xs:string" use="required"/>
+      <xs:attribute name="placeholder" type="xs:string" use="optional"/>
+      <xs:attribute name="bind-record" type="xs:string" use="optional"/>
+      <xs:attribute name="bind-field" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
   <!-- 根元素:卡片容器,title 必填 -->
   <xs:element name="card">
     <xs:complexType>
@@ -124,6 +204,11 @@
         <xs:element ref="comment"/>
         <xs:element ref="action-row"/>
         <xs:element ref="list"/>
+        <xs:element ref="divider"/>
+        <xs:element ref="img"/>
+        <xs:element ref="date"/>
+        <xs:element ref="select"/>
+        <xs:element ref="table"/>
       </xs:choice>
       <xs:attribute name="title" type="xs:string" use="required"/>
       <xs:attribute name="template" type="Template" default="blue"/>

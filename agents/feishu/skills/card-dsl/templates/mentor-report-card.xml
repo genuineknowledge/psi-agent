@@ -1,0 +1,36 @@
+<!--
+  mentor 摘要卡模板(company-todo-mentor-report 发卡用)
+  {key} 为占位符,渲染时由 values_json 填充(值自动 XML 转义)。
+  使用方式:feishu_card_render(template="mentor-report-card",
+    values_json="{...}", context_json="{rows:[...], ...}")
+  values(卡面文案,由统计核心算好传入):
+    template        卡头取色:red(有逾期/未填)/ blue(正常)/ green(全员闭环)
+    cycle_label     周期标签,如 "08-28"
+    mentor_name     团队名(mentor 姓名)
+    people_summary  人员概况,如 "填报 12 人｜请假 1 人｜未按时填报 2 人"
+    goal_summary    目标数量,如 "大目标 4｜小目标 8｜TODO 23"
+    done_summary    完成情况,如 "已闭环 15｜进行中 6｜逾期 2"
+    score_summary   评价概况,如 "平均分 4.2｜5分×3｜4分×6｜3分×2"(打分全空时传"暂无打分")
+    trend           完成率趋势,如 "61%→68%→72%(近6周期)"(数据不足传"—")
+    ledger_url      本周期台账直链(https://genuineknowledge.feishu.cn/base/{app_token}?table={table_id})
+  context(行数据注入):rows = 本周期明细行数组,每行 {level, title, due, status, score};
+    空数组时表格区渲染 empty 文案。调用方在 rows 文本里可写 markdown
+    (如状态列 <font color='red'>逾期🔴</font>),引擎按 markdown 放行。
+-->
+<card title="TODO 报表·{cycle_label}·{mentor_name}团队" template="{template}">
+  <info label="人员概况" value="{people_summary}"/>
+  <info label="目标数量" value="{goal_summary}"/>
+  <info label="完成情况" value="{done_summary}"/>
+  <divider/>
+  <table source="rows" empty="本周期暂无明细">
+    <col field="level" label="层级" width="1"/>
+    <col field="title" label="标题" width="3"/>
+    <col field="due" label="截止" width="1"/>
+    <col field="status" label="状态" width="2"/>
+    <col field="score" label="打分" width="1"/>
+  </table>
+  <divider/>
+  <info label="评价概况" value="{score_summary}"/>
+  <info label="趋势" value="{trend}"/>
+  <info label="台账" value="[打开本周期台账]({ledger_url})"/>
+</card>

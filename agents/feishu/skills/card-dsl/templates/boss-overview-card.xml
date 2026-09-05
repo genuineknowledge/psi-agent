@@ -1,0 +1,32 @@
+<!--
+  boss 整体统计卡模板(company-todo-boss-overview 发卡用)
+  {key} 为占位符,渲染时由 values_json 填充(值自动 XML 转义)。
+  使用方式:feishu_card_render(template="boss-overview-card",
+    values_json="{...}", context_json="{teams:[...], ...}")
+  values(卡面文案,由统计核心算好传入):
+    template        卡头取色:red(有逾期)/ blue(正常)/ green(全员闭环)
+    cycle_label     周期标签,如 "08-28"
+    global_summary  全局指标,如 "目标 12｜小目标 20｜TODO 61｜已闭环 40｜逾期 5｜请假顺延 3"
+    overdue_top     逾期 TOP,如 "① 张三(赵胜迪团队)逾期5天 ② 李四逾期3天"(无逾期传"无")
+    trend           全公司完成率趋势,如 "65%→70%→74%(近6周期)"(数据不足传"—")
+    tree_url        公司工作树 wiki 根页链接
+  context(行数据注入):teams = 团队维度行数组,每行 {mentor, people, todo, closed,
+    overdue, leave, avg_score};空数组时表格区渲染 empty 文案。avg_score 无打分
+    时调用方传 "—"。表格单元格按 markdown 放行(引擎不解析)。
+-->
+<card title="全公司 TODO 总览·{cycle_label}" template="{template}">
+  <info label="全局指标" value="{global_summary}"/>
+  <divider/>
+  <table source="teams" empty="暂无团队数据">
+    <col field="mentor" label="团队" width="2"/>
+    <col field="people" label="人数" width="1"/>
+    <col field="todo" label="TODO" width="1"/>
+    <col field="closed" label="已闭环" width="1"/>
+    <col field="overdue" label="逾期" width="1"/>
+    <col field="avg_score" label="均分" width="1"/>
+  </table>
+  <divider/>
+  <info label="逾期 TOP" value="{overdue_top}"/>
+  <info label="趋势" value="{trend}"/>
+  <info label="工作树" value="[打开公司工作树]({tree_url})"/>
+</card>
