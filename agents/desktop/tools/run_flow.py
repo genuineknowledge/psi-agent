@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import locale
 import marshal
 import os
 import re
@@ -28,6 +29,7 @@ from loguru import logger
 from psi_agent.session.agent import SessionAgent, current_tool_ai_socket
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
+from psi_agent.session.runtime_context import get_user_message, workflow_was_touched
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 
@@ -75,6 +77,7 @@ from fusion_flow.workflow_runner import (  # noqa: E402
     compile_workflow,
 )
 from fusion_flow.workflow_runner import execute_workflow as _execute_workflow  # noqa: E402
+from workflow_sample import _record_workflow_authoring  # noqa: E402
 
 _STEP_SYSTEM_PROMPT = (
     "You execute exactly one assigned FusionFlow Agent step. "
@@ -1156,6 +1159,45 @@ def _workflow_definition_digest(
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _workflow_sample_plan(compiled: CompiledWorkflow) -> list[str]:
+    """Build the public plan metadata stored with a captured workflow sample.
+
+    This list is deliberately separate from the execution plan used by the
+    runner. It is only a human-readable summary for the local JSON record:
+    the compiled graph still controls execution, and no model self-report or
+    private chain-of-thought is involved.
+    """
+
+    # These fixed boundary entries make the lifecycle clear even for an empty
+    # graph; one generated string below describes each compiled graph step.
+    plan = ["Validate the workflow declaration"]
+    plan.extend(
+        f"Execute step {step.step_id} ({compiled.executor_kinds[step.executor_id]})" for step in compiled.graph.steps
+    )
+    plan.append("Return the declared output artifacts")
+    return plan
+
+
+async def _record_workflow_sample_if_needed(
+    flow_path: str,
+    compiled: CompiledWorkflow,
+) -> None:
+    """Persist authoring context before dispatch, best-effort and fail-open."""
+
+    try:
+        result = await _record_workflow_authoring(
+            flow_path,
+            _workflow_sample_plan(compiled),
+            get_user_message(),
+            workflow_touched=workflow_was_touched(flow_path),
+        )
+    except Exception as error:
+        logger.warning(f"Could not record local workflow authoring sample: {error!r}")
+    else:
+        if result is not None:
+            logger.info("Recorded local workflow authoring sample")
+
+
 def _resource_payload(context: CompletionContext) -> dict[str, list[str]]:
     return {grant.resource_id: list(grant.instance_ids) for grant in context.dispatch.resource_lease.grants}
 
@@ -1498,14 +1540,39 @@ def _program_stream_payload(raw: bytes) -> tuple[str | None, str | None]:
         return None, base64.b64encode(raw).decode("ascii")
 
 
+def _program_diagnostic_payload(raw: bytes) -> tuple[str, str | None, str]:
+    """Decode diagnostics opportunistically while keeping an exact byte fallback."""
+
+    encodings = ["utf-8"]
+    with suppress(Exception):
+        encodings.append(locale.getencoding())
+    seen: set[str] = set()
+    for encoding in encodings:
+        if encoding in seen:
+            continue
+        seen.add(encoding)
+        try:
+            text = raw.decode(encoding)
+            raw_base64 = None if encoding == "utf-8" else base64.b64encode(raw).decode("ascii")
+            return text, raw_base64, encoding
+        except LookupError, UnicodeDecodeError:
+            continue
+    return (
+        raw.decode("utf-8", errors="backslashreplace"),
+        base64.b64encode(raw).decode("ascii") if raw else None,
+        "utf-8/backslashreplace",
+    )
+
+
 def _program_attempt_payload(result: _ProgramProcessResult) -> dict[str, object]:
     stdout, stdout_base64 = _program_stream_payload(result.stdout)
-    stderr, stderr_base64 = _program_stream_payload(result.stderr)
+    stderr, stderr_base64, stderr_encoding = _program_diagnostic_payload(result.stderr)
     return {
         "argv": list(result.argv),
         "exit_code": result.exit_code,
         "stdout": stdout,
         "stderr": stderr,
+        "stderr_encoding": stderr_encoding,
         "stdout_base64": stdout_base64,
         "stderr_base64": stderr_base64,
         "error": result.error or None,
@@ -1565,17 +1632,15 @@ def _program_result_outputs(
         )
 
     stdout, stdout_base64 = _program_stream_payload(result.stdout)
-    stderr, stderr_base64 = _program_stream_payload(result.stderr)
-    if stdout_base64 is not None or stderr_base64 is not None:
+    if stdout_base64 is not None:
         return _program_error_outputs(
             invocation,
             phase="output_format",
             kind="invalid_utf8",
-            message="Program stdout and stderr must be valid UTF-8 text.",
+            message="Program stdout must be valid UTF-8 text.",
             attempts=attempts,
         )
     assert stdout is not None
-    assert stderr is not None
     if result.exit_code != 0:
         return _program_error_outputs(
             invocation,
@@ -2639,6 +2704,7 @@ async def run_flow(
     inputs = _parse_mapping(inputs_json, label="inputs_json")
     resource_capacities = _parse_resource_capacities(resource_capacities_json)
     compiled = _compile_workflow_for_run(source, flow_path=flow_path)
+    await _record_workflow_sample_if_needed(flow_path, compiled)
     instruction_files = await _materialize_instruction_files(compiled, flow_path)
     initial_checkpoint = create_execution_checkpoint(
         generate_plan(compiled.graph),
