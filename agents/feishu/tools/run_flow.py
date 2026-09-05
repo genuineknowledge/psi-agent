@@ -1625,6 +1625,15 @@ def _program_output_mode(output_ids: tuple[str, ...]) -> str:
     return "strict_json_object"
 
 
+def _program_output_annotations(invocation: ProgramInvocation) -> dict[str, str]:
+    if invocation.dispatch.iteration_index is None:
+        return dict(invocation.output_annotations)
+    return {
+        artifact_id: (f"One value contributed by this foreach iteration. Aggregate Artifact annotation: {annotation}")
+        for artifact_id, annotation in invocation.output_annotations.items()
+    }
+
+
 def _program_executable_name(value: str) -> str:
     return Path(value).name.lower()
 
@@ -1976,7 +1985,7 @@ async def _complete_program_step(
         ),
         system_prompt=_PROGRAM_SYSTEM_PROMPT,
     )
-    contract = {
+    contract: dict[str, object] = {
         "contract_version": 1,
         "workspace_root": str(workspace),
         "step_id": invocation.binding_name,
@@ -2002,6 +2011,10 @@ async def _complete_program_step(
         ),
         "repair_authorized": repair_authorized,
     }
+    if invocation.input_annotations:
+        contract["input_artifact_annotations"] = dict(invocation.input_annotations)
+    if invocation.output_annotations:
+        contract["output_artifact_annotations"] = _program_output_annotations(invocation)
     try:
         encoded_contract = json.dumps(
             contract,
@@ -2201,6 +2214,15 @@ async def _complete_agent_step(
     submitted: dict[str, object] | None = None
     submission_error: ValueError | None = None
 
+    output_annotations = {
+        artifact_id: (
+            annotation
+            if context.dispatch.iteration_index is None
+            else (f"One value contributed by this foreach iteration. Aggregate Artifact annotation: {annotation}")
+        )
+        for artifact_id, annotation in context.output_annotations.items()
+    }
+
     async def submit_step_result(**outputs: object) -> str:
         nonlocal submission_error, submitted
         if submitted is not None:
@@ -2224,7 +2246,12 @@ async def _complete_agent_step(
         description="Submit this step's final artifacts and stop.",
         parameters={
             "type": "object",
-            "properties": {artifact_id: {} for artifact_id in context.output_ids},
+            "properties": {
+                artifact_id: (
+                    {"description": output_annotations[artifact_id]} if artifact_id in output_annotations else {}
+                )
+                for artifact_id in context.output_ids
+            },
             "required": list(context.output_ids),
             "additionalProperties": False,
         },
@@ -2344,10 +2371,16 @@ async def _complete_agent_step(
                     ).warning("FusionFlow Agent Step accepted safe trailing-comma output from json-repair")
                     return repaired
             raise ValueError(f"step {context.step_id!r} result remained invalid after 3 attempts") from validation_error
+        annotation_text = (
+            f"Output Artifact annotations: {json.dumps(output_annotations, ensure_ascii=False, sort_keys=True)}. "
+            if output_annotations
+            else ""
+        )
         message = (
             f"Your previous step result was invalid: {validation_error}\n"
             "Do not redo the step. Return exactly one valid JSON object as ordinary assistant content, "
             f"keyed by exactly these output keys: {json.dumps(context.output_ids, ensure_ascii=False)}. "
+            f"{annotation_text}"
             "Do not add Markdown or prose."
         )
     raise AssertionError("unreachable")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -33,6 +34,60 @@ class ParseContext:
 
     concepts: dict[str, Concept]
     operators: dict[str, Operator]
+
+
+def _clean_artifact_annotation(comment: str) -> str:
+    """Remove comment markers while preserving free-form annotation text."""
+
+    if comment.startswith("--"):
+        return comment[2:].strip()
+    return comment[2:-2].strip()
+
+
+def extract_artifact_annotations(source: str, artifact_ids: Collection[str]) -> dict[str, str]:
+    """Read free-form trailing comments from parsed Artifact declarations."""
+
+    declared = frozenset(artifact_ids)
+    token_stream = CommonTokenStream(FusionFlowLexer(InputStream(source)))
+    token_stream.fill()
+    tokens = token_stream.tokens
+    annotations: dict[str, str] = {}
+    for index, token in enumerate(tokens):
+        if token.type != FusionFlowLexer.CONST or index + 1 >= len(tokens):
+            continue
+        raw_artifact_id = tokens[index + 1].text or ""
+        artifact_id = raw_artifact_id
+        if raw_artifact_id.startswith('"') and raw_artifact_id.endswith('"'):
+            decoded = json.loads(raw_artifact_id)
+            if not isinstance(decoded, str):
+                continue
+            artifact_id = decoded
+        if artifact_id not in declared:
+            continue
+
+        semicolon = next(
+            (candidate for candidate in tokens[index + 2 :] if candidate.type == FusionFlowLexer.SEMICOLON),
+            None,
+        )
+        if semicolon is None:
+            continue
+        cursor = semicolon.stop + 1
+        while cursor < len(source) and source[cursor] in " \t":
+            cursor += 1
+        if source.startswith("--", cursor):
+            end = source.find("\n", cursor + 2)
+            comment = source[cursor : len(source) if end == -1 else end]
+        elif source.startswith("/*", cursor):
+            end = source.find("*/", cursor + 2)
+            if end == -1:
+                continue
+            comment = source[cursor : end + 2]
+        else:
+            continue
+        annotation = _clean_artifact_annotation(comment)
+        if annotation:
+            annotations[artifact_id] = annotation
+    return annotations
 
 
 class _DiagnosticListener:
