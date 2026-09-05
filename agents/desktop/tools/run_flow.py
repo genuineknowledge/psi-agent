@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import locale
 import marshal
 import os
 import re
@@ -1539,14 +1540,39 @@ def _program_stream_payload(raw: bytes) -> tuple[str | None, str | None]:
         return None, base64.b64encode(raw).decode("ascii")
 
 
+def _program_diagnostic_payload(raw: bytes) -> tuple[str, str | None, str]:
+    """Decode diagnostics opportunistically while keeping an exact byte fallback."""
+
+    encodings = ["utf-8"]
+    with suppress(Exception):
+        encodings.append(locale.getencoding())
+    seen: set[str] = set()
+    for encoding in encodings:
+        if encoding in seen:
+            continue
+        seen.add(encoding)
+        try:
+            text = raw.decode(encoding)
+            raw_base64 = None if encoding == "utf-8" else base64.b64encode(raw).decode("ascii")
+            return text, raw_base64, encoding
+        except LookupError, UnicodeDecodeError:
+            continue
+    return (
+        raw.decode("utf-8", errors="backslashreplace"),
+        base64.b64encode(raw).decode("ascii") if raw else None,
+        "utf-8/backslashreplace",
+    )
+
+
 def _program_attempt_payload(result: _ProgramProcessResult) -> dict[str, object]:
     stdout, stdout_base64 = _program_stream_payload(result.stdout)
-    stderr, stderr_base64 = _program_stream_payload(result.stderr)
+    stderr, stderr_base64, stderr_encoding = _program_diagnostic_payload(result.stderr)
     return {
         "argv": list(result.argv),
         "exit_code": result.exit_code,
         "stdout": stdout,
         "stderr": stderr,
+        "stderr_encoding": stderr_encoding,
         "stdout_base64": stdout_base64,
         "stderr_base64": stderr_base64,
         "error": result.error or None,
@@ -1606,17 +1632,15 @@ def _program_result_outputs(
         )
 
     stdout, stdout_base64 = _program_stream_payload(result.stdout)
-    stderr, stderr_base64 = _program_stream_payload(result.stderr)
-    if stdout_base64 is not None or stderr_base64 is not None:
+    if stdout_base64 is not None:
         return _program_error_outputs(
             invocation,
             phase="output_format",
             kind="invalid_utf8",
-            message="Program stdout and stderr must be valid UTF-8 text.",
+            message="Program stdout must be valid UTF-8 text.",
             attempts=attempts,
         )
     assert stdout is not None
-    assert stderr is not None
     if result.exit_code != 0:
         return _program_error_outputs(
             invocation,
