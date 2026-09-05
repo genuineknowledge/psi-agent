@@ -262,6 +262,49 @@ Kanban CLI 无法给在跑的会话发消息,没有别的办法把它叫醒。
 默认不列 untracked 条目**,加 `--include-untracked` 后显示完整的 590 行 8 个文件。判「活丢了」
 之前必须用这个参数复核。
 
+### 与 main 合并:基线整体挪位,旧数字一条都不能复用
+
+PR 开出去之后 main 前进了 11 个 commit,GitHub 报 3 个文件冲突,全在 session 层——因为
+`888b1b1f`(压缩移出会话锁,改了 `agent.py` 785 行)与 `f2b5ed73`(Stop 撤回时剥离 history)
+动的正是卡 B 包 `try/finally` 的那个回合循环。
+
+**这里的头号陷阱不是解冲突,是拿旧基线判新代码。** main 自己带进来几十条判据,失败集合与
+总数都变了;沿用本文上面那个「61 failed」会直接读出「64 - 61 = 涨了 3 条,回归」的错误结论。
+正确做法是在 `c76a2962` 上重新起一棵工作树量基线,再逐条比对:
+
+| 范围 | 合并后 | 新 main 基线 | 判定 |
+|---|---|---|---|
+| `tests/` | 64 failed / 1990 passed | 64 failed / 1958 passed | `comm` 两侧皆空,零回归 |
+| `agents/feishu` | 43 failed / 3251 passed | 43 failed / 3237 passed | `comm` 两侧皆空,零回归 |
+
+passed 增量 32 与 14 分别对上各卡新增判据数。合并后五张卡的 159 条判据全绿,
+`ty check .` 仍为 4 条 `os.killpg` 基线诊断,ruff 两步 0。
+
+**三处冲突只有一处是真的语义冲突:**
+
+1. **回合循环的 `try`(真冲突)。** 两侧各自加了 `try` 但目的不同:本分支要
+   `finally: end_turn()` 清水位线,main 要 `except BaseException:
+   _abandon_incomplete_turn(turn_start)` 撤回早提交的 user 行。两者可共存,按
+   `except` 在前、`finally` 在后合成同一个 `try`。**关键是两个索引不是同一个量**:
+   main 的 `turn_start` 在 `conversation.add(user)` **之前**取,本分支的水位线在
+   `commit()` **之后**取。混用会让撤回多删或少删一行,因此各自保留、各自命名。
+2. **`tool_defs` 与压缩调用(纯 main 侧)。** TMPFIX-M2 工具闸门、`_maybe_compact` 改成
+   `_request_compaction` 只记录,本分支未碰,取 main。
+3. **两个文件的 import 块(机械冲突)。** 两侧各加不同 import,都保留;合并会产生重复的
+   `project_history_with_sources`,去重并按 `ruff --select I` 排序。
+
+`request_assembly.py` 上 main 的改动(token 上限收归 `psi_agent.protocol`)与省略逻辑正交,
+`_turn_watermark` / `begin_turn` / `end_turn` / `exempt` 全部原样存活。
+
+**一个差点得出错误结论的判据操作,记此备考:** 用 `grep -c "test_history_recall"` 在 `-q`
+输出里数测试名,得 0,看着像 D2 判据又没被收集(正是本文上面记过的 testpaths 坑的形状)。
+实际是 **`-q` 模式只打点不打通过用例的名字**,`grep` 数不到属正常。改用 `--collect-only`
+才看清:该文件被收集 13 处,且 3251 + 43 = 3294 与收集总数吻合。判据没中和判据没跑是两件
+事,别用一个数不出来的量法去判后者。
+
+云端 CI 在合并提交上全绿(lint / test / antlr / feishu-web / 三平台 pyinstaller / 两个安装包),
+GitHub 状态 `MERGEABLE`、`CLEAN`。
+
 ---
 
 ## T —— 测试与验收
