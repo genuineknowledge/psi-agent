@@ -1,37 +1,29 @@
-"""Guard against ghost tool names in the runtime-facing Feishu documentation.
+"""Guard against ghost tool names in the runtime-facing desktop (ToC) docs.
 
-A ghost tool is a name written as if it were a real, callable tool that has
-no matching top-level ``async def`` in ``tools/*.py``. Two families exist:
+Mirror of ``agents/feishu/tests/test_feishu_ghost_tools.py`` for the desktop
+agent; keep the two files in sync when a rule changes.  A ghost tool is a
+name written as if it were a real, callable tool that has no matching
+top-level ``async def`` in ``tools/*.py``.
 
-- never existed at all (``feishu_user_get``, ``feishu_contact_search``,
-  ``feishu_chat_list_members``, ``feishu_message_reply``,
-  ``feishu_bitable_records``) — pure doc inventions;
-- existed before #612, then their domain moved to endpoint tables and the
-  Python tool was deleted (``feishu_message_react``, ``feishu_chat_create``,
-  ``feishu_user_manage``, ...). Calling either family from the agent fails
-  with "tool does not exist".
+Why desktop needs its own guard:
 
-The agent reads AGENTS.md / TOOLS.md / skill documents as its tool guide,
-so a ghost there sends the model to call a tool that does not exist and burn
-rounds on "not found" retries until the turn hits ``max_tool_rounds``. These
-tests pin both families out of **every runtime-facing doc** (AGENTS.md,
-TOOLS.md, and all skill documents under ``skills/``), and fail when a doc
-references a feishu_/wiki_ name that is not on the real surface, instead of
-letting the drift back in silently.
+- The two workspaces share most skills, and a feishu skill synced into the
+  desktop agent carries feishu-only tool teaching with it.  Calling any of
+  those from the desktop agent fails with "tool does not exist" and burns
+  rounds on "not found" retries until the turn hits ``max_tool_rounds``.
+- The never-existed / #612-deleted families are project-wide ghosts: they
+  must not be taught by *either* agent, feishu or desktop.
 
-What counts as "on the real surface or clearly not a call":
+Rules applied to every runtime-facing doc (AGENTS.md, TOOLS.md, and every
+skill document under ``skills/``):
 
-- the name is a real top-level async def in ``tools/*.py``;
-- ``DOC_ONLY`` — identifiers the docs deliberately name as non-tools
-  (routing hints, event/card tags, "there is no X tool" statements);
-- family references, three allowed shapes:
-  - glob-style tokens ending in ``_`` (``feishu_doc_``, ``feishu_*``);
-  - category/module labels that prefix at least one real tool
-    (``feishu_auth`` → ``feishu_auth_request`` ...; ``feishu_doc`` →
-    ``feishu_doc_read`` ...);
-  - AGENTS.md tool-table row headers of the form
-    `` `name` (``name.py`` ...) `` where the row itself teaches the real
-    tool calls.
+- NEVER_EXISTED / MIGRATED_AWAY names are banned outright;
+- a real feishu-only tool (a tool that exists only in the feishu workspace)
+  may never be named as a tool in desktop docs;
+- every other feishu_/wiki_ mention must resolve against the desktop real
+  surface, or be a documented non-tool (``DOC_ONLY``), or read as a family
+  reference (globs ending in ``_``, labels that prefix a real tool, or
+  tool-table row headers of the form `` `name` (``name.py`` ...) ``).
 """
 
 from __future__ import annotations
@@ -41,6 +33,7 @@ import re
 from pathlib import Path
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
+FEISHU_ROOT = Path(__file__).resolve().parents[2] / "feishu"
 TOOLS_DIR = WORKSPACE_ROOT / "tools"
 
 # Ghosts that never had a top-level async def in tools/*.py at any point in
@@ -117,10 +110,10 @@ _SKIP_DIRS = {
 _TOKEN_RE = re.compile(r"\b(feishu_[a-z_]+|wiki_[a-z_]+)\b")
 
 
-def _public_tool_names() -> set[str]:
-    """Collect public async tool function names (feishu_*/wiki_*) from tools/*.py via AST."""
+def _tool_names(tools_dir: Path) -> set[str]:
+    """Public async tool function names (feishu_*/wiki_*) from tools/*.py via AST."""
     names: set[str] = set()
-    for py in TOOLS_DIR.glob("*.py"):
+    for py in tools_dir.glob("*.py"):
         if py.name.startswith("_"):
             continue
         tree = ast.parse(py.read_text(encoding="utf-8"))
@@ -152,7 +145,7 @@ def _is_family_glob(token: str) -> bool:
 
 
 def _prefixes_a_real_tool(token: str, real: set[str]) -> bool:
-    """Category/module label naming a family of real tools (``feishu_auth`` → ``feishu_auth_*``)."""
+    """Category/module label naming a family of real tools (``feishu_auth`` -> ``feishu_auth_*``)."""
     return any(name.startswith(token) and name != token for name in real)
 
 
@@ -161,7 +154,7 @@ def _is_module_header(token: str, text: str) -> bool:
     return re.search(rf"`{re.escape(token)}`\s*\(`{re.escape(token)}\.py`", text) is not None
 
 
-def _unresolved_mentions(text: str, real: set[str]) -> dict[str, str]:
+def _unresolved_mentions(text: str, real: set[str], extra_banned: set[str]) -> dict[str, str]:
     """Map each doc mention that fails every allowance rule to its reason."""
     unresolved: dict[str, str] = {}
     for token in sorted(_tool_mentions(text)):
@@ -169,6 +162,8 @@ def _unresolved_mentions(text: str, real: set[str]) -> dict[str, str]:
             unresolved[token] = "never existed; banned everywhere"
         elif token in MIGRATED_AWAY:
             unresolved[token] = "deleted by #612 (endpoint tables); banned everywhere"
+        elif token in extra_banned:
+            unresolved[token] = "exists only in the feishu workspace; not callable here"
         elif (
             token in real
             or token in DOC_ONLY
@@ -183,35 +178,42 @@ def _unresolved_mentions(text: str, real: set[str]) -> dict[str, str]:
 
 
 def test_never_existed_ghosts_do_not_appear_in_docs() -> None:
-    """The never-existed ghosts must never appear in any runtime-facing doc again."""
-    real = _public_tool_names()
+    """The never-existed ghosts must never appear in any desktop doc again."""
+    real = _tool_names(TOOLS_DIR)
     for doc in _runtime_docs():
-        unresolved = _unresolved_mentions(doc.read_text(encoding="utf-8"), real)
+        unresolved = _unresolved_mentions(doc.read_text(encoding="utf-8"), real, set())
         ghost = {t: why for t, why in unresolved.items() if t in NEVER_EXISTED}
         assert not ghost, f"{doc.relative_to(WORKSPACE_ROOT)} mentions ghost tool(s) that never existed: {ghost}"
 
 
 def test_migrated_away_tools_are_not_taught_as_callable() -> None:
-    """#612-deleted tools must not be written as callable tools anywhere.
-
-    Their capabilities are endpoint-table rows reached via feishu_api; the
-    docs now point there instead, so the old callable names may not reappear.
-    """
-    real = _public_tool_names()
+    """#612-deleted tools must not be written as callable tools anywhere."""
+    real = _tool_names(TOOLS_DIR)
     for doc in _runtime_docs():
-        unresolved = _unresolved_mentions(doc.read_text(encoding="utf-8"), real)
+        unresolved = _unresolved_mentions(doc.read_text(encoding="utf-8"), real, set())
         migrated = {t: why for t, why in unresolved.items() if t in MIGRATED_AWAY}
         assert not migrated, f"{doc.relative_to(WORKSPACE_ROOT)} teaches #612-deleted tool(s): {migrated}"
 
 
-def test_all_runtime_docs_only_reference_real_tools() -> None:
-    """Every feishu_/wiki_ name any runtime-facing doc treats as a tool must exist.
+def test_desktop_docs_never_teach_feishu_only_tools() -> None:
+    """A real feishu tool must not be named as a tool in desktop docs.
 
-    Allowances are limited to documented non-tools (``DOC_ONLY``), family
-    references (globs ending in ``_``, labels that prefix a real tool, and
-    tool-table row headers that teach the real calls inside the row).
+    Desktop and feishu share most skills; a feishu-only name copied into a
+    desktop doc would send the ToC agent to call a tool that does not exist
+    in its workspace.
     """
-    real = _public_tool_names()
+    real = _tool_names(TOOLS_DIR)
+    feishu_only = _tool_names(FEISHU_ROOT / "tools") - real
     for doc in _runtime_docs():
-        unresolved = _unresolved_mentions(doc.read_text(encoding="utf-8"), real)
+        unresolved = _unresolved_mentions(doc.read_text(encoding="utf-8"), real, feishu_only)
+        leaked = {t: why for t, why in unresolved.items() if t in feishu_only}
+        assert not leaked, f"{doc.relative_to(WORKSPACE_ROOT)} names feishu-only tool(s): {leaked}"
+
+
+def test_all_runtime_docs_only_reference_real_tools() -> None:
+    """Every feishu_/wiki_ name any desktop doc treats as a tool must exist."""
+    real = _tool_names(TOOLS_DIR)
+    feishu_only = _tool_names(FEISHU_ROOT / "tools") - real
+    for doc in _runtime_docs():
+        unresolved = _unresolved_mentions(doc.read_text(encoding="utf-8"), real, feishu_only)
         assert not unresolved, f"{doc.relative_to(WORKSPACE_ROOT)} names tool(s) with no definition: {unresolved}"
