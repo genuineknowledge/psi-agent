@@ -1,0 +1,100 @@
+/* Survey popup: draggable floating frame with a questionnaire link button. */
+
+.survey-popup-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  pointer-events: none;
+}
+
+.survey-popup-frame {
+  position: absolute;
+  top: 120px;
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  width: min(420px, 92vw);
+  overflow: hidden;
+  border-radius: 16px;
+  border: 1px solid rgba(var(--brand-rgb), 0.35);
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 24px 64px rgba(6, 23, 43, 0.32);
+  pointer-events: auto;
+  animation: modal-in 220ms ease both;
+}
+
+.survey-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 8px 10px 4px;
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+
+.survey-popup-grip {
+  flex-shrink: 0;
+  color: var(--ink-soft);
+}
+
+.survey-popup-intro {
+  margin: 0;
+  padding: 0 16px 6px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink-soft);
+}
+
+.survey-popup-body {
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
+.survey-popup-link {
+  width: 100%;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 16px;
+  border: 1px solid rgba(var(--brand-rgb), 0.35);
+  border-radius: 14px;
+  background: rgba(var(--brand-rgb), 0.08);
+  color: var(--brand-700);
+  font-size: 15px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.survey-popup-link:hover {
+  border-color: var(--brand-500);
+  background: rgba(var(--brand-rgb), 0.14);
+}
+
+.survey-popup-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--line);
+  background: #fbfdff;
+}
+
+.survey-popup-close {
+  min-height: 34px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--brand-500);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.survey-popup-close:hover {
+  background: var(--brand-600);
+}
