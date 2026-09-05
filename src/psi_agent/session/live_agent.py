@@ -118,12 +118,13 @@ async def resume_session_turn(
 
     message = with_kind({"role": "user", "content": content}, kind)
     logger.info(f"Resuming a turn on session {session_id!r} ({len(content)} chars, kind={kind!r})")
-    # Take the same lock a Channel turn takes: a resume is an ordinary turn and must
+    # Take the same guard a Channel turn takes (``turn_lock``: the session lock plus
+    # the deferred compaction it owes on release): a resume is an ordinary turn and must
     # not interleave with one that is already writing this conversation. ``aclosing``
     # rather than a bare ``finally: aclose()``: the agent loop's own cleanup (rollback /
     # commit) must run before this frame unwinds — the ordering every other
     # ``agent.run`` call site uses.
-    async with agent._lock, aclosing(agent.run(message, response_kind=kind)) as chunks:
+    async with agent.turn_lock(), aclosing(agent.run(message, response_kind=kind)) as chunks:
         async for _chunk in chunks:
             pass
     logger.info(f"Resumed turn on session {session_id!r} finished")

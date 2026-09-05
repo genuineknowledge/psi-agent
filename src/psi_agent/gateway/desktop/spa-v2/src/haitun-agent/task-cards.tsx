@@ -3,6 +3,7 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Pin,
   Trash2,
 } from "lucide-react";
 import { type CSSProperties, useEffect, useState, type MouseEvent } from "react";
@@ -58,22 +59,26 @@ function useLiveOverviewDay(language: Language): string {
 export function TaskRow({
   task,
   active,
+  pinned = false,
   onSelect,
   onPrefetch,
   onOpenArtifact,
   onDelete,
+  onTogglePin,
 }: {
   task: Task;
   active: boolean;
+  pinned?: boolean;
   onSelect: () => void;
   onPrefetch?: () => void;
   onOpenArtifact: (task: Task, fileName?: string) => void;
   onDelete?: (task: Task) => void;
+  onTogglePin?: (task: Task) => void;
 }) {
   const { t } = useI18n();
   return (
     <div
-      className={`task-row ${active ? "active" : ""}`}
+      className={`task-row ${active ? "active" : ""} ${pinned ? "pinned" : ""}`}
       onPointerEnter={onPrefetch}
     >
       <button type="button" className="task-row-select" onClick={onSelect} aria-label={t("task.openTask", { title: task.title })}>
@@ -96,6 +101,21 @@ export function TaskRow({
         </span>
       </button>
       <div className="task-row-actions">
+        {onTogglePin && (
+          <button
+            type="button"
+            className={`task-row-pin${pinned ? " pinned" : ""}`}
+            title={pinned ? t("task.unpin") : t("task.pin")}
+            aria-label={pinned ? t("task.unpinAria", { title: task.title }) : t("task.pinAria", { title: task.title })}
+            aria-pressed={pinned}
+            onClick={(event) => {
+              event.stopPropagation();
+              onTogglePin(task);
+            }}
+          >
+            <Pin size={14} fill={pinned ? "currentColor" : "none"} />
+          </button>
+        )}
         {onDelete && (
           <button
             type="button"

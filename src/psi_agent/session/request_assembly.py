@@ -53,6 +53,9 @@ from typing import Any
 
 from loguru import logger
 
+from psi_agent.protocol import (
+    DEFAULT_MAX_CONTEXT_TOKENS as _DEFAULT_MAX_CONTEXT_TOKENS,
+)
 from psi_agent.session.history_display import (
     ELISION_HANDLE_PREFIX,
     ELISION_HANDLE_TEMPLATE,
@@ -60,23 +63,16 @@ from psi_agent.session.history_display import (
     render_sent_files_note,
 )
 
-DEFAULT_MAX_CONTEXT_TOKENS = 200_000
-"""Fallback token ceiling, read from the same ``PSI_MAX_CONTEXT_TOKENS`` as the
-AI layer: one budget observed in two places, not two budgets that can drift.
-The AI layer keeps its own reading because it is the side that sees ``usage``;
-this side is the one that can act before the fact.
+DEFAULT_MAX_CONTEXT_TOKENS = _DEFAULT_MAX_CONTEXT_TOKENS
+"""Re-exported from ``psi_agent.protocol``, which owns the number.
 
-The *number* deliberately differs from the AI layer's 100000 default, because
-100000 is below this deployment's fixed overhead.  Measured: a 181218-character
-production system prompt is about 117k tokens at the 1.56 chars/token rate of
-Chinese prose — so with a 100k ceiling the prompt alone is over budget before a
-single history row is added.  That is not a shrinkable condition: eliding every
-row still leaves it over, and the same arithmetic is why one attendance task
-compacted 50 times while its token count climbed monotonically to 400093.  A
-default under the floor would make this module elide all history on every turn
-for no benefit, so it sits above the floor instead.  Deployments that want the
-old number set the env var; ``adopt_threshold`` additionally declines to adopt a
-ceiling that would put the fixed overhead out of reach.
+Both layers read the same ``PSI_MAX_CONTEXT_TOKENS`` and now share the same
+fallback: one budget observed in two places, not two budgets that can drift.
+The AI layer keeps its own *reading* because it is the side that sees ``usage``;
+this side is the one that can act before the fact.  Only the fallback is shared.
+
+Kept as a module-level name because this module's callers and tests refer to it,
+and because ``MIN_ADOPTABLE_TOKENS`` below is meaningful only in relation to it.
 """
 
 MIN_ADOPTABLE_TOKENS = 150_000

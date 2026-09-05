@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, cast
 
 import anyio
@@ -27,6 +28,22 @@ class _FakeAgent:
         self.response_kinds: list[str | None] = []
         self.closed = 0
         self._block = block
+        self.drains = 0
+
+    @asynccontextmanager
+    async def turn_lock(self) -> AsyncIterator[None]:
+        """Mirror the real guard: hold the lock, then drain compaction off it.
+
+        The fake has to grow this because a resume is an ordinary turn, and the
+        real ``turn_lock`` is what makes "compaction is not charged to the next
+        message" true for resumes too. ``drains`` records that the release-side
+        step actually ran.
+        """
+        try:
+            async with self._lock:
+                yield
+        finally:
+            self.drains += 1
 
     def run(
         self,

@@ -140,6 +140,27 @@ def make_error_chunk(message: str) -> dict[str, Any]:
     }
 
 
+DEFAULT_MAX_CONTEXT_TOKENS = 200_000
+"""Fallback token ceiling when ``PSI_MAX_CONTEXT_TOKENS`` is unset.
+
+It lives here, beside ``make_compaction_signal``, because the ceiling *is* part
+of the agreement between layers: the AI side raises the signal against it and
+the Session side enforces a budget against it, both reading the same env var.
+Two layers previously kept their own fallback (100000 on the AI side, 200000 on
+the Session side), which is exactly the drift this module exists to prevent.
+
+The number sits above this deployment's measured fixed overhead. A 181218-char
+production system prompt is ~117k tokens, so a 100000 ceiling puts the prompt
+alone over budget before any history is added — an unsatisfiable request that no
+amount of eliding or compacting can fix. That arithmetic is why one attendance
+task compacted 50 times while its token count climbed to 400093.
+
+Session additionally refuses to adopt an AI-side ceiling below
+``session.request_assembly.MIN_ADOPTABLE_TOKENS``, so enforcement stays correct
+even against an operator who lowers only one side.
+"""
+
+
 def make_compaction_signal(*, prompt_tokens: int, threshold: int) -> dict[str, Any]:
     """Build the mid-stream compaction signal.
 

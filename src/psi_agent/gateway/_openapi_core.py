@@ -518,7 +518,7 @@ CORE_SCHEMAS: dict[str, Any] = {
                 "default": -1,
                 "description": (
                     "Prompt token threshold that triggers history compaction. "
-                    "-1 = resolve from PSI_MAX_CONTEXT_TOKENS env var, else 100000. "
+                    "-1 = resolve from PSI_MAX_CONTEXT_TOKENS env var, else 200000. "
                     "0 = disable compaction. Keep it well below the model's real "
                     "context window so compaction runs before the upstream rejects "
                     "the request."

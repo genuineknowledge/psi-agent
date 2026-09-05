@@ -17,6 +17,7 @@ from loguru import logger
 from psi_agent._logging import setup_logging
 from psi_agent._sockets import create_site
 from psi_agent._tls import client_ssl_context
+from psi_agent.protocol import DEFAULT_MAX_CONTEXT_TOKENS
 
 from .server import handle_chat_completions
 
@@ -128,8 +129,8 @@ class Ai:
     """Enable DEBUG-level logging."""
 
     max_context_tokens: int = -1
-    """Prompt token threshold for triggering compaction (default 100K).
-    -1 = use PSI_MAX_CONTEXT_TOKENS env var or 100K. 0 disables compaction.
+    """Prompt token threshold for triggering compaction (default 200K).
+    -1 = use PSI_MAX_CONTEXT_TOKENS env var or 200K. 0 disables compaction.
     CLI: --max-context-tokens."""
 
     async def run(self) -> None:
@@ -145,10 +146,12 @@ class Ai:
                 try:
                     self.max_context_tokens = int(env_val)
                 except ValueError:
-                    logger.warning(f"Invalid PSI_MAX_CONTEXT_TOKENS={env_val!r}, using default 100K")
-                    self.max_context_tokens = 100000
+                    logger.warning(
+                        f"Invalid PSI_MAX_CONTEXT_TOKENS={env_val!r}, using default {DEFAULT_MAX_CONTEXT_TOKENS}"
+                    )
+                    self.max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
             else:
-                self.max_context_tokens = 100000
+                self.max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
         logger.debug(
             f"AI resolved params: provider={provider!r}, model={model!r}, "
             f"base_url={base_url!r}, api_key={'*' * 8 if api_key else '(empty)'}, "

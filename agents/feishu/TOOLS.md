@@ -45,7 +45,9 @@ Add whatever helps you do your job. This is your cheat sheet.
 收到飞书群聊消息时，消息开头会带一段 `<feishu_context>` 元数据（chat_id / chat_type /
 message_id / sender_open_id）。需要群里之前的上下文时：
 
-- `feishu_message_list(container_id=<chat_id>, container_id_type="chat")` 拉取本群历史消息
+- 拉本群历史消息：`feishu_api` 打 `GET /open-apis/im/v1/messages`（query
+  `container_id_type="chat"` + `container_id=<chat_id>`；话题用 `container_id_type="thread"` +
+  `omt_` id，见 `feishu-message` 技能「消息列表」）；只读某条话题的纯文本用 `feishu_thread_read`
 - 消息里提到的飞书文档链接：从 URL 取 file_type + token，用 `feishu_doc_read` 读正文
 - 群里分享的附件/图片：用 `feishu_file_download` 下载后再处理
 
@@ -117,7 +119,7 @@ message_id / sender_open_id）。需要群里之前的上下文时：
 哪些操作**必须**用户本人授权（机器人权限天生做不了，直接 `need_auth`）：
 - `feishu_docs_search`（全库搜「当前用户能看到的文档」，需 `docs_read`）；
 - `feishu_wiki_create_space`（新建知识库，新库归授权用户，需 `wiki_write`）；
-- `feishu_contact_search`（全组织按名搜人，需 `contact_read`）。
+- 全组织**按名搜人**（`feishu_api` 打 `GET /open-apis/search/v1/user`，只吃 user token，需 `contact_read`）。
 
 ### 问归属（一次问清，之后不再问）
 
@@ -392,13 +394,16 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
     停止推送用 `feishu_api POST /open-apis/approval/v4/approvals/:approval_code/unsubscribe(approval_code)`。
 12. **卡点找人（判定归属 + 给联系方式）**：员工私聊说"工作上卡在某个点了"，按 [`feishu-blocker-routing`]
     技能给他指路。先读一张**职责归属多维表格**（业务领域/职责 → 负责人 open_id）
-    （`feishu_api` 打 `GET /open-apis/bitable/v1/apps/:app_token/tables/:table_id/records`）把卡点匹配到负责人，再用
-    `feishu_user_get(user_ids=<负责人 open_id>)` 取其**联系方式**（`mobile`/`email`/`enterprise_email`/
+    （`feishu_api` 打 `GET /open-apis/bitable/v1/apps/:app_token/tables/:table_id/records`）把卡点匹配到负责人，再
+    `feishu_api` 打 `GET /open-apis/contact/v3/users/:user_id`（`user_id_type=open_id`，见 `feishu-contact`
+    技能「查人」表）取负责人**联系方式**（`mobile`/`email`/`enterprise_email`/
     `job_title`），回员工"①这归谁负责 ②去找谁 ③怎么联系"。台账里存的是姓名不是 open_id 时，
-    最省事是 `feishu_contact_search(query=<姓名>)` **全局按名搜人**（不必先知道他在哪个群/部门，
-    直接把姓名解析成 open_id）——这一步走用户身份，返回 `need_auth=True` 时才引导授权；退而求其次用
+    最省事是按名全局搜人 `feishu_api` 打 `GET /open-apis/search/v1/user`（`query=<姓名>`，**只吃 user token**，
+    必须带 `user_key`；不必先知道他在哪个群/部门，直接把姓名解析成 open_id）——这一步走用户身份，
+    返回 `need_auth=True` 时才引导授权；退而求其次用
     `feishu_department_members(recursive=True)` 或 `feishu_chat_find_member` 按名反查 open_id。
-    要一次拿到某群**全部**成员（不是按名找某个人）时，用 `feishu_chat_list_members(chat_id)` 列全员花名册。
+    要一次拿到某群**全部**成员（不是按名找某个人）时，用 `feishu_api` 打 `GET /open-apis/im/v1/chats/:chat_id/members`
+    列全员花名册。
     **联系方式只在私聊回给来问的本人，不群发**；`mobile`/`email` 读到空多是缺
     `contact:user.phone:readonly`/`contact:user.email:readonly` 或通讯录权限范围没覆盖，**如实说明**并
     退回到"在飞书里 @他"，不编号码；台账查不到归属就如实说查不到，别硬安负责人。
@@ -425,7 +430,8 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
     - 一次要发多个文件就输出多行、每行一个 `[SEND:...]`。
 
     **绝不要拿 `feishu_*` 工具当交付手段**（这是真出过的事故：用户在 Web 控制台只让转换一个文档，
-    agent 却去 `feishu_chat_find("Haitun团队")` 想发到一个用户压根没提的飞书群）。`feishu_*` 的
+    agent 却经 `feishu_api` 去搜群建会话（`GET /open-apis/im/v1/chats/search`）想发到一个用户压根没提的
+    飞书群）。`feishu_*` 的
     发送/上传接口投递到**飞书**，那和「用户当前这个对话」是两个不同的目的地——用户在 Web 控制台时
     永远收不到。判断依据很简单：
     - 用户消息里有 `<feishu_context>` → 这一轮来自飞书；
@@ -494,13 +500,15 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
     发出但回调上下文保存失败；只提示这项必要的部分失败，不要重发卡片。纯粹只是发一段文字仍用
     `feishu_message_send`。
 16. **建新群拉人（没有现成群可发时）**：`feishu_message_send` 只能往**已存在**的群发消息；要**从零建一个
-    新群并把人拉进来**时，用 `feishu_chat_create(name, user_ids=[...], description=..., owner_id=...)`。
+    新群并把人拉进来**时，用 `feishu_api` 打 `POST /open-apis/im/v1/chats`（body `name` / `user_id_list` /
+    `owner_id` / `description`，见 `feishu-chat` 技能「群列表与建群」）。
     机器人用自己 tenant 身份建群，**群主默认设成提需求的那个人**——把 `<feishu_context>` 的 `sender_open_id`
     传给 `owner_id`，群就归他所有；机器人自己留作管理员，所以建好后照样能拿返回的 `chat_id` 用
     `feishu_message_send` 往群里发言。提需求的人明确说要让别人当群主时，`owner_id` 就传那个人的 open_id；
-    只有纯机器人自建、没有具体发起人时才留空（此时机器人当群主）。`user_ids` 传的是 **open_id 不是姓名**——先用
-    `feishu_chat_find_member`（从别的群）或 `feishu_department_members` 把姓名反查成 open_id（单次最多 50 人，
-    超了先建再补拉）。返回里的 `invalid_user_ids` 是飞书没能加进来的人（多为不在通讯录权限范围内），如实反馈。
+    只有纯机器人自建、没有具体发起人时才留空（此时机器人当群主）。`user_id_list` 传的是 **open_id 不是姓名**
+    ——先用 `feishu_chat_find_member`（从别的群）或 `feishu_department_members` 把姓名反查成 open_id
+    （单次最多 50 人，超了先建再补拉）。拉人失败名单在返回的 `invalid_user_id_list` 里（多为不在通讯录
+    权限范围内），如实反馈。
 17. **从零建一张多维表格（没有现成台账可写时）**：写数据都要一个**已存在**的
     `app_token`；用户说"建个台账/跟踪表/登记表"而手里没有链接时，别让他先自己去飞书里建表，按三步自己建。
     多维表格的端点表在 **`feishu-bitable` 技能**里，读它再用 `feishu_api` 调；下面只说流程和坑。
@@ -550,13 +558,14 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
     `feishu_api` PUT `/open-apis/bitable/v1/apps/:app_token`（body `{"is_advanced": true}`）开（wiki 里的表和
     嵌在文档里的表开不了，报 1254301）；同一个 PUT 也能给表格本体改名。
     表名/列名一律**按用户说的建，缺信息就问**，别自己编一套字段糊上去。
-18. **撤回发错的消息**：用户说"把刚才那条撤回/撤销/删掉""发错了"时，用
-    `feishu_message_recall(message_id=<om_...>, user_key=<sender_open_id>)`。`message_id` 只能是**消息 id**
-    （`om_` 开头）——来自 `feishu_message_send`/`_send_card`/`_reply` 的返回、`<feishu_context>`，或
-    `feishu_message_list`/`feishu_thread_read` 里的条目；传 chat_id（`oc_`）/open_id（`ou_`）会被直接拒掉。
+18. **撤回发错的消息**：用户说"把刚才那条撤回/撤销/删掉""发错了"时，用 `feishu_api` 打
+    `DELETE /open-apis/im/v1/messages/:message_id`（只要路径参数，见 `feishu-message` 技能「回复与撤回」）。
+    `message_id` 只能是**消息 id**（`om_` 开头）——来自 `feishu_message_send`/`feishu_message_send_card`
+    的返回、`<feishu_context>`，或消息列表端点/`feishu_thread_read` 里的条目；传 chat_id（`oc_`）/open_id（`ou_`）
+    会被直接拒掉。
     机器人**自己发的消息随时能撤**；撤**别人**的消息要求操作身份是该群群主/管理员，否则飞书报 230026，
     此时传群主的 `user_key` 并让其授权才行。撤回还有**时限**（企业管理员配置），超时报 230009。
-    这两类失败工具都会在结果里带一句 `hint` 说明卡在哪，**如实转告用户**，别反复重试或谎称已撤回。
+    这两类失败都会在结果里带一句 `hint` 说明卡在哪，**如实转告用户**，别反复重试或谎称已撤回。
     撤回是"让这条消息不该存在"；只是**内容写错**就别撤回重发，用下面第 20 条的编辑。
 19. **改多维表格里已有的格子（改状态/改错的值/补空格，不是新增一行）**：用户说"把张三那行状态改成
     已完成""金额写错了改成 12000""把这几行都标记成已归档"时，**别新增一行**
@@ -596,15 +605,17 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
     传该用户的 `user_key` 并让其授权）、一条消息最多编辑 **20 次**、超过企业管理员配置的**可编辑时限**就只能撤回重发。
     图片/文件/音频/视频消息**不能编辑**，只能撤回重发。失败时结果里带 `hint` 指明卡在哪，如实转告。
 21. **给消息加表情回应（收到/已处理，不占一条消息）**：用户说"收到就行""给这条点个赞"
-    "标记一下已处理"时，用 `feishu_message_react(message_id=<om_...>, emoji_type=<表情>)`——回应落在原气泡上，
+    "标记一下已处理"时，加/列回应走 `feishu_api` 打 `POST` / `GET /open-apis/im/v1/messages/:message_id/reactions`
+    （body 嵌一层 `{"reaction_type": {"emoji_type": "..."}}`，见 `feishu-message` 技能「表情回应」）——回应落在原气泡上，
     **不往会话里加消息**，而回一句"好的"会。取消用
     `feishu_message_unreact(message_id, emoji_type=<同一个表情>)`（也可传 `reaction_id`）；
-    看谁回应了什么用 `feishu_message_reactions(message_id)`（也是拿 `reaction_id` 的地方，可当轻量点名/投票读）。
+    看谁回应了什么也用上面 `GET` 端点（是拿 `reaction_id` 的地方，可当轻量点名/投票读）。
     `emoji_type` 传飞书键（`THUMBSUP`/`OK`/`DONE`/`OnIt`/`THANKS`/`Fire`/`PARTY`）、中文（`赞`/`收到`/`完成`/`感谢`）
-    或表情本身（`👍`/`✅`/`🎉`）都行，工具会归一化——**飞书这套枚举大小写不统一**（`THUMBSUP` 全大写但
-    `Fire`/`OnIt` 首字母大写），照字面猜十次错九次，报 231001。
+    或表情本身（`👍`/`✅`/`🎉`）——**飞书这套枚举大小写不统一**（`THUMBSUP` 全大写但
+    `Fire`/`OnIt` 首字母大写），照字面猜十次错九次，报 231001；`feishu_message_unreact` 会把中文/表情
+    归一化，`feishu_api` 裸调端点则必须给飞书键。
     只有**加回应的那个身份**能取消它，所以取消时传当初加回应用的同一个 `user_key`；
-    同一个表情被多人加过时工具**不猜**，返回 candidates 让你挑 `reaction_id`。
+    同一个表情被多人加过时 `feishu_message_unreact` **不猜**，返回 candidates 让你挑 `reaction_id`。
 22. **发图片/文件/语音/视频/富文本消息（不只是纯文本和卡片）**：
     - `feishu_message_send_image(receive_id, image_path)`——把**本机图片**发成图片消息（图表、截图、照片）。
       纯文本里放个 URL 只是个链接，云盘文件也不是聊天附件，只有这个能在会话里真的显示一张图。≤10MB。
@@ -632,23 +643,25 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
     两条飞书硬限制绕不过去，工具会带 `hint`：只能查**机器人自己发**的消息（别人发的报 230012），且只能查
     **7 天内**发的（超期报 230033）。碰上这两种就**如实说查不了**，别编一个已读数字。只要已读名单、不要未读时
     传 `include_unread=False`，省两次调用（大群里尤其值）。
-24. **置顶/取消置顶消息**：用户说"把这条置顶""钉在群顶上""取消置顶"时，用
-    `feishu_message_pin(message_id)` / `feishu_message_unpin(message_id)`，想知道群里现在置顶了什么用
-    `feishu_message_pins(chat_id)`（按置顶时间倒序，只给 message_id + 谁置顶的 + 什么时候，**不含消息正文**，
-    要正文再去 `feishu_message_list` 读）。公告、会议链接、群规这类"别让它被刷走"的内容用置顶，比反复重发干净。
+24. **置顶/取消置顶消息**：用户说"把这条置顶""钉在群顶上""取消置顶"时，走 `feishu_api`：
+    置顶 `POST /open-apis/im/v1/pins`（**body** 放 `message_id`）、取消 `DELETE /open-apis/im/v1/pins/:message_id`
+    （**路径**放）、想知道群里现在置顶了什么用 `GET /open-apis/im/v1/pins`（`chat_id` 必填；按置顶时间倒序，
+    只给 message_id + 谁置顶的 + 什么时候，**不含消息正文**，要正文再按消息 id 读；见 `feishu-message` 技能「置顶」）。
+    公告、会议链接、群规这类"别让它被刷走"的内容用置顶，比反复重发干净。
     两个方向都是**幂等**的：已置顶的再置顶返回原来那条 pin；**没置顶过的取消置顶飞书也报成功**——所以取消成功
-    只说明"现在没置顶"，**别据此说"我把置顶取消了"**，要确认原本有没有先查 `feishu_message_pins`。
+    只说明"现在没置顶"，**别据此说"我把置顶取消了"**，要确认原本有没有先查 `GET .../pins`。
     最常见的失败是 **230046：多数群只允许群主/管理员置顶**，机器人通常两者都不是——这时传该管理员本人的
     `user_key`（并让其完成授权）以其身份操作，或让群主放开权限；`hint` 会说明卡在哪一种。
-25. **把消息转发给别人/别的群**：用户说"把这条转给张三""同步到那个群""把刚才那段讨论转给老板"时，用
-    `feishu_message_forward(message_id, receive_id)`，一次转**多条**用
-    `feishu_message_merge_forward(message_ids_json, receive_id)`（合并成一张折叠卡片）。
+25. **把消息转发给别人/别的群**：用户说"把这条转给张三""同步到那个群""把刚才那段讨论转给老板"时，
+    走 `feishu_api`：单条 `POST /open-apis/im/v1/messages/:message_id/forward`（query `receive_id_type`、
+    body `receive_id`）、多条合并 `POST /open-apis/im/v1/messages/merge_forward`（body `receive_id` +
+    `message_id_list`，合并成一张折叠卡片；见 `feishu-message` 技能「转发」）。
     **别读出内容再用 `feishu_message_send` 重发**——那样会丢掉**原作者署名**，消息里的图片/附件也会**悄悄没了**；
     转发能原样保留，这在"把客户这句话转给研发"这种要留证据的场合是关键差别。代价是转发**不能改内容**，
-    要加说明就转发完再单独发一条。目标类型按前缀自动判断：群 `oc_`、私聊 `ou_`、`on_`、邮箱，以及
-    **话题 `omt_`**（转发是唯一能直接投进话题的接口，`feishu_message_send` 做不到）。
+    要加说明就转发完再单独发一条。目标类型按前缀选：群 `oc_`→`chat_id`、私聊 `ou_`→`open_id`、`on_`→`union_id`、
+    邮箱→`email`，以及**话题 `omt_`→`thread_id`**（转发是唯一能直接投进话题的接口，`feishu_message_send` 做不到）。
     合并转发一次 1-100 条，且这些消息必须来自**同一个会话**（跨群报 230069，普通消息混话题回复报 230067）；
-    被飞书单独拒掉的 id 会放在 `invalid_message_ids` 里返回，**报数前先看这个字段**。
+    被飞书单独拒掉的 id 会放在返回的 `invalid_message_id_list` 里，**报数前先看这个字段**。
     红包/投票/语音/日程转让/系统消息/加密消息，以及合并转发里的子消息，**都不能转发**（230061/230064），
     碰上就如实转告 `hint`，别改用重发假装转发成功。
 26. **在文档里画图表**：一个工具 `feishu_chart(chart_type, data_json, title, options_json, document_id, ...)`

@@ -177,7 +177,7 @@ jobs:
           name: psi-agent-pyinstaller-windows-latest
           path: dist-exe
       - shell: cmd
-        run: copy dist-exe\psi-agent.exe "agents\feishu\psi-agent.exe"
+        run: copy dist-exe\psi-agent.exe "agents\desktop\psi-agent.exe"
       - uses: msys2/setup-msys2@v2
         id: msys2
         with:
@@ -190,10 +190,10 @@ jobs:
             mingw-w64-ucrt-x86_64-nodejs mingw-w64-ucrt-x86_64-uv
       - shell: pwsh
         run: |
-          robocopy "${{ steps.msys2.outputs.msys2-location }}" "agents\feishu\msys64" /E /NFL /NDL /NJH /NJS /NP
+          robocopy "${{ steps.msys2.outputs.msys2-location }}" "agents\desktop\msys64" /E /NFL /NDL /NJH /NJS /NP
           if ($LASTEXITCODE -ge 8) { exit 1 } else { exit 0 }
       - shell: pwsh
-        run: Remove-Item -Recurse -Force "agents\feishu\msys64\var\cache\pacman\pkg\*" -ErrorAction SilentlyContinue
+        run: Remove-Item -Recurse -Force "agents\desktop\msys64\var\cache\pacman\pkg\*" -ErrorAction SilentlyContinue
       - run: choco install innosetup --no-progress
       - name: Build launcher with updater config
         shell: pwsh
@@ -204,7 +204,8 @@ jobs:
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=amd64"
-          & ".github\inno-setup\build-haitun-launcher.ps1"
+          & ".github\inno-setup\build-haitun-launcher.ps1" `
+            -WorkspaceDir (Resolve-Path "agents\desktop")
       # Keep the Windows path parallel to macOS: sign the executable after it
       # has been assembled and before it is embedded in the installers. OIDC is
       # deliberately restricted to main, matching the Azure federated
@@ -255,7 +256,7 @@ jobs:
             throw 'Set repository Variable GLOBALSIGN_TSA_URL.'
           }
           $files = @(
-            (Resolve-Path 'agents\feishu\psi-agent.exe').Path,
+            (Resolve-Path 'agents\desktop\psi-agent.exe').Path,
             (Resolve-Path '.github\inno-setup\haitun.exe').Path
           )
           & $env:AZURE_SIGN_TOOL sign `
@@ -277,7 +278,7 @@ jobs:
           SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
         run: |
           # 只把 key 写进打包目录，不落库；PR 分支没有 secret 时生成空 .env，打包照常成功。
-          $path = "agents\feishu\.env"
+          $path = "agents\desktop\.env"
           $lines = [System.Collections.Generic.List[string]]::new()
           if ($env:SERPER_API_KEY) {
             $lines.Add("SERPER_API_KEY=$env:SERPER_API_KEY")
@@ -291,18 +292,40 @@ jobs:
       - name: Build installers
         shell: pwsh
         run: |
+          $sourceIss = ".github\inno-setup\haitun.iss"
+          $desktopIss = ".github\inno-setup\haitun-desktop.iss"
+          $definition = [System.IO.File]::ReadAllText($sourceIss)
+          $definition = $definition.Replace('agents\feishu', 'agents\desktop')
+          if ($definition.Contains('agents\feishu')) {
+            throw 'Desktop installer definition still references agents\feishu.'
+          }
+          [System.IO.File]::WriteAllText(
+            $desktopIss,
+            $definition,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          $required = @(
+            'agents\desktop\systems\system.py',
+            'agents\desktop\tools\memory_search.py',
+            'agents\desktop\tools\_fusion_memory\runtime.py'
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Desktop agent package is incomplete: $path"
+            }
+          }
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          & $iscc /Qp /O"installer-output" ".github\inno-setup\haitun.iss"
+          & $iscc /Qp /O"installer-output" $desktopIss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $iscc /Qp /DCOMPONENT_APP /O"installer-output" ".github\inno-setup\haitun.iss"
+          & $iscc /Qp /DCOMPONENT_APP /O"installer-output" $desktopIss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $iscc /Qp /DCOMPONENT_MSYS /O"installer-output" ".github\inno-setup\haitun.iss"
+          & $iscc /Qp /DCOMPONENT_MSYS /O"installer-output" $desktopIss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Collect version files
         shell: pwsh
         run: |
-          Copy-Item -Force "agents\feishu\haitun-version.txt" "installer-output\"
-          Copy-Item -Force "agents\feishu\msys64\msys-version.txt" "installer-output\"
+          Copy-Item -Force "agents\desktop\haitun-version.txt" "installer-output\"
+          Copy-Item -Force "agents\desktop\msys64\msys-version.txt" "installer-output\"
       - name: Sign and verify installer executables
         if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         shell: pwsh
@@ -354,7 +377,7 @@ jobs:
             throw 'Windows SDK signtool.exe was not found for signature verification.'
           }
           $applicationFiles = @(
-            (Resolve-Path 'agents\feishu\psi-agent.exe').Path,
+            (Resolve-Path 'agents\desktop\psi-agent.exe').Path,
             (Resolve-Path '.github\inno-setup\haitun.exe').Path
           )
           foreach ($file in ($applicationFiles + $files)) {
@@ -391,9 +414,9 @@ jobs:
           # 与 Windows 侧同一套做法: 只写进打包目录, 不落库; PR 分支没有 secret
           # 时生成空 .env, 打包照常成功。
           if [ -n "$SERPER_API_KEY" ]; then
-            printf 'SERPER_API_KEY=%s\n' "$SERPER_API_KEY" > agents/feishu/.env
+            printf 'SERPER_API_KEY=%s\n' "$SERPER_API_KEY" > agents/desktop/.env
           else
-            : > agents/feishu/.env
+            : > agents/desktop/.env
           fi
           echo "runtime .env prepared (SERPER_API_KEY present: ${SERPER_API_KEY:+yes})"
       # 公证默认全开, 特性分支和 PR 也公证。
@@ -450,8 +473,61 @@ jobs:
           APP_SPECIFIC_PASSWORD: ${{ secrets.APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          desktop_launcher=.github/macos/launcher-desktop.sh
+          awk '
+            BEGIN { inserted = 0 }
+            $0 == "if [ ! -d \"$AGENT_DIR\" ]; then" && !inserted {
+              print "# PyInstaller desktop migration: preserve the former Feishu package, then reseed."
+              print "if [ -d \"$AGENT_DIR\" ] &&"
+              print "   [ -f \"$AGENT_DIR/tools/_fusion_memory_mcp.py\" ] &&"
+              print "   [ ! -f \"$AGENT_DIR/tools/_fusion_memory/runtime.py\" ]; then"
+              print "    legacy=\"$SUPPORT_ROOT/agent.pre-desktop\""
+              print "    suffix=0"
+              print "    while [ -e \"$legacy\" ]; do"
+              print "        suffix=$((suffix + 1))"
+              print "        legacy=\"$SUPPORT_ROOT/agent.pre-desktop.$suffix\""
+              print "    done"
+              print "    if ! mv \"$AGENT_DIR\" \"$legacy\"; then"
+              print "        echo \"launcher: ERROR cannot preserve legacy agent package\" >>\"$LOG_DIR/launcher.log\" 2>/dev/null || true"
+              print "        exit 1"
+              print "    fi"
+              print "    echo \"launcher: preserved legacy agent package at $legacy\" >>\"$LOG_DIR/launcher.log\" 2>/dev/null || true"
+              print "fi"
+              inserted = 1
+            }
+            { print }
+            END { if (!inserted) exit 42 }
+          ' .github/macos/launcher.sh > "$desktop_launcher"
+
+          desktop_build=.github/macos/build-dmg-desktop.sh
+          sed \
+            -e 's|WORKSPACE_SRC="$REPO_ROOT/agents/feishu"|WORKSPACE_SRC="$REPO_ROOT/agents/desktop"|' \
+            -e 's|"$MACOS_DIR/launcher.sh"|"$MACOS_DIR/launcher-desktop.sh"|' \
+            .github/macos/build-dmg.sh > "$desktop_build"
+          if ! grep -Fq 'WORKSPACE_SRC="$REPO_ROOT/agents/desktop"' "$desktop_build"; then
+            echo "::error::Desktop dmg builder does not select agents/desktop"
+            exit 1
+          fi
+          if ! grep -Fq '"$MACOS_DIR/launcher-desktop.sh"' "$desktop_build"; then
+            echo "::error::Desktop dmg builder does not select the migration launcher"
+            exit 1
+          fi
+          if ! grep -Fq 'agent.pre-desktop' "$desktop_launcher"; then
+            echo "::error::Desktop launcher does not preserve the legacy Feishu agent"
+            exit 1
+          fi
+          for path in \
+            agents/desktop/systems/system.py \
+            agents/desktop/tools/memory_search.py \
+            agents/desktop/tools/_fusion_memory/runtime.py; do
+            if [ ! -f "$path" ]; then
+              echo "::error::Desktop agent package is incomplete: $path"
+              exit 1
+            fi
+          done
+          bash -n "$desktop_launcher" "$desktop_build"
           chmod +x dist-bin/psi-agent
-          bash .github/macos/build-dmg.sh
+          bash "$desktop_build"
       # 只放 dmg。这个 artifact 是「给人下载去装的东西」, 从 Actions 页面下下来解开
       # 应该就是一个安装包, 不该再多一个文件让人猜它是不是要一起拷走。
       # `haitun-version.txt` 是发布流水线的元数据 (oss-publish 用它核对两平台版本

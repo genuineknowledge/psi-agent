@@ -61,9 +61,17 @@ async def _write_chat_sse_with_keepalive(
                     with anyio.fail_after(keepalive_sec):
                         chunk = await recv.receive()
                 except TimeoutError:
-                    with suppress(Exception):
+                    # Keepalive must still detect a gone client. Swallowing every
+                    # write failure here left ChatManager / Session running after
+                    # SPA Stop, so the early-committed user message stayed in
+                    # history and the next send saw both the aborted question and
+                    # the edited one (模型把两段话一起想).
+                    try:
                         await resp.write(b": keepalive\n\n")
-                        logger.debug(f"Chat SSE keepalive for session {session_id!r}")
+                    except Exception as e:
+                        logger.info(f"Chat SSE client gone during keepalive for session {session_id!r}: {e!r}")
+                        raise
+                    logger.debug(f"Chat SSE keepalive for session {session_id!r}")
                     continue
                 except anyio.EndOfStream:
                     break

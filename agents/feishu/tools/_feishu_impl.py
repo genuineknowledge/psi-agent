@@ -585,6 +585,9 @@ _SCOPE_CATALOG: dict[str, tuple[str, ...]] = {
         "contact:user.phone:readonly",
         "contact:user.email:readonly",
     ),
+    # Mindnote (思维笔记) reading only works with a user-level token; the tenant
+    # token alone gets 404. This capability backs feishu_worktree_read.
+    "mindnote_read": ("mindnote:node:read",),
 }
 
 
@@ -1127,4 +1130,9 @@ from _feishu.task import (  # noqa: E402,F401
     _build_create_task_request,
     _due_to_ms,
     create_task_impl,
+)
+from _feishu.worktree import (  # noqa: E402,F401
+    _node_text,
+    build_people,
+    read_worktree_impl,
 )

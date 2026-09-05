@@ -749,7 +749,7 @@ Session 标题由服务端 `/titles` 端点维护，不在浏览器 localStorage
 GET /ais + GET /sessions → 恢复上次 AI/Session → 无 AI 时由 SPA 自行 POST /ais（打开即用，见 desktop/spa/AGENTS.md）
 → 仍无 AI 则弹窗 Hub「大模型」→ 恢复 titles / sidebar / theme / active IDs
 ```
-Chat SSE 在长空闲时写 `: keepalive` 注释，**不得**对上游 `agen.__anext__()` 使用 `fail_after`（会拆掉 ChatManager，导致前端「正在同步」挂死）。打开即用默认模型 / 域名由 SPA 维护，Gateway 不内置默认 AI。
+Chat SSE 在长空闲时写 `: keepalive` 注释，**不得**对上游 `agen.__anext__()` 使用 `fail_after`（会拆掉 ChatManager，导致前端「正在同步」挂死）。keepalive 写失败（客户端已断）**必须向上抛**（刻意为之）：若 `suppress` 掉，ChatManager/Session 会在 SPA Stop 后继续跑完，早期落盘的 user 行留在 history，下一轮改写提问仍会带上撤回前那句。打开即用默认模型 / 域名由 SPA 维护，Gateway 不内置默认 AI。
 
 服务端通过 AppData `{appdata}/state/latest.json` 自动持久化 AI、Session、Title 状态（legacy cwd `state/` 双读），重启后自动恢复。对话历史经 AppData `histories/` JSONL 独立持久化。浏览器 localStorage 仅保留 UI 状态（active ids、sidebar 折叠、主题偏好）和对话历史缓存。
 

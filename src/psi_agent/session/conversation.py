@@ -146,6 +146,20 @@ class Conversation:
         # Dropped lines have to leave the file; appending cannot remove anything.
         self._rewrite_needed = True
 
+    def truncate_to(self, length: int) -> None:
+        """Keep only ``messages[:length]`` (drop the rest).
+
+        Used when an early-committed turn is abandoned (Stop / disconnect):
+        the user row was already on disk, so ``rollback()`` alone cannot
+        remove it — the snapshot was cleared by that early ``commit()``.
+        """
+        if length < 0:
+            raise ValueError(f"truncate_to length must be >= 0, got {length}")
+        self._begin_if_needed()
+        if length < len(self.messages):
+            del self.messages[length:]
+            self._rewrite_needed = True
+
     def replace_system(self, content: str) -> None:
         """Replace the system message (``messages[0]``) in-place,
         or add it if the conversation is empty.  Automatically
@@ -236,7 +250,7 @@ class Conversation:
         lines are **appended**; a commit then costs the new messages instead of
         the whole file (a 66MB session used to write 66MB per commit, and one
         turn commits several times).  When anything before the tail changed —
-        ``replace_system`` / ``trim_after`` / ``rollback`` — or the file no
+        ``replace_system`` / ``trim_after`` / ``truncate_to`` / ``rollback`` — or the file no
         longer looks the way we left it, the file is rewritten in full through
         a tempfile + ``replace``.
 

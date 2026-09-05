@@ -36,12 +36,13 @@
 | 账户区 | 头像菜单合一 | 头像菜单仅资料/登录；**模型池**与**设置**为侧栏独立快捷入口 |
 | 默认工作区 | 无 / 必须先选 | 启动读 ``GET /defaults``.workspace（Gateway 软默认 `{Desktop}/haitun交付`，**只宣布不建目录**；首个 Session/对话时服务端再 mkdir）；遗留 `*-workspace` / 字面量 `workspace` / `haitun-workspace` 会忽略 |
 | 工作区切换 | 侧栏打开 PathPicker | 设置「切换工作区」→ 全屏选择页；**浏览**走 `/workspace/places` + `/browse`（对齐 v1）；偏好 `gw-v2-workspace` |
-| 顶栏新建 | — | 右上角「新建任务/聊天」+ 侧栏同入口（`⌘/Ctrl N`）；**分屏聚焦**时对话栏「收起」旁也有同款入口（左栏收起后**仅**保留展开上下文钮，不再并排再建入口） |
+| 顶栏新建 | — | 右上角「新建任务/聊天」+ 侧栏同入口（**刻意为之**：不绑 `⌘/Ctrl N`，与 Edge「打开新窗口」冲突；侧栏按钮亦不展示该快捷键）；**分屏聚焦**时对话栏「收起」旁也有同款入口（左栏收起后**仅**保留展开上下文钮，不再并排再建入口） |
 | Agent 包 | 与 workspace 合一 | ``GET /defaults``.agent → 新建任务/聊天 ``POST /sessions`` 带 `agent`（可与用户工作区不同）。设置「切换 Agent 包」与工作区同区；全屏 `WorkspaceGate kind=agent`；偏好 `gw-v2-agent`（覆盖 defaults）。**刻意为之**：只影响**新建** Session；已有任务仍用创建时绑定的 `agent` |
 | 任务模板库 | — | 卡片正文/分类/交付物/页脚等字号 ≥12–14px（勿回退 8–10px 设计稿字号）。「新建模板」抽屉经 `createPortal` 挂 `document.body`：全屏遮罩 + 右侧贴边抽屉（勿嵌在 `.main-stage` 内导致四边露白） |
 
 设置弹窗保留**切换工作区**与**切换 Agent 包**（真实功能）；设置 / 高级设置是**同一弹窗的两个页面**（点「高级设置」换页、可返回设置；`Esc` 先回主页再关闭），不要叠第二个 `HubDialog`。通知/交付位置等占位项已去掉，避免空壳菜单。
 | 任务删除 | 侧栏 trash → DELETE session + 清本地 hist | 侧栏/卡片删除 → ``DELETE /sessions/{id}``（顺带清 JSONL + 标题）+ 清本地状态 |
+| 任务置顶 | 侧栏 pin → `gw-pinned-session-ids` | 侧栏历史任务行 pin 钮（`TaskRow`）→ `gw-v2-pinned-task-ids`；**只排侧栏列表**（置顶先、再原序），**不改**卡片栈顺序；bootReady 后再 prune 失效 id（冷启动 `tasks=[]` 时不写盘） |
 | 消息操作栏 | 助手：赞/踩/复制/重新生成；用户：复制 + 失败重试 | 同左（`FocusChatThread`）；feedback 仅内存态，刷新历史后不保留 |
 | 停止生成 | 输入栏 Send ↔ Stop 切换 | 同左：流式时发送键变为停止（`abortRef.abort()`）；停止后草稿回填输入框 |
 | 任务翻页 | — | 总览：卡片栈两侧 `card-arrow`。**分屏/聚焦**：左右箭头贴在**对话面板**（`context-chat`）左右缘——随对话区走（上下文栏开则在右栏内；侧栏+上下文都收起则贴主区左右）。顶栏另有 `NN / MM` 翻页器。键盘 `←`/`→`（输入框内 `Alt+←/→`）。窄屏隐藏侧箭头，保留顶栏翻页器 |
@@ -50,8 +51,9 @@
 
 ```text
 任务卡          ↔  Gateway Session（同 workspace；可选独立 agent 包）
-新建任务/聊天   ↔  POST /sessions（可带 agent）+ POST /titles + 首条 chat SSE（文案与附件同总览对话框：`File[]` multipart）；**首条发送后立刻进入分屏聚焦**（左上下文 / 右对话），不再停在新建页本地气泡
+新建任务/聊天   ↔  POST /sessions（可带 agent）+ POST /titles（首条文案的 `titleFromPrompt`，与乐观 UI 一致）+ 首条 chat SSE（文案与附件同总览对话框：`File[]` multipart）；**首条发送后立刻进入分屏聚焦**（左上下文 / 右对话），不再停在新建页本地气泡
 卡片内对话      ↔  POST /sessions/{id}/chat（multipart chunks）
+任务台标题      ↔  **刻意为之**：对标 DeepSeek——取聊天里**首条** user 文案（`titleFromHistoryMessages`）。`ensureHistory` / `refreshHistory` / 回合成功后同步 `POST /titles`；**无 user 的空 chat 默认不改标题**（避免首条落盘前抢读把乐观标题盖成「新任务」）。**Stop 撤回**传 `emptyMeansDefault` 才回落「新任务」。**不再**用 `POST /titles/generate` 另开 LLM 起标题。
 任务历史文案    ↔  GET /sessions/{id}/history（AppData `histories/` 优先 + legacy 双读）
 任务卡中间步 N/M ↔  GET /sessions/{id}/todos（``todo`` tool → AppData `todos/{id}.json`，legacy `.psi/todos` 双读）
 分屏「任务历史」 ↔  GET /sessions/{id}/todo-segments（`todos/{id}.segments.json`；点选回放该段步骤）
@@ -105,7 +107,7 @@ Hub「使用免费模型」→ **保留**已连接真实模型；hydrateAiForSes
 
 - **用户消息**：悬停显示复制；发送失败（`failed`）时显示**红色回退箭头**（`RotateCcw`）。加载 `/history` 后经 `normalizeFailedTurns` 把「有 user、无完整 agent 回复」标成 `failed`/`incomplete`（与 spa v1 同款）。**点击箭头 ≠ 立刻重发**：效果对齐 Stop——撤回该 user（及空 agent stub），文案与附件**顶掉**输入框里半成品草稿并 focus，由用户再按发送。
 - **助手消息**：完整回复结束后显示操作栏——点赞 / 点踩（互斥切换）、重新生成（丢掉该助手气泡并用上一条用户消息重跑 SSE）、复制。
-- **停止生成**：流式进行中输入栏右侧为红色停止键（替换发送）。中止后撤回本轮乐观 user+agent，把原文案与附件还原到输入框（对齐 Cursor）。**刻意为之**：停止键用 `pointerdown` + 短时 `suppressSubmit`，避免 Stop 变回 Send 后同一次点击误触重发（旧逻辑清空输入框，误触 submit 是空操作所以「一点就停」；回填草稿后误触会立刻再跑一轮，看起来像打断后又在气泡里重出）。另用 `streamEpoch` / `signal.aborted` 丢掉中止后的迟到 SSE。网络等非 Abort 失败仍标记 `failed` / 可重试。
+- **停止生成**：流式进行中输入栏右侧为红色停止键（替换发送）。中止后撤回本轮乐观 user+agent，把原文案与附件还原到输入框（对齐 Cursor）——**不**标 `failed`、不留红箭头气泡。**刻意为之**：Stop 后不立刻 `refreshHistory`（会与 Session abandon 竞态，把尚未剥离的 user 灌回并被 `normalizeFailedTurns` 标成异常）；标题只按本地剩余气泡改。停止键用 `pointerdown` + 短时 `suppressSubmit`，避免 Stop 变回 Send 后同一次点击误触重发。另用 `streamEpoch` / `signal.aborted` 丢掉中止后的迟到 SSE。网络等非 Abort 失败仍标记 `failed` / 可重试。
 - **粘贴 / 拖放附件**：对话栏 / 新建任务/聊天输入支持 `Ctrl/Cmd+V` 粘贴，以及从资源管理器或其他窗口拖入文件——均等价于回形针选文件，进入同一附件 chip 再走 multipart；纯文字粘贴不拦截。识图等由 workspace tool 处理。拖入时输入区高亮并提示「松开以添加附件」（`useComposerFileDrop` + `filesFromClipboard`）。
 - **换行**：输入为 `textarea`；`Enter` 发送，`Ctrl/Cmd+Enter` 换行（`Shift+Enter` 亦换行）。
 - **流式吸底（对齐 spa v1 / Cursor）**：`FocusChatThread` 距底 ≤60px 才跟随新内容滚底；手动上拉后不打断阅读；滚回底部恢复跟随。**发消息必跳底**：无论当前滚动位置，新增气泡切片里出现 `role=user` 即强制吸底并重新粘滞（`sendMessage` 一次追加 user+空 agent，不能只看 `messages.at(-1)`）。**直播思考框**（`.focus-chat-live-thinking`）同一规则：贴底才粘滞跟随思考增长；上拖断开、内容在下方继续生成；再拉回底恢复粘滞——禁止每 token 无条件 `scrollTop=scrollHeight`（会把框「粘死」）。

@@ -511,9 +511,7 @@ asks for information that only the assigner can settle (for example 截止时间
 验收标准, 资源或权限), treat it as a task feedback question, not a request to relay a message.
 Use the existing `arrangement_id`, call `assignment_feedback` with `action="create"` and
 `"notification_strategy": "blocking"`, and include the missing information, why it cannot be
-inferred, attempts as an array, impact, and 2-3 concrete options. 不要调用 `feishu_user_get`、
-不要调用 `feishu_message_send`, 不要调用 `feishu_message_send_card`, 不要调用 `feishu_message_reply` to
-ask the assigner on the recipient's behalf. The feedback tool notifies the assigner; 不要等待安排者
+inferred, attempts as an array, impact, and 2-3 concrete options. 不要调用 `feishu_message_send`, 不要调用 `feishu_message_send_card`, 不要调用 `feishu_topic_start` to ask the assigner on the recipient's behalf. The feedback tool notifies the assigner; 不要等待安排者
 回复, 不要让接收者 Session 保持占用。 Reply to the recipient immediately:
 “已提交反馈, 等待安排者处理。” If the tool fails, explain the failure and stop; never bypass
 the feedback thread with a manually sent card or message.

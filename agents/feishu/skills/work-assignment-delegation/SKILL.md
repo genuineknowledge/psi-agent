@@ -53,15 +53,15 @@ category: productivity
 12. 安排者答复后，原反馈卡片只读展示“已更新、待接收者确认”，不能在这张发给安排者且已经消费的卡片上生成接收者确认按钮。接收者从自己的 HaiTun 会话收到结果卡，核对更新后的理解并确认；确认后工具把同一反馈线程推进到可执行状态并原位更新双方卡片。
 13. 反馈卡片可见正文使用任务标题，不显示 `arrangement_id`、`task_id` 等内部原始 ID；这些 ID 只保留在隐藏的回调关联字段中。任务标题和反馈者姓名由工具按 `arrangement_id` 从权威安排记录中解析，不需要也不应该由对话提供或推测；读不到真实标题时显示“当前工作安排”。卡片上的每条反馈会标注可确认的姓名与角色；身份无法唯一确认时只显示角色，不要在 `raw_content` 里再手写“接收者：”这类前缀。
 
-接收者缺口询问：如果当前会话的接收者在已有安排上下文中询问截止时间、任务范围、交付格式、验收标准、资源或权限，且这些信息无法从安排、项目资料或组织资料确定，应把问题写入同一 `arrangement_id` 的 `assignment_feedback`，不能代接收者给安排者发普通消息或手工发卡。反馈工具负责通知安排者；当前回合立即告知接收者“已提交反馈，等待安排者处理”，不得等待真人回复或阻塞会话。工具返回校验错误时只修正同一工具的参数并重试一次，不能改用 `feishu_user_get`、`feishu_message_send`、`feishu_message_send_card` 或 `feishu_message_reply` 绕过反馈线程。
+接收者缺口询问：如果当前会话的接收者在已有安排上下文中询问截止时间、任务范围、交付格式、验收标准、资源或权限，且这些信息无法从安排、项目资料或组织资料确定，应把问题写入同一 `arrangement_id` 的 `assignment_feedback`，不能代接收者给安排者发普通消息或手工发卡。反馈工具负责通知安排者；当前回合立即告知接收者“已提交反馈，等待安排者处理”，不得等待真人回复或阻塞会话。工具返回校验错误时只修正同一工具的参数并重试一次，不能改用 `feishu_message_send`、`feishu_message_send_card` 或 `feishu_topic_start` 绕过反馈线程。
 
 接收者流程：
 
 1. 工作安排卡片已经分区包含安排者原始内容、Agent 整理的背景/目标/缺口/风险/行动项和参考资料；只有需要刷新状态或继续讨论时才调用 `assignment_get`。
 2. 不要重复输出卡片已经完整展示的详情，也不要让接收者等待模型重新组织同一份内容。
 3. 明确区分事实、假设和待确认事项；缺失信息只标成缺口，不补写成事实。
-4. 接收者确认收到时，调用 `assignment_accept`。成功后不再调用 `feishu_task_create` 或 `assignment_transition`，避免重复任务和重复状态迁移。
-5. 需要方案时，协助接收者形成可评审方案，至少包括目标理解、影响范围、关键步骤、风险、验证方式和需要评审的问题。
+4. 接收者确认收到时，调用 `assignment_accept`。成功后不再经 `feishu_api` 另建 task v2 任务（`POST /open-apis/task/v2/tasks`），也不再调用 `assignment_transition`，避免重复任务和重复状态迁移。
+5. 需要方案时：先按 [`proposal-need-remind`](../proposal-need-remind/SKILL.md) 做中事/大事提醒(可跳过)；用户同意写方案后再用 [`proposal-writing-standard`](../proposal-writing-standard/SKILL.md) 协助形成可评审草案(多方案+分析；结构与硬闸门按该 skill)。不要在未提醒分级的情况下直接当成普通转达。
 6. 接收者确认方案后，调用 `assignment_transition`，其中 `transition_type: "submit_plan"`，并把方案写入 `plan`。
 7. 如果接收者明确不形成方案或任务不需要方案，调用 `assignment_transition`，其中 `transition_type: "close"`，并写入 `closure_reason`。不要调用 `closed_without_plan`，Memory 没有这个 transition。
 

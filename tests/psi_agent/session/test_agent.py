@@ -1478,6 +1478,61 @@ async def test_agent_rollback_restores_history_on_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_agent_abandons_user_message_on_cancel(tmp_path: Path) -> None:
+    """SPA Stop / aclose must drop the early-committed user row.
+
+    Otherwise the next send still sees the aborted question in history, and
+    the model thinks about both the withdrawn prompt and the edited one.
+    """
+    history_path = tmp_path / "histories" / "s.jsonl"
+    await anyio.Path(history_path.parent).mkdir()
+
+    conv = Conversation(
+        messages=[{"role": "system", "content": "original"}],
+        path=history_path,
+    )
+    await conv.save()
+
+    gate = anyio.Event()
+    # Hold the mock AI open until cleanup; do not sleep a wall clock —
+    # AppRunner.cleanup waits for in-flight handlers. (ty: Request has no
+    # wait_for_disconnection in stubs.)
+    hold = anyio.Event()
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(_sse_chunk(reasoning="thinking about 述职报告").encode())
+        gate.set()
+        await hold.wait()
+        return resp
+
+    mock_server = MockAIServer(tmp_path)
+    ai_socket = await mock_server.start(handler)
+    try:
+        agent = SessionAgent(
+            ai_client=AiClient(ai_socket),
+            tool_registry=ToolRegistry(),
+            conversation=conv,
+        )
+        run = agent.run_streamed({"role": "user", "content": "帮我写述职报告"})
+        async with aclosing(run):
+            async for chunk in run:
+                if chunk.reasoning:
+                    break
+            await gate.wait()
+
+        assert len(agent._conversation.messages) == 1
+        assert agent._conversation.messages[0]["role"] == "system"
+        loaded = await Conversation._load(history_path)
+        assert len(loaded) == 1
+        assert loaded[0]["role"] == "system"
+    finally:
+        hold.set()
+        await mock_server.cleanup()
+
+
+@pytest.mark.anyio
 async def test_agent_rollback_restores_pending_on_error(tmp_path: Path) -> None:
     async def handler(request: web.Request) -> web.StreamResponse:
         return web.Response(status=500)

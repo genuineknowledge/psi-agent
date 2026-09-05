@@ -89,6 +89,10 @@ async def test_agent_triggers_compaction_on_signal() -> None:
         all_content = "".join(c.content or "" for c in chunks)
         assert "Hello!" in all_content
 
+        # The turn only *records* the signal now; the LLM call happens off the
+        # session lock. Production reaches this via ``turn_lock``; this test
+        # drives ``run`` directly, so it drains explicitly.
+        await agent.drain_pending_compaction()
         await anyio.sleep(0.02)
 
         assert len(conv.messages) >= 4
@@ -204,6 +208,7 @@ async def test_agent_compaction_creates_system_if_missing() -> None:
         )
 
         [c async for c in agent.run({"role": "user", "content": "hi"})]
+        await agent.drain_pending_compaction()
 
         assert len(conv.messages) >= 3
         compacted_msg = conv.messages[-1]
