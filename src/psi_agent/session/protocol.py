@@ -71,7 +71,7 @@ over the same span measured p50=0, p90=5, p95=10, p99=32, tail up to the old
 40 covers that measured non-runaway tail (≈3x the production p90 of 13 and
 above the local p99 of 32) while remaining a real ceiling: a runaway now burns
 about a third of the old 128-round cost, and the observed runaway shapes
-(bash ×128, a 49-round turn holding the turn lock) are still stopped well
+(bash x128, a 49-round turn holding the turn lock) are still stopped well
 short of where they used to land.
 
 Hitting the limit therefore stays a visible, occasional event rather than
