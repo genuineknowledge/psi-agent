@@ -23,5 +23,10 @@ def test_compare_schema_person_and_number_types() -> None:
     assert fields["待确认"]["type"] == 1
     # 六项词表固定,一个不多一个不少
     assert {m for m in fields if m not in ("周期日期", "成员", "mentor", "结论", "待确认")} == {
-        "新开", "承接", "消失", "已闭环", "回流", "请假顺延",
+        "新开",
+        "承接",
+        "消失",
+        "已闭环",
+        "回流",
+        "请假顺延",
     }
