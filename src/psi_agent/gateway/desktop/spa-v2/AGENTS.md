@@ -32,7 +32,7 @@
 | 技术栈 | Vue 3 + Pinia | React 19 + Vite |
 | base | `/spa/` | `/spa-v2/` |
 | 对话 | Gateway SSE | 同左（同一套 API） |
-| 交付物 | 气泡 blob chip | 宝箱 UI；SSE `blob` 写入 `deliverables`；抽屉内按 blob 真实渲染（对齐 spa v1：MD/HTML/图片音视频/代码/CSV/PDF/DOCX/XLSX/PPTX，重库动态 `import()`；无 blob 时明确空态）。MD 预览与聊天气泡共用 `renderMd` + `.md-table-card`。**刻意为之**：`renderMd` 超链接 `target=_blank`；附件 chip / 预览抽屉仍本页。DOCX：`ignoreWidth` 去掉页宽；**页边距仍是绝对长度**，预览 CSS 强制 `section.docx` 宽 100% + 适中 padding，避免窄抽屉里正文挤成细条；表格/图片 `max-width:100%` 防横向溢出。有 `[SEND:]` path 时，气泡 chip / 宝箱 / 预览抽屉可「在文件夹中显示」（`POST /workspace/reveal`） |
+| 交付物 | 气泡 blob chip | 宝箱 UI；SSE `blob` 写入 `deliverables`；抽屉内按 blob 真实渲染（对齐 spa v1：MD/HTML/图片音视频/代码/CSV/PDF/DOCX/XLSX/PPTX，重库动态 `import()`；无 blob 时明确空态）。MD 预览与聊天气泡共用 `renderMd` + `.md-table-card`。**刻意为之**：`renderMd` 超链接 `target=_blank`；附件 chip / 预览抽屉仍本页。DOCX：`ignoreWidth` 去掉页宽；**页边距仍是绝对长度**，预览 CSS 强制 `section.docx` 宽 100% + 适中 padding，避免窄抽屉里正文挤成细条；表格/图片 `max-width:100%` 防横向溢出。视觉对齐 MD：`fitDocxTables()` 清 Word 绝对列宽、包 `.docx-table-scroll`、首行标 `docx-table-header-row`；host CSS 用深色标题 / 灰边卡片表 / 正文 15px（勿保留 Word 主题蓝标题）。有 `[SEND:]` path 时，气泡 chip / 宝箱 / 预览抽屉可「在文件夹中显示」（`POST /workspace/reveal`） |
 | 账户区 | 头像菜单合一 | 头像菜单仅资料/登录；**模型池**与**设置**为侧栏独立快捷入口 |
 | 默认工作区 | 无 / 必须先选 | 启动读 ``GET /defaults``.workspace（Gateway 软默认 `{Desktop}/haitun交付`，**只宣布不建目录**；首个 Session/对话时服务端再 mkdir）；遗留 `*-workspace` / 字面量 `workspace` / `haitun-workspace` 会忽略 |
 | 工作区切换 | 侧栏打开 PathPicker | 设置「切换工作区」→ 全屏选择页；**浏览**走 `/workspace/places` + `/browse`（对齐 v1）；偏好 `gw-v2-workspace` |
@@ -180,6 +180,8 @@ npm run dev
 ## 登录（C 端账号）
 
 界面 `components/user-hub/HubLoginPanel.tsx`（挂在 `UserHub` 头像菜单的「登录账号」），纯逻辑抽到 `services/authFlow.ts` 以便 vitest 直接测，验证码 6 格是 `HubOtpInput.tsx`。
+
+**手机号输入**：UI 已固定展示 `+86`，`onChange` 经 `normalizePhoneDigits()` 剥掉自动填充带入的 `+86`/`86`/`0086` 后再截 11 位；`autoComplete="tel-national"` 提示浏览器只填国内号。旧写法 `replace(/\D/).slice(0,11)` 会在剥区号**之前**截断，把 `+86138…` 收成 `8613800138`。
 
 **token 不进浏览器**：页面只 `fetch('/auth/*')` 打本机 Gateway，凭证由 Gateway 侧持有并加密落盘。两段式注册的 `tempToken` 同样扣在 Gateway 进程内 —— 页面脚本一旦持有凭证，XSS 即等于凭证泄露。所以 `verifyAuthCode` 的返回里没有 `tempToken`，`completeAuth` 也不需要传。
 
