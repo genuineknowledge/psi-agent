@@ -28,6 +28,7 @@ from loguru import logger
 from psi_agent.session.agent import SessionAgent, current_tool_ai_socket
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
+from psi_agent.session.runtime_context import get_user_message, workflow_was_touched
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 
@@ -75,6 +76,7 @@ from fusion_flow.workflow_runner import (  # noqa: E402
     compile_workflow,
 )
 from fusion_flow.workflow_runner import execute_workflow as _execute_workflow  # noqa: E402
+from workflow_sample import _record_workflow_authoring  # noqa: E402
 
 _STEP_SYSTEM_PROMPT = (
     "You execute exactly one assigned FusionFlow Agent step. "
@@ -1154,6 +1156,45 @@ def _workflow_definition_digest(
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _workflow_sample_plan(compiled: CompiledWorkflow) -> list[str]:
+    """Build the public plan metadata stored with a captured workflow sample.
+
+    This list is deliberately separate from the execution plan used by the
+    runner. It is only a human-readable summary for the local JSON record:
+    the compiled graph still controls execution, and no model self-report or
+    private chain-of-thought is involved.
+    """
+
+    # These fixed boundary entries make the lifecycle clear even for an empty
+    # graph; one generated string below describes each compiled graph step.
+    plan = ["Validate the workflow declaration"]
+    plan.extend(
+        f"Execute step {step.step_id} ({compiled.executor_kinds[step.executor_id]})" for step in compiled.graph.steps
+    )
+    plan.append("Return the declared output artifacts")
+    return plan
+
+
+async def _record_workflow_sample_if_needed(
+    flow_path: str,
+    compiled: CompiledWorkflow,
+) -> None:
+    """Persist authoring context before dispatch, best-effort and fail-open."""
+
+    try:
+        result = await _record_workflow_authoring(
+            flow_path,
+            _workflow_sample_plan(compiled),
+            get_user_message(),
+            workflow_touched=workflow_was_touched(flow_path),
+        )
+    except Exception as error:
+        logger.warning(f"Could not record local workflow authoring sample: {error!r}")
+    else:
+        if result is not None:
+            logger.info("Recorded local workflow authoring sample")
 
 
 def _resource_payload(context: CompletionContext) -> dict[str, list[str]]:
@@ -2639,6 +2680,7 @@ async def run_flow(
     inputs = _parse_mapping(inputs_json, label="inputs_json")
     resource_capacities = _parse_resource_capacities(resource_capacities_json)
     compiled = _compile_workflow_for_run(source, flow_path=flow_path)
+    await _record_workflow_sample_if_needed(flow_path, compiled)
     instruction_files = await _materialize_instruction_files(compiled, flow_path)
     initial_checkpoint = create_execution_checkpoint(
         generate_plan(compiled.graph),
