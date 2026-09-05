@@ -115,6 +115,7 @@ extend-exclude = [
     # (byte-identical); generated code is not hand-maintained, so it is
     # excluded on both paths.
     "agents/desktop/skills/workflow/fusion_flow/generated",
+    "*.md",
 ]
 
 [tool.ruff.lint]
