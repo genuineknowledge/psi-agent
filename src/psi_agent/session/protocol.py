@@ -52,21 +52,32 @@ __all__ = [
 ]
 
 
-DEFAULT_MAX_TOOL_ROUNDS = 20
+DEFAULT_MAX_TOOL_ROUNDS = 40
 """Default ceiling on agent-loop rounds per turn.
 
-Measured against real traffic rather than guessed: rounds per turn came out at
-p50=3, p90=13, max=49.  The previous default of 128 sat so far above the
-distribution that it could never be reached — a runaway loop burned 128 model
-calls before stopping, so in practice there was no ceiling at all.  20 sits above
-p90 and leaves normal turns untouched while capping a runaway at roughly a sixth
-of the old cost.
+Raised from 20 to 40 on 2026-09-05.  20 replaced 128 after real-traffic
+measurements (rounds per turn p50=3, p90=13, observed max=49): 128 sat so far
+above the distribution that a runaway burned 128 model calls before stopping —
+in practice there was no ceiling at all — while 20 sat above p90 and capped a
+runaway at roughly a sixth of the old cost.
 
-It does *not* sit above the observed max, and that is deliberate: a 49-round turn
-is the shape this limit exists to stop.  Hitting the limit therefore moves from
-"never" to "occasionally", which is why the stop is reported explicitly to the
-user (``MAX_ROUNDS_NOTICE``) instead of just to the log.  Callers that legitimately
-need more rounds should pass ``max_tool_rounds`` explicitly.
+Both workspace tool surfaces have since grown past the traffic that number was
+measured against (ToC desktop ≈90 and ToB feishu ≈190 exposed tools, with
+tool-discovery chains, browser_* interaction tools and multi-step SOP skills),
+and normal turns began reaching 20 in routine use.  A 1000-turn local sample
+over the same span measured p50=0, p90=5, p95=10, p99=32, tail up to the old
+128 cap — 1.9% of turns exceeded 20 rounds.
+
+40 covers that measured non-runaway tail (≈3x the production p90 of 13 and
+above the local p99 of 32) while remaining a real ceiling: a runaway now burns
+about a third of the old 128-round cost, and the observed runaway shapes
+(bash ×128, a 49-round turn holding the turn lock) are still stopped well
+short of where they used to land.
+
+Hitting the limit therefore stays a visible, occasional event rather than
+"never": the stop is reported explicitly to the user (``MAX_ROUNDS_NOTICE``)
+instead of just to the log.  Callers that legitimately need more rounds should
+pass ``max_tool_rounds`` explicitly (flows already do).
 
 Single source of truth for all three entry points (``Session``,
 ``SessionAgent.__init__``, ``SessionAgent.create``) — they drifted as separate
