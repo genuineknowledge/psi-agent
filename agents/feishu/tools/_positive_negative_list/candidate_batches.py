@@ -139,7 +139,7 @@ def analysis_candidates(batch: dict[str, Any]) -> list[dict[str, Any]]:
     impact and remediation still require the normal conversational analysis
     step before the writer confirmation card can be shown.
     """
-    if batch.get("status") not in {"ready_for_analysis", "analysis_started"}:
+    if batch.get("status") not in {"ready_for_analysis", "analysis_started", "case_prepared"}:
         return []
     result: list[dict[str, Any]] = []
     for row in batch.get("rows") or []:

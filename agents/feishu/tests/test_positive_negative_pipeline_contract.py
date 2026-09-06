@@ -370,60 +370,16 @@ def test_self_reported_case_is_valid_for_private_chat() -> None:
     assert validate_case(case) == ()
 
 
-def test_confirmed_negative_case_starts_private_review_and_notice_guidance(tmp_path) -> None:
-    confirm = importlib.import_module("positive_negative_list_confirm")
+def test_negative_case_notice_contains_guidance() -> None:
     notifications = importlib.import_module("_positive_negative_list.notifications")
-    reviews = importlib.import_module("_positive_negative_list.reviews")
     case = _negative_case()
 
-    count = confirm._start_private_reviews(case, "rec_test", tmp_path)
-
-    active = reviews.find_active_reviews(tmp_path, "ou_subject")
-    assert count == 1
-    assert len(active) == 1
-    assert active[0].record_id == "rec_test"
     notice = notifications._notice_text(case, "https://feishu.cn/base/test")
     assert "客观原因" in notice
     assert "补足动作" in notice
     assert "防止再犯" in notice
     assert "不写回表格" in notice
     assert "行为性质：负面行为" in notice
-
-
-def test_self_reported_negative_case_starts_private_review_without_duplicate_notice(tmp_path) -> None:
-    confirm = importlib.import_module("positive_negative_list_confirm")
-    reviews = importlib.import_module("_positive_negative_list.reviews")
-    case = CaseDraft.from_mapping(
-        _negative_case().to_mapping() | {"reporter_user_key": "ou_subject", "writer_user_key": "ou_subject"}
-    )
-
-    count = confirm._start_private_reviews(case, "rec_self", tmp_path)
-
-    active = reviews.find_active_reviews(tmp_path, "ou_subject")
-    assert count == 1
-    assert len(active) == 1
-    assert active[0].record_id == "rec_self"
-
-
-def test_self_reported_negative_case_sends_review_prompt(monkeypatch) -> None:
-    confirm = importlib.import_module("positive_negative_list_confirm")
-    reviews = importlib.import_module("_positive_negative_list.reviews")
-    case = CaseDraft.from_mapping(
-        _negative_case().to_mapping() | {"reporter_user_key": "ou_subject", "writer_user_key": "ou_subject"}
-    )
-    sent: list[tuple[str, str, str]] = []
-
-    async def fake_send(receive_id: str, text: str, receive_id_type: str):
-        sent.append((receive_id, text, receive_id_type))
-        return {"ok": True, "message_id": "msg_review"}
-
-    monkeypatch.setattr(reviews, "send_message_impl", fake_send)
-    status = asyncio.run(confirm._send_self_review_prompts(case, "rec_self"))
-
-    assert status == "notification_sent"
-    assert len(sent) == 1
-    assert sent[0][0] == "ou_subject"
-    assert "客观原因" in sent[0][1]
 
 
 def test_confirmation_card_uses_display_name_but_keeps_open_id_in_case(monkeypatch) -> None:
@@ -440,6 +396,9 @@ def test_confirmation_card_uses_display_name_but_keeps_open_id_in_case(monkeypat
     card = asyncio.run(positive_negative._confirmation_card(case, "digest_test"))
     content = card["body"]["elements"][0]["content"]
 
+    assert card["schema"] == "2.0"
+    assert all(element.get("tag") != "action" for element in card["body"]["elements"])
+    assert "behaviors" in json.dumps(card, ensure_ascii=False)
     assert "对象**　王炜博" in content
     assert "ou_subject" not in content
     assert case.subject_user_key == "ou_subject"
@@ -554,6 +513,36 @@ def test_record_notice_resolves_subject_name(monkeypatch) -> None:
     assert "ou_subject" not in text
 
 
+def test_record_notice_cards_use_card_2_grammar_and_only_negative_has_review_button() -> None:
+    notifications = importlib.import_module("_positive_negative_list.notifications")
+    negative = LedgerRecord.from_mapping(
+        {
+            "record_id": "rec_negative",
+            "subject_user_key": "ou_subject",
+            "reporter_user_key": "ou_reporter",
+            "occurred_at": "2026-09-01",
+            "nature": "negative",
+            "category": "工作方式方法",
+            "fact_summary": "方案确定后未倒排，导致任务未闭环",
+            "correct_behavior": "先倒排节点并明确交付物",
+            "immediate_remedy": "补齐节点并同步上下游",
+            "prevention": "开工前检查倒排表",
+        }
+    )
+    positive = LedgerRecord.from_mapping(negative.to_mapping() | {"record_id": "rec_positive", "nature": "positive"})
+
+    negative_card = notifications.render_record_notice_card(negative, "王炜博")
+    positive_card = notifications.render_record_notice_card(positive, "王炜博")
+    negative_json = json.dumps(negative_card, ensure_ascii=False)
+    positive_json = json.dumps(positive_card, ensure_ascii=False)
+
+    assert negative_card["schema"] == "2.0"
+    assert all(element.get("tag") != "action" for element in negative_card["body"]["elements"])
+    assert negative_json.count("pn_record_review_start") == 1
+    assert "开始复盘" in negative_json
+    assert "开始复盘" not in positive_json
+
+
 def test_remind_result_resolves_subject_name(monkeypatch, tmp_path) -> None:
     remind = importlib.import_module("positive_negative_case_remind")
     notifications = importlib.import_module("_positive_negative_list.notifications")
@@ -611,12 +600,6 @@ def test_record_notice_card_callback_starts_private_review_idempotently(monkeypa
         }
     )
 
-    class FakeAdapter:
-        async def get_record(self, record_id, user_key):
-            assert record_id == "rec_review"
-            assert user_key == "ou_subject"
-            return record
-
     sent: list[str] = []
 
     async def fake_send(receive_id, text, receive_id_type):
@@ -626,7 +609,10 @@ def test_record_notice_card_callback_starts_private_review_idempotently(monkeypa
     async def fake_root():
         return tmp_path
 
-    monkeypatch.setattr(review_tool, "configured_table_adapter", lambda: FakeAdapter())
+    def fail_if_table_is_read():
+        raise AssertionError("notice callback must not read the formal table")
+
+    monkeypatch.setattr(review_tool, "configured_table_adapter", fail_if_table_is_read)
     monkeypatch.setattr(review_tool, "_resolve_appdata_root", fake_root)
     monkeypatch.setattr(review_tool.reviews, "send_message_impl", fake_send)
     monkeypatch.setattr(remind, "_resolve_appdata_root", fake_root)
@@ -637,6 +623,7 @@ def test_record_notice_card_callback_starts_private_review_idempotently(monkeypa
                     "action": "pn_record_review_start",
                     "record_id": "rec_review",
                     "subject_user_key": "ou_subject",
+                    "record": record.to_mapping(),
                 }
             },
             "operator": {"open_id": "ou_subject"},
@@ -644,11 +631,55 @@ def test_record_notice_card_callback_starts_private_review_idempotently(monkeypa
         ensure_ascii=False,
     )
 
-    first = json.loads(asyncio.run(remind.positive_negative_case_remind(card_action_json=callback, user_key="ou_subject")))
-    second = json.loads(asyncio.run(remind.positive_negative_case_remind(card_action_json=callback, user_key="ou_subject")))
+    first = json.loads(
+        asyncio.run(remind.positive_negative_case_remind(card_action_json=callback, user_key="ou_subject"))
+    )
+    second = json.loads(
+        asyncio.run(remind.positive_negative_case_remind(card_action_json=callback, user_key="ou_subject"))
+    )
     assert first["status"] == "review_started"
     assert second["status"] == "review_already_started"
     assert sent == ["ou_subject"]
+
+
+def test_failed_review_prompt_does_not_leave_an_active_draft(monkeypatch, tmp_path) -> None:
+    review_tool = importlib.import_module("positive_negative_case_review")
+    record = LedgerRecord.from_mapping(
+        {
+            "record_id": "rec_retry",
+            "subject_user_key": "ou_subject",
+            "reporter_user_key": "ou_reporter",
+            "occurred_at": "2026-09-01",
+            "nature": "negative",
+            "category": "工作方式方法",
+            "fact_summary": "方案确定后未倒排，导致任务未闭环",
+        }
+    )
+    attempts = 0
+
+    async def fake_send(receive_id, text, receive_id_type):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return {"ok": False, "message": "temporary failure"}
+        return {"ok": True, "message_id": "msg_retry"}
+
+    async def fake_root():
+        return tmp_path
+
+    monkeypatch.setattr(review_tool, "_resolve_appdata_root", fake_root)
+    monkeypatch.setattr(review_tool.reviews, "send_message_impl", fake_send)
+    kwargs = {
+        "record_json": json.dumps(record.to_mapping(), ensure_ascii=False),
+        "user_key": "ou_subject",
+    }
+
+    first = json.loads(asyncio.run(review_tool.positive_negative_case_review_start(**kwargs)))
+    second = json.loads(asyncio.run(review_tool.positive_negative_case_review_start(**kwargs)))
+
+    assert first["status"] == "review_notification_failed"
+    assert second["status"] == "review_started"
+    assert attempts == 2
 
 
 def test_prepare_error_lists_legal_case_field_names(monkeypatch) -> None:
@@ -946,7 +977,7 @@ def test_candidate_card_handlers_match_only_organize_actions(feishu_network) -> 
     assert sent["status"] == "sent"
 
 
-def test_candidate_finalize_returns_analysis_payload_without_writing(feishu_network) -> None:
+def test_last_candidate_decision_returns_analysis_payload_without_writing(feishu_network) -> None:
     card_tool = importlib.import_module("positive_negative_candidate_card")
     sent = json.loads(
         asyncio.run(
@@ -975,23 +1006,7 @@ def test_candidate_finalize_returns_analysis_payload_without_writing(feishu_netw
         )
     )
     assert kept["status"] == "ready_for_analysis"
-    result = json.loads(
-        asyncio.run(
-            card_tool.positive_negative_candidate_card(
-                card_action_json=json.dumps(
-                    {
-                        "action": {"value": {"action": "pn_candidate_finalize", "batch_id": sent["batch_id"]}},
-                        "message_id": sent["message_id"],
-                        "operator": {"open_id": "ou_subject"},
-                    },
-                    ensure_ascii=False,
-                ),
-                user_key="ou_subject",
-            )
-        )
-    )
-    assert result["status"] == "analysis_started"
-    assert result["candidates"][0]["source_candidates"] == ["未及时同步风险"]
+    assert kept["candidates"][0]["source_candidates"] == ["未及时同步风险"]
     assert not (Path(os.environ["PSI_APPDATA"]) / "positive-negative-list" / "records.json").exists()
 
 
@@ -1031,7 +1046,7 @@ def test_evaluative_candidate_can_be_kept_and_deferred_to_analysis(feishu_networ
     assert batch["status"] == "ready_for_analysis"
 
 
-def test_candidate_finalize_exposes_one_event_package_per_kept_candidate(feishu_network) -> None:
+def test_last_candidate_decision_exposes_one_event_package_per_kept_candidate(feishu_network) -> None:
     card_tool = importlib.import_module("positive_negative_candidate_card")
     sent = json.loads(
         asyncio.run(
@@ -1068,26 +1083,11 @@ def test_candidate_finalize_exposes_one_event_package_per_kept_candidate(feishu_
             )
         )
         assert result["ok"] is True
-    finalized = json.loads(
-        asyncio.run(
-            card_tool.positive_negative_candidate_card(
-                card_action_json=json.dumps(
-                    {
-                        "action": {"value": {"action": "pn_candidate_finalize", "batch_id": sent["batch_id"]}},
-                        "message_id": sent["message_id"],
-                        "operator": {"open_id": "ou_subject"},
-                    },
-                    ensure_ascii=False,
-                ),
-                user_key="ou_subject",
-            )
-        )
-    )
-    assert finalized["status"] == "analysis_started"
-    assert len(finalized["analysis_candidates"]) == 2
-    assert all(package["person_name"] == "王炜博" for package in finalized["analysis_candidates"])
-    assert all(package["meeting_date"] == "2026-09-06" for package in finalized["analysis_candidates"])
-    assert all(package["requires_case_analysis"] is True for package in finalized["analysis_candidates"])
+    assert result["status"] == "ready_for_analysis"
+    assert len(result["analysis_candidates"]) == 2
+    assert all(package["person_name"] == "王炜博" for package in result["analysis_candidates"])
+    assert all(package["meeting_date"] == "2026-09-06" for package in result["analysis_candidates"])
+    assert all(package["requires_case_analysis"] is True for package in result["analysis_candidates"])
 
 
 def test_candidate_analysis_rejects_missing_evidence_before_confirmation() -> None:
@@ -1182,11 +1182,78 @@ def test_candidate_analysis_delegates_one_complete_event_to_existing_prepare(mon
     assert result["status"] == "待写入者确认"
     assert captured["case"]["subject_user_key"] == "ou_subject"
     assert captured["case"]["reporter_user_key"] == "ou_subject"
-    assert captured["kwargs"]["source_event_id"] == "meeting:2026-09-06:analyze-ready"
+    assert captured["kwargs"]["source_event_id"] == "meeting:2026-09-06:analyze-ready:event:0"
     assert captured["kwargs"]["user_key"] == "ou_subject"
 
 
-def test_confirmation_writes_only_test_adapter_then_sends_notice_card_without_auto_review(monkeypatch, tmp_path) -> None:
+def test_candidate_analysis_handles_multiple_kept_events_individually(monkeypatch) -> None:
+    tool = importlib.import_module("positive_negative_candidate_analyze")
+    batches = importlib.import_module("_positive_negative_list.candidate_batches")
+    batch = batches.build_candidate_batch(
+        person_open_id="ou_subject",
+        person_name="王炜博",
+        source_label="会议纪要",
+        meeting_date="2026-09-06",
+        candidates=[
+            {"text": "方案确定后直接开工，没有倒排节点", "context": "项目启动"},
+            {"text": "风险出现后没有及时同步上下游", "context": "项目执行"},
+        ],
+        source_key="meeting:2026-09-06:multi-analyze",
+    )
+    for row in batch["rows"]:
+        row["status"] = "kept"
+    batch["status"] = "ready_for_analysis"
+    asyncio.run(batches.save_batch(batch))
+    source_events: list[str] = []
+
+    async def fake_prepare(case_json: str, **kwargs):
+        source_events.append(kwargs["source_event_id"])
+        return json.dumps(
+            {"ok": True, "status": "待写入者确认", "case_id": f"case_{len(source_events)}"}
+        )
+
+    monkeypatch.setattr(tool, "positive_negative_case_prepare", fake_prepare)
+    base_analysis = {
+        "impact": "上下游等待",
+        "evidence_sources": ["会议纪要"],
+        "nature": "negative",
+        "category": "工作方式方法",
+        "primary_rule_id": "pn-test-negative",
+        "correct_behavior": "先明确计划并及时同步风险",
+        "immediate_remedy": "补齐计划并同步上下游",
+        "prevention": "设置执行和反馈检查点",
+    }
+    for event_index, row in enumerate(batch["rows"]):
+        result = json.loads(
+            asyncio.run(
+                tool.positive_negative_candidate_analyze(
+                    batch_id=batch["batch_id"],
+                    event_index=event_index,
+                    analysis_json=json.dumps(
+                        base_analysis
+                        | {
+                            "observed_behavior": row["text"],
+                            "context": row["context"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    user_key="ou_subject",
+                )
+            )
+        )
+        assert result["ok"] is True
+
+    saved = asyncio.run(batches.load_batch(batch["batch_id"]))
+    assert source_events == [
+        "meeting:2026-09-06:multi-analyze:event:0",
+        "meeting:2026-09-06:multi-analyze:event:1",
+    ]
+    assert set(saved["analysis_results"]) == {"0", "1"}
+
+
+def test_confirmation_writes_only_test_adapter_then_sends_notice_card_without_auto_review(
+    monkeypatch, tmp_path
+) -> None:
     positive_negative = importlib.import_module("positive_negative_list")
     confirm = importlib.import_module("positive_negative_list_confirm")
     notifications = importlib.import_module("_positive_negative_list.notifications")

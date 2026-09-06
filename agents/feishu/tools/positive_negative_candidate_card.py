@@ -127,20 +127,6 @@ def render_candidate_card(batch: dict[str, Any]) -> dict[str, Any]:
             {"tag": "markdown", "content": f"待整理：{pending} 条 · 当前不写入任何表格"},
         ]
     )
-    if batch.get("status") == "ready_for_analysis":
-        elements.append(
-            {
-                "tag": "action",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "整理完成，进入分析"},
-                        "type": "primary",
-                        "value": {"action": "pn_candidate_finalize", "batch_id": batch["batch_id"]},
-                    }
-                ],
-            }
-        )
     return {
         "schema": "2.0",
         "config": {"width_mode": "regular"},
@@ -171,33 +157,13 @@ async def _handle_click(card_action_json: str, user_key: str) -> str:
         return _f.dumps_result({"ok": False, "status": "candidate_batch_not_found"})
     if batch.get("person_open_id") != user_key and user_key:
         return _f.dumps_result({"ok": False, "status": "unauthorized"})
-    if str(action.get("action") or "") == "pn_candidate_finalize":
-        if batch.get("status") != "ready_for_analysis":
-            return _f.dumps_result({"ok": False, "status": "candidate_batch_not_ready"})
-        active = candidate_batches.analysis_candidates(batch)
-        if not active:
-            return _f.dumps_result({"ok": False, "status": "no_candidate_to_analyze"})
-        batch["status"] = "analysis_started"
-        await candidate_batches.save_batch(batch)
-        message_id = str(action.get("_message_id") or batch.get("message_id") or "")
-        if message_id:
-            await _f.edit_card_impl(message_id, json.dumps(render_candidate_card(batch), ensure_ascii=False), user_key)
-        return _f.dumps_result(
-            {
-                "ok": True,
-                "status": "analysis_started",
-                "batch_id": batch_id,
-                "analysis_candidates": active,
-                "candidates": active,
-            }
-        )
     action_name = str(action.get("action") or "")
-    if action_name.startswith("pn_candidate_") and action_name != "pn_candidate_finalize" and _action_row_index(action_name) is None:
+    if action_name.startswith("pn_candidate_") and _action_row_index(action_name) is None:
         return _f.dumps_result({"ok": False, "status": "unsupported_legacy_action"})
     parsed = _action_row_index(str(action.get("action") or ""))
     if not parsed:
         return _f.dumps_result({"ok": False, "status": "invalid_candidate_action"})
-    kind, source_index, target_index = parsed
+    kind, source_index, _ = parsed
     rows = batch.get("rows") or []
     if not (0 <= source_index < len(rows)):
         return _f.dumps_result({"ok": False, "status": "candidate_row_not_found"})
@@ -206,23 +172,29 @@ async def _handle_click(card_action_json: str, user_key: str) -> str:
         if row.get("status") == "pending":
             row["status"] = "kept"
             row["decided_at"] = candidate_batches._now()
-    elif kind == "ignore":
-        if row.get("status") == "pending":
-            row["status"] = "ignored"
-            row["decided_at"] = candidate_batches._now()
+    elif kind == "ignore" and row.get("status") == "pending":
+        row["status"] = "ignored"
+        row["decided_at"] = candidate_batches._now()
     if candidate_batches.is_ready_for_analysis(batch):
         batch["status"] = "ready_for_analysis"
     await candidate_batches.save_batch(batch)
     message_id = str(action.get("_message_id") or batch.get("message_id") or "")
     if message_id:
         await _f.edit_card_impl(message_id, json.dumps(render_candidate_card(batch), ensure_ascii=False), user_key)
-    return _f.dumps_result(
-        {"ok": True, "status": batch["status"], "action": action.get("action"), "batch_id": batch_id}
-    )
+    result: dict[str, Any] = {
+        "ok": True,
+        "status": batch["status"],
+        "action": action.get("action"),
+        "batch_id": batch_id,
+    }
+    if batch["status"] == "ready_for_analysis":
+        active = candidate_batches.analysis_candidates(batch)
+        result.update({"analysis_candidates": active, "candidates": active})
+    return _f.dumps_result(result)
 
 
 def candidate_card_handlers(batch: dict[str, Any]) -> dict[str, str]:
-    handlers: dict[str, str] = {"pn_candidate_finalize": "positive_negative_candidate_card"}
+    handlers: dict[str, str] = {}
     rows = batch.get("rows") or []
     for row in rows:
         if row.get("status") != "pending":

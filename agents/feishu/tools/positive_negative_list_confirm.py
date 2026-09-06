@@ -16,9 +16,9 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 import _feishu_impl as _f
-from _positive_negative_list import reviews, runtime
+from _positive_negative_list import runtime
 from _positive_negative_list.drafts import delete_draft_body, save_draft
-from _positive_negative_list.models import CaseDraft, LedgerRecord
+from _positive_negative_list.models import CaseDraft
 from _positive_negative_list.notifications import (
     NotificationResult,
     NotificationSender,
@@ -115,84 +115,6 @@ async def _send_subject_notice(
     case: CaseDraft, public_record_id: str, root: str | Path | None = None
 ) -> NotificationResult:
     return await NotificationSender(root).send_subject_notice(case, public_record_id)
-
-
-def _start_private_reviews(case: CaseDraft, public_record_id: str, root: str | Path) -> int:
-    """Create one private review draft for every negative subject.
-
-    A self-report skips the duplicate record notice, but it still needs a
-    private review draft so the same conversation can guide the writer through
-    the three reflection questions.
-    """
-    if case.nature != "negative":
-        return 0
-    subjects = [
-        identity.strip()
-        for identity in case.subject_user_key.replace("\N{FULLWIDTH COMMA}", ",").split(",")
-        if identity.strip()
-    ]
-    count = 0
-    for subject in dict.fromkeys(subjects):
-        record = LedgerRecord.from_mapping(
-            {
-                "record_id": public_record_id,
-                "reporter_user_key": case.reporter_user_key,
-                "subject_user_key": subject,
-                "occurred_at": case.occurred_at,
-                "nature": case.nature,
-                "category": case.category,
-                "fact_summary": case.fact_summary,
-                "correct_behavior": case.correct_behavior,
-                "immediate_remedy": case.immediate_remedy,
-                "prevention": case.prevention,
-            }
-        )
-        review_id = "review_" + hashlib.sha256(f"{case.case_id}\0{subject}".encode()).hexdigest()[:24]
-        reviews.save_review(root, reviews.new_review(record, subject, review_id))
-        count += 1
-    return count
-
-
-async def _send_self_review_prompts(case: CaseDraft, public_record_id: str) -> str:
-    """Prompt self-reporting subjects without sending a duplicate record notice."""
-    reporters = {
-        identity.strip()
-        for identity in case.reporter_user_key.replace("\N{FULLWIDTH COMMA}", ",").split(",")
-        if identity.strip()
-    }
-    subjects = [
-        identity.strip()
-        for identity in case.subject_user_key.replace("\N{FULLWIDTH COMMA}", ",").split(",")
-        if identity.strip() and identity.strip() in reporters
-    ]
-    if not subjects:
-        return "not_applicable"
-    record = LedgerRecord.from_mapping(
-        {
-            "record_id": public_record_id,
-            "reporter_user_key": case.reporter_user_key,
-            "subject_user_key": case.subject_user_key,
-            "occurred_at": case.occurred_at,
-            "nature": case.nature,
-            "category": case.category,
-            "fact_summary": case.fact_summary,
-            "correct_behavior": case.correct_behavior,
-            "immediate_remedy": case.immediate_remedy,
-            "prevention": case.prevention,
-        }
-    )
-    for subject in dict.fromkeys(subjects):
-        try:
-            response = await reviews.send_message_impl(
-                subject,
-                reviews.review_prompt(LedgerRecord.from_mapping(record.to_mapping() | {"subject_user_key": subject})),
-                "open_id",
-            )
-        except Exception:
-            return "notification_pending_retry"
-        if not isinstance(response, dict) or not response.get("ok"):
-            return "notification_pending_retry"
-    return "notification_sent"
 
 
 async def _confirm_unlocked(card_action_json: str = "", user_key: str = "") -> str:

@@ -17,7 +17,12 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 import _feishu_impl as _f
-from _assignment_display import readable_name, render_people_display, resolve_feishu_display_names, resolve_people_display
+from _assignment_display import (
+    readable_name,
+    render_people_display,
+    resolve_feishu_display_names,
+    resolve_people_display,
+)
 from _positive_negative_list.dedupe import (
     build_cross_source_fingerprint,
     make_source_key,
@@ -70,13 +75,21 @@ async def _confirmation_card(case: CaseDraft, digest: str) -> dict[str, Any]:
                 },
                 {"tag": "hr"},
                 {
-                    "tag": "action",
-                    "actions": [
+                    "tag": "column_set",
+                    "flex_mode": "none",
+                    "columns": [
                         {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "确认写入"},
-                            "type": "primary",
-                            "value": action_value,
+                            "tag": "column",
+                            "width": "weighted",
+                            "weight": 1,
+                            "elements": [
+                                {
+                                    "tag": "button",
+                                    "text": {"tag": "plain_text", "content": "确认写入"},
+                                    "type": "primary",
+                                    "behaviors": [{"type": "callback", "value": action_value}],
+                                }
+                            ],
                         }
                     ],
                 },

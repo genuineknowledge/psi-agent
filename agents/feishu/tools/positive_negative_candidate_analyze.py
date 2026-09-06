@@ -59,8 +59,13 @@ async def positive_negative_candidate_analyze(
     batch_id: str = "",
     analysis_json: str = "",
     user_key: str = "",
+    event_index: int = -1,
 ) -> str:
-    """Validate a complete event analysis and open the existing case card."""
+    """Validate one complete event analysis and open the existing case card.
+
+    ``event_index`` is required when a candidate batch contains more than one
+    kept event. Each event gets an independent confirmation and dedupe key.
+    """
     try:
         if not batch_id.strip() or not user_key.strip():
             return _f.dumps_result({"ok": False, "status": "candidate_identity_required"})
@@ -69,12 +74,28 @@ async def positive_negative_candidate_analyze(
             return _f.dumps_result({"ok": False, "status": "candidate_batch_not_found"})
         if batch.get("person_open_id") != user_key:
             return _f.dumps_result({"ok": False, "status": "unauthorized"})
-        if batch.get("status") not in {"analysis_started", "ready_for_analysis"}:
+        if batch.get("status") not in {"analysis_started", "ready_for_analysis", "case_prepared"}:
             return _f.dumps_result({"ok": False, "status": "candidate_batch_not_ready"})
         candidates = candidate_batches.analysis_candidates(batch)
+        if event_index >= 0:
+            candidates = [item for item in candidates if item.get("event_index") == event_index]
         if len(candidates) != 1:
             return _f.dumps_result(
                 {"ok": False, "status": "candidate_event_package_count_invalid", "count": len(candidates)}
+            )
+        candidate = candidates[0]
+        analysis_results = batch.get("analysis_results")
+        if not isinstance(analysis_results, dict):
+            analysis_results = {}
+        prior = analysis_results.get(str(candidate["event_index"]))
+        if isinstance(prior, dict) and prior.get("case_id"):
+            return _f.dumps_result(
+                {
+                    "ok": True,
+                    "status": "candidate_event_already_prepared",
+                    "case_id": prior["case_id"],
+                    "event_index": candidate["event_index"],
+                }
             )
         analysis = _parse_object(analysis_json, "analysis_json")
         missing = _missing_analysis_fields(analysis)
@@ -95,7 +116,6 @@ async def positive_negative_candidate_analyze(
                 return _f.dumps_result(
                     {"ok": False, "status": "candidate_coaching_incomplete", "missing": missing_negative}
                 )
-        candidate = candidates[0]
         case = {
             "reporter_user_key": user_key,
             "subject_user_key": batch["person_open_id"],
@@ -121,12 +141,20 @@ async def positive_negative_candidate_analyze(
             # existing MVP source contract; the meeting-note label is retained
             # in the event-package metadata, not as a new write path.
             source_type="feishu_private_chat",
-            source_event_id=str(batch.get("source_key") or batch_id),
-            source_message_id=batch_id,
+            source_event_id=f"{batch.get('source_key') or batch_id}:event:{candidate['event_index']}",
+            source_message_id=f"{batch_id}:{candidate['event_index']}",
             user_key=user_key,
         )
+        prepared = json.loads(result)
+        if not isinstance(prepared, dict) or not prepared.get("ok"):
+            return result
         batch["status"] = "case_prepared"
-        batch["analysis"] = {**analysis, "case_id": json.loads(result).get("case_id", "")}
+        analysis_results[str(candidate["event_index"])] = {
+            **analysis,
+            "case_id": prepared.get("case_id", ""),
+        }
+        batch["analysis_results"] = analysis_results
+        batch["analysis"] = analysis_results[str(candidate["event_index"])]
         await candidate_batches.save_batch(batch)
         return result
     except (TypeError, ValueError, json.JSONDecodeError) as exc:

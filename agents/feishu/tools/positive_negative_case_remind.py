@@ -74,10 +74,27 @@ async def positive_negative_case_remind(
             if operator and user_key.strip() and operator != user_key.strip():
                 return _f.dumps_result({"ok": False, "status": "unauthorized"})
             operator = operator or user_key.strip()
-            record_id = str(value.get("record_id") or "").strip()
-            subject = str(value.get("subject_user_key") or "").strip()
+            context = envelope.get("business_context")
+            context = context if isinstance(context, dict) else {}
+            record_id = str(value.get("record_id") or context.get("record_id") or "").strip()
+            subject = str(value.get("subject_user_key") or context.get("subject_user_key") or "").strip()
             if not record_id or not subject or not operator or operator != subject:
                 return _f.dumps_result({"ok": False, "status": "unauthorized"})
+            inline_record = value.get("record") or context.get("record")
+            if isinstance(inline_record, dict):
+                return await positive_negative_case_review_start(
+                    record_json=json.dumps(inline_record, ensure_ascii=False),
+                    subject_user_key=subject,
+                    user_key=operator,
+                )
+            root = await _resolve_appdata_root()
+            receipt_record = notifications.NotificationSender(root).load_record_receipt(record_id, subject)
+            if receipt_record is not None:
+                return await positive_negative_case_review_start(
+                    record_json=json.dumps(receipt_record.to_mapping(), ensure_ascii=False),
+                    subject_user_key=subject,
+                    user_key=operator,
+                )
             return await positive_negative_case_review_start(
                 record_id=record_id,
                 subject_user_key=subject,
