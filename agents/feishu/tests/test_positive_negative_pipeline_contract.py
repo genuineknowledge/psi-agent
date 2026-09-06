@@ -438,9 +438,9 @@ def test_confirmation_card_uses_display_name_but_keeps_open_id_in_case(monkeypat
     case = _negative_case()
 
     card = asyncio.run(positive_negative._confirmation_card(case, "digest_test"))
-    content = card["elements"][0]["content"]
+    content = card["body"]["elements"][0]["content"]
 
-    assert "涉事人**：王炜博" in content
+    assert "对象**　王炜博" in content
     assert "ou_subject" not in content
     assert case.subject_user_key == "ou_subject"
 
@@ -594,6 +594,61 @@ def test_remind_result_resolves_subject_name(monkeypatch, tmp_path) -> None:
 
     assert payload["涉事人"] == "王炜博"
     assert "ou_subject" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_record_notice_card_callback_starts_private_review_idempotently(monkeypatch, tmp_path) -> None:
+    remind = importlib.import_module("positive_negative_case_remind")
+    review_tool = importlib.import_module("positive_negative_case_review")
+    record = LedgerRecord.from_mapping(
+        {
+            "record_id": "rec_review",
+            "subject_user_key": "ou_subject",
+            "reporter_user_key": "ou_reporter",
+            "occurred_at": "2026-09-01",
+            "nature": "negative",
+            "category": "工作方式方法",
+            "fact_summary": "方案确定后未倒排，导致任务未闭环",
+        }
+    )
+
+    class FakeAdapter:
+        async def get_record(self, record_id, user_key):
+            assert record_id == "rec_review"
+            assert user_key == "ou_subject"
+            return record
+
+    sent: list[str] = []
+
+    async def fake_send(receive_id, text, receive_id_type):
+        sent.append(receive_id)
+        return {"ok": True, "message_id": "msg_review"}
+
+    async def fake_root():
+        return tmp_path
+
+    monkeypatch.setattr(review_tool, "configured_table_adapter", lambda: FakeAdapter())
+    monkeypatch.setattr(review_tool, "_resolve_appdata_root", fake_root)
+    monkeypatch.setattr(review_tool.reviews, "send_message_impl", fake_send)
+    monkeypatch.setattr(remind, "_resolve_appdata_root", fake_root)
+    callback = json.dumps(
+        {
+            "action": {
+                "value": {
+                    "action": "pn_record_review_start",
+                    "record_id": "rec_review",
+                    "subject_user_key": "ou_subject",
+                }
+            },
+            "operator": {"open_id": "ou_subject"},
+        },
+        ensure_ascii=False,
+    )
+
+    first = json.loads(asyncio.run(remind.positive_negative_case_remind(card_action_json=callback, user_key="ou_subject")))
+    second = json.loads(asyncio.run(remind.positive_negative_case_remind(card_action_json=callback, user_key="ou_subject")))
+    assert first["status"] == "review_started"
+    assert second["status"] == "review_already_started"
+    assert sent == ["ou_subject"]
 
 
 def test_prepare_error_lists_legal_case_field_names(monkeypatch) -> None:
@@ -1161,9 +1216,6 @@ def test_confirmation_writes_only_test_adapter_then_sends_notice_card_without_au
     async def fake_root():
         return tmp_path
 
-    async def fake_send_card(*args, **kwargs):
-        return {"ok": True, "message_id": "msg_card"}
-
     monkeypatch.setattr(positive_negative._f, "send_card_impl", fake_send_card)
     monkeypatch.setattr(positive_negative, "_get_session_id", lambda: "session_test")
     monkeypatch.setattr(confirm, "get_session_id", lambda: "session_test")
@@ -1195,9 +1247,10 @@ def test_confirmation_writes_only_test_adapter_then_sends_notice_card_without_au
     assert result["ok"] is True
     assert result["public_record_id"] == "rec_test_only"
     assert adapter.creates == 1
-    assert sent_cards and sent_cards[0][0] == "ou_subject"
-    assert "schema" in sent_cards[0][1] and sent_cards[0][1]["schema"] == "2.0"
-    assert "正确做法" in json.dumps(sent_cards[0][1], ensure_ascii=False)
+    notice_cards = [card for target, card in sent_cards if target == "ou_subject"]
+    assert notice_cards
+    assert notice_cards[0]["schema"] == "2.0"
+    assert "正确做法" in json.dumps(notice_cards[0], ensure_ascii=False)
     active = reviews.find_active_reviews(tmp_path, "ou_subject")
     assert active == ()
     assert result["private_review_status"] == "not_started"
