@@ -11,6 +11,7 @@ any model request is made.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import re
 import socket
@@ -55,7 +56,33 @@ def _hook_statuses(log: str) -> dict[str, str] | None:
     return None
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Stop a one-file PyInstaller bootloader and the child it extracted."""
+    with contextlib.suppress(OSError):
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+
 def _stop(process: subprocess.Popen[str]) -> None:
+    if _is_windows():
+        # PyInstaller one-file executables keep a second extracted child alive;
+        # terminating only Popen's parent leaves the child's inherited log
+        # handle open and makes TemporaryDirectory cleanup fail with WinError 32.
+        _kill_process_tree(process.pid)
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+        return
     if process.poll() is not None:
         return
     process.terminate()
