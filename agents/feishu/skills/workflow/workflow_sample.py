@@ -149,10 +149,8 @@ async def _record_workflow_authoring(
     flow_path: str,
     plan: list[str],
     user_message: str,
-    *,
-    workflow_touched: bool,
 ) -> str | None:
-    """Record a checked authoring event when this turn created or changed a flow."""
+    """Record an executed workflow when it is new or its source changed."""
 
     if not user_message.strip():
         return None
@@ -181,7 +179,7 @@ async def _record_workflow_authoring(
                     latest_created_at = created_at
                     latest_source_hash = previous_hash
 
-    if has_events and not workflow_touched and latest_source_hash == source_hash:
+    if has_events and latest_source_hash == source_hash:
         return None
     if has_events:
         return await workflow_sample_record(flow_path, plan, adjustment=user_message)

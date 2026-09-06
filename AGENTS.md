@@ -445,6 +445,7 @@ uv build                         # 构建
 - **一棵树只改一个区**：前端树只碰 `src/psi_agent/gateway/desktop/spa-v2/`（及必要的 Gateway 壳 / spa v1）；workspace 树主要碰 `agents/feishu/`，以及必要的 Session / Gateway 服务端。越区改动优先换树，而不是在本树顺手改
 - **同 remote ≠ 同磁盘**：别人把分支合进 `main`，不会自动出现在你的工作树里；要用 `git fetch` 后显式合并
 - **接 `main` 时停在自己的 `feat/…` 上**：`git fetch origin` → 先 commit 或 stash 保护 WIP → `git merge origin/main`。冲突以各层 `AGENTS.md` 为准（保留三区 / AppData / ContextVar 约定后再叠自己的功能）
+- **主仓库 PR 不得随意创建或关闭**：涉及上游仓库或 `main` 的 PR，先核对 fork/upstream、base/head、现有 PR 和冲突状态；未经用户明确确认，不得新建、关闭、替换或强推。优先更新同一 PR 的来源分支，避免重复草稿和误关 PR。
 - **禁止**擅自 `git reset --hard origin/main`——它会丢掉本树的本地提交，除非用户明确要求
 - **阅读顺序**：根 `AGENTS.md` → `session/AGENTS.md` → `gateway/AGENTS.md` → `agents/feishu/AGENTS.md` 或 `gateway/desktop/spa-v2/AGENTS.md`
 - **各区验收命令看本层文档**：Python 侧见上面「开发命令」；前端侧见 `gateway/desktop/spa-v2/AGENTS.md`「本地开发」（`npm run build` 后经 Gateway 硬刷验收，该目录没有 `npm test`）

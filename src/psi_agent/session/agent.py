@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import inspect
 import json
-import sys
-import types
 from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing
 from contextvars import ContextVar
@@ -55,7 +53,7 @@ from psi_agent.session.protocol import (
     AgentStopCause,
 )
 from psi_agent.session.request_assembly import RequestAssembler
-from psi_agent.session.runtime_context import mark_workflow_touched, runtime_scope
+from psi_agent.session.runtime_context import runtime_scope
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.system_prompt import SystemPrompt
 from psi_agent.session.tool_convergence import ToolCallConvergence
@@ -115,7 +113,6 @@ _CURRENT_TOOL_AI_SOCKET: ContextVar[str | None] = ContextVar(
     "psi_agent_current_tool_ai_socket",
     default=None,
 )
-_WORKFLOW_LAUNCHERS = frozenset({"flow_run", "run_flow", "run_flow_resume"})
 
 
 RECENT_TURNS_MARKER = "\n[Recent turns]\n"
@@ -593,58 +590,6 @@ class SessionAgent:
             lambda sink: self.run(user_message, extra_params, response_kind=response_kind, _result_sink=sink)
         )
 
-    async def _record_authored_workflows(
-        self,
-        paths: set[str],
-        user_message: str,
-    ) -> None:
-        """Persist generated-only workflow sources without a model tool call."""
-
-        if not paths or not user_message.strip() or self._agent_path is None:
-            return
-        module_path = self._agent_path / "skills" / "workflow" / "workflow_sample.py"
-        module_file = anyio.Path(module_path)
-        if not await module_file.is_file():
-            return
-
-        module_name = f"psi_workflow_sample_{id(self)}"
-        try:
-            source = await module_file.read_text(encoding="utf-8")
-            module = types.ModuleType(module_name)
-            module.__file__ = str(module_path)
-            sys.modules[module_name] = module
-            exec(compile(source, str(module_path), "exec"), module.__dict__)
-            recorder = getattr(module, "_record_workflow_authoring", None)
-            if not inspect.iscoroutinefunction(recorder):
-                logger.warning("Workflow sample runtime has no async authoring recorder")
-                return
-
-            for raw_path in sorted(paths):
-                normalized = raw_path.strip().replace("\\", "/")
-                candidate = Path(normalized)
-                if (
-                    candidate.is_absolute()
-                    or candidate.parts[:1] != ("flows",)
-                    or candidate.suffix.lower() not in {".workflow", ".g4"}
-                ):
-                    continue
-                try:
-                    result = await recorder(
-                        candidate.as_posix(),
-                        ["Persist the authored workflow snapshot"],
-                        user_message,
-                        workflow_touched=True,
-                    )
-                except Exception as error:
-                    logger.warning(f"Could not record generated workflow sample: {error!r}")
-                else:
-                    if result is not None:
-                        logger.info("Recorded generated workflow authoring sample")
-        except Exception as error:
-            logger.warning(f"Could not load workflow sample runtime: {error!r}")
-        finally:
-            sys.modules.pop(module_name, None)
-
     async def run(
         self,
         user_message: dict[str, Any],
@@ -698,8 +643,6 @@ class SessionAgent:
         turn_user_text = user_message.get("content", "")
         if not isinstance(turn_user_text, str):
             turn_user_text = ""
-        workflow_touched: set[str] = set()
-        workflow_launcher_called = False
 
         # Gateway embeds many Sessions in one process — bind this turn so
         # tools can read session id / workspace / agent paths via ContextVars.
@@ -708,7 +651,6 @@ class SessionAgent:
             workspace=str(self._workspace_path) if self._workspace_path is not None else "",
             agent=str(self._agent_path) if self._agent_path is not None else "",
             user_message=turn_user_text,
-            workflow_touched=workflow_touched,
         ):
             async with self._conversation:
                 # Reload tools and schedules from their configured roots.
@@ -909,9 +851,6 @@ class SessionAgent:
                                 results: list[str] = [""] * len(ordered_calls)
 
                                 async def _execute_one(idx: int, fn: str, a: dict[str, Any], r: list[str]) -> None:
-                                    nonlocal workflow_launcher_called
-                                    if fn in _WORKFLOW_LAUNCHERS:
-                                        workflow_launcher_called = True
                                     func = self._tool_registry.get(fn)
                                     if func is None:
                                         r[idx] = f"Error: Tool '{fn}' not found"
@@ -933,13 +872,6 @@ class SessionAgent:
                                                 raw = await func(**a)
                                             finally:
                                                 _CURRENT_TOOL_AI_SOCKET.reset(token)
-                                            if (
-                                                fn in {"write", "edit"}
-                                                and isinstance(a.get("file_path"), str)
-                                                and isinstance(raw, str)
-                                                and raw.lstrip().startswith("[OK]")
-                                            ):
-                                                mark_workflow_touched(a["file_path"])
                                             r[idx] = str(raw)
                                             elapsed_ms = int((anyio.current_time() - started) * 1000)
                                             logger.info(
@@ -1022,8 +954,6 @@ class SessionAgent:
                         await self._conversation.commit()
                         await self._system_prompt.run_after_turn(hook_message, assistant_msg)
                         await self._schedule_registry.refresh()
-                        if not workflow_launcher_called:
-                            await self._record_authored_workflows(workflow_touched, turn_user_text)
                         if _compaction_needed:
                             await self._maybe_compact(_compaction_prompt_tokens, _compaction_threshold)
                         _finish(

@@ -9,7 +9,6 @@ from types import SimpleNamespace
 import anyio
 import pytest
 
-from psi_agent.session.agent import SessionAgent
 from psi_agent.session.runtime_context import path_scope, runtime_scope
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -77,14 +76,12 @@ async def test_record_preserves_versions_and_exact_user_text(tmp_path: Path, mon
                 "flows/review.workflow",
                 ["Run three reviews", "Combine their findings"],
                 "  Add a security reviewer.  ",
-                workflow_touched=True,
             )
         )
         skipped = await tool._record_workflow_authoring(
             "flows/review.workflow",
             ["Run three reviews", "Combine their findings"],
             "Reuse the saved workflow.",
-            workflow_touched=False,
         )
 
     initial = json.loads(await anyio.Path(initial_result["local_path"]).read_text(encoding="utf-8"))
@@ -112,38 +109,12 @@ async def test_record_rejects_ambiguous_text_and_empty_plan(tmp_path: Path) -> N
 
 
 @pytest.mark.anyio
-async def test_session_captures_generate_only_workflow_without_run_flow(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workspace = tmp_path / "workspace"
-    flow_path = workspace / "flows" / "generated.workflow"
-    flow_path.parent.mkdir(parents=True)
-    flow_path.write_text("workflow generated {}\n", encoding="utf-8")
-    monkeypatch.setenv("PSI_APPDATA", str(tmp_path / "appdata"))
-
-    agent = object.__new__(SessionAgent)
-    agent._agent_path = REPO_ROOT / "agents" / "feishu"
-    with path_scope(workspace=str(workspace), agent=str(agent._agent_path)):
-        await agent._record_authored_workflows(
-            {"flows/./generated.workflow"},
-            "Generate this workflow only.",
-        )
-
-    records = list((tmp_path / "appdata" / "workflow-samples").rglob("*.json"))
-    assert len(records) == 1
-    payload = json.loads(records[0].read_text(encoding="utf-8"))
-    assert payload["question"] == "Generate this workflow only."
-    assert payload["adjustment"] is None
-
-
-@pytest.mark.anyio
 async def test_run_flow_hook_is_invoked_before_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     runner = _load_runner()
-    observed: list[tuple[str, list[str], str, bool]] = []
+    observed: list[tuple[str, list[str], str]] = []
 
-    async def recorder(flow_path: str, plan: list[str], message: str, *, workflow_touched: bool) -> str:
-        observed.append((flow_path, plan, message, workflow_touched))
+    async def recorder(flow_path: str, plan: list[str], message: str) -> str:
+        observed.append((flow_path, plan, message))
         return "saved"
 
     monkeypatch.setattr(runner, "_record_workflow_authoring", recorder)
@@ -153,7 +124,6 @@ async def test_run_flow_hook_is_invoked_before_dispatch(monkeypatch: pytest.Monk
         workspace=str(REPO_ROOT / "agents" / "feishu"),
         agent=str(REPO_ROOT / "agents" / "feishu"),
         user_message="Author this workflow",
-        workflow_touched={"flows/review.workflow"},
     ):
         await runner._record_workflow_sample_if_needed("flows/review.workflow", compiled)
 
@@ -162,7 +132,6 @@ async def test_run_flow_hook_is_invoked_before_dispatch(monkeypatch: pytest.Monk
             "flows/review.workflow",
             ["Validate the workflow declaration", "Return the declared output artifacts"],
             "Author this workflow",
-            True,
         )
     ]
 
