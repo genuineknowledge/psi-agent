@@ -59,6 +59,7 @@ ALLOWED_PATHS = frozenset(
         "/feishu/auth/me",
         # 网页应用数据一族(register_feishu_routes), 全部按 sid 过滤身份。
         "/feishu/defaults",
+        "/feishu/jsapi/config",
         "/feishu/sessions",
         "/feishu/summaries",
         "/feishu/titles",

@@ -189,10 +189,16 @@ AI 和 Session 组件无需关心通信介质——由 `_sockets.py` 统一处�
 | `PSI_AI_MODEL` | 模型名 |
 | `PSI_AI_API_KEY` | API key |
 | `PSI_AI_BASE_URL` | 上游 base URL |
+| `PSI_APPDATA` | 应用数据持久化根目录（存储历史、状态、todos 等） |
+| `PSI_MAX_CONTEXT_TOKENS` | 会话上下文最大 Token 数门限（触发自动压缩） |
+| `PSI_DEBUG_MODULES` | 定向调试日志模块白名单（逗号或分号分隔） |
+| `PSI_DEBUG_LOG_PATH` | 调试日志文件落盘路径 |
 | `PSI_TELEGRAM_BOT_TOKEN` | Telegram bot token |
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 代理 |
 | `PSI_FEISHU_APP_ID` | 飞书 app ID |
 | `PSI_FEISHU_APP_SECRET` | 飞书 app secret |
+| `PSI_OAUTH_CALLBACK_BASE` | OAuth 授权回调基础 URL |
+| `PSI_AUTH_ENDPOINT` | 外部 Auth 服务认证端点 |
 
 CLI 参数优先于环境变量。AI 参数（provider、model、api_key、base_url）及 channel 认证参数均可选，未传时回退到环境变量。Socket 路径参数（--session-socket、--channel-socket、--ai-socket）为必填。
 
@@ -310,6 +316,9 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | POST | `/ais` | 创建 AI 实例 |
 | DELETE | `/ais/{ai_id}` | 删除 AI |
 | GET | `/ais` | 列出所有 AI |
+| POST | `/routers` | 创建智能路由实例 |
+| DELETE | `/routers/{router_id}` | 删除智能路由 |
+| GET | `/routers` | 列出所有智能路由 |
 | POST | `/sessions` | 创建 Session |
 | DELETE | `/sessions/{session_id}` | 删除 Session |
 | GET | `/sessions` | 列出所有 Session |
@@ -320,8 +329,16 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |
+| GET | `/summaries` | 获取所有会话摘要 |
+| POST | `/summaries` | 设置会话摘要 |
+| POST | `/summaries/generate` | AI 自动生成摘要 |
+| GET | `/defaults` | 获取系统默认配置（默认 agent、workspace、appdata 等） |
+| GET | `/ui/attention` | 获取 Web UI 提醒/注意力通知列表 |
+| GET | `/workspace/roots` | 获取当前可访问的工作区根路径列表 |
 | GET | `/workspace/browse` | 浏览目录（`?path=...`） |
 | GET | `/workspace/cwd` | 获取工作目录 |
+| GET | `/workspace/file` | 读取/查看工作区文件内容 |
+| POST | `/workspace/reveal` | 在系统文件管理器中打开/定位文件 |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | favicon（仅当 `--icon` 设置时有效，否则返回 404） |
 
