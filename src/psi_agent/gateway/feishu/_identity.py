@@ -10,6 +10,8 @@
   ``FeishuManager.session_id_for(open_id)`` 比对。
 * **网页新建的会话** —— id 是随机 uuid, 认不出主人; 靠 **workspace 等于该 open_id 的
   workspace** 认。这是「同一个人的多个会话共享一个 workspace」设计的直接回报。
+* **固定会议 Session** ``meeting-session`` —— 会议纪要是组织共享资料, 所有已登录飞书用户
+  都可读取它的历史; 匿名请求仍拒绝。其他调度 Session 继续隐藏。
 
 群聊第一版不显示(见 PR #755 讨论), 故群会话恒不拥有。
 """
@@ -26,6 +28,8 @@ from psi_agent.gateway.feishu._feishu_manager import (
 )
 
 GROUP_SESSION_PREFIX = f"{FEISHU_SESSION_PREFIX}chat-"
+SCHEDULER_SESSION_PREFIX = "scheduler-"
+PUBLIC_MEETING_SESSION_ID = "meeting-session"
 
 
 class SessionLike(Protocol):
@@ -60,6 +64,12 @@ def owns_session(open_id: str, session_id: str, workspace: str, fm: FeishuManage
     空 *open_id* (未登录) 恒为假 —— 否则空身份会变成万能钥匙。
     """
     if not open_id or not session_id:
+        return False
+    if session_id == PUBLIC_MEETING_SESSION_ID:
+        return True
+    # Scheduler sessions are implementation details.  The shared meeting
+    # session above is the only scheduler intentionally exposed to Feishu.
+    if session_id.startswith(SCHEDULER_SESSION_PREFIX):
         return False
     if is_group_session(session_id):
         return False

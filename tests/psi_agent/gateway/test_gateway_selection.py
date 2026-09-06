@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import fields
+from pathlib import Path
 
 import anyio
 import pytest
 import tyro
 from aiohttp import web
 
-from psi_agent.gateway import ALL_GATEWAYS, Gateway, _redirect_to_feishu_web, resolve_gateways
+from psi_agent.gateway import ALL_GATEWAYS, Gateway, _load_meeting_scheduler, _redirect_to_feishu_web, resolve_gateways
 from psi_agent.gateway.desktop._routes import register_desktop_routes
 from psi_agent.gateway.feishu._routes import register_feishu_routes, register_oauth_routes
 from psi_agent.gateway.server import create_core_app
@@ -206,3 +207,12 @@ def test_repeated_values_are_deduplicated_in_order() -> None:
     # 单个值与全集原样通过, 顺序即传入顺序。
     assert resolve_gateways(["desktop"]) == ("desktop",)
     assert resolve_gateways(list(ALL_GATEWAYS)) == ALL_GATEWAYS
+
+
+def test_meeting_scheduler_loader_uses_agent_path_outside_repo_cwd(tmp_path) -> None:
+    repo_root = Path(__file__).resolve()
+    for _ in range(4):
+        repo_root = repo_root.parent
+    agent_package = repo_root / "agents" / "feishu"
+
+    assert callable(_load_meeting_scheduler(str(agent_package)))

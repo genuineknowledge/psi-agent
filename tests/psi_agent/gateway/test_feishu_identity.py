@@ -72,6 +72,31 @@ def test_empty_open_id_owns_nothing(tmp_path: str) -> None:
     assert owns_session("", "", "", fm) is False
 
 
+def test_meeting_session_is_readable_by_any_authenticated_user(tmp_path: str) -> None:
+    fm = FeishuManager(_sm=_NO_SM, _workspace_root=str(tmp_path))
+    meeting_workspace = str(tmp_path / ".meeting-session")
+
+    assert owns_session("ou_alice", "meeting-session", meeting_workspace, fm) is True
+    assert owns_session("ou_bob", "meeting-session", meeting_workspace, fm) is True
+    assert owns_session("", "meeting-session", meeting_workspace, fm) is False
+
+
+def test_visible_sessions_includes_public_meeting_session_but_not_other_scheduler(tmp_path: str) -> None:
+    fm = FeishuManager(_sm=_NO_SM, _workspace_root=str(tmp_path))
+    alice_workspace = fm.workspace_for("ou_alice")
+    rows = [
+        _S("meeting-session", str(tmp_path / ".meeting-session")),
+        _S("scheduler-other", alice_workspace),
+    ]
+
+    assert [s.id for s in visible_sessions("ou_alice", rows, fm)] == ["meeting-session"]
+
+
+def test_scheduler_session_is_never_owned(tmp_path: str) -> None:
+    fm = FeishuManager(_sm=_NO_SM, _workspace_root=str(tmp_path))
+    assert owns_session("ou_alice", "scheduler-anything", fm.workspace_for("ou_alice"), fm) is False
+
+
 def test_visible_sessions_filters(tmp_path: str) -> None:
     fm = FeishuManager(_sm=_NO_SM, _workspace_root=str(tmp_path))
     ws_a, ws_b = fm.workspace_for("ou_alice"), fm.workspace_for("ou_bob")

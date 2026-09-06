@@ -11,6 +11,7 @@ from croniter import croniter
 
 from psi_agent._yaml import parse_yaml_header
 from psi_agent.session import schedule_registry as schedule_registry_module
+from psi_agent.session.agent import current_tool_ai_socket
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.schedule_registry import ACTIVATE_ALL, Schedule, ScheduleEntry, ScheduleRegistry
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
@@ -472,6 +473,7 @@ async def test_fire_tool_calls_registry_directly() -> None:
         called["receive_id"] = receive_id
         called["text"] = text
         called["receive_id_type"] = receive_id_type
+        called["ai_socket"] = current_tool_ai_socket()
         return '{"ok": true}'
 
     class _ToolAgent:
@@ -480,6 +482,7 @@ async def test_fire_tool_calls_registry_directly() -> None:
         def __init__(self) -> None:
             self._conversation = Conversation()
             self._tool_registry = ToolRegistry()
+            self._ai_client = type("_AI", (), {"ai_socket": "ai://scheduler"})()
             tf = ToolFunction.from_callable(feishu_message_send)
             self._tool_registry._files["x"] = FileEntry(
                 file_hash="h",
@@ -507,6 +510,7 @@ async def test_fire_tool_calls_registry_directly() -> None:
     chunks = await ScheduleRegistry._fire_tool(s, cast(Any, agent), "schedule.silent")
     assert called["receive_id"] == "oc_1"
     assert called["text"] == "hi"
+    assert called["ai_socket"] == "ai://scheduler"
     assert any(c.reasoning and "Tool Call" in c.reasoning for c in chunks)
 
 

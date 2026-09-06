@@ -34,7 +34,7 @@ from psi_agent.gateway.feishu._auth import (
     warn_if_dev_bypass_enabled,
 )
 from psi_agent.gateway.feishu._feishu_manager import FeishuManager
-from psi_agent.gateway.feishu._identity import owns_session, visible_sessions
+from psi_agent.gateway.feishu._identity import PUBLIC_MEETING_SESSION_ID, owns_session, visible_sessions
 from psi_agent.gateway.feishu._jsapi import FeishuJsapiSigner, JsapiError
 from psi_agent.gateway.feishu._oauth_manager import OAuthRelay
 from psi_agent.gateway.server import _error, _json, _read_json, _serve_chat_sse, _session_data
@@ -313,7 +313,7 @@ async def _web_list_sessions(request: web.Request) -> web.Response:
     fm: FeishuManager = request.app["fm"]
     sm: SessionManager = request.app["sm"]
     bot_sid = fm.session_id_for(identity.open_id)
-    rows = visible_sessions(identity.open_id, await sm.list_all(), fm)
+    rows = visible_sessions(identity.open_id, await sm.list_all(include_scheduler=True), fm)
     return _json([_web_session_data(r, from_im=r.id == bot_sid) for r in rows])
 
 
@@ -372,6 +372,8 @@ async def _web_get_history(request: web.Request) -> web.Response:
         workspace = sm.get_workspace(session_id)
     except LookupError:
         return _error(f"Session '{session_id}' not found", status=404)
+    if session_id == PUBLIC_MEETING_SESSION_ID:
+        return _error("meeting-session is read-only", status=403)
     if not owns_session(identity.open_id, session_id, workspace, fm):
         return _error("forbidden", status=403)
     messages = await hm.get(workspace, session_id, appdata=str(request.app.get("appdata") or ""))
@@ -419,7 +421,7 @@ async def _web_owned_ids(request: web.Request) -> set[str]:
     identity = _require_identity(request)
     fm: FeishuManager = request.app["fm"]
     sm: SessionManager = request.app["sm"]
-    return {s.id for s in visible_sessions(identity.open_id, await sm.list_all(), fm)}
+    return {s.id for s in visible_sessions(identity.open_id, await sm.list_all(include_scheduler=True), fm)}
 
 
 async def _web_list_titles(request: web.Request) -> web.Response:
