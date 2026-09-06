@@ -2,22 +2,24 @@ from __future__ import annotations
 
 # Local meeting tools intentionally load from the agent package rather than an installed package.
 # ruff: noqa: E402
+import inspect
 import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import anyio
 import pytest
 
 TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-import meeting_pipeline_run as pipeline
-import meeting_session_notify as notify
-import meeting_transcript_prepare as transcript_prepare
-import tencent_meeting
-from _meeting_automation import (
+import meeting_pipeline_run as pipeline  # ty: ignore[unresolved-import]
+import meeting_session_notify as notify  # ty: ignore[unresolved-import]
+import meeting_transcript_prepare as transcript_prepare  # ty: ignore[unresolved-import]
+import tencent_meeting  # ty: ignore[unresolved-import]
+from _meeting_automation import (  # ty: ignore[unresolved-import]
     MEETING_JOBS,
     MEETING_SESSION_ID,
     _json_payload,
@@ -31,9 +33,9 @@ from _meeting_automation import (
     render_transcript_paragraphs,
     should_process_recording,
 )
-from meeting_session_read import meeting_session_read
-from meeting_session_write import meeting_session_write
-from meeting_transcript_prepare import meeting_transcript_prepare
+from meeting_session_read import meeting_session_read  # ty: ignore[unresolved-import]
+from meeting_session_write import meeting_session_write  # ty: ignore[unresolved-import]
+from meeting_transcript_prepare import meeting_transcript_prepare  # ty: ignore[unresolved-import]
 
 from psi_agent.session.agent import _CURRENT_TOOL_AI_SOCKET
 from psi_agent.session.protocol import AiDelta
@@ -296,14 +298,17 @@ async def test_collect_paragraphs_follows_index_and_detail_cursors(monkeypatch: 
                 return {"paragraphs": [{"pid": "1"}]}
             return {"paragraphs": [{"pid": "0"}], "has_more": True, "next_page_token": "index-2"}
         if name == "get_transcripts_details":
-            pid = str(arguments["pid"])
-            if pid == "0":
+            if arguments.get("pid") == "0":
                 return {
                     "paragraphs": [{"pid": "0", "content": "第一段"}],
                     "has_more": True,
-                    "next_pid": "2",
+                    "next_page_token": "detail-2",
                 }
-            return {"paragraphs": [{"pid": pid, "content": f"第{pid}段"}]}
+            if arguments.get("page_token") == "detail-2":
+                return {"paragraphs": [{"pid": "2", "content": "第2段"}]}
+            if arguments.get("pid") == "1":
+                return {"paragraphs": [{"pid": "1", "content": "第1段"}]}
+            raise AssertionError(arguments)
         raise AssertionError(name)
 
     monkeypatch.setattr(transcript_prepare, "_call", fake_call)
@@ -311,7 +316,36 @@ async def test_collect_paragraphs_follows_index_and_detail_cursors(monkeypatch: 
 
     assert [item["pid"] for item in paragraphs] == ["0", "2", "1"]
     assert ("get_transcripts_paragraphs", {"record_file_id": "record-1", "page_token": "index-2"}) in calls
-    assert ("get_transcripts_details", {"record_file_id": "record-1", "pid": "2", "limit": 100}) in calls
+    assert (
+        "get_transcripts_details",
+        {"record_file_id": "record-1", "page_token": "detail-2", "limit": 100},
+    ) in calls
+
+
+@pytest.mark.anyio
+async def test_collect_paragraphs_fallback_preserves_detail_token_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    async def fake_call(name: str, arguments: dict[str, object], *, token_env: str) -> object:
+        calls.append((name, dict(arguments)))
+        if name == "get_transcripts_paragraphs":
+            return {"paragraphs": []}
+        if name == "get_transcripts_details":
+            if arguments.get("pid") == "0":
+                return {"paragraphs": [{"pid": "0", "content": "第一段"}], "has_more": True, "next_token": "tail"}
+            if arguments.get("page_token") == "tail":
+                return {"paragraphs": [{"pid": "1", "content": "第二段"}]}
+            raise AssertionError(arguments)
+        raise AssertionError(name)
+
+    monkeypatch.setattr(transcript_prepare, "_call", fake_call)
+    paragraphs = await transcript_prepare._collect_paragraphs("record-2", token_env="TENCENT_MEETING_TOKEN")
+
+    assert [item["pid"] for item in paragraphs] == ["0", "1"]
+    assert (
+        "get_transcripts_details",
+        {"record_file_id": "record-2", "page_token": "tail", "limit": 100},
+    ) in calls
 
 
 @pytest.mark.anyio
@@ -359,7 +393,7 @@ async def test_prepare_skips_already_processed_recording(tmp_path: Path, monkeyp
 async def test_meeting_scheduler_is_provisioned_once_for_fixed_workspace(tmp_path: Path) -> None:
     class FakeScheduler:
         def __init__(self) -> None:
-            self.calls: list[tuple[str, str, str]] = []
+            self.calls: list[tuple[str, str, str, str]] = []
 
         async def ensure(self, workspace: str, *, ai_id: str = "", agent: str = "", session_id: str = "") -> str:
             self.calls.append((workspace, ai_id, agent, session_id))
@@ -473,7 +507,7 @@ async def test_read_full_transcript_follows_has_more_beyond_manifest_count(
     seen: list[int] = []
 
     async def fake_read(**kwargs: object) -> str:
-        index = int(kwargs["chunk_index"])
+        index = int(str(kwargs["chunk_index"]))
         seen.append(index)
         return json.dumps(
             {
@@ -774,6 +808,159 @@ async def test_meeting_session_notify_is_idempotent_for_fixed_recipient(
     assert second["status"] == "already_sent"
     assert second["recipient"] == "罗霖"
     assert sent == [("ou_hr", "会议分析总览", "open_id")]
+
+
+@pytest.mark.anyio
+async def test_meeting_session_notify_resumes_direct_chunks_after_partial_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sent: list[str] = []
+    attempts = 0
+
+    async def fake_send(_identity: str, text: str, _receive_id_type: str) -> dict[str, str | bool]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 2:
+            return {"ok": False, "message": "temporary failure"}
+        sent.append(text)
+        return {"ok": True, "message_id": f"om_{attempts}"}
+
+    monkeypatch.setattr(notify, "_configured_hr_identity", lambda: "ou_hr")
+    monkeypatch.setattr(notify._f, "send_message_impl", fake_send)
+    text = "x" * (notify.MAX_NOTIFICATION_CHARS * 2 + 10)
+
+    first = json.loads(
+        await notify.meeting_session_notify(
+            meeting_name="weekday-alignment",
+            recipient="hr",
+            text=text,
+            record_file_id="record-partial",
+            appdata_root=str(tmp_path),
+        )
+    )
+    second = json.loads(
+        await notify.meeting_session_notify(
+            meeting_name="weekday-alignment",
+            recipient="hr",
+            text=text,
+            record_file_id="record-partial",
+            appdata_root=str(tmp_path),
+        )
+    )
+
+    assert first["status"] == "send_failed"
+    assert second["status"] == "sent"
+    assert attempts == 4
+    assert len(sent) == 3
+    assert "[1/3]" in sent[0]
+    assert "[2/3]" in sent[1]
+    assert "[3/3]" in sent[2]
+
+
+@pytest.mark.anyio
+async def test_meeting_session_notify_resumes_topic_replies_without_new_topic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    topics: list[str] = []
+    replies: list[str] = []
+    reply_attempts = 0
+
+    async def fake_resolve(_name: str) -> tuple[str, str]:
+        return "oc_main", "HaiTun Agent主战场"
+
+    async def fake_start_topic(
+        _chat_id: str, text: str, _at_ids: object = None, _at_all: bool = False
+    ) -> dict[str, str | bool]:
+        topics.append(text)
+        return {"ok": True, "message_id": "om_root", "thread_id": "omt_root"}
+
+    async def fake_reply(_message_id: str, text: str) -> dict[str, object]:
+        nonlocal reply_attempts
+        reply_attempts += 1
+        if reply_attempts == 1:
+            return {"ok": False, "message": "temporary failure"}
+        replies.append(text)
+        return {"ok": True, "message_id": f"om_reply_{reply_attempts}", "thread_id": "omt_root"}
+
+    monkeypatch.setattr(notify, "_resolve_group_with_bot", fake_resolve)
+    monkeypatch.setattr(notify._f, "start_topic_impl", fake_start_topic)
+    monkeypatch.setattr(notify, "_reply_in_topic", fake_reply)
+    text = "x" * (notify.MAX_NOTIFICATION_CHARS * 2 + 10)
+
+    first = json.loads(
+        await notify.meeting_session_notify(
+            meeting_name="weekday-alignment",
+            recipient="HaiTun Agent主战场",
+            text=text,
+            record_file_id="record-topic-partial",
+            appdata_root=str(tmp_path),
+        )
+    )
+    second = json.loads(
+        await notify.meeting_session_notify(
+            meeting_name="weekday-alignment",
+            recipient="HaiTun Agent主战场",
+            text=text,
+            record_file_id="record-topic-partial",
+            appdata_root=str(tmp_path),
+        )
+    )
+
+    assert first["status"] == "send_failed"
+    assert second["status"] == "sent"
+    assert topics == ["[1/3]\n" + "x" * notify.MAX_NOTIFICATION_CHARS]
+    assert len(replies) == 2
+    assert "[2/3]" in replies[0]
+    assert "[3/3]" in replies[1]
+
+
+@pytest.mark.anyio
+async def test_meeting_session_notify_serializes_same_receipt_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    active = 0
+    maximum_active = 0
+    started = anyio.Event()
+    release = anyio.Event()
+    sent = 0
+
+    async def fake_send(_identity: str, _text: str, _receive_id_type: str) -> dict[str, str | bool]:
+        nonlocal active, maximum_active, sent
+        active += 1
+        maximum_active = max(maximum_active, active)
+        sent += 1
+        started.set()
+        await release.wait()
+        active -= 1
+        return {"ok": True, "message_id": "om_once"}
+
+    monkeypatch.setattr(notify, "_configured_hr_identity", lambda: "ou_hr")
+    monkeypatch.setattr(notify._f, "send_message_impl", fake_send)
+    results: list[dict[str, object]] = []
+
+    async def run_one() -> None:
+        results.append(
+            json.loads(
+                await notify.meeting_session_notify(
+                    meeting_name="weekday-alignment",
+                    recipient="hr",
+                    text="一次",
+                    record_file_id="record-lock",
+                    appdata_root=str(tmp_path),
+                )
+            )
+        )
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(run_one)
+        tg.start_soon(run_one)
+        await started.wait()
+        release.set()
+
+    assert maximum_active == 1
+    assert sent == 1
+    assert {result["status"] for result in results} == {"sent", "already_sent"}
+    assert "force" not in inspect.signature(notify.meeting_session_notify).parameters
 
 
 @pytest.mark.anyio

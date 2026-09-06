@@ -15,6 +15,8 @@ from _meeting_automation import meeting_artifact_root
 from psi_agent._appdata import resolve_appdata_root
 
 MAX_NOTIFICATION_CHARS = 8_000
+_RECEIPT_LOCKS: dict[str, anyio.Lock] = {}
+_RECEIPT_LOCKS_GUARD = anyio.Lock()
 
 
 def _configured_hr_identity() -> str:
@@ -129,12 +131,34 @@ async def _reply_in_topic(message_id: str, text: str) -> dict[str, object]:
             "ok": False,
             "message": str((response or {}).get("message") or "topic reply failed"),
         }
-    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    raw_data = response.get("data")
+    data: dict[str, object] = raw_data if isinstance(raw_data, dict) else {}
     return {
         "ok": True,
         "message_id": str(data.get("message_id") or ""),
         "thread_id": str(data.get("thread_id") or ""),
     }
+
+
+async def _receipt_lock(key: str) -> anyio.Lock:
+    async with _RECEIPT_LOCKS_GUARD:
+        lock = _RECEIPT_LOCKS.get(key)
+        if lock is None:
+            lock = anyio.Lock()
+            _RECEIPT_LOCKS[key] = lock
+        return lock
+
+
+async def _read_receipts(path: Path) -> dict[str, object]:
+    try:
+        value = json.loads(await anyio.Path(str(path)).read_text(encoding="utf-8"))
+    except OSError, json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+async def _write_receipts(path: Path, receipts: dict[str, object]) -> None:
+    await anyio.Path(str(path)).write_text(json.dumps(receipts, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 async def meeting_session_notify(
@@ -143,10 +167,9 @@ async def meeting_session_notify(
     text: str,
     record_file_id: str = "",
     user_key: str = "",
-    force: bool = False,
     appdata_root: str = "",
 ) -> str:
-    """向固定个人或群聊收件人发送会议结果, 并记录幂等回执。"""
+    """向固定个人或群聊收件人发送会议结果, 并记录可恢复的幂等回执。"""
     try:
         if not meeting_name.strip() or not recipient.strip() or not text.strip():
             raise ValueError("meeting_name, recipient, and text are required")
@@ -161,80 +184,120 @@ async def meeting_session_notify(
                 ensure_ascii=False,
             )
         receipt_path = artifact / "notification_receipts.json"
-        try:
-            receipts = json.loads(receipt_path.read_text(encoding="utf-8"))
-        except OSError, json.JSONDecodeError:
-            receipts = {}
-        if not isinstance(receipts, dict):
-            receipts = {}
         # Use the resolved identity rather than the caller's alias (``hr`` vs
         # ``罗霖``).  Different task wording must still converge on one delivery.
         receipt_key = hashlib.sha256(f"{record_file_id}\n{identity}".encode()).hexdigest()
-        if not force and isinstance(receipts.get(receipt_key), dict) and receipts[receipt_key].get("ok"):
-            return json.dumps(
-                {
-                    "ok": True,
-                    "status": "already_sent",
+        async with await _receipt_lock(str(receipt_path) + ":" + receipt_key):
+            receipts = await _read_receipts(receipt_path)
+            previous = receipts.get(receipt_key)
+            if isinstance(previous, dict) and previous.get("ok"):
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "status": "already_sent",
+                        "recipient": display_name,
+                        "message_id": previous.get("message_id", ""),
+                    },
+                    ensure_ascii=False,
+                )
+            text_hash = hashlib.sha256(text.encode()).hexdigest()
+            if isinstance(previous, dict) and previous.get("text_sha256") not in (None, "", text_hash):
+                result = {
+                    "ok": False,
+                    "status": "receipt_content_mismatch",
                     "recipient": display_name,
-                    "message_id": receipts[receipt_key].get("message_id", ""),
-                },
-                ensure_ascii=False,
-            )
-        try:
-            message_ids: list[str] = []
-            thread_id = ""
-            if identity.startswith("oc_"):
-                first_text = chunks[0] if len(chunks) == 1 else f"[1/{len(chunks)}]\n{chunks[0]}"
-                sent = await _f.start_topic_impl(identity, first_text, None, False)
-                delivery = "topic"
-                if isinstance(sent, dict) and sent.get("ok"):
-                    first_id = str(sent.get("message_id") or "")
-                    if first_id:
-                        message_ids.append(first_id)
-                    thread_id = str(sent.get("thread_id") or "")
-                    for index, chunk in enumerate(chunks[1:], start=2):
-                        reply = await _reply_in_topic(first_id, f"[{index}/{len(chunks)}]\n{chunk}")
-                        if not reply.get("ok"):
-                            sent = reply
-                            break
-                        reply_id = str(reply.get("message_id") or "")
-                        if reply_id:
-                            message_ids.append(reply_id)
-                    else:
-                        sent = {**sent, "message_ids": message_ids, "thread_id": thread_id}
-            else:
-                delivery = "direct"
-                sent = {"ok": True, "message_ids": []}
-                for index, chunk in enumerate(chunks, start=1):
-                    body = chunk if len(chunks) == 1 else f"[{index}/{len(chunks)}]\n{chunk}"
-                    part = await _f.send_message_impl(identity, body, "open_id")
-                    if not isinstance(part, dict) or not part.get("ok"):
-                        sent = part if isinstance(part, dict) else {"ok": False, "message": "direct send failed"}
-                        break
-                    part_id = str(part.get("message_id") or "")
-                    if part_id:
-                        sent["message_ids"].append(part_id)
-                else:
-                    sent["message_id"] = sent["message_ids"][0] if sent["message_ids"] else ""
-        except Exception as exc:
-            sent = {"ok": False, "message": f"{type(exc).__name__}: {exc}"}
+                    "delivery": "topic" if identity.startswith("oc_") else "direct",
+                    "recipient_id": identity,
+                    "message_ids": previous.get("message_ids", []),
+                    "error": "内容已变化, 拒绝在部分发送后混用旧消息和新消息",
+                }
+                return json.dumps(result, ensure_ascii=False)
+
             delivery = "topic" if identity.startswith("oc_") else "direct"
-        result = {
-            "ok": bool(isinstance(sent, dict) and sent.get("ok")),
-            "status": "sent" if isinstance(sent, dict) and sent.get("ok") else "send_failed",
-            "recipient": display_name,
-            "delivery": delivery,
-            "recipient_id": identity,
-            "message_id": str(sent.get("message_id") or "") if isinstance(sent, dict) else "",
-            "thread_id": str(sent.get("thread_id") or "") if isinstance(sent, dict) else "",
-            "message_ids": sent.get("message_ids", []) if isinstance(sent, dict) else [],
-            "error": str(sent.get("message") or "") if isinstance(sent, dict) and not sent.get("ok") else "",
-        }
-        receipts[receipt_key] = result
-        await anyio.Path(str(receipt_path)).write_text(
-            json.dumps(receipts, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        return json.dumps(result, ensure_ascii=False)
+            previous_ids = previous.get("message_ids", []) if isinstance(previous, dict) else []
+            message_ids = [str(value) for value in previous_ids] if isinstance(previous_ids, list) else []
+            previous_index = previous.get("next_chunk_index") if isinstance(previous, dict) else None
+            try:
+                next_chunk_index = int(str(previous_index)) if previous_index is not None else len(message_ids)
+            except TypeError, ValueError:
+                next_chunk_index = len(message_ids)
+            thread_id = str(previous.get("thread_id", "")) if isinstance(previous, dict) else ""
+            root_message_id = str(previous.get("root_message_id", "")) if isinstance(previous, dict) else ""
+
+            def progress(status: str, *, error: str = "", ok: bool = False) -> dict[str, object]:
+                return {
+                    "ok": ok,
+                    "status": status,
+                    "recipient": display_name,
+                    "delivery": delivery,
+                    "recipient_id": identity,
+                    "message_id": root_message_id or (message_ids[0] if message_ids else ""),
+                    "root_message_id": root_message_id,
+                    "thread_id": thread_id,
+                    "message_ids": message_ids,
+                    "next_chunk_index": next_chunk_index,
+                    "total_chunks": len(chunks),
+                    "text_sha256": text_hash,
+                    "error": error,
+                }
+
+            if delivery == "topic" and next_chunk_index == 0:
+                first_text = chunks[0] if len(chunks) == 1 else f"[1/{len(chunks)}]\n{chunks[0]}"
+                try:
+                    sent = await _f.start_topic_impl(identity, first_text, None, False)
+                except Exception as exc:
+                    sent = {"ok": False, "message": f"{type(exc).__name__}: {exc}"}
+                if not isinstance(sent, dict) or not sent.get("ok"):
+                    result = progress("send_failed", error=str((sent or {}).get("message") or "topic start failed"))
+                    receipts[receipt_key] = result
+                    await _write_receipts(receipt_path, receipts)
+                    return json.dumps(result, ensure_ascii=False)
+                root_message_id = str(sent.get("message_id") or "")
+                thread_id = str(sent.get("thread_id") or "")
+                if not root_message_id:
+                    result = progress("send_failed", error="topic root did not return a message id")
+                    receipts[receipt_key] = result
+                    await _write_receipts(receipt_path, receipts)
+                    return json.dumps(result, ensure_ascii=False)
+                message_ids.append(root_message_id)
+                next_chunk_index = 1
+                receipts[receipt_key] = progress("sending")
+                await _write_receipts(receipt_path, receipts)
+
+            if delivery == "topic" and not root_message_id:
+                result = progress("send_failed", error="cannot resume topic without its root message id")
+                receipts[receipt_key] = result
+                await _write_receipts(receipt_path, receipts)
+                return json.dumps(result, ensure_ascii=False)
+
+            while next_chunk_index < len(chunks):
+                index = next_chunk_index
+                body = chunks[index] if len(chunks) == 1 else f"[{index + 1}/{len(chunks)}]\n{chunks[index]}"
+                try:
+                    if delivery == "topic":
+                        sent = await _reply_in_topic(root_message_id, body)
+                    else:
+                        sent = await _f.send_message_impl(identity, body, "open_id")
+                except Exception as exc:
+                    sent = {"ok": False, "message": f"{type(exc).__name__}: {exc}"}
+                if not isinstance(sent, dict) or not sent.get("ok"):
+                    result = progress("send_failed", error=str((sent or {}).get("message") or "message send failed"))
+                    receipts[receipt_key] = result
+                    await _write_receipts(receipt_path, receipts)
+                    return json.dumps(result, ensure_ascii=False)
+                message_id = str(sent.get("message_id") or "")
+                if message_id:
+                    message_ids.append(message_id)
+                if delivery == "topic" and sent.get("thread_id"):
+                    thread_id = str(sent["thread_id"])
+                next_chunk_index += 1
+                receipts[receipt_key] = progress("sending")
+                await _write_receipts(receipt_path, receipts)
+
+            result = progress("sent", ok=True)
+            receipts[receipt_key] = result
+            await _write_receipts(receipt_path, receipts)
+            return json.dumps(result, ensure_ascii=False)
     except (OSError, TypeError, ValueError) as exc:
         return json.dumps(
             {"ok": False, "status": "meeting_notification_failed", "error": f"{type(exc).__name__}: {exc}"},

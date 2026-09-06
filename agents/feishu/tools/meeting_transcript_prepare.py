@@ -60,6 +60,19 @@ def _merge_paragraphs(target: list[dict[str, Any]], payload: Any) -> None:
             seen.add(pid)
 
 
+def _next_detail_cursor(payload: Any) -> tuple[str, str] | None:
+    """Return the next detail cursor together with the parameter it belongs to."""
+    if not isinstance(payload, dict) or not payload.get("has_more"):
+        return None
+    next_pid = payload.get("next_pid")
+    if next_pid:
+        return "pid", str(next_pid)
+    next_token = payload.get("next_page_token") or payload.get("next_token")
+    if next_token:
+        return "page_token", str(next_token)
+    return None
+
+
 async def _collect_paragraphs(record_file_id: str, *, token_env: str) -> list[dict[str, Any]]:
     paragraph_ids: list[str] = []
     paragraph_payload = await _call(
@@ -88,42 +101,40 @@ async def _collect_paragraphs(record_file_id: str, *, token_env: str) -> list[di
     paragraphs: list[dict[str, Any]] = []
     if paragraph_ids:
         for pid in paragraph_ids:
-            cursor = pid
-            visited_detail_cursors: set[str] = set()
-            while cursor and cursor not in visited_detail_cursors:
-                visited_detail_cursors.add(cursor)
+            cursor_arg, cursor = "pid", pid
+            visited_detail_cursors: set[tuple[str, str]] = set()
+            while cursor and (cursor_arg, cursor) not in visited_detail_cursors:
+                visited_detail_cursors.add((cursor_arg, cursor))
                 detail = await _call(
                     "get_transcripts_details",
-                    {"record_file_id": record_file_id, "pid": cursor, "limit": 100},
+                    {"record_file_id": record_file_id, cursor_arg: cursor, "limit": 100},
                     token_env=token_env,
                 )
                 _merge_paragraphs(paragraphs, detail)
-                if not isinstance(detail, dict) or not detail.get("has_more"):
+                next_cursor = _next_detail_cursor(detail)
+                if next_cursor is None:
                     break
-                next_cursor = detail.get("next_pid") or detail.get("next_page_token") or detail.get("next_token")
-                cursor = str(next_cursor) if next_cursor else ""
+                cursor_arg, cursor = next_cursor
         return paragraphs
 
     # Some recordings do not expose the paragraph index.  Fall back to the
     # details cursor and continue until the server says there is no next page.
-    pid = "0"
-    visited: set[str] = set()
+    cursor_arg, cursor = "pid", "0"
+    visited: set[tuple[str, str]] = set()
     for _ in range(10_000):
-        if pid in visited:
+        if (cursor_arg, cursor) in visited:
             break
-        visited.add(pid)
+        visited.add((cursor_arg, cursor))
         detail = await _call(
             "get_transcripts_details",
-            {"record_file_id": record_file_id, "pid": pid, "limit": 100},
+            {"record_file_id": record_file_id, cursor_arg: cursor, "limit": 100},
             token_env=token_env,
         )
         _merge_paragraphs(paragraphs, detail)
-        if not isinstance(detail, dict) or not detail.get("has_more"):
+        next_cursor = _next_detail_cursor(detail)
+        if next_cursor is None:
             break
-        next_pid = detail.get("next_pid") or detail.get("next_page_token")
-        if not next_pid:
-            break
-        pid = str(next_pid)
+        cursor_arg, cursor = next_cursor
     return paragraphs
 
 

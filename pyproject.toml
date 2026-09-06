@@ -111,6 +111,9 @@ target-version = "py314"
 line-length = 120
 extend-exclude = [
     "agents/feishu/skills/workflow/fusion_flow/generated",
+    # Tencent Meeting ships these scripts as a vendor skill.  They are not
+    # maintained as repository application code and use the upstream style.
+    "agents/feishu/skills/tencent-meeting-mcp/scripts/**",
     # ``desktop`` ships the same ANTLR-generated parser as ``feishu``
     # (byte-identical); generated code is not hand-maintained, so it is
     # excluded on both paths.
