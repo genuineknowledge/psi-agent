@@ -189,10 +189,16 @@ Protocol errors between components take two forms:
 | `PSI_AI_MODEL` | Model name |
 | `PSI_AI_API_KEY` | API key |
 | `PSI_AI_BASE_URL` | Upstream base URL |
+| `PSI_APPDATA` | Application data root directory (persists histories, states, todos, etc.) |
+| `PSI_MAX_CONTEXT_TOKENS` | Maximum context tokens threshold (triggers auto-compaction) |
+| `PSI_DEBUG_MODULES` | Whitelist for targeted debug logging modules (comma or semicolon separated) |
+| `PSI_DEBUG_LOG_PATH` | File path for targeted debug log persistence |
 | `PSI_TELEGRAM_BOT_TOKEN` | Telegram bot token |
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 proxy |
 | `PSI_FEISHU_APP_ID` | Feishu app ID |
 | `PSI_FEISHU_APP_SECRET` | Feishu app secret |
+| `PSI_OAUTH_CALLBACK_BASE` | OAuth authentication callback base URL |
+| `PSI_AUTH_ENDPOINT` | External auth endpoint |
 
 CLI args take precedence over environment variables. AI params (provider, model, api_key, base_url) and channel auth params are optional and fall back to env vars when omitted. Socket path params (--session-socket, --channel-socket, --ai-socket) are required.
 
@@ -322,6 +328,9 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | POST | `/ais` | Create AI instance |
 | DELETE | `/ais/{ai_id}` | Delete AI |
 | GET | `/ais` | List all AIs |
+| POST | `/routers` | Create router instance |
+| DELETE | `/routers/{router_id}` | Delete router |
+| GET | `/routers` | List all routers |
 | POST | `/sessions` | Create Session |
 | DELETE | `/sessions/{session_id}` | Delete Session |
 | GET | `/sessions` | List all Sessions |
@@ -332,8 +341,16 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
+| GET | `/summaries` | Get all session summaries |
+| POST | `/summaries` | Set session summary |
+| POST | `/summaries/generate` | AI auto-generate summary |
+| GET | `/defaults` | Get system defaults (default agent, workspace, appdata, etc.) |
+| GET | `/ui/attention` | Get Web UI attention/notification list |
+| GET | `/workspace/roots` | Get accessible workspace roots |
 | GET | `/workspace/browse` | Browse directory (`?path=...`) |
 | GET | `/workspace/cwd` | Get working directory |
+| GET | `/workspace/file` | Read/view workspace file content |
+| POST | `/workspace/reveal` | Reveal/locate file in system file manager |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | Favicon (available only with `--icon`; returns 404 otherwise) |
 
