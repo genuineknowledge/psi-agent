@@ -14,6 +14,7 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 import _feishu_impl as _f
+from _assignment_display import resolve_people_display
 from _positive_negative_list import notifications
 from _positive_negative_list.models import LedgerRecord
 from _positive_negative_list.runtime import configured_read_table_adapter as configured_table_adapter
@@ -73,12 +74,13 @@ async def positive_negative_case_remind(
             record = replace(record, subject_user_key=subject_user_key.strip())
         root = await _resolve_appdata_root()
         result = await notifications.NotificationSender(root).send_record_notice(record, force=force)
+        subject_display = await resolve_people_display(record.subject_user_key, _f.get_users_batch_impl)
         return _f.dumps_result(
             {
                 "ok": result.ok,
                 "status": result.status,
                 "record_id": record.record_id,
-                "subject_user_key": record.subject_user_key,
+                "涉事人": subject_display,
                 **({"message_id": result.message_id} if result.message_id else {}),
                 **({"error": result.error} if result.error else {}),
             }

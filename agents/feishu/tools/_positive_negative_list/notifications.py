@@ -14,6 +14,7 @@ from typing import Any, ClassVar
 
 import _feishu_impl
 import anyio
+from _assignment_display import resolve_people_display
 
 from _positive_negative_list.models import CaseDraft, LedgerRecord
 
@@ -58,10 +59,11 @@ def _record_receipt_path(root: str | Path, record_id: str, subject_user_key: str
     return directory / f"{digest}.json"
 
 
-def _notice_text(case: CaseDraft, public_record_id: str) -> str:
+def _notice_text(case: CaseDraft, public_record_id: str, subject_display: str = "姓名未解析") -> str:
     nature = {"positive": "正面行为", "negative": "负面行为"}.get(case.nature, case.nature)
     lines = [
         "正负面清单记录通知",
+        f"涉事人：{subject_display}",
         f"发生时间：{case.occurred_at}",
         f"行为事实：{case.fact_summary}",
         f"行为性质：{nature}",
@@ -82,6 +84,11 @@ def _notice_text(case: CaseDraft, public_record_id: str) -> str:
             )
         )
     return "\n".join(lines)
+
+
+async def notice_text_with_names(case: CaseDraft, public_record_id: str) -> str:
+    subject_display = await resolve_people_display(case.subject_user_key, _feishu_impl.get_users_batch_impl)
+    return _notice_text(case, public_record_id, subject_display)
 
 
 def _identity_parts(value: str) -> list[str]:
@@ -107,10 +114,11 @@ def _record_content_gaps(record: LedgerRecord) -> tuple[str, ...]:
     return tuple(name for name, value in required.items() if not value.strip())
 
 
-def _record_notice_text(record: LedgerRecord) -> str:
+def _record_notice_text(record: LedgerRecord, subject_display: str = "姓名未解析") -> str:
     nature = {"positive": "正面行为", "negative": "负面行为"}.get(record.nature, record.nature)
     lines = [
         "正负面清单记录通知",
+        f"涉事人：{subject_display}",
         f"发生时间：{record.occurred_at}",
         f"行为事实：{record.fact_summary}",
         f"行为性质：{nature}",
@@ -138,6 +146,11 @@ def _record_notice_text(record: LedgerRecord) -> str:
     return "\n".join(lines)
 
 
+async def record_notice_text_with_names(record: LedgerRecord) -> str:
+    subject_display = await resolve_people_display(record.subject_user_key, _feishu_impl.get_users_batch_impl)
+    return _record_notice_text(record, subject_display)
+
+
 async def _write_receipt_async(path: Path, payload: dict[str, Any]) -> None:
     """Atomically replace a receipt without blocking the async event loop."""
     temporary = anyio.Path(f"{path}.tmp")
@@ -151,6 +164,7 @@ class NotificationSender:
 
     def __init__(self, appdata_root: str | Path | None = None) -> None:
         self.appdata_root = Path(appdata_root) if appdata_root is not None else None
+        self._notice_text_cache: dict[str, str] = {}
 
     async def send_subject_notice(self, case: CaseDraft, public_record_id: str) -> NotificationResult:
         loop = asyncio.get_running_loop()
@@ -173,7 +187,8 @@ class NotificationSender:
             return NotificationResult(False, status, error=reporter_error)
         if set(subjects).issubset(set(reporters)):
             return NotificationResult(True, "skipped_same_person")
-        text = _notice_text(case, public_record_id)
+        text = await notice_text_with_names(case, public_record_id)
+        self._notice_text_cache[case.case_id] = text
         attempts: list[tuple[str, NotificationResult]] = []
         for identity in subjects:
             if identity in reporters:
@@ -289,13 +304,13 @@ class NotificationSender:
                     message_id=str(existing.get("notification_message_id") or ""),
                 )
 
-        text = _record_notice_text(record)
+        text = await record_notice_text_with_names(record)
         try:
             response = await send_message_impl(record.subject_user_key, text, "open_id")
         except Exception as exc:  # transport failures are retryable
             result = NotificationResult(False, "notification_pending_retry", error=f"{type(exc).__name__}: {exc}")
             if self.appdata_root is not None:
-                self.save_record_receipt(record, result)
+                self.save_record_receipt(record, result, notice_text=text)
             return result
         if not isinstance(response, dict) or not response.get("ok"):
             message = response.get("message") if isinstance(response, dict) else "notification failed"
@@ -303,11 +318,11 @@ class NotificationSender:
                 False, "notification_pending_retry", error=str(message or "notification failed")
             )
             if self.appdata_root is not None:
-                self.save_record_receipt(record, result)
+                self.save_record_receipt(record, result, notice_text=text)
             return result
         result = NotificationResult(True, "notification_sent", str(response.get("message_id") or ""))
         if self.appdata_root is not None:
-            self.save_record_receipt(record, result)
+            self.save_record_receipt(record, result, notice_text=text)
         return result
 
     def _read_record_receipt(self, record_id: str, subject_user_key: str) -> dict[str, Any] | None:
@@ -320,7 +335,9 @@ class NotificationSender:
             return None
         return payload if isinstance(payload, dict) else None
 
-    def save_record_receipt(self, record: LedgerRecord, result: NotificationResult) -> Path:
+    def save_record_receipt(
+        self, record: LedgerRecord, result: NotificationResult, *, notice_text: str | None = None
+    ) -> Path:
         if self.appdata_root is None:
             raise ValueError("appdata_root is required to save a receipt")
         path = _record_receipt_path(self.appdata_root, record.record_id, record.subject_user_key)
@@ -331,7 +348,7 @@ class NotificationSender:
             "notification_status": result.status,
             "notification_message_id": result.message_id,
             "notification_error": result.error,
-            "notice_text": _record_notice_text(record),
+            "notice_text": notice_text or _record_notice_text(record),
             "updated_at": time.time(),
         }
         temporary = path.with_suffix(".tmp")
@@ -426,7 +443,7 @@ class NotificationSender:
             "notification_status": result.status,
             "notification_message_id": result.message_id,
             "notification_error": result.error,
-            "notice_text": _notice_text(case, public_record_id),
+            "notice_text": self._notice_text_cache.get(case.case_id) or _notice_text(case, public_record_id),
             "subject_user_key": case.subject_user_key,
             "notification_targets": targets,
             "updated_at": time.time(),

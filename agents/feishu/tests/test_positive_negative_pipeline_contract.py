@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
+
+import pytest
 
 # ruff: noqa: RUF001
 
@@ -47,6 +50,44 @@ def _negative_case() -> CaseDraft:
             "case_id": "case_test",
         }
     )
+
+
+@pytest.fixture()
+def feishu_network(monkeypatch):
+    feishu = importlib.import_module("_feishu_impl")
+    calls = {"send": [], "edit": []}
+    counter = {"value": 0}
+
+    async def fake_send_card(
+        receive_id,
+        card_json,
+        receive_id_type,
+        user_key=None,
+        business_context_json="{}",
+        action_handlers_json="{}",
+        multi_use=False,
+        **_kwargs,
+    ):
+        counter["value"] += 1
+        message_id = f"om_candidate_{counter['value']}"
+        calls["send"].append(
+            {
+                "message_id": message_id,
+                "receive_id": receive_id,
+                "card": json.loads(card_json),
+                "action_handlers": json.loads(action_handlers_json or "{}"),
+                "multi_use": multi_use,
+            }
+        )
+        return {"ok": True, "message_id": message_id}
+
+    async def fake_edit_card(message_id, card_json, user_key=""):
+        calls["edit"].append({"message_id": message_id, "card": json.loads(card_json)})
+        return {"ok": True}
+
+    monkeypatch.setattr(feishu, "send_card_impl", fake_send_card)
+    monkeypatch.setattr(feishu, "edit_card_impl", fake_edit_card)
+    return calls
 
 
 def test_bitable_role_permission_denial_is_not_reported_as_empty_success() -> None:
@@ -404,6 +445,157 @@ def test_confirmation_card_uses_display_name_but_keeps_open_id_in_case(monkeypat
     assert case.subject_user_key == "ou_subject"
 
 
+def test_prepare_result_preview_uses_people_names_without_changing_internal_draft(monkeypatch, tmp_path) -> None:
+    positive_negative = importlib.import_module("positive_negative_list")
+    case = _negative_case()
+
+    async def fake_get_users_batch(user_ids: str, user_id_type: str = "open_id"):
+        assert user_id_type == "open_id"
+        return {
+            "ok": True,
+            "users": [
+                {"open_id": "ou_subject", "name": "王炜博"},
+                {"open_id": "ou_reporter", "name": "罗霖"},
+            ],
+        }
+
+    async def fake_send_card(*args, **kwargs):
+        return {"ok": True, "message_id": "msg_card"}
+
+    monkeypatch.setattr(positive_negative._f, "get_users_batch_impl", fake_get_users_batch)
+    monkeypatch.setattr(positive_negative._f, "send_card_impl", fake_send_card)
+
+    async def fake_resolve_appdata_root():
+        return tmp_path
+
+    monkeypatch.setattr(positive_negative, "_resolve_appdata_root", fake_resolve_appdata_root)
+    monkeypatch.setattr(positive_negative, "_get_session_id", lambda: "session_test")
+
+    payload = json.loads(
+        asyncio.run(
+            positive_negative.positive_negative_case_prepare(
+                json.dumps(case.to_mapping(), ensure_ascii=False),
+                source_event_id="evt_preview_names",
+                user_key="ou_subject",
+            )
+        )
+    )
+
+    assert payload["preview"]["涉事人"] == "王炜博"
+    assert payload["preview"]["报告人"] == "罗霖"
+    assert payload["preview"]["写入者"] == "王炜博"
+    assert "ou_" not in json.dumps(payload["preview"], ensure_ascii=False)
+
+
+def test_people_display_keeps_names_and_never_falls_back_to_open_id(monkeypatch) -> None:
+    display = importlib.import_module("_assignment_display")
+
+    async def fake_get_users_batch(user_ids: str, user_id_type: str = "open_id"):
+        assert user_ids == "ou_known,ou_unknown"
+        return {"ok": True, "users": [{"open_id": "ou_known", "name": "王炜博"}]}
+
+    actual = asyncio.run(display.resolve_people_display("已有姓名,ou_known，ou_unknown", fake_get_users_batch))
+
+    assert actual == "已有姓名、王炜博、姓名未解析"
+    assert "ou_" not in actual
+
+
+def test_public_read_projection_resolves_people_to_display_names(monkeypatch) -> None:
+    reader = importlib.import_module("_positive_negative_list.reader")
+
+    async def fake_get_users_batch(user_ids: str, user_id_type: str = "open_id"):
+        assert user_id_type == "open_id"
+        return {
+            "ok": True,
+            "users": [
+                {"open_id": "ou_subject", "name": "王炜博"},
+                {"open_id": "ou_reporter", "name": "罗霖"},
+            ],
+        }
+
+    result = {
+        "ok": True,
+        "records": [
+            LedgerRecord.from_mapping(
+                {
+                    "record_id": "rec_1",
+                    "subject_user_key": "ou_subject",
+                    "reporter_user_key": "ou_reporter",
+                    "occurred_at": "2026-09-01",
+                    "nature": "negative",
+                    "category": "工作方式方法",
+                    "fact_summary": "未形成闭环",
+                }
+            ).to_mapping()
+        ],
+        "has_more": False,
+    }
+    monkeypatch.setattr(reader._f, "get_users_batch_impl", fake_get_users_batch)
+
+    public = asyncio.run(reader.public_result_with_names(result))
+
+    record = public["记录"][0]
+    assert record["涉事人"] == "王炜博"
+    assert record["报告人"] == "罗霖"
+    assert "ou_" not in json.dumps(public, ensure_ascii=False)
+
+
+def test_record_notice_resolves_subject_name(monkeypatch) -> None:
+    notifications = importlib.import_module("_positive_negative_list.notifications")
+    case = _negative_case()
+
+    async def fake_get_users_batch(user_ids: str, user_id_type: str = "open_id"):
+        return {"ok": True, "users": [{"open_id": "ou_subject", "name": "王炜博"}]}
+
+    monkeypatch.setattr(notifications._feishu_impl, "get_users_batch_impl", fake_get_users_batch)
+    text = asyncio.run(notifications.notice_text_with_names(case, "rec_1"))
+
+    assert "涉事人：王炜博" in text
+    assert "ou_subject" not in text
+
+
+def test_remind_result_resolves_subject_name(monkeypatch, tmp_path) -> None:
+    remind = importlib.import_module("positive_negative_case_remind")
+    notifications = importlib.import_module("_positive_negative_list.notifications")
+    case = LedgerRecord.from_mapping(
+        {
+            "record_id": "rec_1",
+            "subject_user_key": "ou_subject",
+            "reporter_user_key": "ou_reporter",
+            "occurred_at": "2026-09-01",
+            "nature": "positive",
+            "category": "组织向心力",
+            "fact_summary": "主动同步信息",
+        }
+    )
+
+    async def fake_send(*args, **kwargs):
+        return {"ok": True, "message_id": "msg_1"}
+
+    async def fake_get_users_batch(user_ids: str, user_id_type: str = "open_id"):
+        return {"ok": True, "users": [{"open_id": "ou_subject", "name": "王炜博"}]}
+
+    monkeypatch.setattr(notifications, "send_message_impl", fake_send)
+    monkeypatch.setattr(notifications._feishu_impl, "get_users_batch_impl", fake_get_users_batch)
+
+    async def fake_resolve_appdata_root():
+        return tmp_path
+
+    monkeypatch.setattr(remind, "_resolve_appdata_root", fake_resolve_appdata_root)
+
+    payload = json.loads(
+        asyncio.run(
+            remind.positive_negative_case_remind(
+                record_json=json.dumps(case.to_mapping(), ensure_ascii=False),
+                user_key="ou_reporter",
+            )
+        )
+    )
+
+    assert payload["涉事人"] == "王炜博"
+    assert "ou_subject" not in json.dumps(payload, ensure_ascii=False)
+
+
 def test_prepare_error_lists_legal_case_field_names(monkeypatch) -> None:
     positive_negative = importlib.import_module("positive_negative_list")
 
@@ -489,3 +681,550 @@ def test_existing_columns_store_human_note_and_formal_nature_label() -> None:
     assert "分类：" in encoded["f_note"]
     assert "正确做法：" in encoded["f_note"]
     assert case.cross_source_fingerprint in encoded["f_note"]
+
+
+def test_candidate_event_merge_keeps_one_event_package_and_all_source_sentences() -> None:
+    batches = importlib.import_module("_positive_negative_list.candidate_batches")
+    batch = batches.build_candidate_batch(
+        person_open_id="ou_subject",
+        person_name="王炜博",
+        source_label="会议纪要",
+        meeting_date="2026-09-06",
+        candidates=[
+            {"text": "方案确定后直接开工，没有倒排节点", "context": "项目启动"},
+            {"text": "做到中途才发现上下游都在等", "context": "项目启动"},
+        ],
+        source_key="meeting:2026-09-06:am",
+    )
+
+    merged = batches.merge_candidate(batch, 1, 0)
+
+    assert len([row for row in merged["rows"] if row["status"] != "merged"]) == 1
+    target = merged["rows"][0]
+    assert target["status"] == "pending"
+    assert target["source_candidates"] == [
+        "方案确定后直接开工，没有倒排节点",
+        "做到中途才发现上下游都在等",
+    ]
+    assert "直接开工" in target["text"] and "上下游都在等" in target["text"]
+    assert merged["rows"][1]["status"] == "merged"
+
+
+def test_evaluative_candidate_requires_observable_behavior() -> None:
+    batches = importlib.import_module("_positive_negative_list.candidate_batches")
+
+    quality = batches.assess_candidate_quality("XXX学习能力强、靠谱")
+
+    assert quality["status"] == "needs_observable_behavior"
+    assert "行为" in quality["reason"]
+
+
+def test_candidate_batch_source_key_is_idempotent(tmp_path, monkeypatch) -> None:
+    batches = importlib.import_module("_positive_negative_list.candidate_batches")
+    monkeypatch.setattr(batches, "_resolve_appdata_root", lambda: tmp_path)
+
+    first = batches.build_candidate_batch(
+        person_open_id="ou_subject",
+        person_name="王炜博",
+        source_label="会议纪要",
+        meeting_date="2026-09-06",
+        candidates=[{"text": "未同步风险"}],
+        source_key="meeting:2026-09-06:am",
+    )
+    second = batches.build_candidate_batch(
+        person_open_id="ou_subject",
+        person_name="王炜博",
+        source_label="会议纪要",
+        meeting_date="2026-09-06",
+        candidates=[{"text": "未同步风险"}],
+        source_key="meeting:2026-09-06:am",
+    )
+
+    asyncio.run(batches.save_batch(first))
+    duplicate = asyncio.run(batches.find_batch_by_source_key("meeting:2026-09-06:am"))
+
+    assert duplicate is not None
+    assert duplicate["batch_id"] == first["batch_id"]
+    assert second["batch_id"] != first["batch_id"]
+
+
+def test_candidate_card_is_organize_only_and_never_offers_direct_record_action(feishu_network) -> None:
+    card_tool = importlib.import_module("positive_negative_candidate_card")
+    payload = asyncio.run(
+        card_tool.positive_negative_candidate_card(
+            receive_id="ou_subject",
+            person_name="王炜博",
+            source_label="会议纪要",
+            meeting_date="2026-09-06",
+            candidates_json=json.dumps(
+                [
+                    {"text": "方案确定后直接开工，没有倒排节点", "context": "项目启动"},
+                    {"text": "做到中途才发现上下游都在等", "context": "项目启动"},
+                ],
+                ensure_ascii=False,
+            ),
+            source_key="meeting:2026-09-06:am",
+            user_key="ou_subject",
+        )
+    )
+    result = json.loads(payload)
+    assert result["ok"] is True
+    card = feishu_network["send"][-1]["card"]
+    rendered = json.dumps(card, ensure_ascii=False)
+    assert "确认记录" not in rendered
+    assert "直接写入" not in rendered
+    assert "纳入候选" in rendered
+    assert "合并" in rendered
+    assert "补充证据" in rendered
+    assert "忽略" in rendered
+    assert not (Path(os.environ["PSI_APPDATA"]) / "positive-negative-list" / "records.json").exists()
+
+
+def test_candidate_card_keep_and_merge_only_update_private_batch(feishu_network) -> None:
+    card_tool = importlib.import_module("positive_negative_candidate_card")
+    sent = json.loads(
+        asyncio.run(
+            card_tool.positive_negative_candidate_card(
+                receive_id="ou_subject",
+                person_name="王炜博",
+                candidates_json=json.dumps(["未及时同步风险", "上下游一直等待"], ensure_ascii=False),
+                source_key="meeting:2026-09-06:pm",
+                user_key="ou_subject",
+            )
+        )
+    )
+
+    kept = json.loads(
+        asyncio.run(
+            card_tool.positive_negative_candidate_card(
+                card_action_json=json.dumps(
+                    {
+                        "action": {"value": {"action": "pn_candidate_keep_0", "batch_id": sent["batch_id"]}},
+                        "message_id": sent["message_id"],
+                        "operator": {"open_id": "ou_subject"},
+                    },
+                    ensure_ascii=False,
+                ),
+                user_key="ou_subject",
+            )
+        )
+    )
+    assert kept["ok"] is True
+    assert kept["status"] == "pending"
+    assert not (Path(os.environ["PSI_APPDATA"]) / "positive-negative-list" / "records.json").exists()
+
+    merged = json.loads(
+        asyncio.run(
+            card_tool.positive_negative_candidate_card(
+                card_action_json=json.dumps(
+                    {
+                        "action": {"value": {"action": "pn_candidate_merge_1_0", "batch_id": sent["batch_id"]}},
+                        "message_id": sent["message_id"],
+                        "operator": {"open_id": "ou_subject"},
+                    },
+                    ensure_ascii=False,
+                ),
+                user_key="ou_subject",
+            )
+        )
+    )
+    assert merged["ok"] is True
+    batch = asyncio.run(card_tool._load_candidate_batch(sent["batch_id"]))
+    assert batch["rows"][1]["status"] == "merged"
+    assert len(batch["rows"][0]["source_candidates"]) == 2
+    assert batch["status"] == "ready_for_analysis"
+    assert not (Path(os.environ["PSI_APPDATA"]) / "positive-negative-list" / "records.json").exists()
+
+
+def test_candidate_evidence_action_opens_form_and_submission_returns_to_pending(feishu_network) -> None:
+    card_tool = importlib.import_module("positive_negative_candidate_card")
+    sent = json.loads(
+        asyncio.run(
+            card_tool.positive_negative_candidate_card(
+                receive_id="ou_subject",
+                person_name="王炜博",
+                candidates_json=json.dumps(["未及时同步风险"], ensure_ascii=False),
+                source_key="meeting:2026-09-06:evidence-form",
+                user_key="ou_subject",
+            )
+        )
+    )
+    opened = json.loads(
+        asyncio.run(
+            card_tool.positive_negative_candidate_card(
+                card_action_json=json.dumps(
+                    {
+                        "action": {"value": {"action": "pn_candidate_evidence_0", "batch_id": sent["batch_id"]}},
+                        "message_id": sent["message_id"],
+                        "operator": {"open_id": "ou_subject"},
+                    },
+                    ensure_ascii=False,
+                ),
+                user_key="ou_subject",
+            )
+        )
+    )
+    assert opened["status"] == "evidence_form_sent"
+    assert "补充候选证据" in json.dumps(feishu_network["send"][-1]["card"], ensure_ascii=False)
+    submitted = json.loads(
+        asyncio.run(
+            card_tool.positive_negative_candidate_card(
+                card_action_json=json.dumps(
+                    {
+                        "action": {
+                            "value": {
+                                "action": "pn_candidate_evidence_submit",
+                                "batch_id": sent["batch_id"],
+                                "row_index": 0,
+                            },
+                            "form_value": {
+                                "observed_behavior": "在延期风险已明确后未同步上下游",
+                                "evidence_sources": "聊天记录,任务记录",
+                            },
+                        },
+                        "operator": {"open_id": "ou_subject"},
+                    },
+                    ensure_ascii=False,
+                ),
+                user_key="ou_subject",
+            )
+        )
+    )
+    assert submitted["status"] == "evidence_saved"
+    batch = asyncio.run(card_tool._load_candidate_batch(sent["batch_id"]))
+    assert batch["status"] == "pending"
+    assert batch["rows"][0]["status"] == "pending"
+    assert batch["rows"][0]["evidence_sources"] == ["聊天记录", "任务记录"]
+
+def test_candidate_card_handlers_match_only_organize_actions(feishu_network) -> None:
+    card_tool = importlib.import_module("positive_negative_candidate_card")
+    sent = json.loads(
+        asyncio.run(
+            card_tool.positive_negative_candidate_card(
+                receive_id="ou_subject",
+                person_name="王炜博",
+                candidates_json=json.dumps(["未及时同步风险", "上下游一直等待"], ensure_ascii=False),
+                source_key="meeting:2026-09-06:handlers",
+                user_key="ou_subject",
+            )
+        )
+    )
+    send = feishu_network["send"][-1]
+    assert send["action_handlers"]
+    assert all(value == "positive_negative_candidate_card" for value in send["action_handlers"].values())
+    assert all("keep" not in action or "candidate" in action for action in send["action_handlers"])
+    assert "positive_negative_case_confirm" not in json.dumps(send["action_handlers"], ensure_ascii=False)
+    assert sent["status"] == "sent"
+
+
+def test_candidate_finalize_returns_analysis_payload_without_writing(feishu_network) -> None:
+    card_tool = importlib.import_module("positive_negative_candidate_card")
+    sent = json.loads(
+        asyncio.run(
+            card_tool.positive_negative_candidate_card(
+                receive_id="ou_subject",
+                person_name="王炜博",
+                candidates_json=json.dumps(["未及时同步风险"], ensure_ascii=False),
+                source_key="meeting:2026-09-06:finalize",
+                user_key="ou_subject",
+            )
+        )
+    )
+    kept = json.loads(
+        asyncio.run(
+            card_tool.positive_negative_candidate_card(
+                card_action_json=json.dumps(
+                    {
+                        "action": {"value": {"action": "pn_candidate_keep_0", "batch_id": sent["batch_id"]}},
+                        "message_id": sent["message_id"],
+                        "operator": {"open_id": "ou_subject"},
+                    },
+                    ensure_ascii=False,
+                ),
+                user_key="ou_subject",
+            )
+        )
+    )
+    assert kept["status"] == "ready_for_analysis"
+    result = json.loads(
+        asyncio.run(
+            card_tool.positive_negative_candidate_card(
+                card_action_json=json.dumps(
+                    {
+                        "action": {"value": {"action": "pn_candidate_finalize", "batch_id": sent["batch_id"]}},
+                        "message_id": sent["message_id"],
+                        "operator": {"open_id": "ou_subject"},
+                    },
+                    ensure_ascii=False,
+                ),
+                user_key="ou_subject",
+            )
+        )
+    )
+    assert result["status"] == "analysis_started"
+    assert result["candidates"][0]["source_candidates"] == ["未及时同步风险"]
+    assert not (Path(os.environ["PSI_APPDATA"]) / "positive-negative-list" / "records.json").exists()
+
+
+def test_evaluative_candidate_cannot_be_kept_or_finalized(feishu_network) -> None:
+    card_tool = importlib.import_module("positive_negative_candidate_card")
+    sent = json.loads(
+        asyncio.run(
+            card_tool.positive_negative_candidate_card(
+                receive_id="ou_subject",
+                person_name="王炜博",
+                candidates_json=json.dumps(["XXX学习能力强"], ensure_ascii=False),
+                source_key="meeting:2026-09-06:evaluative",
+                user_key="ou_subject",
+            )
+        )
+    )
+
+    result = json.loads(
+        asyncio.run(
+            card_tool.positive_negative_candidate_card(
+                card_action_json=json.dumps(
+                    {
+                        "action": {"value": {"action": "pn_candidate_keep_0", "batch_id": sent["batch_id"]}},
+                        "message_id": sent["message_id"],
+                        "operator": {"open_id": "ou_subject"},
+                    },
+                    ensure_ascii=False,
+                ),
+                user_key="ou_subject",
+            )
+        )
+    )
+    assert result["status"] == "needs_observable_behavior"
+    batch = asyncio.run(card_tool._load_candidate_batch(sent["batch_id"]))
+    assert batch["rows"][0]["status"] == "pending"
+    assert batch["status"] == "pending"
+
+
+def test_candidate_finalize_exposes_one_event_package_per_kept_candidate(feishu_network) -> None:
+    card_tool = importlib.import_module("positive_negative_candidate_card")
+    sent = json.loads(
+        asyncio.run(
+            card_tool.positive_negative_candidate_card(
+                receive_id="ou_subject",
+                person_name="王炜博",
+                meeting_date="2026-09-06",
+                candidates_json=json.dumps(
+                    [
+                        {"text": "方案确定后直接开工，没有倒排节点", "context": "项目启动"},
+                        {"text": "做到中途才发现上下游都在等", "context": "项目启动"},
+                    ],
+                    ensure_ascii=False,
+                ),
+                source_key="meeting:2026-09-06:event-package",
+                user_key="ou_subject",
+            )
+        )
+    )
+    for action in ("pn_candidate_keep_0", "pn_candidate_merge_1_0"):
+        result = json.loads(
+            asyncio.run(
+                card_tool.positive_negative_candidate_card(
+                    card_action_json=json.dumps(
+                        {
+                            "action": {"value": {"action": action, "batch_id": sent["batch_id"]}},
+                            "message_id": sent["message_id"],
+                            "operator": {"open_id": "ou_subject"},
+                        },
+                        ensure_ascii=False,
+                    ),
+                    user_key="ou_subject",
+                )
+            )
+        )
+        assert result["ok"] is True
+    finalized = json.loads(
+        asyncio.run(
+            card_tool.positive_negative_candidate_card(
+                card_action_json=json.dumps(
+                    {
+                        "action": {"value": {"action": "pn_candidate_finalize", "batch_id": sent["batch_id"]}},
+                        "message_id": sent["message_id"],
+                        "operator": {"open_id": "ou_subject"},
+                    },
+                    ensure_ascii=False,
+                ),
+                user_key="ou_subject",
+            )
+        )
+    )
+    assert finalized["status"] == "analysis_started"
+    assert len(finalized["analysis_candidates"]) == 1
+    package = finalized["analysis_candidates"][0]
+    assert package["person_name"] == "王炜博"
+    assert package["meeting_date"] == "2026-09-06"
+    assert package["source_candidates"] == ["方案确定后直接开工，没有倒排节点", "做到中途才发现上下游都在等"]
+    assert package["requires_case_analysis"] is True
+
+
+def test_candidate_analysis_rejects_missing_evidence_before_confirmation() -> None:
+    tool = importlib.import_module("positive_negative_candidate_analyze")
+    batches = importlib.import_module("_positive_negative_list.candidate_batches")
+    batch = batches.build_candidate_batch(
+        person_open_id="ou_subject",
+        person_name="王炜博",
+        source_label="会议纪要",
+        meeting_date="2026-09-06",
+        candidates=[{"text": "方案确定后直接开工，没有倒排节点", "context": "项目启动"}],
+        source_key="meeting:2026-09-06:analyze-missing",
+    )
+    batch["rows"][0]["status"] = "kept"
+    batch["status"] = "analysis_started"
+    asyncio.run(batches.save_batch(batch))
+
+    result = json.loads(
+        asyncio.run(
+            tool.positive_negative_candidate_analyze(
+                batch_id=batch["batch_id"],
+                analysis_json=json.dumps(
+                    {
+                        "observed_behavior": "方案确定后直接开工，没有倒排节点",
+                        "context": "项目启动",
+                        "impact": "上下游等待",
+                        "evidence_sources": [],
+                        "nature": "negative",
+                        "category": "工作方式方法",
+                        "primary_rule_id": "pn-test-negative",
+                        "correct_behavior": "先倒排节点并明确交付物",
+                        "immediate_remedy": "补齐节点并同步上下游",
+                        "prevention": "在开工前检查倒排表",
+                    },
+                    ensure_ascii=False,
+                ),
+                user_key="ou_subject",
+            )
+        )
+    )
+    assert result["ok"] is False
+    assert result["status"] == "candidate_evidence_incomplete"
+    assert "evidence_sources" in result["missing"]
+
+
+def test_candidate_analysis_delegates_one_complete_event_to_existing_prepare(monkeypatch) -> None:
+    tool = importlib.import_module("positive_negative_candidate_analyze")
+    batches = importlib.import_module("_positive_negative_list.candidate_batches")
+    batch = batches.build_candidate_batch(
+        person_open_id="ou_subject",
+        person_name="王炜博",
+        source_label="会议纪要",
+        meeting_date="2026-09-06",
+        candidates=[{"text": "方案确定后直接开工，没有倒排节点", "context": "项目启动"}],
+        source_key="meeting:2026-09-06:analyze-ready",
+    )
+    batch["rows"][0]["status"] = "kept"
+    batch["status"] = "analysis_started"
+    asyncio.run(batches.save_batch(batch))
+    captured: dict[str, Any] = {}
+
+    async def fake_prepare(case_json: str, **kwargs):
+        captured["case"] = json.loads(case_json)
+        captured["kwargs"] = kwargs
+        return json.dumps({"ok": True, "status": "待写入者确认", "case_id": "case_from_event"})
+
+    monkeypatch.setattr(tool, "positive_negative_case_prepare", fake_prepare)
+    result = json.loads(
+        asyncio.run(
+            tool.positive_negative_candidate_analyze(
+                batch_id=batch["batch_id"],
+                analysis_json=json.dumps(
+                    {
+                        "observed_behavior": "方案确定后直接开工，没有倒排节点",
+                        "context": "项目启动",
+                        "impact": "上下游等待",
+                        "evidence_sources": ["聊天记录"],
+                        "nature": "negative",
+                        "category": "工作方式方法",
+                        "primary_rule_id": "pn-test-negative",
+                        "correct_behavior": "先倒排节点并明确交付物",
+                        "immediate_remedy": "补齐节点并同步上下游",
+                        "prevention": "在开工前检查倒排表",
+                    },
+                    ensure_ascii=False,
+                ),
+                user_key="ou_subject",
+            )
+        )
+    )
+    assert result["ok"] is True
+    assert result["status"] == "待写入者确认"
+    assert captured["case"]["subject_user_key"] == "ou_subject"
+    assert captured["case"]["reporter_user_key"] == "ou_subject"
+    assert captured["kwargs"]["source_event_id"] == "meeting:2026-09-06:analyze-ready"
+    assert captured["kwargs"]["user_key"] == "ou_subject"
+
+
+def test_confirmation_writes_only_test_adapter_then_notifies_and_starts_private_review(monkeypatch, tmp_path) -> None:
+    positive_negative = importlib.import_module("positive_negative_list")
+    confirm = importlib.import_module("positive_negative_list_confirm")
+    notifications = importlib.import_module("_positive_negative_list.notifications")
+    reviews = importlib.import_module("_positive_negative_list.reviews")
+
+    class FakeAdapter:
+        creates = 0
+
+        async def preflight(self, user_key):
+            return SimpleNamespace(ok=True, errors=(), schema=object())
+
+        async def create_public_record(self, case, user_key):
+            self.creates += 1
+            return {"record_id": "rec_test_only"}
+
+    adapter = FakeAdapter()
+    sent_messages: list[tuple[str, str]] = []
+
+    async def fake_send_message(receive_id, text, receive_id_type):
+        sent_messages.append((receive_id, text))
+        return {"ok": True, "message_id": "msg_notice"}
+
+    async def fake_get_users_batch(user_ids: str, user_id_type: str = "open_id"):
+        names = {"ou_subject": "王炜博", "ou_reporter": "罗霖"}
+        return {"ok": True, "users": [{"open_id": item, "name": names[item]} for item in user_ids.split(",")]}
+
+    async def fake_root():
+        return tmp_path
+
+    async def fake_send_card(*args, **kwargs):
+        return {"ok": True, "message_id": "msg_card"}
+
+    monkeypatch.setattr(positive_negative._f, "send_card_impl", fake_send_card)
+    monkeypatch.setattr(positive_negative, "_get_session_id", lambda: "session_test")
+    monkeypatch.setattr(confirm, "get_session_id", lambda: "session_test")
+    monkeypatch.setattr(positive_negative, "_resolve_appdata_root", fake_root)
+    monkeypatch.setattr(confirm, "resolve_appdata_root", fake_root)
+    monkeypatch.setattr(confirm, "TABLE_ADAPTER", adapter)
+    monkeypatch.setattr(confirm, "table_adapter", None)
+    monkeypatch.setattr(notifications, "send_message_impl", fake_send_message)
+    monkeypatch.setattr(notifications._feishu_impl, "get_users_batch_impl", fake_get_users_batch)
+    case = _negative_case().to_mapping() | {"writer_user_key": "ou_reporter", "reporter_user_key": "ou_reporter"}
+    prepared = json.loads(
+        asyncio.run(
+            positive_negative.positive_negative_case_prepare(
+                json.dumps(case, ensure_ascii=False),
+                source_event_id="evt_full_chain",
+                user_key="ou_reporter",
+            )
+        )
+    )
+    callback = json.dumps(
+        {
+            "action": {"value": {"action": "positive_negative_case_confirm"}},
+            "business_context": {"case_id": prepared["case_id"], "preview_digest": prepared["preview_digest"]},
+        },
+        ensure_ascii=False,
+    )
+    result = json.loads(asyncio.run(confirm.positive_negative_case_confirm(callback, user_key="ou_reporter")))
+
+    assert result["ok"] is True
+    assert result["public_record_id"] == "rec_test_only"
+    assert adapter.creates == 1
+    assert sent_messages and sent_messages[0][0] == "ou_subject"
+    assert "正确做法" in sent_messages[0][1]
+    active = reviews.find_active_reviews(tmp_path, "ou_subject")
+    assert len(active) == 1
+    assert active[0].record_id == "rec_test_only"
+    assert result["private_review_status"] == "started"

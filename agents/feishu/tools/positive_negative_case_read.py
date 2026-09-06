@@ -44,7 +44,7 @@ async def positive_negative_case_read(
             view_id=runtime.configured_read_view_id(),
         )
         result = await reader.read_records(cast(reader.FeishuLedgerClient, adapter._client), query, user_key)
-        result = reader.public_result(result)
+        result = await reader.public_result_with_names(result)
     except (TypeError, ValueError) as exc:
         result = {"ok": False, "error": str(exc)}
     except (OSError, RuntimeError) as exc:
