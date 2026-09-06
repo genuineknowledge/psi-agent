@@ -124,9 +124,9 @@ def merge_candidate(batch: dict[str, Any], source_index: int, target_index: int)
 def is_ready_for_analysis(batch: dict[str, Any]) -> bool:
     """Return true only when every source line has an explicit disposition.
 
-    A line marked ``needs_evidence`` or ``needs_observable_behavior`` must stay
-    outside the analysis path.  This prevents a meeting-note sentence from
-    becoming a ledger row merely because somebody clicked through the card.
+    Every line needs an explicit keep/ignore disposition.  A kept line remains
+    an evidence lead and is sent to the conversational analysis step; it is
+    never a ledger row merely because somebody clicked through the card.
     """
     rows = batch.get("rows") or []
     return bool(rows) and all(row.get("status") in _READY_ROW_STATUSES for row in rows)
@@ -174,7 +174,7 @@ async def load_batch(batch_id: str) -> dict[str, Any] | None:
     path = _state_dir(root) / f"{batch_id}.json"
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError, json.JSONDecodeError:
+    except (FileNotFoundError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
 
@@ -186,7 +186,7 @@ async def find_batch_by_source_key(source_key: str) -> dict[str, Any] | None:
     for path in _state_dir(root).glob("cand_*.json"):
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
-        except OSError, json.JSONDecodeError:
+        except (OSError, json.JSONDecodeError):
             continue
         if isinstance(value, dict) and value.get("source_key") == source_key:
             return value

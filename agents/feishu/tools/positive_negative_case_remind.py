@@ -18,6 +18,7 @@ from _assignment_display import resolve_people_display
 from _positive_negative_list import notifications
 from _positive_negative_list.models import LedgerRecord
 from _positive_negative_list.runtime import configured_read_table_adapter as configured_table_adapter
+from positive_negative_case_review import positive_negative_case_review_start
 
 from psi_agent._appdata import resolve_appdata_root as _resolve_appdata_root
 
@@ -38,6 +39,7 @@ async def positive_negative_case_remind(
     subject_user_key: str = "",
     force: bool = False,
     user_key: str = "",
+    card_action_json: str = "",
 ) -> str:
     """Privately remind the subject of an existing ledger record.
 
@@ -52,6 +54,35 @@ async def positive_negative_case_remind(
         JSON delivery status; failures remain retryable and do not modify the table.
     """
     try:
+        if card_action_json.strip():
+            try:
+                envelope = json.loads(card_action_json)
+            except json.JSONDecodeError as exc:
+                return _f.dumps_result({"ok": False, "status": "invalid_callback", "error": str(exc)})
+            if not isinstance(envelope, dict):
+                return _f.dumps_result({"ok": False, "status": "invalid_callback"})
+            action = envelope.get("action") if isinstance(envelope.get("action"), dict) else {}
+            value = action.get("value") if isinstance(action.get("value"), dict) else {}
+            action_name = str(value.get("action") or action.get("action_id") or "").strip()
+            if action_name != "pn_record_review_start":
+                return _f.dumps_result({"ok": False, "status": "invalid_callback"})
+            source = envelope.get("source") if isinstance(envelope.get("source"), dict) else {}
+            operator_payload = envelope.get("operator") if isinstance(envelope.get("operator"), dict) else {}
+            operator = str(
+                source.get("operator_open_id") or source.get("open_id") or operator_payload.get("open_id") or ""
+            ).strip()
+            if operator and user_key.strip() and operator != user_key.strip():
+                return _f.dumps_result({"ok": False, "status": "unauthorized"})
+            operator = operator or user_key.strip()
+            record_id = str(value.get("record_id") or "").strip()
+            subject = str(value.get("subject_user_key") or "").strip()
+            if not record_id or not subject or not operator or operator != subject:
+                return _f.dumps_result({"ok": False, "status": "unauthorized"})
+            return await positive_negative_case_review_start(
+                record_id=record_id,
+                subject_user_key=subject,
+                user_key=operator,
+            )
         if record_json.strip():
             record = _parse_record(record_json)
         elif record_id.strip():

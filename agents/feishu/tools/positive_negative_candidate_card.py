@@ -1,7 +1,7 @@
 # ruff: noqa: E402, E501, RUF001
 """Meeting-note candidate整理卡.
 
-This card never writes a ledger row.  It only groups, ignores, or marks
+This card never writes a ledger row.  It only keeps or ignores
 candidate evidence for follow-up; the existing case confirmation tool remains
 the sole write gate for the robot test table.
 """
@@ -18,7 +18,7 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 import _feishu_impl as _f
-from _assignment_display import readable_name
+from _assignment_display import readable_name, resolve_people_display
 from _positive_negative_list import candidate_batches
 
 
@@ -64,20 +64,6 @@ def _button(label: str, action: str, value: dict[str, Any], button_type: str = "
 def _row_actions(batch: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
     index = int(row["index"])
     base = {"batch_id": batch["batch_id"], "row_index": index, "person_open_id": batch["person_open_id"]}
-    merge_buttons = []
-    for target in batch.get("rows") or []:
-        target_index = int(target.get("index", -1))
-        if target_index == index or target.get("status") in {"merged", "ignored"}:
-            continue
-        merge_buttons.append(
-            _button(
-                f"合并到{target_index + 1}",
-                f"pn_candidate_merge_{index}_{target_index}",
-                base,
-            )
-        )
-    if not merge_buttons:
-        merge_buttons = [_button("合并到…", f"pn_candidate_merge_pick_{index}", base)]
     return {
         "tag": "column_set",
         "flex_mode": "none",
@@ -88,62 +74,11 @@ def _row_actions(batch: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
                 "weight": 1,
                 "elements": [_button("纳入候选", f"pn_candidate_keep_{index}", base, "primary")],
             },
-            {"tag": "column", "width": "weighted", "weight": 1, "elements": merge_buttons},
             {
                 "tag": "column",
                 "width": "weighted",
                 "weight": 1,
-                "elements": [_button("补充证据", f"pn_candidate_evidence_{index}", base)],
-            },
-            {
-                "tag": "column",
-                "width": "weighted",
-                "weight": 1,
-                "elements": [_button("忽略", f"pn_candidate_ignore_{index}", base)],
-            },
-        ],
-    }
-
-
-def _evidence_form(batch: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {"title": {"tag": "plain_text", "content": "补充候选证据"}, "template": "orange"},
-        "elements": [
-            {
-                "tag": "markdown",
-                "content": f"**候选**：{row.get('text') or ''}\n请补充可观察行为和可追溯来源；提交后仍需回到候选整理卡继续判断。",
-            },
-            {
-                "tag": "form",
-                "name": "pn_candidate_evidence_form",
-                "elements": [
-                    {
-                        "tag": "input",
-                        "name": "observed_behavior",
-                        "required": True,
-                        "placeholder": {"tag": "plain_text", "content": "实际做了什么？"},
-                    },
-                    {
-                        "tag": "input",
-                        "name": "evidence_sources",
-                        "required": True,
-                        "placeholder": {"tag": "plain_text", "content": "聊天记录 / 任务记录 / 截图等"},
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "提交补充"},
-                        "type": "primary",
-                        "name": "submit_evidence",
-                        "action_type": "form_submit",
-                        "value": {
-                            "action": "pn_candidate_evidence_submit",
-                            "batch_id": batch["batch_id"],
-                            "row_index": int(row["index"]),
-                        },
-                    },
-                ],
+                "elements": [_button("暂时忽略", f"pn_candidate_ignore_{index}", base)],
             },
         ],
     }
@@ -159,7 +94,7 @@ def render_candidate_card(batch: dict[str, Any]) -> dict[str, Any]:
         {"tag": "hr"},
         {
             "tag": "markdown",
-            "content": "这些是待核实的行为线索，不是正式记录。请先合并同一事件、补证或忽略；完成整理后再进入分析和测试表确认。",
+            "content": "这些是待核实的行为线索，不是正式记录。请先选择纳入候选或暂时忽略；缺少的事实会在后续分析对话中轻量补问。",
         },
     ]
     for row in rows:
@@ -218,12 +153,9 @@ def render_candidate_card(batch: dict[str, Any]) -> dict[str, Any]:
 
 
 def _action_row_index(action: str) -> tuple[str, int, int | None] | None:
-    match = re.fullmatch(r"pn_candidate_(keep|ignore|evidence|merge_pick)_(\d+)", action)
+    match = re.fullmatch(r"pn_candidate_(keep|ignore)_(\d+)", action)
     if match:
         return match.group(1), int(match.group(2)), None
-    match = re.fullmatch(r"pn_candidate_merge_(\d+)_(\d+)", action)
-    if match:
-        return "merge", int(match.group(1)), int(match.group(2))
     return None
 
 
@@ -259,27 +191,9 @@ async def _handle_click(card_action_json: str, user_key: str) -> str:
                 "candidates": active,
             }
         )
-    if str(action.get("action") or "") == "pn_candidate_evidence_submit":
-        row_index = int(action.get("row_index", -1))
-        rows = batch.get("rows") or []
-        if not (0 <= row_index < len(rows)):
-            return _f.dumps_result({"ok": False, "status": "candidate_row_not_found"})
-        form = action.get("_form_value") if isinstance(action.get("_form_value"), dict) else {}
-        observed = str(form.get("observed_behavior") or "").strip()
-        sources = [part.strip() for part in str(form.get("evidence_sources") or "").split(",") if part.strip()]
-        if not observed or not sources:
-            return _f.dumps_result({"ok": False, "status": "candidate_evidence_incomplete"})
-        row = rows[row_index]
-        row["text"] = observed
-        row["source_candidates"] = list(dict.fromkeys([*(row.get("source_candidates") or []), observed]))
-        row["evidence_sources"] = sources
-        row["quality_status"] = "candidate"
-        row["quality_reason"] = "已补充可观察行为和证据来源"
-        row["status"] = "pending"
-        row["decided_at"] = ""
-        batch["status"] = "pending"
-        await candidate_batches.save_batch(batch)
-        return _f.dumps_result({"ok": True, "status": "evidence_saved", "batch_id": batch_id, "row_index": row_index})
+    action_name = str(action.get("action") or "")
+    if action_name.startswith("pn_candidate_") and action_name != "pn_candidate_finalize" and _action_row_index(action_name) is None:
+        return _f.dumps_result({"ok": False, "status": "unsupported_legacy_action"})
     parsed = _action_row_index(str(action.get("action") or ""))
     if not parsed:
         return _f.dumps_result({"ok": False, "status": "invalid_candidate_action"})
@@ -289,8 +203,6 @@ async def _handle_click(card_action_json: str, user_key: str) -> str:
         return _f.dumps_result({"ok": False, "status": "candidate_row_not_found"})
     row = rows[source_index]
     if kind == "keep":
-        if row.get("quality_status") == "needs_observable_behavior":
-            return _f.dumps_result({"ok": False, "status": "needs_observable_behavior", "row_index": source_index})
         if row.get("status") == "pending":
             row["status"] = "kept"
             row["decided_at"] = candidate_batches._now()
@@ -298,35 +210,6 @@ async def _handle_click(card_action_json: str, user_key: str) -> str:
         if row.get("status") == "pending":
             row["status"] = "ignored"
             row["decided_at"] = candidate_batches._now()
-    elif kind == "evidence":
-        if row.get("status") == "pending":
-            row["status"] = "needs_evidence"
-            row["decided_at"] = candidate_batches._now()
-        form_result = await _f.send_card_impl(
-            batch["person_open_id"],
-            json.dumps(_evidence_form(batch, row), ensure_ascii=False),
-            "open_id",
-            user_key,
-            json.dumps({"kind": "pn_candidate_evidence", "batch_id": batch_id}, ensure_ascii=False),
-            json.dumps({"pn_candidate_evidence_submit": "positive_negative_candidate_card"}, ensure_ascii=False),
-            False,
-        )
-        await candidate_batches.save_batch(batch)
-        return _f.dumps_result(
-            {
-                "ok": bool(isinstance(form_result, dict) and form_result.get("ok")),
-                "status": "evidence_form_sent",
-                "batch_id": batch_id,
-                "row_index": source_index,
-                "message_id": str((form_result or {}).get("message_id") or "")
-                if isinstance(form_result, dict)
-                else "",
-            }
-        )
-    elif kind == "merge":
-        candidate_batches.merge_candidate(batch, source_index, int(target_index))
-    elif kind == "merge_pick":
-        return _f.dumps_result({"ok": True, "status": "choose_merge_target", "row_index": source_index})
     if candidate_batches.is_ready_for_analysis(batch):
         batch["status"] = "ready_for_analysis"
     await candidate_batches.save_batch(batch)
@@ -346,12 +229,7 @@ def candidate_card_handlers(batch: dict[str, Any]) -> dict[str, str]:
             continue
         index = int(row.get("index", -1))
         handlers[f"pn_candidate_keep_{index}"] = "positive_negative_candidate_card"
-        handlers[f"pn_candidate_evidence_{index}"] = "positive_negative_candidate_card"
         handlers[f"pn_candidate_ignore_{index}"] = "positive_negative_candidate_card"
-        for target in rows:
-            target_index = int(target.get("index", -1))
-            if target_index != index and target.get("status") not in {"merged", "ignored"}:
-                handlers[f"pn_candidate_merge_{index}_{target_index}"] = "positive_negative_candidate_card"
     return handlers
 
 
@@ -387,9 +265,12 @@ async def positive_negative_candidate_card(
                 }
             )
     candidates = [item if isinstance(item, dict) else {"text": item} for item in raw]
+    display_person_name = person_name.strip()
+    if not readable_name(display_person_name):
+        display_person_name = await resolve_people_display(display_person_name, _f.get_users_batch_impl)
     batch = candidate_batches.build_candidate_batch(
         person_open_id=receive_id,
-        person_name=person_name,
+        person_name=display_person_name,
         source_label=source_label,
         meeting_date=meeting_date,
         candidates=candidates,

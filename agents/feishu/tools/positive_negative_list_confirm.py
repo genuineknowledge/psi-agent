@@ -78,7 +78,7 @@ def _receipt_path(root: str | Path, case_id: str) -> Path:
 def _read_receipt(root: str | Path, case_id: str) -> dict[str, Any] | None:
     try:
         value = json.loads(_receipt_path(root, case_id).read_text(encoding="utf-8"))
-    except FileNotFoundError, json.JSONDecodeError:
+    except (FileNotFoundError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
 
@@ -89,7 +89,7 @@ def _find_any_draft(root: str | Path, session_id: str, case_id: str) -> CaseDraf
     for path in base.glob("*/*.json") if base.exists() else ():
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except OSError, json.JSONDecodeError:
+        except (OSError, json.JSONDecodeError):
             continue
         if (
             not isinstance(payload, dict)
@@ -99,7 +99,7 @@ def _find_any_draft(root: str | Path, session_id: str, case_id: str) -> CaseDraf
             continue
         try:
             return CaseDraft.from_mapping(payload["case"])
-        except TypeError, ValueError, KeyError:
+        except (TypeError, ValueError, KeyError):
             return None
     return None
 
@@ -199,7 +199,7 @@ async def _confirm_unlocked(card_action_json: str = "", user_key: str = "") -> s
     """Confirm one card snapshot and create at most one public record."""
     try:
         payload = json.loads(card_action_json)
-    except TypeError, json.JSONDecodeError:
+    except (TypeError, json.JSONDecodeError):
         return _f.dumps_result({"ok": False, "status": "invalid_callback"})
     if not isinstance(payload, dict) or not user_key.strip():
         return _f.dumps_result({"ok": False, "status": "unauthorized"})
@@ -319,19 +319,20 @@ async def _confirm_unlocked(card_action_json: str = "", user_key: str = "") -> s
         public_record_link,
         NotificationResult(False, "notification_pending_retry", error="notification delivery pending"),
     )
-    review_count = _start_private_reviews(case, public_record_id, root)
     # The body is removed only after a durable receipt exists; the receipt keeps
-    # enough data to retry the private notice after a process interruption.
+    # enough data to retry the notice card after a process interruption.  A
+    # review is deliberately not started here: the subject starts it from the
+    # "开始复盘" button on the notice card.
     delete_draft_body(root, user_key, case_id)
     try:
-        notice_result = await _send_subject_notice(case, public_record_link, root)
+        # Keep the row ID in the card action payload so the callback can read
+        # the test-table record; the human-facing receipt still stores the
+        # clickable link separately.
+        notice_result = await _send_subject_notice(case, public_record_id, root)
     except Exception as exc:
         notice_result = NotificationResult(False, "notification_pending_retry", error=f"{type(exc).__name__}: {exc}")
     if not isinstance(notice_result, NotificationResult):
         notice_result = NotificationResult(True, "notification_sent")
-    self_review_notification = "not_applicable"
-    if review_count:
-        self_review_notification = await _send_self_review_prompts(case, public_record_id)
     sender.save_receipt(case, public_record_link, notice_result)
     return _f.dumps_result(
         {
@@ -340,8 +341,8 @@ async def _confirm_unlocked(card_action_json: str = "", user_key: str = "") -> s
             "case_id": case_id,
             "public_record_id": public_record_id,
             "notification_status": notice_result.status,
-            "private_review_status": "started" if review_count else "not_applicable",
-            "private_review_notification": self_review_notification,
+            "private_review_status": "not_started",
+            "private_review_notification": "not_applicable",
         }
     )
 
@@ -350,7 +351,7 @@ async def positive_negative_case_confirm(card_action_json: str = "", user_key: s
     """Serialize confirmation side effects for one case within this process."""
     try:
         payload = json.loads(card_action_json)
-    except TypeError, json.JSONDecodeError:
+    except (TypeError, json.JSONDecodeError):
         return await _confirm_unlocked(card_action_json, user_key)
     if (
         not isinstance(payload, dict)

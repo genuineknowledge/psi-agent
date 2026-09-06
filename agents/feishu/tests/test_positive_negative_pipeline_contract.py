@@ -575,7 +575,7 @@ def test_remind_result_resolves_subject_name(monkeypatch, tmp_path) -> None:
     async def fake_get_users_batch(user_ids: str, user_id_type: str = "open_id"):
         return {"ok": True, "users": [{"open_id": "ou_subject", "name": "王炜博"}]}
 
-    monkeypatch.setattr(notifications, "send_message_impl", fake_send)
+    monkeypatch.setattr(notifications, "send_card_impl", fake_send)
     monkeypatch.setattr(notifications._feishu_impl, "get_users_batch_impl", fake_get_users_batch)
 
     async def fake_resolve_appdata_root():
@@ -774,13 +774,13 @@ def test_candidate_card_is_organize_only_and_never_offers_direct_record_action(f
     assert "确认记录" not in rendered
     assert "直接写入" not in rendered
     assert "纳入候选" in rendered
-    assert "合并" in rendered
-    assert "补充证据" in rendered
-    assert "忽略" in rendered
+    assert "暂时忽略" in rendered
+    assert "合并到" not in rendered
+    assert "补充证据" not in rendered
     assert not (Path(os.environ["PSI_APPDATA"]) / "positive-negative-list" / "records.json").exists()
 
 
-def test_candidate_card_keep_and_merge_only_update_private_batch(feishu_network) -> None:
+def test_candidate_card_keep_and_legacy_merge_is_rejected_without_writing(feishu_network) -> None:
     card_tool = importlib.import_module("positive_negative_candidate_card")
     sent = json.loads(
         asyncio.run(
@@ -813,7 +813,7 @@ def test_candidate_card_keep_and_merge_only_update_private_batch(feishu_network)
     assert kept["status"] == "pending"
     assert not (Path(os.environ["PSI_APPDATA"]) / "positive-negative-list" / "records.json").exists()
 
-    merged = json.loads(
+    legacy = json.loads(
         asyncio.run(
             card_tool.positive_negative_candidate_card(
                 card_action_json=json.dumps(
@@ -828,15 +828,15 @@ def test_candidate_card_keep_and_merge_only_update_private_batch(feishu_network)
             )
         )
     )
-    assert merged["ok"] is True
+    assert legacy["ok"] is False
+    assert legacy["status"] == "unsupported_legacy_action"
     batch = asyncio.run(card_tool._load_candidate_batch(sent["batch_id"]))
-    assert batch["rows"][1]["status"] == "merged"
-    assert len(batch["rows"][0]["source_candidates"]) == 2
-    assert batch["status"] == "ready_for_analysis"
+    assert batch["rows"][1]["status"] == "pending"
+    assert batch["rows"][0]["status"] == "kept"
     assert not (Path(os.environ["PSI_APPDATA"]) / "positive-negative-list" / "records.json").exists()
 
 
-def test_candidate_evidence_action_opens_form_and_submission_returns_to_pending(feishu_network) -> None:
+def test_candidate_evidence_action_is_deferred_to_analysis(feishu_network) -> None:
     card_tool = importlib.import_module("positive_negative_candidate_card")
     sent = json.loads(
         asyncio.run(
@@ -864,37 +864,11 @@ def test_candidate_evidence_action_opens_form_and_submission_returns_to_pending(
             )
         )
     )
-    assert opened["status"] == "evidence_form_sent"
-    assert "补充候选证据" in json.dumps(feishu_network["send"][-1]["card"], ensure_ascii=False)
-    submitted = json.loads(
-        asyncio.run(
-            card_tool.positive_negative_candidate_card(
-                card_action_json=json.dumps(
-                    {
-                        "action": {
-                            "value": {
-                                "action": "pn_candidate_evidence_submit",
-                                "batch_id": sent["batch_id"],
-                                "row_index": 0,
-                            },
-                            "form_value": {
-                                "observed_behavior": "在延期风险已明确后未同步上下游",
-                                "evidence_sources": "聊天记录,任务记录",
-                            },
-                        },
-                        "operator": {"open_id": "ou_subject"},
-                    },
-                    ensure_ascii=False,
-                ),
-                user_key="ou_subject",
-            )
-        )
-    )
-    assert submitted["status"] == "evidence_saved"
+    assert opened["ok"] is False
+    assert opened["status"] == "unsupported_legacy_action"
     batch = asyncio.run(card_tool._load_candidate_batch(sent["batch_id"]))
     assert batch["status"] == "pending"
     assert batch["rows"][0]["status"] == "pending"
-    assert batch["rows"][0]["evidence_sources"] == ["聊天记录", "任务记录"]
 
 def test_candidate_card_handlers_match_only_organize_actions(feishu_network) -> None:
     card_tool = importlib.import_module("positive_negative_candidate_card")
@@ -966,7 +940,7 @@ def test_candidate_finalize_returns_analysis_payload_without_writing(feishu_netw
     assert not (Path(os.environ["PSI_APPDATA"]) / "positive-negative-list" / "records.json").exists()
 
 
-def test_evaluative_candidate_cannot_be_kept_or_finalized(feishu_network) -> None:
+def test_evaluative_candidate_can_be_kept_and_deferred_to_analysis(feishu_network) -> None:
     card_tool = importlib.import_module("positive_negative_candidate_card")
     sent = json.loads(
         asyncio.run(
@@ -995,10 +969,11 @@ def test_evaluative_candidate_cannot_be_kept_or_finalized(feishu_network) -> Non
             )
         )
     )
-    assert result["status"] == "needs_observable_behavior"
+    assert result["ok"] is True
+    assert result["status"] == "ready_for_analysis"
     batch = asyncio.run(card_tool._load_candidate_batch(sent["batch_id"]))
-    assert batch["rows"][0]["status"] == "pending"
-    assert batch["status"] == "pending"
+    assert batch["rows"][0]["status"] == "kept"
+    assert batch["status"] == "ready_for_analysis"
 
 
 def test_candidate_finalize_exposes_one_event_package_per_kept_candidate(feishu_network) -> None:
@@ -1021,7 +996,7 @@ def test_candidate_finalize_exposes_one_event_package_per_kept_candidate(feishu_
             )
         )
     )
-    for action in ("pn_candidate_keep_0", "pn_candidate_merge_1_0"):
+    for action in ("pn_candidate_keep_0", "pn_candidate_keep_1"):
         result = json.loads(
             asyncio.run(
                 card_tool.positive_negative_candidate_card(
@@ -1054,12 +1029,10 @@ def test_candidate_finalize_exposes_one_event_package_per_kept_candidate(feishu_
         )
     )
     assert finalized["status"] == "analysis_started"
-    assert len(finalized["analysis_candidates"]) == 1
-    package = finalized["analysis_candidates"][0]
-    assert package["person_name"] == "王炜博"
-    assert package["meeting_date"] == "2026-09-06"
-    assert package["source_candidates"] == ["方案确定后直接开工，没有倒排节点", "做到中途才发现上下游都在等"]
-    assert package["requires_case_analysis"] is True
+    assert len(finalized["analysis_candidates"]) == 2
+    assert all(package["person_name"] == "王炜博" for package in finalized["analysis_candidates"])
+    assert all(package["meeting_date"] == "2026-09-06" for package in finalized["analysis_candidates"])
+    assert all(package["requires_case_analysis"] is True for package in finalized["analysis_candidates"])
 
 
 def test_candidate_analysis_rejects_missing_evidence_before_confirmation() -> None:
@@ -1158,7 +1131,7 @@ def test_candidate_analysis_delegates_one_complete_event_to_existing_prepare(mon
     assert captured["kwargs"]["user_key"] == "ou_subject"
 
 
-def test_confirmation_writes_only_test_adapter_then_notifies_and_starts_private_review(monkeypatch, tmp_path) -> None:
+def test_confirmation_writes_only_test_adapter_then_sends_notice_card_without_auto_review(monkeypatch, tmp_path) -> None:
     positive_negative = importlib.import_module("positive_negative_list")
     confirm = importlib.import_module("positive_negative_list_confirm")
     notifications = importlib.import_module("_positive_negative_list.notifications")
@@ -1175,10 +1148,10 @@ def test_confirmation_writes_only_test_adapter_then_notifies_and_starts_private_
             return {"record_id": "rec_test_only"}
 
     adapter = FakeAdapter()
-    sent_messages: list[tuple[str, str]] = []
+    sent_cards: list[tuple[str, dict[str, Any]]] = []
 
-    async def fake_send_message(receive_id, text, receive_id_type):
-        sent_messages.append((receive_id, text))
+    async def fake_send_card(receive_id, card_json, *args, **kwargs):
+        sent_cards.append((receive_id, json.loads(card_json)))
         return {"ok": True, "message_id": "msg_notice"}
 
     async def fake_get_users_batch(user_ids: str, user_id_type: str = "open_id"):
@@ -1198,7 +1171,7 @@ def test_confirmation_writes_only_test_adapter_then_notifies_and_starts_private_
     monkeypatch.setattr(confirm, "resolve_appdata_root", fake_root)
     monkeypatch.setattr(confirm, "TABLE_ADAPTER", adapter)
     monkeypatch.setattr(confirm, "table_adapter", None)
-    monkeypatch.setattr(notifications, "send_message_impl", fake_send_message)
+    monkeypatch.setattr(notifications, "send_card_impl", fake_send_card)
     monkeypatch.setattr(notifications._feishu_impl, "get_users_batch_impl", fake_get_users_batch)
     case = _negative_case().to_mapping() | {"writer_user_key": "ou_reporter", "reporter_user_key": "ou_reporter"}
     prepared = json.loads(
@@ -1222,9 +1195,9 @@ def test_confirmation_writes_only_test_adapter_then_notifies_and_starts_private_
     assert result["ok"] is True
     assert result["public_record_id"] == "rec_test_only"
     assert adapter.creates == 1
-    assert sent_messages and sent_messages[0][0] == "ou_subject"
-    assert "正确做法" in sent_messages[0][1]
+    assert sent_cards and sent_cards[0][0] == "ou_subject"
+    assert "schema" in sent_cards[0][1] and sent_cards[0][1]["schema"] == "2.0"
+    assert "正确做法" in json.dumps(sent_cards[0][1], ensure_ascii=False)
     active = reviews.find_active_reviews(tmp_path, "ou_subject")
-    assert len(active) == 1
-    assert active[0].record_id == "rec_test_only"
-    assert result["private_review_status"] == "started"
+    assert active == ()
+    assert result["private_review_status"] == "not_started"

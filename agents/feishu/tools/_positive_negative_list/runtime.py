@@ -559,7 +559,7 @@ async def _load_test_state() -> None:
         root = await resolve_appdata_root()
         path = Path(root) / "positive-negative-list" / "test-target.json"
         payload = json.loads(await anyio.Path(str(path)).read_text(encoding="utf-8"))
-    except OSError, TypeError, ValueError, json.JSONDecodeError:
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return
     if isinstance(payload, dict):
         app_token = str(payload.get("app_token") or "").strip()

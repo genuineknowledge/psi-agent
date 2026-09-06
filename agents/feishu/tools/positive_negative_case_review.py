@@ -87,6 +87,19 @@ async def positive_negative_case_review_start(
             return _f.dumps_result({"ok": False, "status": "unauthorized", "error": "user identity is required"})
 
         root = await _resolve_appdata_root()
+        existing = next(
+            (item for item in reviews.find_active_reviews(root, record.subject_user_key) if item.record_id == record.record_id),
+            None,
+        )
+        if existing is not None:
+            return _f.dumps_result(
+                {
+                    "ok": True,
+                    "status": "review_already_started",
+                    "review_id": existing.review_id,
+                    "record_id": record.record_id,
+                }
+            )
         review_id = f"review_{secrets.token_urlsafe(12)}"
         # The review is addressed to the subject.  The requester may be the
         # reporter or writer, but only the subject should be able to submit the
