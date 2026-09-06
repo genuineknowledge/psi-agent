@@ -188,8 +188,7 @@ def render_record_notice_card(record: LedgerRecord, subject_display: str, *, not
                 {
                     "tag": "markdown",
                     "content": (
-                        f"**正确做法 · 建议**　"
-                        f"{record.correct_behavior or '发现风险后及时同步现状、影响和补救方案。'}"
+                        f"**正确做法 · 建议**　{record.correct_behavior or '发现风险后及时同步现状、影响和补救方案。'}"
                     ),
                 },
                 {
@@ -482,7 +481,7 @@ class NotificationSender:
         try:
             receipt = _record_receipt_path(self.appdata_root, record_id, subject_user_key)
             payload = json.loads(receipt.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
+        except FileNotFoundError, json.JSONDecodeError:
             return None
         return payload if isinstance(payload, dict) else None
 
@@ -520,7 +519,7 @@ class NotificationSender:
             return None
         try:
             return LedgerRecord.from_mapping(raw_record)
-        except (TypeError, ValueError, KeyError):
+        except TypeError, ValueError, KeyError:
             return None
 
     async def retry_record_notice(self, record_id: str, subject_user_key: str) -> NotificationResult:
@@ -649,7 +648,7 @@ class NotificationSender:
     async def _retry_notification_locked(self, path: Path) -> NotificationResult:
         try:
             payload = json.loads(await anyio.Path(path).read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
+        except FileNotFoundError, json.JSONDecodeError:
             return NotificationResult(False, "receipt_not_found", error="notification receipt not found")
         if not isinstance(payload, dict):
             return NotificationResult(False, "receipt_invalid", error="notification receipt is invalid")
@@ -683,8 +682,10 @@ class NotificationSender:
 
     async def _retry_case_targets(self, path: Path, payload: dict[str, Any], targets: list[Any]) -> NotificationResult:
         text = str(payload.get("notice_text") or "")
-        cards = payload.get("notification_cards") if isinstance(payload.get("notification_cards"), dict) else {}
-        records = payload.get("notification_records") if isinstance(payload.get("notification_records"), dict) else {}
+        cards_raw = payload.get("notification_cards")
+        cards: dict[str, Any] = cards_raw if isinstance(cards_raw, dict) else {}
+        records_raw = payload.get("notification_records")
+        records: dict[str, Any] = records_raw if isinstance(records_raw, dict) else {}
         updated_targets: list[dict[str, str]] = []
         failures: list[NotificationResult] = []
         message_id = ""

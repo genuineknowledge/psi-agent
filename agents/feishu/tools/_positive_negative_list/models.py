@@ -103,7 +103,7 @@ def _date_text(value: Any) -> str:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         try:
             return datetime.fromtimestamp(float(value) / 1000, ZoneInfo("Asia/Shanghai")).date().isoformat()
-        except (OverflowError, OSError, ValueError):
+        except OverflowError, OSError, ValueError:
             return str(value)
     return _text(value)
 

@@ -8,6 +8,7 @@ import json
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
@@ -61,8 +62,10 @@ async def positive_negative_case_remind(
                 return _f.dumps_result({"ok": False, "status": "invalid_callback", "error": str(exc)})
             if not isinstance(envelope, dict):
                 return _f.dumps_result({"ok": False, "status": "invalid_callback"})
-            action = envelope.get("action") if isinstance(envelope.get("action"), dict) else {}
-            value = action.get("value") if isinstance(action.get("value"), dict) else {}
+            action_raw = envelope.get("action")
+            action: dict[str, Any] = action_raw if isinstance(action_raw, dict) else {}
+            value_raw = action.get("value")
+            value: dict[str, Any] = value_raw if isinstance(value_raw, dict) else {}
             action_name = str(value.get("action") or action.get("action_id") or "").strip()
             if action_name != "pn_record_review_start":
                 return _f.dumps_result({"ok": False, "status": "invalid_callback"})
@@ -74,8 +77,8 @@ async def positive_negative_case_remind(
             if operator and user_key.strip() and operator != user_key.strip():
                 return _f.dumps_result({"ok": False, "status": "unauthorized"})
             operator = operator or user_key.strip()
-            context = envelope.get("business_context")
-            context = context if isinstance(context, dict) else {}
+            context_raw = envelope.get("business_context")
+            context: dict[str, Any] = context_raw if isinstance(context_raw, dict) else {}
             record_id = str(value.get("record_id") or context.get("record_id") or "").strip()
             subject = str(value.get("subject_user_key") or context.get("subject_user_key") or "").strip()
             if not record_id or not subject or not operator or operator != subject:

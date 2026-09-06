@@ -65,9 +65,7 @@ def render_people_display(value: str, names: dict[str, str]) -> str:
     parts = _identity_parts(value)
     if not parts:
         return "姓名未提供"
-    return "、".join(
-        names.get(part, "姓名未解析") if readable_name(part) is None else part for part in parts
-    )
+    return "、".join(names.get(part, "姓名未解析") if readable_name(part) is None else part for part in parts)
 
 
 async def resolve_people_display(

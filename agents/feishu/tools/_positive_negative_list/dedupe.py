@@ -78,7 +78,7 @@ def reserve_source_key(appdata_root: str | Path, source_key: str, case_id: str) 
         except FileExistsError:
             try:
                 existing = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError, TypeError):
+            except OSError, json.JSONDecodeError, TypeError:
                 # A file left by an older interrupted writer is not a valid
                 # reservation. Reclaim it and retry once with a fresh claim.
                 path.unlink(missing_ok=True)

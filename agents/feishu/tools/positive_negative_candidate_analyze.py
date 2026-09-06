@@ -48,9 +48,8 @@ def _missing_analysis_fields(analysis: dict[str, Any]) -> list[str]:
     missing = [name for name in _REQUIRED_ANALYSIS_FIELDS if not analysis.get(name)]
     evidence = analysis.get("evidence_sources")
     if (
-        (not isinstance(evidence, list) or not all(isinstance(item, str) and item.strip() for item in evidence))
-        and "evidence_sources" not in missing
-    ):
+        not isinstance(evidence, list) or not all(isinstance(item, str) and item.strip() for item in evidence)
+    ) and "evidence_sources" not in missing:
         missing.append("evidence_sources")
     return missing
 
@@ -100,9 +99,7 @@ async def positive_negative_candidate_analyze(
         analysis = _parse_object(analysis_json, "analysis_json")
         missing = _missing_analysis_fields(analysis)
         if missing:
-            return _f.dumps_result(
-                {"ok": False, "status": "candidate_evidence_incomplete", "missing": missing}
-            )
+            return _f.dumps_result({"ok": False, "status": "candidate_evidence_incomplete", "missing": missing})
         nature = str(analysis.get("nature") or "").strip()
         if nature not in {"positive", "negative"}:
             return _f.dumps_result({"ok": False, "status": "candidate_nature_invalid"})

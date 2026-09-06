@@ -174,7 +174,7 @@ async def load_batch(batch_id: str) -> dict[str, Any] | None:
     path = _state_dir(root) / f"{batch_id}.json"
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError, json.JSONDecodeError:
         return None
     return value if isinstance(value, dict) else None
 
@@ -186,7 +186,7 @@ async def find_batch_by_source_key(source_key: str) -> dict[str, Any] | None:
     for path in _state_dir(root).glob("cand_*.json"):
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             continue
         if isinstance(value, dict) and value.get("source_key") == source_key:
             return value

@@ -956,6 +956,7 @@ def test_candidate_evidence_action_is_deferred_to_analysis(feishu_network) -> No
     assert batch["status"] == "pending"
     assert batch["rows"][0]["status"] == "pending"
 
+
 def test_candidate_card_handlers_match_only_organize_actions(feishu_network) -> None:
     card_tool = importlib.import_module("positive_negative_candidate_card")
     sent = json.loads(
@@ -1208,9 +1209,7 @@ def test_candidate_analysis_handles_multiple_kept_events_individually(monkeypatc
 
     async def fake_prepare(case_json: str, **kwargs):
         source_events.append(kwargs["source_event_id"])
-        return json.dumps(
-            {"ok": True, "status": "待写入者确认", "case_id": f"case_{len(source_events)}"}
-        )
+        return json.dumps({"ok": True, "status": "待写入者确认", "case_id": f"case_{len(source_events)}"})
 
     monkeypatch.setattr(tool, "positive_negative_case_prepare", fake_prepare)
     base_analysis = {

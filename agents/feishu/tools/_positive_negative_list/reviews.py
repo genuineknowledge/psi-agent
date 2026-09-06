@@ -67,11 +67,11 @@ def save_review(root: str | Path, draft: ReviewDraft) -> Path:
 def load_review(root: str | Path, review_id: str) -> ReviewDraft | None:
     try:
         raw = json.loads(_review_path(root, review_id).read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError, json.JSONDecodeError:
         return None
     try:
         return ReviewDraft.from_mapping(raw)
-    except (TypeError, ValueError, KeyError):
+    except TypeError, ValueError, KeyError:
         return None
 
 
@@ -85,7 +85,7 @@ def find_active_reviews(root: str | Path, writer_user_key: str) -> tuple[ReviewD
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             draft = ReviewDraft.from_mapping(raw)
-        except (OSError, json.JSONDecodeError, TypeError, ValueError, KeyError):
+        except OSError, json.JSONDecodeError, TypeError, ValueError, KeyError:
             continue
         if draft.writer_user_key == writer_user_key.strip() and draft.status == "started":
             matches.append(draft)
