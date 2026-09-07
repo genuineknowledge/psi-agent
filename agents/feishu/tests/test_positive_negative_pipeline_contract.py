@@ -1677,3 +1677,115 @@ def test_six_column_dedupe_search_uses_contains_operator() -> None:
     adapter2._schema = dedicated
     asyncio.run(adapter2.find_by_source_key("sk-456", "ou_writer"))
     assert client2.calls and client2.calls[0][2] == "is"
+
+
+# ---------------------------------------------------------------------------
+# R3: notification retry fidelity (cards persisted before send, per-target
+# receipts prevent duplicate delivery) and record-id link hygiene.
+# ---------------------------------------------------------------------------
+
+
+def test_notification_retry_reuses_stored_card_after_interrupted_send(monkeypatch, tmp_path) -> None:
+    import hashlib
+
+    notifications = importlib.import_module("_positive_negative_list.notifications")
+    sent_cards: list[str] = []
+
+    async def fake_users(user_ids: str, user_id_type: str = "open_id"):
+        return {"ok": True, "users": [{"open_id": "ou_subject", "name": "王炜博"}]}
+
+    async def fail_send(receive_id, card_json, *args, **kwargs):
+        raise TimeoutError("transport down")
+
+    async def ok_send(receive_id, card_json, *args, **kwargs):
+        sent_cards.append(str(card_json))
+        return {"ok": True, "message_id": "msg_retry"}
+
+    monkeypatch.setattr(notifications._feishu_impl, "get_users_batch_impl", fake_users)
+    monkeypatch.setattr(notifications, "send_card_impl", fail_send)
+    sender = notifications.NotificationSender(tmp_path)
+    result = asyncio.run(sender.send_subject_notice(_negative_case(), "rec_pub_1"))
+    assert result.ok is False
+
+    # The case receipt already carries the card and the per-recipient receipt
+    # keeps the exact card JSON for the retry.
+    case_receipt = json.loads(
+        (tmp_path / "positive-negative-list" / "receipts" / "case_test.json").read_text(encoding="utf-8")
+    )
+    assert case_receipt["notification_cards"]["ou_subject"]
+    digest = hashlib.sha256("rec_pub_1\nou_subject".encode()).hexdigest()
+    record_receipt = json.loads(
+        (tmp_path / "positive-negative-list" / "notification-receipts" / f"{digest}.json").read_text(encoding="utf-8")
+    )
+    stored_card = str(record_receipt["card_json"])
+    assert stored_card
+
+    monkeypatch.setattr(notifications, "send_card_impl", ok_send)
+    retry = asyncio.run(sender.retry_notification("case_test"))
+    assert retry.ok is True
+    assert retry.status == "notification_sent"
+    assert sent_cards and sent_cards[0] == stored_card
+
+
+def test_notification_retry_skips_target_already_sent_before_crash(monkeypatch, tmp_path) -> None:
+    notifications = importlib.import_module("_positive_negative_list.notifications")
+    sent_cards: list[str] = []
+
+    async def fake_users(user_ids: str, user_id_type: str = "open_id"):
+        return {"ok": True, "users": [{"open_id": "ou_subject", "name": "王炜博"}]}
+
+    async def ok_send(receive_id, card_json, *args, **kwargs):
+        sent_cards.append(str(card_json))
+        return {"ok": True, "message_id": "msg_once"}
+
+    monkeypatch.setattr(notifications._feishu_impl, "get_users_batch_impl", fake_users)
+    monkeypatch.setattr(notifications, "send_card_impl", ok_send)
+    sender = notifications.NotificationSender(tmp_path)
+    first = asyncio.run(sender.send_subject_notice(_negative_case(), "rec_pub_2"))
+    assert first.ok is True
+    assert len(sent_cards) == 1
+
+    # Simulate a crash before the case receipt was updated: the case receipt is
+    # still pending, but the per-recipient receipt already says "sent".  The
+    # retry must not deliver a second copy.
+    retry = asyncio.run(sender.retry_notification("case_test"))
+    assert retry.ok is True
+    assert len(sent_cards) == 1
+
+
+def test_notice_text_never_leaks_raw_record_id_as_link() -> None:
+    notifications = importlib.import_module("_positive_negative_list.notifications")
+
+    text = notifications._notice_text(_negative_case(), "rec_raw_123")
+    assert "rec_raw_123" not in text
+    assert "记录链接" not in text
+    linked = notifications._notice_text(_negative_case(), "https://feishu.cn/base/x?table=t&record=rec_raw_123")
+    assert "记录链接" in linked
+
+    def record_with(record_link: str):
+        return notifications.LedgerRecord(
+            record_id="rec_x",
+            case_id="",
+            reporter_user_key="ou_reporter",
+            subject_user_key="ou_subject",
+            occurred_at="2026-09-01",
+            nature="positive",
+            category="分类",
+            fact_summary="行为事实",
+            evidence_sources=(),
+            correct_behavior="",
+            immediate_remedy="",
+            prevention="",
+            review_status="",
+            source_key="",
+            canonical_incident_id="",
+            cross_source_fingerprint="",
+            fields={},
+            record_link=record_link,
+        )
+
+    record_text = notifications._record_notice_text(record_with("rec_x"))
+    assert "rec_x" not in record_text
+    assert "记录链接" not in record_text
+    record_text_linked = notifications._record_notice_text(record_with("https://feishu.cn/base/x?record=rec_x"))
+    assert "记录链接" in record_text_linked
