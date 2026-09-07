@@ -1885,3 +1885,68 @@ def test_single_page_read_text_points_to_analyze_tool_not_manual_paging() -> Non
     projection = reader._public_result({"ok": True, "records": [], "has_more": True})
     assert "汇总分析" in projection["读取状态"]
     assert "下一页" not in projection["读取状态"]
+
+
+# ---------------------------------------------------------------------------
+# Editable PNL reference config (``config/positive-negative-list.yaml``),
+# todo-sop style: values editable, structure a contract, built-ins fallback.
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_config_yaml_overrides_ledger_defaults(monkeypatch, tmp_path) -> None:
+    runtime = importlib.import_module("_positive_negative_list.runtime")
+    paths = importlib.import_module("_runtime_paths")
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "positive-negative-list.yaml").write_text(
+        "\n".join(
+            [
+                "ledger:",
+                "  app_token: app_custom",
+                "  table_id: tbl_custom",
+                "  view_id: vew_custom",
+                "  columns:",
+                "    nature: 正负面归属",
+                "    subject_user_key: 员工姓名",
+                "    fact_summary: 事件描述",
+                "    occurred_at: 记录日期",
+                "    note: 备注",
+                "    reporter_user_key: 填写人",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(paths, "resolve_agent", lambda: tmp_path)
+
+    assert runtime._target_coordinates({}, "read") == ("app_custom", "tbl_custom", "vew_custom")
+    assert runtime._default_ledger_field_names()["nature"] == "正负面归属"
+    # Built-in constants are untouched and still serve as fallbacks.
+    assert runtime._SOURCE_APP_TOKEN == "RNEvbLIJAaPPdksfv8YceTmjndg"
+
+
+def test_runtime_config_falls_back_to_builtins_when_missing(monkeypatch, tmp_path) -> None:
+    runtime = importlib.import_module("_positive_negative_list.runtime")
+    paths = importlib.import_module("_runtime_paths")
+    monkeypatch.setattr(paths, "resolve_agent", lambda: tmp_path)
+
+    assert runtime._target_coordinates({}, "read") == (
+        runtime._SOURCE_APP_TOKEN,
+        runtime._SOURCE_TABLE_ID,
+        runtime._SOURCE_VIEW_ID,
+    )
+    assert runtime._default_ledger_field_names() == dict(runtime._LEDGER_FIELD_NAMES)
+
+
+def test_runtime_config_falls_back_when_malformed(monkeypatch, tmp_path) -> None:
+    runtime = importlib.import_module("_positive_negative_list.runtime")
+    paths = importlib.import_module("_runtime_paths")
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "positive-negative-list.yaml").write_text("ledger: [broken", encoding="utf-8")
+    monkeypatch.setattr(paths, "resolve_agent", lambda: tmp_path)
+
+    assert runtime._target_coordinates({}, "read") == (
+        runtime._SOURCE_APP_TOKEN,
+        runtime._SOURCE_TABLE_ID,
+        runtime._SOURCE_VIEW_ID,
+    )
