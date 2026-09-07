@@ -10,7 +10,7 @@ import _feishu_api_impl as _api
 import _feishu_impl as _f
 import anyio
 import yaml
-from _meeting_automation import meeting_artifact_root
+from _meeting_automation import atomic_write_text, meeting_artifact_root
 
 from psi_agent._appdata import resolve_appdata_root
 
@@ -159,7 +159,7 @@ async def _read_receipts(path: Path) -> dict[str, object]:
 
 
 async def _write_receipts(path: Path, receipts: dict[str, object]) -> None:
-    await anyio.Path(str(path)).write_text(json.dumps(receipts, ensure_ascii=False, indent=2), encoding="utf-8")
+    await atomic_write_text(path, json.dumps(receipts, ensure_ascii=False, indent=2))
 
 
 async def meeting_session_notify(

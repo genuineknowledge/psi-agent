@@ -15,12 +15,17 @@ import anyio
 
 _SCRIPT = Path(__file__).resolve().parent.parent / "skills" / "tencent-meeting-mcp" / "scripts" / "tencent_meeting.py"
 
+#: 单次子进程调用上限 (秒)。上游/网络挂起时, 超时后子进程被终止而不是让
+#: 12:00 的 cron 管道永久阻塞; 可用 ``TENCENT_MEETING_CALL_TIMEOUT`` 覆盖。
+DEFAULT_CALL_TIMEOUT = float(os.environ.get("TENCENT_MEETING_CALL_TIMEOUT", "60"))
+
 
 async def _tencent_meeting_call_with_token_env(
     method: str,
     params_json: str = "",
     *,
     token_env: str = "TENCENT_MEETING_TOKEN",
+    call_timeout: float = DEFAULT_CALL_TIMEOUT,
 ) -> str:
     """Run the MCP proxy with a selected process environment token.
 
@@ -40,7 +45,9 @@ async def _tencent_meeting_call_with_token_env(
     child_env = os.environ.copy()
     child_env["TENCENT_MEETING_TOKEN"] = token
     try:
-        result = await anyio.run_process(args, check=False, env=child_env)
+        result = await anyio.run_process(args, check=False, env=child_env, timeout=call_timeout)
+    except TimeoutError:
+        return f"Error: Tencent Meeting tool timed out after {call_timeout:g}s."
     except Exception as exc:
         return f"Error: Tencent Meeting tool process failed: {type(exc).__name__}: {exc}"
 

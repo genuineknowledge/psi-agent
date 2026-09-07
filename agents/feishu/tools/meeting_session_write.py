@@ -6,8 +6,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-import anyio
-from _meeting_automation import meeting_artifact_root
+from _meeting_automation import atomic_write_text, meeting_artifact_root
 
 from psi_agent._appdata import resolve_appdata_root
 
@@ -35,7 +34,7 @@ async def meeting_session_write(
             raise ValueError(f"recipient_receipts_json is not valid JSON: {exc}") from exc
         if not isinstance(receipts, (dict, list)):
             raise ValueError("recipient_receipts_json must be an object or list")
-        await anyio.Path(str(artifact / "analysis.md")).write_text(analysis_text, encoding="utf-8")
+        await atomic_write_text(artifact / "analysis.md", analysis_text)
         payload = {
             "meeting_name": meeting_name,
             "meeting_code": meeting_code.strip(),
@@ -50,9 +49,7 @@ async def meeting_session_write(
             "updated_at": datetime.now(UTC).isoformat(),
             "formal_ledger_written": False,
         }
-        await anyio.Path(str(artifact / "analysis.json")).write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        await atomic_write_text(artifact / "analysis.json", json.dumps(payload, ensure_ascii=False, indent=2))
         return json.dumps(
             {"ok": True, "status": payload["status"], "meeting_name": meeting_name, "formal_ledger_written": False},
             ensure_ascii=False,

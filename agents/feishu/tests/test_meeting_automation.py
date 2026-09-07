@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,7 +22,9 @@ import meeting_transcript_prepare as transcript_prepare  # ty: ignore[unresolved
 import tencent_meeting  # ty: ignore[unresolved-import]
 from _meeting_automation import (  # ty: ignore[unresolved-import]
     MEETING_JOBS,
+    MeetingJob,
     _json_payload,
+    atomic_write_text,
     chunk_text,
     extract_latest_transcript_record,
     meeting_credential_env,
@@ -51,8 +54,9 @@ async def test_private_tencent_call_injects_selected_environment_token(
 ) -> None:
     captured: dict[str, str] = {}
 
-    async def fake_run_process(args, *, check: bool, env: dict[str, str]):
-        captured.update(env)
+    async def fake_run_process(args, *, check: bool = False, env: dict[str, str] | None = None, **kwargs: object):
+        captured.update(env or {})
+        captured["timeout_seconds"] = kwargs.get("timeout")
         return SimpleNamespace(returncode=0, stdout=b'{"ok":true}', stderr=b"")
 
     monkeypatch.setenv("TENCENT_MEETING_TOKEN", "daily-secret")
@@ -62,6 +66,7 @@ async def test_private_tencent_call_injects_selected_environment_token(
 
     assert result == '{"ok":true}'
     assert captured["TENCENT_MEETING_TOKEN"] == "daily-secret"
+    assert captured["timeout_seconds"] == 60.0  # 默认单次调用超时 60s (防上游挂起永久阻塞)
 
 
 def test_meeting_jobs_use_fixed_post_meeting_crons() -> None:
@@ -311,7 +316,7 @@ async def test_prepare_saves_full_transcript_and_returns_manifest(
     )
     assert result["ok"] is True
     assert result["chunk_count"] >= 2
-    saved_text = (tmp_path / "meeting-session" / "weekday-alignment" / "transcript.md").read_text()
+    saved_text = (tmp_path / "meeting-session" / "weekday-alignment" / "transcript.md").read_text(encoding="utf-8")
     assert result["transcript_chars"] == len(saved_text)
     assert result["record_file_id"] == "r1"
     assert calls.count(("tools/call", "get_transcripts_details")) == 2
@@ -729,7 +734,14 @@ async def test_daily_meeting_pipeline_keeps_pending_when_a_notification_fails(
     )
 
     assert result["status"] == "notifications_pending"
-    assert calls == ["HaiTun Agent主战场", "罗霖", "write:notifications_pending"]
+    # 通知部分失败 → 收尾后向 alert_recipients (张浩/王金旺) 各发一条失败告警 (P3)。
+    assert calls == [
+        "HaiTun Agent主战场",
+        "罗霖",
+        "write:notifications_pending",
+        "张浩",
+        "王金旺",
+    ]
 
 
 @pytest.mark.anyio
@@ -1112,3 +1124,251 @@ async def test_resolve_main_meeting_group_requires_one_exact_match(monkeypatch: 
     identity, display_name = await notify._resolve_group_with_bot("HaiTun Agent主战场")
 
     assert (identity, display_name) == ("oc_main", "HaiTun Agent主战场")
+
+
+# ── P1: 运行指标 run_metrics.jsonl ───────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_pipeline_appends_run_metrics_on_success_and_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """每次运行 (成功与失败) 都向 run_metrics.jsonl 追加一行结构化指标。"""
+    artifact = tmp_path / "meeting-session" / "weekday-alignment"
+    artifact.mkdir(parents=True)
+    (artifact / "manifest.json").write_text(
+        json.dumps({"record_file_id": "record-m1", "chunk_count": 1, "transcript_chars": 4, "paragraph_count": 1}),
+        encoding="utf-8",
+    )
+
+    async def fake_prepare_ok(**_kwargs: object) -> str:
+        return '{"ok":true,"status":"ready","record_file_id":"record-m1","chunk_count":1}'
+
+    async def fake_prepare_fail(**_kwargs: object) -> str:
+        return json.dumps({"ok": False, "status": "transcript_prepare_failed", "error": "provider unavailable"})
+
+    async def fake_read(**kwargs: object) -> str:
+        return json.dumps(
+            {"ok": True, "content": "原文", "has_more": False, "chunk_index": kwargs["chunk_index"]},
+            ensure_ascii=False,
+        )
+
+    async def fake_analyze(transcript: str, smart_minutes: str = "", **_kwargs: object) -> dict[str, str]:
+        return {
+            "analysis_text": f"分析:{transcript}",
+            "meeting_summary": "纪要",
+            "positive_negative_overview": "总览",
+        }
+
+    async def fake_notify(**kwargs: object) -> str:
+        return json.dumps({"ok": True, "status": "sent", "recipient": kwargs["recipient"]})
+
+    async def fake_write(**kwargs: object) -> str:
+        return json.dumps({"ok": True, "status": kwargs["status"]})
+
+    async def resolve_root(_root: str = "") -> str:
+        return _root or str(tmp_path)
+
+    monkeypatch.setattr(pipeline, "meeting_session_read", fake_read)
+    monkeypatch.setattr(pipeline, "_analyze_meeting_transcript", fake_analyze)
+    monkeypatch.setattr(pipeline, "meeting_session_notify", fake_notify)
+    monkeypatch.setattr(pipeline, "meeting_session_write", fake_write)
+    monkeypatch.setattr(pipeline, "resolve_appdata_root", resolve_root)
+
+    monkeypatch.setattr(pipeline, "meeting_transcript_prepare", fake_prepare_ok)
+    first = json.loads(
+        await pipeline.meeting_pipeline_run(
+            meeting_name="weekday-alignment", meeting_code="57152787045", appdata_root=str(tmp_path)
+        )
+    )
+    assert first["status"] == "completed"
+
+    monkeypatch.setattr(pipeline, "meeting_transcript_prepare", fake_prepare_fail)
+    second = json.loads(
+        await pipeline.meeting_pipeline_run(
+            meeting_name="weekday-alignment", meeting_code="57152787045", appdata_root=str(tmp_path)
+        )
+    )
+    assert second["status"] == "transcript_prepare_failed"
+
+    metrics_path = artifact / "run_metrics.jsonl"
+    lines = [json.loads(line) for line in metrics_path.read_text(encoding="utf-8").strip().splitlines() if line.strip()]
+    assert [row["status"] for row in lines] == ["completed", "transcript_prepare_failed"]
+    ok_row, fail_row = lines
+    assert ok_row["meeting_name"] == "weekday-alignment"
+    assert ok_row["record_file_id"] == "record-m1"
+    assert ok_row["transcript_chars"] == 4
+    assert isinstance(ok_row["stages_ms"]["total"], int)
+    assert set(ok_row["stages_ms"]) == {"prepare", "read", "analyze", "notify", "total"}
+    assert ok_row["analysis"] == {"ai_calls": 0, "ai_input_chars": 0}
+    assert set(ok_row["notifications"]) == {"HaiTun Agent主战场", "罗霖"}
+    assert fail_row["record_file_id"] == ""
+    assert "provider unavailable" in fail_row["error"]
+
+
+# ── P2: 会议元数据 + SOP/规则快照注入 ───────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_analysis_prompt_carries_meeting_metadata_and_rule_snapshots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """分块分析请求携带 会议名/标题/会议号/日期/块号 + 版本化 SOP 与正负面快照文本。"""
+    requests: list[dict[str, object]] = []
+
+    class FakeAiClient:
+        def __init__(self, socket: str) -> None:
+            assert socket == "ai://meeting"
+
+        async def stream(self, request: dict[str, object]):
+            requests.append(request)
+            yield AiDelta(content='{"analysis_text":"a","meeting_summary":"s","positive_negative_overview":"o"}')
+
+    monkeypatch.setattr(pipeline, "AiClient", FakeAiClient)
+    job = MeetingJob(
+        name="weekday-alignment",
+        meeting_code="57152787045",
+        cron="0 12 * * 1,3,5",
+        title="周中对齐会",
+        recipients=("罗霖",),
+    )
+    stats: dict[str, int] = {}
+    token = _CURRENT_TOOL_AI_SOCKET.set("ai://meeting")
+    try:
+        await pipeline._analyze_meeting_transcript(
+            "短转写",
+            job=job,
+            sop_rules="会议SOP-测试规则正文",
+            positive_rules="正负面-测试规则正文",
+            stats=stats,
+        )
+    finally:
+        _CURRENT_TOOL_AI_SOCKET.reset(token)
+
+    user_content = str(requests[0]["messages"][1]["content"])
+    system_content = str(requests[0]["messages"][0]["content"])
+    assert "会议元数据" in user_content
+    assert "weekday-alignment" in user_content and "57152787045" in user_content
+    assert "周中对齐会" in user_content
+    assert "会议SOP-测试规则正文" in user_content
+    assert "正负面-测试规则正文" in user_content
+    assert system_content.startswith("你是 HaiTun 的 周中对齐会 分析器")
+    assert stats["ai_calls"] == 1
+    assert stats["ai_input_chars"] > 0
+
+
+@pytest.mark.anyio
+async def test_analysis_requires_committed_rule_snapshots() -> None:
+    """真实 job 必须能从仓库读到会议 SOP skill 与正负面规则快照, 缺失即显式报错。"""
+    jobs = {job.name: job for job in MEETING_JOBS}
+    job = jobs["weekday-alignment"]
+    sop_text, positive_text = await pipeline._load_analysis_rules(job)
+    assert "会议 SOP" in sop_text  # meeting-sop/weekday-alignment/SKILL.md 已注入
+    assert "正负面分析规则" in positive_text
+    assert "不得监听或自动分析" not in positive_text  # 注入的是快照, 不是私聊边界全文
+    assert "负面候选三元组" in positive_text
+
+    broken = replace(job, analysis_sop_skills=("meeting-sop/not-shipped",))
+    with pytest.raises(RuntimeError, match="会议 SOP skill 缺失"):
+        await pipeline._load_analysis_rules(broken)
+
+
+# ── P3: 超时 / 重试 / 协议校验 / 原子写 / 失败告警 ──────────────────────────
+
+
+@pytest.mark.anyio
+async def test_adapter_timeout_returns_explicit_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """子进程超时 → 显式 Error 文本 (由 _call 层重试并最终显式失败), 而非永久挂起。"""
+
+    async def hang(*_args: object, **_kwargs: object) -> None:
+        raise TimeoutError("timed out")
+
+    monkeypatch.setenv("TENCENT_MEETING_TOKEN", "daily-secret")
+    monkeypatch.setattr(tencent_meeting.anyio, "run_process", hang)
+    result = await tencent_meeting._tencent_meeting_call_with_token_env("tools/list", token_env="TENCENT_MEETING_TOKEN")
+    assert "timed out after 60" in result
+
+
+@pytest.mark.anyio
+async def test_prepare_call_retries_transient_errors_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """瞬时失败 (Error 前缀) 最多重试 _CALL_ATTEMPTS 次, 成功后返回解析结果。"""
+    attempts: list[int] = []
+
+    async def flaky(_method: str, _params_json: str = "") -> str:
+        attempts.append(1)
+        if len(attempts) < 3:
+            return "Error: temporary upstream failure"
+        return '{"records":[]}'
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(transcript_prepare, "tencent_meeting_call", flaky)
+    monkeypatch.setattr(transcript_prepare.anyio, "sleep", no_sleep)
+    payload = await transcript_prepare._call("get_records_list", {})
+    assert payload == {"records": []}
+    assert len(attempts) == 3
+
+
+@pytest.mark.anyio
+async def test_prepare_call_rpc_error_fails_explicitly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """JSON-RPC error / result 缺失 → 不再被静默当成"无录制", 重试后显式抛错。"""
+    attempts: list[int] = []
+
+    async def always_error(_method: str, _params_json: str = "") -> str:
+        attempts.append(1)
+        return '{"error":{"code":-1,"message":"permission denied"}}'
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(transcript_prepare, "tencent_meeting_call", always_error)
+    monkeypatch.setattr(transcript_prepare.anyio, "sleep", no_sleep)
+    monkeypatch.setattr(transcript_prepare, "_CALL_ATTEMPTS", 2)
+    monkeypatch.setattr(transcript_prepare, "_CALL_BACKOFF_SECONDS", (0.0,))
+    with pytest.raises(RuntimeError, match="RPC error"):
+        await transcript_prepare._call("get_records_list", {})
+    assert len(attempts) == 2
+
+
+def test_atomic_write_text_replaces_whole_file(tmp_path: Path) -> None:
+    """原子写: 内容完整替换且不留 *.tmp 残片 (并发读者看不到半截文件)。"""
+
+    target = tmp_path / "sub" / "artifact.json"
+    anyio.run(atomic_write_text, target, '{"v":1}')
+    assert target.read_text(encoding="utf-8") == '{"v":1}'
+    anyio.run(atomic_write_text, target, '{"v":2,"x":"更大内容"}')
+    assert json.loads(target.read_text(encoding="utf-8"))["v"] == 2
+    assert list(tmp_path.rglob("*.tmp")) == []
+
+
+@pytest.mark.anyio
+async def test_failure_alert_sent_to_every_alert_recipient(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """采集失败时向 job.alert_recipients 每人发一条带标记的告警文本。"""
+    sent: list[tuple[str, str]] = []
+
+    async def fake_prepare_fail(**_kwargs: object) -> str:
+        return json.dumps({"ok": False, "status": "transcript_prepare_failed", "error": "token 无效"})
+
+    async def capture_notify(**kwargs: object) -> str:
+        sent.append((str(kwargs["recipient"]), str(kwargs["text"])))
+        return json.dumps({"ok": True, "status": "sent", "recipient": kwargs["recipient"]})
+
+    async def resolve_root(_root: str = "") -> str:
+        return _root or str(tmp_path)
+
+    monkeypatch.setattr(pipeline, "meeting_transcript_prepare", fake_prepare_fail)
+    monkeypatch.setattr(pipeline, "meeting_session_notify", capture_notify)
+    monkeypatch.setattr(pipeline, "resolve_appdata_root", resolve_root)
+
+    result = json.loads(
+        await pipeline.meeting_pipeline_run(
+            meeting_name="weekday-alignment", meeting_code="57152787045", appdata_root=str(tmp_path)
+        )
+    )
+    assert result["status"] == "transcript_prepare_failed"
+    assert [recipient for recipient, _text in sent] == ["张浩", "王金旺"]
+    assert all(text.startswith("[会议自动化告警]") and "transcript_prepare_failed" in text for _r, text in sent)
+    assert all("token 无效" in text for _r, text in sent)

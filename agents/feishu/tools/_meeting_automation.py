@@ -14,9 +14,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import uuid
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import anyio
 
 from psi_agent._appdata import resolve_appdata_root
 
@@ -34,6 +38,11 @@ class MeetingJob:
     retry_crons: tuple[str, ...] = ()
     summary_recipients: tuple[str, ...] = ("程秀秀",)
     overview_recipients: tuple[str, ...] = ("罗霖",)
+    # Versioned SOP skill(s) whose text is injected verbatim into scheduled
+    # analysis prompts ("meeting-sop/<name>").  Missing file is a hard error.
+    analysis_sop_skills: tuple[str, ...] = ()
+    # Ops contacts notified when a run fails (prepare/analysis/notify).
+    alert_recipients: tuple[str, ...] = ()
     token_env: str = "TENCENT_MEETING_TOKEN"
     fire: str = "tool"
     tool_name: str = "meeting_pipeline_run"
@@ -48,6 +57,8 @@ MEETING_JOBS: tuple[MeetingJob, ...] = (
         title="周中对齐会",
         recipients=(MAIN_MEETING_GROUP_NAME, "罗霖"),
         summary_recipients=(MAIN_MEETING_GROUP_NAME,),
+        analysis_sop_skills=("meeting-sop/weekday-alignment",),
+        alert_recipients=("张浩", "王金旺"),
         tool_args=(("meeting_name", "weekday-alignment"), ("meeting_code", "57152787045")),
     ),
     MeetingJob(
@@ -59,6 +70,8 @@ MEETING_JOBS: tuple[MeetingJob, ...] = (
         retry_crons=("30 17 * * 1,3,5",),
         summary_recipients=("张浩", "王金旺"),
         overview_recipients=("罗霖",),
+        analysis_sop_skills=("meeting-sop/weekday-alignment",),
+        alert_recipients=("张浩", "王金旺"),
         token_env="TENCENT_MEETING_TOKEN_42654699903",
         tool_args=(("meeting_name", "weekday-alignment-1100"), ("meeting_code", "42654699903")),
     ),
@@ -409,11 +422,48 @@ def json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+_PATH_LOCKS: dict[str, anyio.Lock] = {}
+_PATH_LOCKS_GUARD = anyio.Lock()
+
+
+async def path_lock(path: str | Path) -> anyio.Lock:
+    """进程内按路径去重的互斥锁 (读-改-写同一产物文件时使用)。
+
+    跨进程仍依赖「同一 Gateway 只 watch 一份」的单实例约定 (与 notify 的回执锁
+    同思路); 锁只防同进程内定时触发与手动重跑并发。
+    """
+    key = str(path)
+    async with _PATH_LOCKS_GUARD:
+        lock = _PATH_LOCKS.get(key)
+        if lock is None:
+            lock = anyio.Lock()
+            _PATH_LOCKS[key] = lock
+        return lock
+
+
+async def atomic_write_text(path: str | Path, text: str) -> None:
+    """原子写文本文件: 同目录临时文件 + ``os.replace``, 读方永远不会看到半截内容。
+
+    写失败时清理临时文件并把异常原样抛出 (不静默)。
+    """
+    target = Path(path)
+    await anyio.Path(str(target.parent)).mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        await anyio.Path(str(tmp)).write_text(text, encoding="utf-8")
+        await anyio.to_thread.run_sync(os.replace, str(tmp), str(target))
+    finally:
+        if tmp.exists():
+            with suppress(OSError):
+                tmp.unlink()
+
+
 __all__ = [
     "MAIN_MEETING_GROUP_NAME",
     "MEETING_JOBS",
     "MeetingJob",
     "async_meeting_store_root",
+    "atomic_write_text",
     "chunk_text",
     "extract_latest_transcript_record",
     "extract_paragraph_ids",
@@ -424,6 +474,7 @@ __all__ = [
     "meeting_job_for",
     "meeting_schedule_files",
     "meeting_store_root",
+    "path_lock",
     "read_meeting_manifest",
     "render_transcript_paragraphs",
     "should_process_recording",

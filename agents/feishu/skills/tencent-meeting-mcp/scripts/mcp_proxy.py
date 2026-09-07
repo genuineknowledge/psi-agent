@@ -74,8 +74,9 @@ class McpProxy:
             method="POST"
         )
 
+        # 显式超时: 上游挂起时让本代理快速失败 (外层适配器有重试与总超时兜底)。
         try:
-            with urllib.request.urlopen(req) as response:
+            with urllib.request.urlopen(req, timeout=30) as response:
                 response_data = response.read().decode("utf-8")
                 return json.loads(response_data)
         except urllib.error.URLError as e:

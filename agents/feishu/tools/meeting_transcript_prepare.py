@@ -14,18 +14,26 @@ from typing import Any
 import anyio
 from _meeting_automation import (
     _json_payload,
+    atomic_write_text,
     chunk_text,
     extract_latest_transcript_record,
     extract_paragraph_ids,
     extract_paragraph_items,
     meeting_artifact_root,
     meeting_credential_env,
+    path_lock,
     read_meeting_manifest,
     render_transcript_paragraphs,
 )
 from tencent_meeting import _tencent_meeting_call_with_token_env, tencent_meeting_call
 
 from psi_agent._appdata import resolve_appdata_root
+
+#: 单次 API 调用的有限重试 (指数退避)。只用于自愈瞬时失败: 网络错误、上游挂起
+#: (超时)、5xx/429; 业务错误 (参数/权限/会议不存在) 同样会重试到次数上限后
+#: 以明确异常失败 —— 宁可显式失败, 不再被静默当成"没有录制/没有转写"。
+_CALL_ATTEMPTS = 3
+_CALL_BACKOFF_SECONDS = (0.5, 1.0, 2.0)
 
 
 def _tool_params(name: str, arguments: dict[str, Any]) -> str:
@@ -39,7 +47,20 @@ def _tool_params(name: str, arguments: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-async def _call(name: str, arguments: dict[str, Any], *, token_env: str = "TENCENT_MEETING_TOKEN") -> Any:
+def _transport_status(payload: Any) -> int | None:
+    """信封 ``_transport.status_code`` (由 ``_json_payload`` 从 HTTP 信封带出)。"""
+    if isinstance(payload, dict):
+        transport = payload.get("_transport")
+        if isinstance(transport, dict):
+            code = transport.get("status_code")
+            if isinstance(code, int):
+                return code
+            if isinstance(code, str) and code.isdigit():
+                return int(code)
+    return None
+
+
+async def _call_once(name: str, arguments: dict[str, Any], *, token_env: str) -> Any:
     params = _tool_params(name, arguments)
     if token_env == "TENCENT_MEETING_TOKEN":
         # Keep the normal path patchable for local tests and existing callers.
@@ -48,7 +69,31 @@ async def _call(name: str, arguments: dict[str, Any], *, token_env: str = "TENCE
         raw = await _tencent_meeting_call_with_token_env("tools/call", params, token_env=token_env)
     if str(raw).lstrip().startswith(("[错误]", "Error:")):
         raise RuntimeError(str(raw).strip())
-    return _json_payload(raw)
+    payload = _json_payload(raw)
+    # JSON-RPC 协议校验: 顶层 error / result 缺失 → 显式失败, 不静默吞成业务结果。
+    if isinstance(payload, dict) and payload.get("error") is not None and "result" not in payload:
+        raise RuntimeError(f"Tencent Meeting RPC error: {json.dumps(payload['error'], ensure_ascii=False)[:240]}")
+    return payload
+
+
+async def _call(name: str, arguments: dict[str, Any], *, token_env: str = "TENCENT_MEETING_TOKEN") -> Any:
+    last_error: Exception | None = None
+    for attempt in range(1, _CALL_ATTEMPTS + 1):
+        try:
+            payload = await _call_once(name, arguments, token_env=token_env)
+        except Exception as exc:  # 统一按"本次失败"处理并决定是否重试
+            last_error = exc
+        else:
+            status = _transport_status(payload)
+            if status is not None and (status >= 500 or status == 429):
+                last_error = RuntimeError(f"Tencent Meeting HTTP {status}")
+            else:
+                return payload
+        if attempt < _CALL_ATTEMPTS:
+            await anyio.sleep(_CALL_BACKOFF_SECONDS[min(attempt - 1, len(_CALL_BACKOFF_SECONDS) - 1)])
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Tencent Meeting call failed without an error")
 
 
 def _merge_paragraphs(target: list[dict[str, Any]], payload: Any) -> None:
@@ -139,7 +184,7 @@ async def _collect_paragraphs(record_file_id: str, *, token_env: str) -> list[di
 
 
 async def _write(path: Path, content: str) -> None:
-    await anyio.Path(str(path)).write_text(content, encoding="utf-8")
+    await atomic_write_text(path, content)
 
 
 async def meeting_transcript_prepare(
@@ -188,19 +233,27 @@ async def meeting_transcript_prepare(
         await _write(artifact / "transcript.md", transcript)
         await _write(artifact / "smart_minutes.json", json.dumps(smart_minutes, ensure_ascii=False, indent=2))
         await _write(artifact / "transcript_paragraphs.json", json.dumps(paragraphs, ensure_ascii=False))
-        processed_ids.add(record_file_id)
-        next_manifest = {
-            "meeting_name": meeting_name,
-            "meeting_code": meeting_code.strip(),
-            "record_file_id": record_file_id,
-            "processed_record_file_ids": sorted(processed_ids),
-            "transcript_chars": len(transcript),
-            "paragraph_count": len(paragraphs),
-            "chunk_count": len(chunks),
-            "chunk_chars": 8_000,
-            "status": "ready",
-        }
-        await _write(artifact / "manifest.json", json.dumps(next_manifest, ensure_ascii=False, indent=2))
+        manifest_path = artifact / "manifest.json"
+        async with await path_lock(manifest_path):
+            # 提交阶段在锁内重读 manifest 并取并集: 定时触发与手动重跑并发时,
+            # 彼此的 processed_record_file_ids 不互相覆盖 (防丢已处理标记)。
+            committed = read_meeting_manifest(base, meeting_name)
+            committed_ids = {str(value) for value in committed.get("processed_record_file_ids", []) if value}
+            if committed.get("record_file_id"):
+                committed_ids.add(str(committed["record_file_id"]))
+            committed_ids.add(record_file_id)
+            next_manifest = {
+                "meeting_name": meeting_name,
+                "meeting_code": meeting_code.strip(),
+                "record_file_id": record_file_id,
+                "processed_record_file_ids": sorted(committed_ids),
+                "transcript_chars": len(transcript),
+                "paragraph_count": len(paragraphs),
+                "chunk_count": len(chunks),
+                "chunk_chars": 8_000,
+                "status": "ready",
+            }
+            await _write(manifest_path, json.dumps(next_manifest, ensure_ascii=False, indent=2))
         return json.dumps(
             {
                 "ok": True,
