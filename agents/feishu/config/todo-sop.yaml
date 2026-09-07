@@ -22,13 +22,13 @@ schema:
     - name: TODO
       time_granularity: 1-2 天,最长 3 天
       count: 1 或多个
-      required: [时间节点, 标准, 优先级]
+      required: [时间节点, 标准]
       relation: 小目标的拆解;不是「要干什么」而是「什么时间干成满足什么标准的什么事」;定位为小方案,上级需跟进与验收;持续 TODO 简单写明即可,项不宜过多
 
 priority:
   terms: [重要且紧急, 重要不紧急, 紧急不重要, 不重要不紧急]
   order: 重要且紧急 > 重要不紧急 > 紧急不重要 > 不重要不紧急
-  scope: 仅 TODO 层;大目标 / 小目标不强求
+  scope: 仅 TODO 层;大目标 / 小目标不强求;海豚模型判定,成员不标注
   importance:            # 行事优先级执行SOP v1.4 重要度三档判定
     high: 可折合成外部成果大的任务
     high_examples: [训模型, 新功能上线, 留存提升, Bug 修复, 重要演示]

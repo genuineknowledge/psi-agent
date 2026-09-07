@@ -246,7 +246,7 @@ def test_priority_importance_and_consistency_check_are_wired_in() -> None:
 
 
 def test_priority_urgency_trap_prompts_downgrade_not_violation() -> None:
-    """SOP 陷阱·紧急错觉: 命中 urgency_trap 却标「重要且紧急」→ 提示降级, 不判违规。"""
+    """SOP 陷阱·紧急错觉: 模型判定「重要且紧急」但命中 urgency_trap → 提示降级, 不判违规。"""
     block = _subsection("按优先级", within=_section("规则集段"))
     assert "紧急错觉" in block, "must name the urgency-trap check"
     assert "先问:产出对用户有价值吗?没有则降级" in block, "must quote the SOP downgrade question verbatim"
@@ -254,19 +254,28 @@ def test_priority_urgency_trap_prompts_downgrade_not_violation() -> None:
     assert "不报 mentor" in block, "the urgency-trap hint must stay with the member only"
 
 
-def test_priority_quadrant_vs_importance_mismatch_is_hint_level() -> None:
-    """成员标的象限 vs importance 三档判定不一致 → 提示级, 给理由与依据。"""
+def test_priority_is_model_judged_members_do_not_mark() -> None:
+    """做法 A(已定): 优先级不要求成员标注, 由海豚按 importance 三档 + urgency_trap 模型判定。"""
+    body = _body()
+    assert "成员不标注" in body or "成员**不标注**" in body, "members must not be required to mark quadrants"
     block = _subsection("按优先级", within=_section("规则集段"))
-    assert "标注与价值一致" in block, "must check the member's quadrant against the tier judgment"
+    assert "海豚检测时对每条 TODO 判" in block, "the rule must describe the model judgment flow"
+    assert "建议排序" in block, "the rule must output a suggested ordering"
+
+
+def test_priority_judgment_consistency_with_value_is_hint_level() -> None:
+    """模型判定的象限 vs 该条价值表述不一致 → 提示级, 给理由与依据。"""
+    block = _subsection("按优先级", within=_section("规则集段"))
+    assert "判定与价值一致" in block, "must check the judged quadrant against the value statement"
     assert "提示级" in block, "a mismatch must be a hint, never a violation"
     assert "理由与依据" in block, "the hint must carry the tier judgment and its grounds"
 
 
-def test_priority_reorder_remedy_delivers_copyable_list() -> None:
-    """乱序补救: 重排后的当期列表随违规提示私聊本人, 可直接复制回看板。"""
+def test_priority_suggested_order_delivers_copyable_list() -> None:
+    """建议排序: 按海豚判定的象限给出建议排序(保留原文只调顺序), 可直接复制回看板。"""
     block = _subsection("补救", within=_section("引擎段"))
-    assert "优先级乱序" in block, "the remedy table must cover priority disorder"
-    assert "重排" in block, "the remedy must reorder by the params quadrant order"
+    assert "优先级建议排序" in block, "the remedy table must cover priority suggestion"
+    assert "建议排序" in block, "the output must be a suggested ordering, not a violation fix"
     assert "可直接复制回看板" in block, "the reordered list must be copyable back to the board"
     assert "只调顺序" in block, "the remedy must keep the original item text, reorder only"
 
