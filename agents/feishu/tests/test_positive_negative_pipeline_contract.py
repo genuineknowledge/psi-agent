@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib
 import json
 import os
@@ -1402,7 +1403,11 @@ def test_candidate_click_on_decided_row_returns_already_decided_without_state_ch
     keep_callback = json.dumps(
         {"action": {"value": {**base_value, "action": "pn_candidate_keep_0"}}, "message_id": ""}
     )
-    first = json.loads(asyncio.run(card_tool.positive_negative_candidate_card(card_action_json=keep_callback, user_key="ou_subject")))
+    first = json.loads(
+        asyncio.run(
+            card_tool.positive_negative_candidate_card(card_action_json=keep_callback, user_key="ou_subject")
+        )
+    )
     assert first["ok"] is True
     assert first["status"] == "ready_for_analysis"
     loaded = asyncio.run(batches.load_batch(batch["batch_id"]))
@@ -1411,7 +1416,11 @@ def test_candidate_click_on_decided_row_returns_already_decided_without_state_ch
     ignore_callback = json.dumps(
         {"action": {"value": {**base_value, "action": "pn_candidate_ignore_0"}}, "message_id": ""}
     )
-    second = json.loads(asyncio.run(card_tool.positive_negative_candidate_card(card_action_json=ignore_callback, user_key="ou_subject")))
+    second = json.loads(
+        asyncio.run(
+            card_tool.positive_negative_candidate_card(card_action_json=ignore_callback, user_key="ou_subject")
+        )
+    )
     assert second["ok"] is True
     assert second["status"] == "already_decided"
     assert second["row_status"] == "kept"
@@ -1686,8 +1695,6 @@ def test_six_column_dedupe_search_uses_contains_operator() -> None:
 
 
 def test_notification_retry_reuses_stored_card_after_interrupted_send(monkeypatch, tmp_path) -> None:
-    import hashlib
-
     notifications = importlib.import_module("_positive_negative_list.notifications")
     sent_cards: list[str] = []
 
@@ -1713,7 +1720,7 @@ def test_notification_retry_reuses_stored_card_after_interrupted_send(monkeypatc
         (tmp_path / "positive-negative-list" / "receipts" / "case_test.json").read_text(encoding="utf-8")
     )
     assert case_receipt["notification_cards"]["ou_subject"]
-    digest = hashlib.sha256("rec_pub_1\nou_subject".encode()).hexdigest()
+    digest = hashlib.sha256(b"rec_pub_1\nou_subject").hexdigest()
     record_receipt = json.loads(
         (tmp_path / "positive-negative-list" / "notification-receipts" / f"{digest}.json").read_text(encoding="utf-8")
     )
@@ -1800,7 +1807,6 @@ def test_notice_text_never_leaks_raw_record_id_as_link() -> None:
 def test_read_rejects_category_filter_when_ledger_has_no_category_column(monkeypatch) -> None:
     read_tool = importlib.import_module("positive_negative_case_read")
     reader = importlib.import_module("_positive_negative_list.reader")
-    runtime = importlib.import_module("_positive_negative_list.runtime")
 
     async def fake_read_records(client, query, user_key):
         raise AssertionError("guard must reject before any read")
@@ -1843,7 +1849,6 @@ def test_read_accepts_trusted_identity_filter_and_reads(monkeypatch) -> None:
     read_tool = importlib.import_module("positive_negative_case_read")
     reader = importlib.import_module("_positive_negative_list.reader")
     runtime = importlib.import_module("_positive_negative_list.runtime")
-    from types import SimpleNamespace as _SN
 
     async def fake_read_records(client, query, user_key):
         assert query.subject_user_key == "ou_subject"
@@ -1856,7 +1861,7 @@ def test_read_accepts_trusted_identity_filter_and_reads(monkeypatch) -> None:
     async def fake_names(*args):
         return frozenset({"事件描述", "正负面归属", "员工姓名", "记录日期", "备注", "填写人", "记录ID"})
 
-    monkeypatch.setattr(runtime, "configured_read_table_adapter", lambda: _SN(_client=object()))
+    monkeypatch.setattr(runtime, "configured_read_table_adapter", lambda: SimpleNamespace(_client=object()))
     monkeypatch.setattr(reader, "read_records", fake_read_records)
     monkeypatch.setattr(reader, "public_result_with_names", fake_public)
     monkeypatch.setattr(reader, "list_table_field_names", fake_names)
