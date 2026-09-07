@@ -22,7 +22,9 @@ from _positive_negative_list.table import TableAdapter, TableClient, _encode_fie
 # and no AppData target file; the write path reuses the public ledger's own
 # six columns after a fail-closed preflight.
 _SOURCE_APP_TOKEN = "RNEvbLIJAaPPdksfv8YceTmjndg"
-_SOURCE_TABLE_ID = "tblwXV7Xlwu0hVYH"
+# 2026-09-07: 原 tblwXV7Xlwu0hVYH 在 RNEv base 已不存在 (读/确认写均指向它时会失败);
+# 现行公共台账 = 「正负清单总表-战争版」, 字段/视图与下方映射及 veweChthHV 一致。
+_SOURCE_TABLE_ID = "tblbF6ZVQbNTNxxn"
 _SOURCE_VIEW_ID = "veweChthHV"
 _LEDGER_FIELD_NAMES = {
     "nature": "正负面归属",
