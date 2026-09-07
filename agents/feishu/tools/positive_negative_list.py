@@ -69,7 +69,7 @@ async def _confirmation_card(case: CaseDraft, digest: str) -> dict[str, Any]:
                         f"**对象**　{subject_display} · {nature}\n"
                         f"**发生时间**　{case.occurred_at}　·　**分类**　{case.category}\n"
                         f"**行为事实**　{case.fact_summary}\n"
-                        f"**证据来源**　{', '.join(case.evidence_sources) or '待补充'}"
+                        f"**证据来源**　{', '.join(case.evidence_sources) or '未提供'}"
                         f"{guidance}\n\n确认后仅写入机器人独立测试表，不修改正式总表；不计分、不进入绩效。"
                     ),
                 },

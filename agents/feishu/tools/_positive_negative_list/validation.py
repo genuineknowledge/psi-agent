@@ -36,7 +36,9 @@ def validate_case(case: CaseDraft) -> tuple[str, ...]:
     # recording their own positive practice or a missed handoff).  The
     # notification layer already skips same-person notices, while the writer
     # identity is still required and bound to the trusted Feishu sender.
-    if not case.evidence_sources or any(source not in allowed_evidence_sources() for source in case.evidence_sources):
+    # 产品口径 (2026-09-07): 写入不强求证据, 事件描述完整即可入库。
+    # 提供证据时仍须来自允许枚举, 防止自造来源; 不提供则直接放行。
+    if case.evidence_sources and any(source not in allowed_evidence_sources() for source in case.evidence_sources):
         errors.append("evidence_sources")
     if case.nature not in {"positive", "negative", "neutral", "insufficient_evidence"}:
         errors.append("nature")

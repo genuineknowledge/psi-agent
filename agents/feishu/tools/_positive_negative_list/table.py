@@ -156,6 +156,10 @@ class TableAdapter:
             fields = existing_columns_builder(case, schema)
         else:
             field_values = {name: _encode_field_value(name, value, schema) for name, value in field_values.items()}
+            # 产品口径 (2026-09-07): 证据可选。空证据不写字段, 让列保持空,
+            # 避免依赖 Bitable 对空多选数组的实现行为。
+            if not case.evidence_sources:
+                field_values.pop("evidence_sources", None)
             fields = {
                 schema.field_ids_by_semantic_name[name]: value
                 for name, value in field_values.items()

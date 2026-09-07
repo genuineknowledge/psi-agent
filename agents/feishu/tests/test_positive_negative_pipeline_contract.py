@@ -1091,7 +1091,8 @@ def test_last_candidate_decision_exposes_one_event_package_per_kept_candidate(fe
     assert all(package["requires_case_analysis"] is True for package in result["analysis_candidates"])
 
 
-def test_candidate_analysis_rejects_missing_evidence_before_confirmation() -> None:
+def test_candidate_analysis_allows_missing_evidence_when_event_complete(monkeypatch) -> None:
+    # 产品口径 (2026-09-07): 写入不强求证据, 事件描述完整即可进入确认卡。
     tool = importlib.import_module("positive_negative_candidate_analyze")
     batches = importlib.import_module("_positive_negative_list.candidate_batches")
     batch = batches.build_candidate_batch(
@@ -1100,12 +1101,19 @@ def test_candidate_analysis_rejects_missing_evidence_before_confirmation() -> No
         source_label="会议纪要",
         meeting_date="2026-09-06",
         candidates=[{"text": "方案确定后直接开工，没有倒排节点", "context": "项目启动"}],
-        source_key="meeting:2026-09-06:analyze-missing",
+        source_key="meeting:2026-09-06:analyze-no-evidence",
     )
     batch["rows"][0]["status"] = "kept"
     batch["status"] = "analysis_started"
     asyncio.run(batches.save_batch(batch))
+    captured: dict[str, Any] = {}
 
+    async def fake_prepare(case_json: str, **kwargs):
+        captured["case"] = json.loads(case_json)
+        captured["kwargs"] = kwargs
+        return json.dumps({"ok": True, "status": "待写入者确认", "case_id": "case_from_event"})
+
+    monkeypatch.setattr(tool, "positive_negative_case_prepare", fake_prepare)
     result = json.loads(
         asyncio.run(
             tool.positive_negative_candidate_analyze(
@@ -1115,7 +1123,6 @@ def test_candidate_analysis_rejects_missing_evidence_before_confirmation() -> No
                         "observed_behavior": "方案确定后直接开工，没有倒排节点",
                         "context": "项目启动",
                         "impact": "上下游等待",
-                        "evidence_sources": [],
                         "nature": "negative",
                         "category": "工作方式方法",
                         "primary_rule_id": "pn-test-negative",
@@ -1129,9 +1136,9 @@ def test_candidate_analysis_rejects_missing_evidence_before_confirmation() -> No
             )
         )
     )
-    assert result["ok"] is False
-    assert result["status"] == "candidate_evidence_incomplete"
-    assert "evidence_sources" in result["missing"]
+    assert result["ok"] is True
+    assert result["status"] == "待写入者确认"
+    assert captured["case"]["evidence_sources"] == []
 
 
 def test_candidate_analysis_delegates_one_complete_event_to_existing_prepare(monkeypatch) -> None:

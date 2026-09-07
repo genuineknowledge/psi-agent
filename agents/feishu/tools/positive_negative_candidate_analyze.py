@@ -27,7 +27,6 @@ _REQUIRED_ANALYSIS_FIELDS = (
     "observed_behavior",
     "context",
     "impact",
-    "evidence_sources",
     "nature",
     "category",
     "primary_rule_id",
@@ -45,11 +44,13 @@ def _parse_object(value: str, name: str) -> dict[str, Any]:
 
 
 def _missing_analysis_fields(analysis: dict[str, Any]) -> list[str]:
+    # 事件描述要素必填; evidence_sources 可选 (产品口径 2026-09-07):
+    # 缺省放行, 提供了但形态非法 (非字符串数组) 才提示修正。
     missing = [name for name in _REQUIRED_ANALYSIS_FIELDS if not analysis.get(name)]
     evidence = analysis.get("evidence_sources")
-    if (
+    if evidence not in (None, "", []) and (
         not isinstance(evidence, list) or not all(isinstance(item, str) and item.strip() for item in evidence)
-    ) and "evidence_sources" not in missing:
+    ):
         missing.append("evidence_sources")
     return missing
 
@@ -120,14 +121,14 @@ async def positive_negative_candidate_analyze(
             "observed_behavior": str(analysis["observed_behavior"]).strip(),
             "context": str(analysis["context"]).strip(),
             "impact": str(analysis["impact"]).strip(),
-            "evidence_sources": analysis["evidence_sources"],
+            "evidence_sources": analysis.get("evidence_sources") or [],
             "nature": nature,
             "category": str(analysis["category"]).strip(),
             "primary_rule_id": str(analysis["primary_rule_id"]).strip(),
             "secondary_rule_ids": analysis.get("secondary_rule_ids") or [],
             "rule_version": str(analysis.get("rule_version") or "6.0").strip(),
             "fact_summary": str(analysis.get("fact_summary") or candidate["observed_behavior"]).strip(),
-            "agent_inference": str(analysis.get("agent_inference") or "根据事件包及补充证据完成判断。").strip(),
+            "agent_inference": str(analysis.get("agent_inference") or "根据事件包完成判断。").strip(),
             "correct_behavior": str(analysis.get("correct_behavior") or "").strip(),
             "immediate_remedy": str(analysis.get("immediate_remedy") or "").strip(),
             "prevention": str(analysis.get("prevention") or "").strip(),
