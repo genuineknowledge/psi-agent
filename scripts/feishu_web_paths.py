@@ -63,6 +63,8 @@ _HTTP_CONSTRUCTS = ("fetch", "EventSource", "XMLHttpRequest", "sendBeacon", "axi
 
 _CALLEE_RE = re.compile(r"\b(fetch|requestJson)\b")
 
+_STRIP_STRINGS_RE = re.compile(r'(["\'])(?:(?=(\\?))\2.)*?\1|`[^`]*`')
+
 
 @dataclass(frozen=True)
 class PathEntry:
@@ -254,7 +256,8 @@ def http_call_sites(root: Path | None = None) -> list[tuple[str, int, str]]:
             code = line.split("//", 1)[0]
             if code.lstrip().startswith("*"):
                 continue  # 块注释正文
-            for match in pattern.finditer(code):
+            code_no_strings = _STRIP_STRINGS_RE.sub("", code)
+            for match in pattern.finditer(code_no_strings):
                 hits.append((rel, lineno, match.group(1)))
     return hits
 
