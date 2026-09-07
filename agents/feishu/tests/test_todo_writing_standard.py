@@ -245,6 +245,32 @@ def test_priority_importance_and_consistency_check_are_wired_in() -> None:
     assert "待人工确认" in block, "an uncertain consistency verdict must go to human confirmation"
 
 
+def test_priority_urgency_trap_prompts_downgrade_not_violation() -> None:
+    """SOP 陷阱·紧急错觉: 命中 urgency_trap 却标「重要且紧急」→ 提示降级, 不判违规。"""
+    block = _subsection("按优先级", within=_section("规则集段"))
+    assert "紧急错觉" in block, "must name the urgency-trap check"
+    assert "先问:产出对用户有价值吗?没有则降级" in block, "must quote the SOP downgrade question verbatim"
+    assert "不判违规" in block, "the urgency-trap hint must never count as a violation"
+    assert "不报 mentor" in block, "the urgency-trap hint must stay with the member only"
+
+
+def test_priority_quadrant_vs_importance_mismatch_is_hint_level() -> None:
+    """成员标的象限 vs importance 三档判定不一致 → 提示级, 给理由与依据。"""
+    block = _subsection("按优先级", within=_section("规则集段"))
+    assert "标注与价值一致" in block, "must check the member's quadrant against the tier judgment"
+    assert "提示级" in block, "a mismatch must be a hint, never a violation"
+    assert "理由与依据" in block, "the hint must carry the tier judgment and its grounds"
+
+
+def test_priority_reorder_remedy_delivers_copyable_list() -> None:
+    """乱序补救: 重排后的当期列表随违规提示私聊本人, 可直接复制回看板。"""
+    block = _subsection("补救", within=_section("引擎段"))
+    assert "优先级乱序" in block, "the remedy table must cover priority disorder"
+    assert "重排" in block, "the remedy must reorder by the params quadrant order"
+    assert "可直接复制回看板" in block, "the reordered list must be copyable back to the board"
+    assert "只调顺序" in block, "the remedy must keep the original item text, reorder only"
+
+
 def test_params_section_pins_the_confirmed_values() -> None:
     params = _section("参数段")
     for value in PARAMS:
