@@ -36,6 +36,33 @@ from _positive_negative_list.validation import validate_case
 from psi_agent._appdata import resolve_appdata_root as _resolve_appdata_root
 from psi_agent.session.runtime_context import get_session_id as _get_session_id
 
+# The exact case_json surface the skill contract exposes to the model.
+# Anything else (workflow, case ids, dedupe identifiers, source-session
+# bookkeeping, red-line state, record links) is generated or decided by the
+# tools and must not be supplied by the model.
+_CASE_JSON_ALLOWED_FIELDS = frozenset(
+    {
+        "writer_user_key",
+        "reporter_user_key",
+        "subject_user_key",
+        "occurred_at",
+        "observed_behavior",
+        "context",
+        "impact",
+        "evidence_sources",
+        "nature",
+        "category",
+        "primary_rule_id",
+        "secondary_rule_ids",
+        "rule_version",
+        "fact_summary",
+        "agent_inference",
+        "correct_behavior",
+        "immediate_remedy",
+        "prevention",
+    }
+)
+
 
 def _preview_digest(case: CaseDraft) -> str:
     # ``workflow`` changes while a card is being written and is not part of
@@ -141,6 +168,32 @@ async def positive_negative_case_prepare(
         raw: dict[str, Any] = json.loads(case_json)
         if not isinstance(raw, dict):
             raise ValueError("case_json must be an object")
+        internal = set(raw) - _CASE_JSON_ALLOWED_FIELDS
+        if internal:
+            red_line_flag = "red_line_candidate" in internal and raw.get("red_line_candidate") not in (None, False)
+            supplied_link = str(raw.get("record_link") or "").strip() if "record_link" in internal else ""
+            if red_line_flag:
+                return _f.dumps_result(
+                    {
+                        "ok": False,
+                        "status": "red_line_state_rejected",
+                        "error": "红线候选状态只能由人工处理流程认定，不接受模型传入 red_line_candidate",
+                        "allowed_case_fields": sorted(_CASE_JSON_ALLOWED_FIELDS),
+                    }
+                )
+            if supplied_link:
+                return _f.dumps_result(
+                    {
+                        "ok": False,
+                        "status": "record_link_rejected",
+                        "error": "记录链接由工具在写入后生成，不接受模型传入 record_link",
+                        "allowed_case_fields": sorted(_CASE_JSON_ALLOWED_FIELDS),
+                    }
+                )
+            # Tool-owned keys (workflow/case_id/dedupe identifiers/source
+            # bookkeeping) are regenerated below; strip any model-supplied
+            # values so the skill contract stays the only way in.
+            raw = {key: value for key, value in raw.items() if key in _CASE_JSON_ALLOWED_FIELDS}
         supplied_writer = raw.get("writer_user_key")
         if supplied_writer not in (None, "", user_key):
             raise ValueError("writer identity does not match trusted sender")

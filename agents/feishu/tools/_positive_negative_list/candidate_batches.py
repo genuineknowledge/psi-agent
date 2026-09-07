@@ -8,6 +8,8 @@ normal analysis and test-table confirmation path.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import inspect
 import json
 import secrets
@@ -164,19 +166,52 @@ def analysis_candidates(batch: dict[str, Any]) -> list[dict[str, Any]]:
 async def save_batch(batch: dict[str, Any]) -> dict[str, Any]:
     root = await _root_value()
     path = _state_dir(root) / f"{batch['batch_id']}.json"
-    path.write_text(json.dumps(batch, ensure_ascii=False, indent=2), encoding="utf-8")
-    path.chmod(0o600)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(batch, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.chmod(0o600)
+    temporary.replace(path)
     return batch
+
+
+def derive_source_key(
+    *, source_label: str, meeting_date: str, person_open_id: str, candidates: list[Any]
+) -> str:
+    """Deterministic same-content source key when the caller omits one.
+
+    An identical payload for the same person derives the same key, so the
+    "same source never sends a second candidate card" contract keeps holding
+    for retries even without a caller-provided key.
+    """
+    parts = [str(source_label or ""), str(meeting_date or ""), str(person_open_id or "")]
+    for item in candidates:
+        text = item.get("text") if isinstance(item, dict) else item
+        parts.append(_text(text, 400))
+    digest = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+    return f"derived:{digest}"
+
+
+def _quarantine(path: Path) -> None:
+    with contextlib.suppress(OSError):
+        path.rename(str(path) + ".corrupt")
+
+
+def _read_batch_json(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError, json.JSONDecodeError:
+        # A truncated half-written batch must not make the batch invisible
+        # forever: quarantine the broken file so lookups stop tripping on it.
+        _quarantine(path)
+        return None
+    return value if isinstance(value, dict) else None
 
 
 async def load_batch(batch_id: str) -> dict[str, Any] | None:
     root = await _root_value()
     path = _state_dir(root) / f"{batch_id}.json"
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError, json.JSONDecodeError:
+    if not path.is_file():
         return None
-    return value if isinstance(value, dict) else None
+    return _read_batch_json(path)
 
 
 async def find_batch_by_source_key(source_key: str) -> dict[str, Any] | None:
@@ -184,11 +219,8 @@ async def find_batch_by_source_key(source_key: str) -> dict[str, Any] | None:
         return None
     root = await _root_value()
     for path in _state_dir(root).glob("cand_*.json"):
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except OSError, json.JSONDecodeError:
-            continue
-        if isinstance(value, dict) and value.get("source_key") == source_key:
+        value = _read_batch_json(path)
+        if value is not None and value.get("source_key") == source_key:
             return value
     return None
 
@@ -197,6 +229,7 @@ __all__ = [
     "analysis_candidates",
     "assess_candidate_quality",
     "build_candidate_batch",
+    "derive_source_key",
     "find_batch_by_source_key",
     "is_ready_for_analysis",
     "load_batch",

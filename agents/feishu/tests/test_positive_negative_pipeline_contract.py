@@ -1326,3 +1326,161 @@ def test_confirmation_writes_only_test_adapter_then_sends_notice_card_without_au
     active = reviews.find_active_reviews(tmp_path, "ou_subject")
     assert active == ()
     assert result["private_review_status"] == "not_started"
+
+
+# ---------------------------------------------------------------------------
+# Reliability hardening: candidate chain (atomic writes / terminal render /
+# idempotent clicks / identity) and prepare field-surface enforcement.
+# ---------------------------------------------------------------------------
+
+
+def test_candidate_kept_row_renders_terminal_state_without_buttons() -> None:
+    batches = importlib.import_module("_positive_negative_list.candidate_batches")
+    card_tool = importlib.import_module("positive_negative_candidate_card")
+    batch = batches.build_candidate_batch(
+        person_open_id="ou_subject",
+        person_name="王炜博",
+        source_label="会议纪要",
+        meeting_date="2026-09-06",
+        candidates=[{"text": "未同步风险"}],
+        source_key="meeting:2026-09-06:terminal",
+    )
+    batch["rows"][0]["status"] = "kept"
+    rendered = json.dumps(card_tool.render_candidate_card(batch), ensure_ascii=False)
+    assert "已纳入候选" in rendered
+    assert "pn_candidate_keep_0" not in rendered
+    assert "pn_candidate_ignore_0" not in rendered
+
+
+def test_candidate_click_without_trusted_user_key_is_rejected(tmp_path, monkeypatch) -> None:
+    batches = importlib.import_module("_positive_negative_list.candidate_batches")
+    card_tool = importlib.import_module("positive_negative_candidate_card")
+    monkeypatch.setattr(batches, "_resolve_appdata_root", lambda: tmp_path)
+    batch = batches.build_candidate_batch(
+        person_open_id="ou_subject",
+        person_name="王炜博",
+        source_label="会议纪要",
+        meeting_date="2026-09-06",
+        candidates=[{"text": "未同步风险"}],
+        source_key="meeting:2026-09-06:no-identity",
+    )
+    asyncio.run(batches.save_batch(batch))
+    callback = json.dumps(
+        {
+            "action": {
+                "value": {
+                    "action": "pn_candidate_keep_0",
+                    "batch_id": batch["batch_id"],
+                    "person_open_id": "ou_subject",
+                }
+            },
+            "message_id": "",
+        }
+    )
+    payload = json.loads(asyncio.run(card_tool.positive_negative_candidate_card(card_action_json=callback)))
+    assert payload["ok"] is False
+    assert payload["status"] == "unauthorized"
+
+
+def test_candidate_click_on_decided_row_returns_already_decided_without_state_change(tmp_path, monkeypatch) -> None:
+    batches = importlib.import_module("_positive_negative_list.candidate_batches")
+    card_tool = importlib.import_module("positive_negative_candidate_card")
+    monkeypatch.setattr(batches, "_resolve_appdata_root", lambda: tmp_path)
+    batch = batches.build_candidate_batch(
+        person_open_id="ou_subject",
+        person_name="王炜博",
+        source_label="会议纪要",
+        meeting_date="2026-09-06",
+        candidates=[{"text": "未同步风险"}],
+        source_key="meeting:2026-09-06:decided",
+    )
+    asyncio.run(batches.save_batch(batch))
+    base_value = {
+        "batch_id": batch["batch_id"],
+        "person_open_id": "ou_subject",
+    }
+    keep_callback = json.dumps(
+        {"action": {"value": {**base_value, "action": "pn_candidate_keep_0"}}, "message_id": ""}
+    )
+    first = json.loads(asyncio.run(card_tool.positive_negative_candidate_card(card_action_json=keep_callback, user_key="ou_subject")))
+    assert first["ok"] is True
+    assert first["status"] == "ready_for_analysis"
+    loaded = asyncio.run(batches.load_batch(batch["batch_id"]))
+    assert loaded["rows"][0]["status"] == "kept"
+
+    ignore_callback = json.dumps(
+        {"action": {"value": {**base_value, "action": "pn_candidate_ignore_0"}}, "message_id": ""}
+    )
+    second = json.loads(asyncio.run(card_tool.positive_negative_candidate_card(card_action_json=ignore_callback, user_key="ou_subject")))
+    assert second["ok"] is True
+    assert second["status"] == "already_decided"
+    assert second["row_status"] == "kept"
+    after = asyncio.run(batches.load_batch(batch["batch_id"]))
+    assert after["rows"][0]["status"] == "kept"
+    assert after["status"] == "ready_for_analysis"
+
+
+def test_candidate_batch_corrupt_file_is_quarantined_not_stuck(tmp_path, monkeypatch) -> None:
+    batches = importlib.import_module("_positive_negative_list.candidate_batches")
+    monkeypatch.setattr(batches, "_resolve_appdata_root", lambda: tmp_path)
+    directory = tmp_path / "positive-negative-list" / "candidate-batches"
+    directory.mkdir(parents=True)
+    broken = directory / "cand_broken.json"
+    broken.write_text('{"truncated": ', encoding="utf-8")
+
+    assert asyncio.run(batches.load_batch("cand_broken")) is None
+    assert not broken.exists()
+    assert any(path.name.endswith(".corrupt") for path in directory.iterdir())
+    assert asyncio.run(batches.find_batch_by_source_key("anything")) is None
+
+
+def test_candidate_card_derives_source_key_when_omitted(tmp_path, monkeypatch) -> None:
+    feishu = importlib.import_module("_feishu_impl")
+    batches = importlib.import_module("_positive_negative_list.candidate_batches")
+    card_tool = importlib.import_module("positive_negative_candidate_card")
+    monkeypatch.setattr(batches, "_resolve_appdata_root", lambda: tmp_path)
+    calls: list[dict[str, Any]] = []
+
+    async def fake_send_card(
+        receive_id, card_json, receive_id_type, user_key=None, business_context_json="{}",
+        action_handlers_json="{}", multi_use=False, **_kwargs,
+    ):
+        calls.append({"receive_id": receive_id, "handlers": json.loads(action_handlers_json or "{}")})
+        return {"ok": True, "message_id": f"om_derived_{len(calls)}"}
+
+    monkeypatch.setattr(feishu, "send_card_impl", fake_send_card)
+    kwargs = {
+        "candidates_json": json.dumps(["未同步风险"], ensure_ascii=False),
+        "person_name": "王炜博",
+        "source_label": "会议纪要",
+        "meeting_date": "2026-09-06",
+        "source_key": "",
+        "receive_id": "ou_subject",
+        "user_key": "ou_subject",
+    }
+    first = json.loads(asyncio.run(card_tool.positive_negative_candidate_card(**kwargs)))
+    assert first["ok"] is True
+    assert first["status"] == "sent"
+    second = json.loads(asyncio.run(card_tool.positive_negative_candidate_card(**kwargs)))
+    assert second["ok"] is True
+    assert second["status"] == "already_sent"
+    assert second["batch_id"] == first["batch_id"]
+    assert len(calls) == 1
+
+
+def test_prepare_rejects_red_line_flag_from_the_model() -> None:
+    positive_negative = importlib.import_module("positive_negative_list")
+    mapping = _negative_case().to_mapping() | {"red_line_candidate": True}
+    payload = json.loads(
+        asyncio.run(
+            positive_negative.positive_negative_case_prepare(
+                json.dumps(mapping, ensure_ascii=False),
+                source_event_id="evt_red_line_injected",
+                user_key="ou_reporter",
+            )
+        )
+    )
+    assert payload["ok"] is False
+    assert payload["status"] == "red_line_state_rejected"
+    assert payload["allowed_case_fields"]
+    assert len(payload["allowed_case_fields"]) == 18
