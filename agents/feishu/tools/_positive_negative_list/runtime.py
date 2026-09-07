@@ -418,8 +418,14 @@ class ConfiguredTableClient(FeishuLedgerClient):
         values[ids["source_key"]] = "\n".join(note_lines)
         return values
 
-    async def search(self, field_id: str, value: str, user_key: str):
-        """Search one configured column using its deployed Feishu field name."""
+    async def search(self, field_id: str, value: str, user_key: str, operator: str = "is"):
+        """Search one configured column using its deployed Feishu field name.
+
+        ``operator`` is a Feishu filter operator.  The six-column ledger
+        aliases every deduplication identifier into the ``备注`` text column,
+        where an exact ``is`` match can never hit a multi-line cell; callers
+        resolving aliased columns pass ``contains`` instead.
+        """
         field_name = self._field_names_by_id.get(field_id)
         if not field_name:
             raise ValueError(f"unknown configured field ID: {field_id}")
@@ -427,7 +433,10 @@ class ConfiguredTableClient(FeishuLedgerClient):
             app_token=self.app_token,
             table_id=self.table_id,
             filter_json=json.dumps(
-                {"conjunction": "and", "conditions": [{"field_name": field_name, "operator": "is", "value": [value]}]},
+                {
+                    "conjunction": "and",
+                    "conditions": [{"field_name": field_name, "operator": operator, "value": [value]}],
+                },
                 ensure_ascii=False,
             ),
             field_names=json.dumps(_field_name_list(self.field_names, self._configured_semantics), ensure_ascii=False),

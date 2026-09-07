@@ -155,6 +155,20 @@ async def _public_case_preview(case: CaseDraft) -> dict[str, Any]:
     }
 
 
+def _case_has_durable_state(root: str | Path, case_id: str) -> bool:
+    """True when a case still owns a draft or a write receipt on disk."""
+    base = Path(root) / "positive-negative-list"
+    if (base / "receipts" / f"{case_id}.json").is_file():
+        return True
+    drafts_root = base / "drafts"
+    if not drafts_root.is_dir():
+        return False
+    for writer_dir in drafts_root.iterdir():
+        if writer_dir.is_dir() and (writer_dir / f"{case_id}.json").is_file():
+            return True
+    return False
+
+
 async def positive_negative_case_prepare(
     case_json: str,
     source_type: str = "feishu_private_chat",
@@ -229,6 +243,15 @@ async def positive_negative_case_prepare(
             }
         )
         reservation = reserve_source_key(root, source_key, case_id)
+        if reservation.status == "exact_duplicate":
+            # A reservation whose case has neither a draft nor a receipt was
+            # left behind by a crash between reserve and card send.  Reclaim
+            # it so the same source can be retried instead of being blocked
+            # forever by an orphaned placeholder.
+            orphan_case = reservation.case_id
+            if orphan_case and not _case_has_durable_state(root, orphan_case):
+                release_source_key(root, source_key, orphan_case)
+                reservation = reserve_source_key(root, source_key, case_id)
         if reservation.status not in {"reserved", "idempotent"}:
             return _f.dumps_result({"ok": False, "status": reservation.status, "case_id": reservation.case_id})
         session_id = _get_session_id()

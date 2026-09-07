@@ -1484,3 +1484,196 @@ def test_prepare_rejects_red_line_flag_from_the_model() -> None:
     assert payload["status"] == "red_line_state_rejected"
     assert payload["allowed_case_fields"]
     assert len(payload["allowed_case_fields"]) == 18
+
+
+# ---------------------------------------------------------------------------
+# R2: crash-window recovery (confirm row recovery, orphan reservation
+# takeover) and six-column alias contains-based deduplication.
+# ---------------------------------------------------------------------------
+
+
+def test_confirm_after_crash_between_create_and_receipt_recovers_existing_row(monkeypatch, tmp_path) -> None:
+    positive_negative = importlib.import_module("positive_negative_list")
+    confirm = importlib.import_module("positive_negative_list_confirm")
+    notifications = importlib.import_module("_positive_negative_list.notifications")
+    feishu = importlib.import_module("_feishu_impl")
+
+    class FakeAdapter:
+        creates = 0
+
+        def __init__(self) -> None:
+            self.lookup = {"rec_recovered"}
+
+        async def preflight(self, user_key):
+            return SimpleNamespace(ok=True, errors=(), schema=object())
+
+        async def find_by_source_key(self, source_key, user_key):
+            if "rec_recovered" in self.lookup:
+                return {"record_id": "rec_recovered"}
+            return None
+
+        async def create_public_record(self, case, user_key):
+            self.creates += 1
+            return {"record_id": "rec_new"}
+
+        def public_record_link(self, record_id):
+            return f"https://feishu.cn/base/app?table=tbl&record={record_id}"
+
+    adapter = FakeAdapter()
+    sent_cards: list[dict[str, Any]] = []
+
+    async def fake_send_card(receive_id, card_json, *args, **kwargs):
+        sent_cards.append({"receive_id": receive_id, "card": json.loads(card_json)})
+        return {"ok": True, "message_id": "msg_notice"}
+
+    async def fake_get_users_batch(user_ids: str, user_id_type: str = "open_id"):
+        names = {"ou_subject": "王炜博", "ou_reporter": "罗霖"}
+        return {"ok": True, "users": [{"open_id": item, "name": names[item]} for item in user_ids.split(",")]}
+
+    async def fake_root():
+        return tmp_path
+
+    monkeypatch.setattr(feishu, "send_card_impl", fake_send_card)
+    monkeypatch.setattr(feishu, "get_users_batch_impl", fake_get_users_batch)
+    monkeypatch.setattr(positive_negative, "_get_session_id", lambda: "session_test")
+    monkeypatch.setattr(positive_negative, "_resolve_appdata_root", fake_root)
+    monkeypatch.setattr(confirm, "get_session_id", lambda: "session_test")
+    monkeypatch.setattr(confirm, "resolve_appdata_root", fake_root)
+    monkeypatch.setattr(confirm, "TABLE_ADAPTER", adapter)
+    monkeypatch.setattr(confirm, "table_adapter", None)
+    monkeypatch.setattr(notifications, "send_card_impl", fake_send_card)
+
+    case = _negative_case().to_mapping() | {"writer_user_key": "ou_reporter", "reporter_user_key": "ou_reporter"}
+    prepared = json.loads(
+        asyncio.run(
+            positive_negative.positive_negative_case_prepare(
+                json.dumps(case, ensure_ascii=False),
+                source_event_id="evt_crash_recover",
+                user_key="ou_reporter",
+            )
+        )
+    )
+    assert prepared["ok"] is True
+    case_id = prepared["case_id"]
+
+    # Simulate the crash window: the draft was persisted as ``writing`` but no
+    # receipt ever landed (process died right after the table row was created).
+    drafts_base = tmp_path / "positive-negative-list" / "drafts"
+    draft_path = next(path for path in drafts_base.glob(f"*/{case_id}.json"))
+    payload = json.loads(draft_path.read_text(encoding="utf-8"))
+    payload["case"]["workflow"] = "writing"
+    draft_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    callback = json.dumps(
+        {
+            "action": {"value": {"action": "positive_negative_case_confirm"}},
+            "business_context": {"case_id": case_id, "preview_digest": prepared["preview_digest"]},
+        },
+        ensure_ascii=False,
+    )
+    result = json.loads(asyncio.run(confirm.positive_negative_case_confirm(callback, user_key="ou_reporter")))
+    assert result["ok"] is True
+    assert result["public_record_id"] == "rec_recovered"
+    assert result["notification_status"] == "notification_sent"
+    assert adapter.creates == 0
+    assert (tmp_path / "positive-negative-list" / "receipts" / f"{case_id}.json").is_file()
+
+    # A second click on the same card must not create or resend anything.
+    again = json.loads(asyncio.run(confirm.positive_negative_case_confirm(callback, user_key="ou_reporter")))
+    assert again["status"] == "already_written"
+    assert adapter.creates == 0
+
+
+def test_prepare_reclaims_orphaned_same_source_reservation(monkeypatch, tmp_path) -> None:
+    positive_negative = importlib.import_module("positive_negative_list")
+    dedupe = importlib.import_module("_positive_negative_list.dedupe")
+    feishu = importlib.import_module("_feishu_impl")
+
+    async def fake_send_card(receive_id, card_json, *args, **kwargs):
+        return {"ok": True, "message_id": "msg_prep"}
+
+    async def fake_get_users_batch(user_ids: str, user_id_type: str = "open_id"):
+        names = {"ou_subject": "王炜博", "ou_reporter": "罗霖"}
+        return {"ok": True, "users": [{"open_id": item, "name": names[item]} for item in user_ids.split(",")]}
+
+    async def fake_root():
+        return tmp_path
+
+    monkeypatch.setattr(feishu, "send_card_impl", fake_send_card)
+    monkeypatch.setattr(feishu, "get_users_batch_impl", fake_get_users_batch)
+    monkeypatch.setattr(positive_negative, "_get_session_id", lambda: "session_test")
+    monkeypatch.setattr(positive_negative, "_resolve_appdata_root", fake_root)
+
+    source_key = dedupe.make_source_key("feishu_private_chat", "evt_orphan_prep")
+    # Simulate a crash after reserve but before the card was sent: the orphaned
+    # reservation references a case that has no draft and no receipt.
+    dedupe.reserve_source_key(str(tmp_path), source_key, "case_orphan_stale")
+
+    case = _negative_case().to_mapping() | {"writer_user_key": "ou_reporter", "reporter_user_key": "ou_reporter"}
+    prepared = json.loads(
+        asyncio.run(
+            positive_negative.positive_negative_case_prepare(
+                json.dumps(case, ensure_ascii=False),
+                source_event_id="evt_orphan_prep",
+                user_key="ou_reporter",
+            )
+        )
+    )
+    assert prepared["ok"] is True
+    reservation_path = tmp_path / "positive-negative-list" / "dedupe" / f"{source_key}.json"
+    reservation = json.loads(reservation_path.read_text(encoding="utf-8"))
+    assert reservation["case_id"] == prepared["case_id"]
+    assert reservation["case_id"] != "case_orphan_stale"
+
+    # A second attempt for the same source is a real duplicate now (draft
+    # exists), so it must keep refusing instead of reclaiming the live case.
+    second = json.loads(
+        asyncio.run(
+            positive_negative.positive_negative_case_prepare(
+                json.dumps(case, ensure_ascii=False),
+                source_event_id="evt_orphan_prep",
+                user_key="ou_reporter",
+            )
+        )
+    )
+    assert second["ok"] is False
+    assert second["status"] == "exact_duplicate"
+
+
+def test_six_column_dedupe_search_uses_contains_operator() -> None:
+    table = importlib.import_module("_positive_negative_list.table")
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, str]] = []
+
+        async def search(self, field_id: str, value: str, user_key: str, operator: str = "is"):
+            self.calls.append((field_id, value, operator))
+            return [{"record_id": "rec_note_hit"}] if operator == "contains" else []
+
+    aliased = SimpleNamespace(
+        deduplication_field_ids={
+            "source_key": "f_note",
+            "canonical_incident_id": "f_note",
+            "cross_source_fingerprint": "f_note",
+        }
+    )
+    client = FakeClient()
+    adapter = table.TableAdapter(client)
+    adapter._schema = aliased
+    asyncio.run(adapter.find_by_source_key("sk-123", "ou_writer"))
+    assert client.calls and client.calls[0][2] == "contains"
+    assert client.calls[0][1] == "sk-123"
+
+    dedicated = SimpleNamespace(
+        deduplication_field_ids={
+            "source_key": "f_sk",
+            "canonical_incident_id": "f_ci",
+            "cross_source_fingerprint": "f_fp",
+        }
+    )
+    client2 = FakeClient()
+    adapter2 = table.TableAdapter(client2)
+    adapter2._schema = dedicated
+    asyncio.run(adapter2.find_by_source_key("sk-456", "ou_writer"))
+    assert client2.calls and client2.calls[0][2] == "is"

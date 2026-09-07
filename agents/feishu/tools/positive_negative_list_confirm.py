@@ -198,15 +198,35 @@ async def _confirm_unlocked(card_action_json: str = "", user_key: str = "") -> s
             }
         )
 
-    # Persist the transition before the external create call so a second callback
-    # cannot race a first one into creating two rows.
-    writing_case = CaseDraft.from_mapping(case.to_mapping() | {"workflow": "writing"})
-    save_draft(root, user_key, session_id, case_id, writing_case)
-    try:
-        written = await adapter.create_public_record(writing_case, user_key)
-    except Exception as exc:
-        save_draft(root, user_key, session_id, case_id, case)
-        return _f.dumps_result({"ok": False, "status": "write_failed", "error": str(exc)})
+    # A persisted ``writing`` workflow without a receipt means a previous
+    # confirmation crashed after this transition but before the durable
+    # receipt existed.  The row may already exist in the ledger: look it up
+    # first (six-column alias search) instead of blindly creating a duplicate.
+    recovered: dict[str, Any] | None = None
+    if case.workflow == "writing":
+        try:
+            existing_row = await adapter.find_by_source_key(case.source_key, user_key)
+        except Exception as exc:
+            return _f.dumps_result({"ok": False, "status": "dedupe_failed", "error": f"{type(exc).__name__}: {exc}"})
+        if existing_row is not None:
+            recovered_id = str(existing_row.get("record_id") or existing_row.get("id") or "").strip()
+            if not recovered_id:
+                return _f.dumps_result(
+                    {"ok": False, "status": "write_failed", "error": "recovered record ID missing"}
+                )
+            recovered = {"record_id": recovered_id, "record_link": adapter.public_record_link(recovered_id)}
+    if recovered is not None:
+        written = recovered
+    else:
+        # Persist the transition before the external create call so a second
+        # callback cannot race a first one into creating two rows.
+        writing_case = CaseDraft.from_mapping(case.to_mapping() | {"workflow": "writing"})
+        save_draft(root, user_key, session_id, case_id, writing_case)
+        try:
+            written = await adapter.create_public_record(writing_case, user_key)
+        except Exception as exc:
+            save_draft(root, user_key, session_id, case_id, case)
+            return _f.dumps_result({"ok": False, "status": "write_failed", "error": str(exc)})
 
     if isinstance(written, WriteResult):
         if written.status == "possible_duplicate":
@@ -243,7 +263,7 @@ async def _confirm_unlocked(card_action_json: str = "", user_key: str = "") -> s
     delete_draft_body(root, user_key, case_id)
     try:
         # Keep the row ID in the card action payload so the callback can read
-        # the test-table record; the human-facing receipt still stores the
+        # the ledger record; the human-facing receipt still stores the
         # clickable link separately.
         notice_result = await _send_subject_notice(case, public_record_id, root)
     except Exception as exc:
