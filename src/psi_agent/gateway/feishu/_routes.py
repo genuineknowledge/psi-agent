@@ -34,7 +34,7 @@ from psi_agent.gateway.feishu._auth import (
     warn_if_dev_bypass_enabled,
 )
 from psi_agent.gateway.feishu._feishu_manager import FeishuManager
-from psi_agent.gateway.feishu._identity import owns_session, visible_sessions
+from psi_agent.gateway.feishu._identity import PUBLIC_MEETING_SESSION_ID, owns_session, visible_sessions
 from psi_agent.gateway.feishu._jsapi import FeishuJsapiSigner, JsapiError
 from psi_agent.gateway.feishu._oauth_manager import OAuthRelay
 from psi_agent.gateway.server import _error, _json, _read_json, _serve_chat_sse, _session_data
@@ -313,7 +313,7 @@ async def _web_list_sessions(request: web.Request) -> web.Response:
     fm: FeishuManager = request.app["fm"]
     sm: SessionManager = request.app["sm"]
     bot_sid = fm.session_id_for(identity.open_id)
-    rows = visible_sessions(identity.open_id, await sm.list_all(), fm)
+    rows = visible_sessions(identity.open_id, await sm.list_all(include_scheduler=True), fm)
     return _json([_web_session_data(r, from_im=r.id == bot_sid) for r in rows])
 
 
@@ -355,7 +355,7 @@ async def _web_create_session(request: web.Request) -> web.Response:
 
 
 async def _web_get_history(request: web.Request) -> web.Response:
-    """``GET /feishu/sessions/{id}/history`` —— 只给自己的会话。
+    """``GET /feishu/sessions/{id}/history`` —— 只给自己的会话, 会议会话例外公开只读。
 
     别人的/群聊的 → 403 而非内容; 不存在的 → 404。先查存在性再判归属: 反过来会让
     「不存在」与「不属于你」都返回 403, 前端分不出「会话被删了」和「越权」。
@@ -386,9 +386,8 @@ async def _web_chat(request: web.Request) -> web.StreamResponse:
     公司表格、往飞书发消息。把裸的那条放上公网等于任何知道一个 session id 的人都能让公司
     agent 干活, 且不问他是谁。所以网页应用改打这条对等物, 裸的那条**行为一字不改**。
 
-    三段判定与 ``_web_get_history`` **逐条相同**(同一套 ``owns_session``, 同样先存在性再归属):
-    未登录 401、不存在 404、别人的/群聊的 403。两条路由拿同一个 session id 该给同一个答案 ——
-    「history 拒了但 chat 放行」这种缝隙只会来自两处各写一套判定。
+    判定与 ``_web_get_history`` 共用 ``owns_session`` 和存在性检查, 但固定会议会话在这里
+    额外拒绝写入: 它只允许已登录用户读取历史, 不允许任何用户驱动调度工具。
 
     **403 而不是 404**: 与 history 那条对齐是主因(前端拿到 404 会当「会话被删了」去刷列表,
     越权时那个动作没有意义)。用 404 隐藏存在性在这里也换不到什么: session id 是本人 workspace
@@ -409,6 +408,8 @@ async def _web_chat(request: web.Request) -> web.StreamResponse:
         workspace = sm.get_workspace(session_id)
     except LookupError:
         return _error(f"Session '{session_id}' not found", status=404)
+    if session_id == PUBLIC_MEETING_SESSION_ID:
+        return _error("meeting-session is read-only", status=403)
     if not owns_session(identity.open_id, session_id, workspace, fm):
         return _error("forbidden", status=403)
     return await _serve_chat_sse(request, session_id)
@@ -419,7 +420,7 @@ async def _web_owned_ids(request: web.Request) -> set[str]:
     identity = _require_identity(request)
     fm: FeishuManager = request.app["fm"]
     sm: SessionManager = request.app["sm"]
-    return {s.id for s in visible_sessions(identity.open_id, await sm.list_all(), fm)}
+    return {s.id for s in visible_sessions(identity.open_id, await sm.list_all(include_scheduler=True), fm)}
 
 
 async def _web_list_titles(request: web.Request) -> web.Response:

@@ -129,7 +129,16 @@ _AUTH_PROMPT = (
 # for this identity). Combined with a msg-substring check so we still catch permission
 # failures whose exact code we don't enumerate.
 _PERMISSION_CODES = {99991672, 99991663, 99991661, 131006, 1254302, 1254045, 1254043, 1770032}
-_PERMISSION_MSG_HINTS = ("permission", "forbidden", "无权限", "没有权限", "access denied", "not authorized")
+_PERMISSION_MSG_HINTS = (
+    "permission",
+    "forbidden",
+    "无权限",
+    "没有权限",
+    "access denied",
+    "not authorized",
+    "rolepermnotallow",
+    "role has no permissions",
+)
 
 
 def _is_permission_error(res: dict[str, Any]) -> bool:
@@ -514,7 +523,15 @@ def _resp_to_result(resp: Any) -> dict[str, Any]:
         except ValueError, UnicodeDecodeError:
             pass
 
-    ok = code == 0
+    # Some Bitable endpoints return an HTTP 200 envelope with ``code=0`` but
+    # ``msg=RolePermNotAllow`` and an empty data object.  Treating that as a
+    # successful empty result hides a permission failure and makes callers
+    # report that a table has no rows.  Normalize this known Feishu response to
+    # the same fail-closed error shape as other permission denials so the
+    # existing UAT fallback / authorization guidance can run.
+    permission_msg = str(msg).casefold()
+    role_permission_denied = "rolepermnotallow" in permission_msg or "role has no permissions" in permission_msg
+    ok = code == 0 and not role_permission_denied
     if not ok:
         # Rate limits and gateway errors come back with an EMPTY body and no JSON
         # content-type, so the SDK leaves `code` as None and there is nothing to parse:
@@ -537,7 +554,11 @@ def _resp_to_result(resp: Any) -> dict[str, Any]:
             "code": code,
             "msg": msg,
             "data": data,
-            "message": f"Feishu API error {code}: {msg}",
+            "message": (
+                f"Feishu permission error {code}: {msg}"
+                if role_permission_denied
+                else f"Feishu API error {code}: {msg}"
+            ),
         }
     return {"ok": True, "code": 0, "msg": msg, "data": data}
 
@@ -848,6 +869,7 @@ from _feishu.bitable import (  # noqa: E402,F401
     clear_bitable_table_impl,
     create_bitable_records_impl,
     create_bitable_table_impl,
+    get_bitable_record_impl,
     list_bitable_fields_impl,
     search_bitable_records_impl,
     update_bitable_field_impl,

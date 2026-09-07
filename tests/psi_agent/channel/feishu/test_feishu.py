@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import anyio
 import pytest
 from lark_channel import PolicyConfig
+from lark_channel.channel.normalize.mentions import extract_mentions
 from loguru import logger
 
 from psi_agent._card_markers import SILENT_REPLY
@@ -29,6 +30,7 @@ from psi_agent.channel.feishu.client import (
     _handle_and_stream,
     _handle_approval_event,
     _handle_comment,
+    _mentions_line,
     _parse_instance_detail,
     _register_approval_processor,
     _remove_reaction,
@@ -643,6 +645,38 @@ async def test_build_chunks_batched_audio_uses_own_message_id(monkeypatch, tmp_p
 # --------------------------------------------------------------------------
 # Document comment handling (@bot in doc comments -> reply on the comment)
 # --------------------------------------------------------------------------
+
+
+def test_context_header_recovers_open_id_from_raw_when_sdk_drops_it() -> None:
+    def context(raw_mentions):
+        extracted = extract_mentions(raw_mentions)
+
+        class Context:
+            def __init__(self) -> None:
+                self.mentions = extracted.mention_list
+                self.raw = {"mentions": raw_mentions}
+
+        return Context()
+
+    string_id = [{"id": "ou_gaoshuai", "id_type": "open_id", "key": "@_user_1", "name": "高帅"}]
+    assert _mentions_line(context(string_id)) == "mentions: 高帅=ou_gaoshuai"
+
+    nested_id = [{"key": "@_user_1", "id": {"open_id": "ou_yang"}, "name": "杨汉琦"}]
+    assert _mentions_line(context(nested_id)) == "mentions: 杨汉琦=ou_yang"
+
+    both = [*string_id, {"key": "@_user_2", "id": {"open_id": "ou_li"}, "name": "李四"}]
+    line = _mentions_line(context(both))
+    assert "高帅=ou_gaoshuai" in line and "李四=ou_li" in line
+
+
+def test_context_header_degrades_when_raw_is_unavailable() -> None:
+    class Context:
+        mentions = extract_mentions(
+            [{"id": "ou_x", "id_type": "open_id", "key": "@_user_1", "name": "某人"}]
+        ).mention_list
+        raw = None
+
+    assert _mentions_line(Context()) == ""
 
 
 def _comment_event(*, mentioned_bot=True, operator_open_id="ou_1", reply_id="re_1") -> SimpleNamespace:

@@ -54,3 +54,28 @@ async def resolve_feishu_display_names(
         if name := readable_name(user.get("name")):
             names[open_id] = name
     return names
+
+
+def _identity_parts(value: str) -> list[str]:
+    return [part.strip() for part in value.replace("\N{FULLWIDTH COMMA}", ",").split(",") if part.strip()]
+
+
+def render_people_display(value: str, names: dict[str, str]) -> str:
+    """Render a person field from a pre-fetched identity-to-name map."""
+    parts = _identity_parts(value)
+    if not parts:
+        return "姓名未提供"
+    return "、".join(names.get(part, "姓名未解析") if readable_name(part) is None else part for part in parts)
+
+
+async def resolve_people_display(
+    value: str,
+    fetch_users: Callable[..., Awaitable[dict[str, Any]]],
+) -> str:
+    """Render a person field for users without exposing Feishu identifiers."""
+    parts = _identity_parts(value)
+    if not parts:
+        return "姓名未提供"
+    internal = {part for part in parts if readable_name(part) is None}
+    names = await resolve_feishu_display_names(internal, fetch_users)
+    return render_people_display(value, names)

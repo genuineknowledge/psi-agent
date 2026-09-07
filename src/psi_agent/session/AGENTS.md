@@ -76,7 +76,7 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
    - finish_reason="error" → 回滚到快照 → `raise AgentError(message)`（早期 `commit` 已清快照，**用户行保留**）
    - Stop / 断开 / `aclose` → `_abandon_incomplete_turn` 截掉本回合再向上传播（**用户行不保留**）
    - 其他未捕获异常 → 同 cancel（abandon）或随 `__aexit__` rollback，视是否走过早期 commit
-6. 最多 `max_tool_rounds` 轮 tool call（默认 `DEFAULT_MAX_TOOL_ROUNDS` = 20），达到上限时追加**面向用户**的说明性 assistant 消息 + commit
+6. 最多 `max_tool_rounds` 轮 tool call（默认 `DEFAULT_MAX_TOOL_ROUNDS` = 40），达到上限时追加**面向用户**的说明性 assistant 消息 + commit
 7. **Turn 级别原子性**：``run()`` 所有正常出口调用 ``commit()``（save + clear snapshot）；异常时 ``async with`` 上下文管理器自动 ``rollback()``。内存和磁盘仅在同一检查点同步更新。
 
 **注意**：
@@ -231,7 +231,7 @@ result = run.result   # 正常耗尽后非 None
 |------|----------|--------------|-----------------------|
 | 模型正常 `stop` | `COMPLETED` | `MODEL_COMPLETED` | `"stop"` |
 | 模型因 `length` 等停止 | `INCOMPLETE` | `MODEL_STOPPED` | 原始值 |
-| 达到 `max_tool_rounds`（默认 20） | `INCOMPLETE` | `AGENT_TURN_LIMIT` | 通常 `"tool_calls"` |
+| 达到 `max_tool_rounds`（默认 40） | `INCOMPLETE` | `AGENT_TURN_LIMIT` | 通常 `"tool_calls"` |
 | 流里从未出现 finish reason | `INCOMPLETE` | `INVALID_MODEL_STREAM` | `None` |
 | 模型 / Session 执行错误 | 不产出 result | 不适用 | 抛 `AgentError` |
 

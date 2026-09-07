@@ -196,6 +196,39 @@ async def test_chat_on_someone_elses_session_is_403(tmp_path: str, mock_ai_serve
         await tg.__aexit__(None, None, None)
 
 
+@pytest.mark.anyio
+async def test_meeting_session_history_is_readable_but_chat_is_read_only(
+    tmp_path: str, mock_ai_server: MockAIServer
+) -> None:
+    """The shared meeting Session exposes history but never accepts user prompts."""
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+    fx, sm, aim, runner = await _setup(str(tmp_path), mock_ai_server, tg)
+    await sm.create(
+        ai_id="ai1",
+        id="meeting-session",
+        workspace=os.path.join(str(tmp_path), "meeting-session"),
+        active_schedules=("*",),
+    )
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=15)) as http:
+            async with http.get(f"{fx.base_url}/feishu/sessions/meeting-session/history", cookies=fx.ck_a) as resp:
+                assert resp.status == 200
+                assert await resp.json() == []
+            async with http.post(
+                f"{fx.base_url}/feishu/sessions/meeting-session/chat",
+                json=CHAT_BODY,
+                cookies=fx.ck_a,
+            ) as resp:
+                assert resp.status == 403
+                assert (await resp.json())["error"] == "meeting-session is read-only"
+    finally:
+        with anyio.CancelScope(shield=True):
+            await sm.delete("meeting-session")
+        await _teardown(fx, sm, aim, runner)
+        await tg.__aexit__(None, None, None)
+
+
 # ---- 变异复核 -----------------------------------------------------------
 
 

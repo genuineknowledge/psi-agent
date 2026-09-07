@@ -497,6 +497,31 @@ async def test_load_skips_non_async(tmp_path: Path) -> None:
     assert set(tr.tools) == {"async_tool"}
 
 
+@pytest.mark.anyio
+async def test_load_skips_imported_async_helpers(tmp_path: Path) -> None:
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "_helper.py").write_text(
+        "async def helper(value: str) -> str:\n    return value\n", encoding="utf-8"
+    )
+    await anyio.Path(tools_dir / "public.py").write_text(
+        textwrap.dedent(
+            """
+            from _helper import helper
+
+            async def public_tool(value: str) -> str:
+                return await helper(value)
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    tr = await ToolRegistry.load(tools_dir)
+
+    assert set(tr.tools) == {"public_tool"}
+    assert tr.get("helper") is None
+
+
 # ── _load_from_dir skip logic ─────────────────────────────────────────────────
 
 

@@ -1,0 +1,182 @@
+version: 6.0-shadow
+status: shadow
+source: "SOP 6.0 试运行规则快照（待 owner 审核）"
+entries:
+  - id: pn-6.0-yong-hu-di-yi-ke-hu-cheng-jiao-positive
+    direction: positive
+    category: 用户第一
+    title: 以用户结果为先
+    text: 围绕用户真实需求交付可验证的结果，并主动说明影响与边界。
+    mirror_rule_id: pn-6.0-yong-hu-di-yi-ke-hu-cheng-jiao-negative
+    keywords: [用户, 需求, 交付, 结果]
+    conditions: [存在明确用户需求或交付对象]
+    exceptions: [纯私人生活且未影响工作承诺、协作或制度]
+    evidence_requirements: [需求记录, 交付物或反馈]
+    source_locator: SOP-6.0/用户第一/正面镜像
+  - id: pn-6.0-yong-hu-di-yi-ke-hu-cheng-jiao-negative
+    direction: negative
+    category: 用户第一
+    title: 忽视用户结果
+    text: 已知用户需求或影响却未处理，导致交付结果偏离且未及时说明。
+    mirror_rule_id: pn-6.0-yong-hu-di-yi-ke-hu-cheng-jiao-positive
+    keywords: [用户, 需求, 忽视, 交付]
+    conditions: [存在可观察的用户影响]
+    exceptions: [需求尚未明确或已提前说明不可行]
+    evidence_requirements: [需求记录, 影响结果, 沟通记录]
+    source_locator: SOP-6.0/用户第一/负面镜像
+  - id: pn-6.0-shi-shi-qiu-shi-facts-positive
+    direction: positive
+    category: 实事求是
+    title: 如实陈述事实
+    text: 区分事实、推断和不确定性，准确陈述进展、风险与结果。
+    mirror_rule_id: pn-6.0-shi-shi-qiu-shi-facts-negative
+    keywords: [事实, 如实, 风险, 进展]
+    conditions: [存在需要汇报或核对的事实]
+    exceptions: [无可观察事实依据的猜测]
+    evidence_requirements: [原始记录, 数据或时间线]
+    source_locator: SOP-6.0/实事求是/正面镜像
+  - id: pn-6.0-shi-shi-qiu-shi-facts-negative
+    direction: negative
+    category: 实事求是
+    title: 失实或混淆事实
+    text: 将猜测说成事实，或隐瞒、歪曲已知进展与风险。
+    mirror_rule_id: pn-6.0-shi-shi-qiu-shi-facts-positive
+    keywords: [失实, 隐瞒, 歪曲, 事实]
+    conditions: [有可核验的事实差异]
+    exceptions: [记录不足以区分误解与故意失实]
+    evidence_requirements: [对照记录, 相关沟通]
+    source_locator: SOP-6.0/实事求是/负面镜像
+  - id: pn-6.0-xun-su-xing-dong-feedback-positive
+    direction: positive
+    category: 迅速行动、及时反馈
+    title: 及时反馈风险与进展
+    text: 发现无法按承诺交付时，立即说明现状、影响、原因、补救方案和新的明确时间。
+    mirror_rule_id: pn-6.0-xun-su-xing-dong-feedback-negative
+    keywords: [及时反馈, 延期, 风险, 进展, 承诺]
+    conditions: [存在承诺、风险或进展变化]
+    exceptions: [没有实际影响且在约定窗口内完成]
+    evidence_requirements: [承诺时间, 风险通知, 新时间]
+    source_locator: SOP-6.0/迅速行动、及时反馈/正面镜像
+  - id: pn-6.0-xun-su-xing-dong-feedback-negative
+    direction: negative
+    category: 迅速行动、及时反馈
+    title: 已知延期风险但未反馈
+    text: 已知无法按承诺交付或出现重要风险，却未在合理时间向相关方反馈。
+    mirror_rule_id: pn-6.0-xun-su-xing-dong-feedback-positive
+    keywords: [延期, 风险, 未反馈, 承诺]
+    conditions: [风险已知且影响承诺或协作]
+    exceptions: [风险不可预见或已按约定窗口反馈]
+    evidence_requirements: [承诺记录, 风险发现时间, 通知记录]
+    source_locator: SOP-6.0/迅速行动、及时反馈/负面镜像
+  - id: pn-6.0-zhui-qiu-ji-zhi-quality-positive
+    direction: positive
+    category: 追求极致
+    title: 对结果负责并复盘改进
+    text: 交付前验证关键质量，交付后根据反馈持续改进。
+    mirror_rule_id: pn-6.0-zhui-qiu-ji-zhi-quality-negative
+    keywords: [质量, 验证, 复盘, 改进]
+    conditions: [有可验证的交付质量要求]
+    exceptions: [探索性工作已明确验证边界]
+    evidence_requirements: [验收记录, 复盘或改进项]
+    source_locator: SOP-6.0/追求极致/正面镜像
+  - id: pn-6.0-zhui-qiu-ji-zhi-quality-negative
+    direction: negative
+    category: 追求极致
+    title: 未验证即交付
+    text: 忽略已知质量要求或反馈，未完成必要验证便交付并造成可避免的问题。
+    mirror_rule_id: pn-6.0-zhui-qiu-ji-zhi-quality-positive
+    keywords: [质量, 验证, 交付, 问题]
+    conditions: [存在明确的质量要求和可避免影响]
+    exceptions: [已明确记录风险并由相关方接受]
+    evidence_requirements: [质量要求, 验证记录, 影响]
+    source_locator: SOP-6.0/追求极致/负面镜像
+  - id: pn-6.0-ai-yuan-sheng-ai-knowledge-positive
+    direction: positive
+    category: AI 原生
+    title: 善用 AI 并沉淀知识
+    text: 合理使用 AI 提升工作质量与速度，并保留可复用的知识和验证边界。
+    mirror_rule_id: pn-6.0-ai-yuan-sheng-ai-knowledge-negative
+    keywords: [AI, 知识, 沉淀, 复用]
+    conditions: [任务适合使用 AI 且结果需验证]
+    exceptions: [敏感信息或制度禁止使用的场景]
+    evidence_requirements: [产出物, 验证记录, 知识链接]
+    source_locator: SOP-6.0/AI原生/正面镜像
+  - id: pn-6.0-ai-yuan-sheng-ai-knowledge-negative
+    direction: negative
+    category: AI 原生
+    title: 未验证地使用 AI 产出
+    text: 直接采用未经核验的 AI 结果，或有可复用经验却未沉淀导致重复返工。
+    mirror_rule_id: pn-6.0-ai-yuan-sheng-ai-knowledge-positive
+    keywords: [AI, 未验证, 知识, 返工]
+    conditions: [AI 结果影响交付且缺少必要核验]
+    exceptions: [仅用于草稿且未作为事实或交付依据]
+    evidence_requirements: [AI 产出, 核验记录, 返工影响]
+    source_locator: SOP-6.0/AI原生/负面镜像
+  - id: pn-6.0-zu-zhi-xiang-xin-li-collaboration-positive
+    direction: positive
+    category: 组织向心力
+    title: 以组织整体目标协作
+    text: 主动共享必要信息，支持团队协作并维护共同目标。
+    mirror_rule_id: pn-6.0-zu-zhi-xiang-xin-li-collaboration-negative
+    keywords: [组织, 协作, 共享, 团队]
+    conditions: [行为影响团队或共同目标]
+    exceptions: [无需共享的个人工作草稿]
+    evidence_requirements: [协作记录, 共享内容]
+    source_locator: SOP-6.0/组织向心力/正面镜像
+  - id: pn-6.0-zu-zhi-xiang-xin-li-collaboration-negative
+    direction: negative
+    category: 组织向心力
+    title: 阻断必要协作信息
+    text: 明知团队需要却不共享关键事实，造成协作阻塞或目标受损。
+    mirror_rule_id: pn-6.0-zu-zhi-xiang-xin-li-collaboration-positive
+    keywords: [组织, 协作, 不共享, 阻塞]
+    conditions: [信息对协作有实际必要性]
+    exceptions: [权限、保密或最小必要原则要求不共享]
+    evidence_requirements: [信息需求, 沟通记录, 协作影响]
+    source_locator: SOP-6.0/组织向心力/负面镜像
+  - id: pn-6.0-gong-zuo-fang-shi-method-positive
+    direction: positive
+    category: 工作方式方法
+    title: 用清晰流程形成闭环
+    text: 明确责任、时间、交接和验收标准，持续维护工作闭环。
+    mirror_rule_id: pn-6.0-gong-zuo-fang-shi-method-negative
+    keywords: [流程, 闭环, 责任, 交接]
+    conditions: [任务需要多人或跨步骤协作]
+    exceptions: [一次性低风险即时事项]
+    evidence_requirements: [任务记录, 交接内容, 验收结果]
+    source_locator: SOP-6.0/工作方式方法/正面镜像
+  - id: pn-6.0-gong-zuo-fang-shi-method-negative
+    direction: negative
+    category: 工作方式方法
+    title: 缺少责任和交接闭环
+    text: 未明确责任、时间或验收，导致任务无人跟进、交接遗漏或重复返工。
+    mirror_rule_id: pn-6.0-gong-zuo-fang-shi-method-positive
+    keywords: [流程, 闭环, 交接, 遗漏, 返工]
+    conditions: [缺口造成实际任务影响]
+    exceptions: [责任和验收已在其他记录明确]
+    evidence_requirements: [任务记录, 交接记录, 影响]
+    source_locator: SOP-6.0/工作方式方法/负面镜像
+  - id: pn-6.0-red-line-safety
+    direction: red_line
+    category: 红线
+    title: 疑似重大合规或安全风险
+    text: 行为可能触及正式红线，当前仅标记为红线候选，未经人工认定。
+    red_line_id: red-line-6.0-safety
+    trigger_conditions: [疑似违法、重大安全风险或严重制度违规的可观察事实]
+    escalation_conditions: [立即保全证据并交由 Mentor、小组负责人、HR 或法务人工处理]
+    conditions: [出现红线触发事实]
+    exceptions: [仅有模糊评价或未经证实的传闻]
+    evidence_requirements: [具体事实, 时间线, 原始证据]
+    source_locator: SOP-6.0/红线/候选升格条件
+  - id: pn-6.0-red-line-repeat
+    direction: red_line
+    category: 红线
+    title: 需人工判断的重复或紧急升格
+    text: 重复记录或紧急影响可能需要人工尽快判断，不代表红线成立。
+    red_line_id: red-line-6.0-repeat
+    trigger_conditions: [有可核实的重复记录或正在扩大的重大影响]
+    escalation_conditions: [尽快提交人工治理角色复核，不自动处罚、不写入红线表]
+    conditions: [重复或紧急影响有证据]
+    exceptions: [仅凭措辞推测重复倾向]
+    evidence_requirements: [关联记录, 时间线, 影响证据]
+    source_locator: SOP-6.0/红线/重复与紧急升格条件

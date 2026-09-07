@@ -594,6 +594,9 @@ class ToolRegistry:
                         if not inspect.iscoroutinefunction(func):
                             continue
 
+                        if getattr(func, "__module__", None) != module_name:
+                            continue
+
                         try:
                             tool_func = ToolFunction.from_callable(func)
                         except Exception as e:

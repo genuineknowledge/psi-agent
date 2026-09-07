@@ -330,8 +330,55 @@ def _context_header(ctx: Any) -> str:
     thread_id = getattr(ctx, "thread_id", None) or getattr(ctx, "reply_to_message_id", None)
     if thread_id:
         lines.append(f"thread_id: {thread_id}")
+    mentions_line = _mentions_line(ctx)
+    if mentions_line:
+        lines.append(mentions_line)
     lines.append("</feishu_context>")
     return "\n".join(lines)
+
+
+def _mentions_line(ctx: Any) -> str:
+    """Return non-bot mentions as ``mentions: name=open_id`` when available.
+
+    The SDK drops ``open_id`` for events whose raw mention ``id`` is a string
+    rather than an object.  Recovering it here keeps downstream agents from
+    falling back to name search and an unnecessary user OAuth flow.
+    """
+    mentions = getattr(ctx, "mentions", None) or []
+    by_key = _raw_mention_open_ids(ctx)
+    parts: list[str] = []
+    for mention in mentions:
+        if getattr(mention, "is_bot", False):
+            continue
+        open_id = str(getattr(mention, "open_id", "") or "").strip()
+        if not open_id:
+            open_id = by_key.get(str(getattr(mention, "key", "") or ""), "")
+        if not open_id:
+            continue
+        name = str(getattr(mention, "name", "") or "").strip()
+        parts.append(f"{name}={open_id}" if name else open_id)
+    return f"mentions: {', '.join(parts)}" if parts else ""
+
+
+def _raw_mention_open_ids(ctx: Any) -> dict[str, str]:
+    """Recover ``@_user_N`` to open_id mappings from the raw event payload."""
+    raw = getattr(ctx, "raw", None)
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for item in raw.get("mentions") or []:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        ident = item.get("id")
+        open_id = ""
+        if isinstance(ident, str) and ident.startswith("ou_"):
+            open_id = ident
+        elif isinstance(ident, dict):
+            open_id = str(ident.get("open_id") or "").strip()
+        if key and open_id:
+            out[key] = open_id
+    return out
 
 
 def _comment_context_header(event: Any, ctx: Any) -> str:

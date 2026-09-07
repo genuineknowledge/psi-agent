@@ -61,6 +61,19 @@ def _build_list_records_request(
     return req
 
 
+def _build_get_record_request(app_token: str, table_id: str, record_id: str, field_names: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/:record_id"
+    req.paths["app_token"] = app_token
+    req.paths["table_id"] = table_id
+    req.paths["record_id"] = record_id
+    if field_names:
+        req.add_query("field_names", field_names)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
 # ── Bitable reads — conditional search and single-record fetch ────────────────
 #
 # list_bitable_records above is the plain GET: it pages the whole table (or a
@@ -213,6 +226,43 @@ async def search_bitable_records_impl(
         "page_token": data.get("page_token", ""),
         "total": data.get("total", 0),
     }
+
+
+async def get_bitable_record_impl(
+    app_token: str,
+    table_id: str,
+    record_id: str,
+    field_names: str = "",
+    user_key: str = "",
+    identity: str = "",
+) -> dict[str, Any]:
+    """Fetch one Bitable record by its record id."""
+    if not app_token.strip():
+        return _core._error("No app_token provided (the segment in a feishu.cn/base/<app_token> URL).")
+    if not table_id.strip():
+        return _core._error(
+            "No table_id provided (get it from feishu_api GET /open-apis/bitable/v1/apps/:app_token/tables)."
+        )
+    if not record_id.strip():
+        return _core._error("No record_id provided.")
+    if field_names.strip():
+        try:
+            names = json.loads(field_names)
+        except ValueError as exc:
+            return _core._error(f"field_names is not valid JSON: {exc}")
+        if not isinstance(names, list):
+            return _core._error('field_names must be a JSON array of column names, e.g. ["状态","负责人"].')
+    res = await _core._invoke(
+        _build_get_record_request(app_token.strip(), table_id.strip(), record_id.strip(), field_names.strip()),
+        user_key=user_key,
+        prefer="user",
+        identity=identity,
+    )
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    record = data.get("record") if isinstance(data.get("record"), dict) else {}
+    return {"ok": True, "record": record}
 
 
 def _build_batch_create_records_request(app_token: str, table_id: str, records: list[dict[str, Any]]) -> BaseRequest:

@@ -102,6 +102,25 @@ async def test_ensure_is_idempotent(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_ensure_can_use_a_stable_explicit_session_id(tmp_path: Path) -> None:
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+    try:
+        am, sm = await _make_managers(tg)
+        await _write_schedule(tmp_path)
+        schedm = SchedulerManager(_sm=sm, _ai_id="ai1")
+
+        sid = await schedm.ensure(str(tmp_path), session_id="meeting-session")
+
+        assert sid == "meeting-session"
+        assert sm.has("meeting-session")
+        assert not sm.has(await _sid(tmp_path))
+    finally:
+        await _drain(sm, am)
+        await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
 async def test_ensure_skips_workspace_without_schedules(tmp_path: Path) -> None:
     """按需 spawn: 没有 schedules 就不开 Session (免得 N 个飞书用户各挂一个空的)。"""
     tg = anyio.create_task_group()
