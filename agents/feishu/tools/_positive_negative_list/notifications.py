@@ -134,9 +134,7 @@ def _record_notice_text(record: LedgerRecord, subject_display: str = "姓名未�
         f"行为性质：{nature}",
         f"分类：{record.category}",
     ]
-    record_link = _real_link(
-        record.record_link or record.fields.get("record_link") or record.fields.get("记录链接")
-    )
+    record_link = _real_link(record.record_link or record.fields.get("record_link") or record.fields.get("记录链接"))
     if record_link:
         lines.append(f"记录链接：{record_link}")
     if record.evidence_sources:

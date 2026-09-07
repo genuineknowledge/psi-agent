@@ -213,9 +213,7 @@ async def _confirm_unlocked(card_action_json: str = "", user_key: str = "") -> s
         if existing_row is not None:
             recovered_id = str(existing_row.get("record_id") or existing_row.get("id") or "").strip()
             if not recovered_id:
-                return _f.dumps_result(
-                    {"ok": False, "status": "write_failed", "error": "recovered record ID missing"}
-                )
+                return _f.dumps_result({"ok": False, "status": "write_failed", "error": "recovered record ID missing"})
             logger.info(f"pnl confirm: recovered previously created row case={case_id} record={recovered_id}")
             recovered = {"record_id": recovered_id, "record_link": adapter.public_record_link(recovered_id)}
     if recovered is not None:

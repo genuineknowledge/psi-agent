@@ -1400,13 +1400,9 @@ def test_candidate_click_on_decided_row_returns_already_decided_without_state_ch
         "batch_id": batch["batch_id"],
         "person_open_id": "ou_subject",
     }
-    keep_callback = json.dumps(
-        {"action": {"value": {**base_value, "action": "pn_candidate_keep_0"}}, "message_id": ""}
-    )
+    keep_callback = json.dumps({"action": {"value": {**base_value, "action": "pn_candidate_keep_0"}}, "message_id": ""})
     first = json.loads(
-        asyncio.run(
-            card_tool.positive_negative_candidate_card(card_action_json=keep_callback, user_key="ou_subject")
-        )
+        asyncio.run(card_tool.positive_negative_candidate_card(card_action_json=keep_callback, user_key="ou_subject"))
     )
     assert first["ok"] is True
     assert first["status"] == "ready_for_analysis"
@@ -1417,9 +1413,7 @@ def test_candidate_click_on_decided_row_returns_already_decided_without_state_ch
         {"action": {"value": {**base_value, "action": "pn_candidate_ignore_0"}}, "message_id": ""}
     )
     second = json.loads(
-        asyncio.run(
-            card_tool.positive_negative_candidate_card(card_action_json=ignore_callback, user_key="ou_subject")
-        )
+        asyncio.run(card_tool.positive_negative_candidate_card(card_action_json=ignore_callback, user_key="ou_subject"))
     )
     assert second["ok"] is True
     assert second["status"] == "already_decided"
@@ -1451,8 +1445,14 @@ def test_candidate_card_derives_source_key_when_omitted(tmp_path, monkeypatch) -
     calls: list[dict[str, Any]] = []
 
     async def fake_send_card(
-        receive_id, card_json, receive_id_type, user_key=None, business_context_json="{}",
-        action_handlers_json="{}", multi_use=False, **_kwargs,
+        receive_id,
+        card_json,
+        receive_id_type,
+        user_key=None,
+        business_context_json="{}",
+        action_handlers_json="{}",
+        multi_use=False,
+        **_kwargs,
     ):
         calls.append({"receive_id": receive_id, "handlers": json.loads(action_handlers_json or "{}")})
         return {"ok": True, "message_id": f"om_derived_{len(calls)}"}
@@ -1835,9 +1835,7 @@ def test_read_rejects_person_name_filter_without_identity(monkeypatch) -> None:
     monkeypatch.setattr(reader, "read_records", fake_read_records)
     payload = json.loads(
         asyncio.run(
-            read_tool.positive_negative_case_read(
-                query_json='{"subject_user_key": "王炜博"}', user_key="ou_writer"
-            )
+            read_tool.positive_negative_case_read(query_json='{"subject_user_key": "王炜博"}', user_key="ou_writer")
         )
     )
     assert payload["ok"] is False
@@ -1867,9 +1865,7 @@ def test_read_accepts_trusted_identity_filter_and_reads(monkeypatch) -> None:
     monkeypatch.setattr(reader, "list_table_field_names", fake_names)
     payload = json.loads(
         asyncio.run(
-            read_tool.positive_negative_case_read(
-                query_json='{"subject_user_key": "ou_subject"}', user_key="ou_writer"
-            )
+            read_tool.positive_negative_case_read(query_json='{"subject_user_key": "ou_subject"}', user_key="ou_writer")
         )
     )
     assert payload["ok"] is True

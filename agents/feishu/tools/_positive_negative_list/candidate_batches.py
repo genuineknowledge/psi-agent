@@ -173,9 +173,7 @@ async def save_batch(batch: dict[str, Any]) -> dict[str, Any]:
     return batch
 
 
-def derive_source_key(
-    *, source_label: str, meeting_date: str, person_open_id: str, candidates: list[Any]
-) -> str:
+def derive_source_key(*, source_label: str, meeting_date: str, person_open_id: str, candidates: list[Any]) -> str:
     """Deterministic same-content source key when the caller omits one.
 
     An identical payload for the same person derives the same key, so the
