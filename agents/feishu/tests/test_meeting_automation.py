@@ -8,6 +8,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import anyio
 import pytest
@@ -54,9 +55,8 @@ async def test_private_tencent_call_injects_selected_environment_token(
 ) -> None:
     captured: dict[str, str] = {}
 
-    async def fake_run_process(args, *, check: bool = False, env: dict[str, str] | None = None, **kwargs: object):
-        captured.update(env or {})
-        captured["timeout_seconds"] = kwargs.get("timeout")
+    async def fake_run_process(args, *, check: bool, env: dict[str, str]):
+        captured.update(env)
         return SimpleNamespace(returncode=0, stdout=b'{"ok":true}', stderr=b"")
 
     monkeypatch.setenv("TENCENT_MEETING_TOKEN", "daily-secret")
@@ -66,7 +66,8 @@ async def test_private_tencent_call_injects_selected_environment_token(
 
     assert result == '{"ok":true}'
     assert captured["TENCENT_MEETING_TOKEN"] == "daily-secret"
-    assert captured["timeout_seconds"] == 60.0  # 默认单次调用超时 60s (防上游挂起永久阻塞)
+    # 默认单次调用超时 60s (防上游挂起永久阻塞); 超时由 anyio.fail_after 实现
+    assert tencent_meeting.DEFAULT_CALL_TIMEOUT == 60.0
 
 
 def test_meeting_jobs_use_fixed_post_meeting_crons() -> None:
@@ -644,7 +645,7 @@ async def test_daily_meeting_pipeline_does_not_reuse_stale_artifacts_after_prepa
 async def test_long_transcript_is_analyzed_in_chunks_then_synthesized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    requests: list[dict[str, object]] = []
+    requests: list[dict[str, Any]] = []
 
     class FakeAiClient:
         def __init__(self, socket: str) -> None:
@@ -1214,7 +1215,7 @@ async def test_analysis_prompt_carries_meeting_metadata_and_rule_snapshots(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """分块分析请求携带 会议名/标题/会议号/日期/块号 + 版本化 SOP 与正负面快照文本。"""
-    requests: list[dict[str, object]] = []
+    requests: list[dict[str, Any]] = []
 
     class FakeAiClient:
         def __init__(self, socket: str) -> None:

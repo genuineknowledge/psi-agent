@@ -45,7 +45,8 @@ async def _tencent_meeting_call_with_token_env(
     child_env = os.environ.copy()
     child_env["TENCENT_MEETING_TOKEN"] = token
     try:
-        result = await anyio.run_process(args, check=False, env=child_env, timeout=call_timeout)
+        with anyio.fail_after(call_timeout):
+            result = await anyio.run_process(args, check=False, env=child_env)
     except TimeoutError:
         return f"Error: Tencent Meeting tool timed out after {call_timeout:g}s."
     except Exception as exc:

@@ -451,7 +451,7 @@ async def atomic_write_text(path: str | Path, text: str) -> None:
     tmp = target.with_name(f"{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     try:
         await anyio.Path(str(tmp)).write_text(text, encoding="utf-8")
-        await anyio.to_thread.run_sync(os.replace, str(tmp), str(target))
+        await anyio.to_thread.run_sync(os.replace, str(tmp), str(target))  # ty: ignore
     finally:
         if tmp.exists():
             with suppress(OSError):
