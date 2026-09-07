@@ -169,7 +169,7 @@ description: "在人工飞书私聊中，按正负面清单分析行为、补事
 
 先询问缺失的时间、可观察行为、背景、影响、证据来源、报告人和涉事人。信息完整后查询规则并展示分类、教导和候选预览，再调用 `positive_negative_case_prepare` 生成写入者确认卡；只有收到确认回调后才允许写入机器人独立测试表。若确认回调失败，保留失败状态，不重复写入正式总表或测试表。
 
-调用 `positive_negative_case_prepare` 时，`case_json` 必须是一个 JSON 对象，并且只能使用工具源码定义的候选记录结构：`writer_user_key`、`reporter_user_key`、`subject_user_key`、`occurred_at`、`observed_behavior`、`context`、`impact`、`evidence_sources`、`nature`、`category`、`primary_rule_id`、`secondary_rule_ids`、`rule_version`、`fact_summary`、`agent_inference`、`correct_behavior`、`immediate_remedy`、`prevention`；其中三个 `*_user_key` 必须使用当前可信飞书 `open_id`，不能把中文列名、显示姓名或自造字段（例如“员工姓名”“行为类型”“判断结果”）作为 JSON 键。`workflow`、案件 ID 和去重标识由工具生成，不要自行传入或修改。确认卡展示姓名时由工具根据 open_id 解析，不能把 open_id 直接展示给用户。
+调用 `positive_negative_case_prepare` 时，`case_json` 必须是一个 JSON 对象，并且只能使用工具源码定义的候选记录结构：`writer_user_key`、`reporter_user_key`、`subject_user_key`、`occurred_at`、`observed_behavior`、`context`、`impact`、`evidence_sources`、`nature`、`category`、`primary_rule_id`、`secondary_rule_ids`、`rule_version`、`fact_summary`、`agent_inference`、`correct_behavior`、`immediate_remedy`、`prevention`；其中三个 `*_user_key` 必须使用当前可信飞书 `open_id`，不能把中文列名、显示姓名或自造字段（例如“员工姓名”“行为类型”“判断结果”）作为 JSON 键。`workflow`、案件 ID 和去重标识由工具生成，不要自行传入或修改。确认卡展示姓名时由工具根据 open_id 解析，不能把 open_id 直接展示给用户。`evidence_sources` 是字符串数组，只能使用工具内置枚举值，不得自造或改写文字：`当事人陈述`、`他人陈述`、`链接`、`截图`、`任务记录`、`聊天记录`、`其他`。
 
 收到 `<feishu_card_action>` 后，必须将标签内的完整 JSON 原样传给 `positive_negative_case_confirm`，并传入当前可信会话的 `user_key`；不得从用户正文重建 `case_id`、预览摘要或写入者身份。
 

@@ -60,6 +60,9 @@ dependencies = [
     "hikari>=2.5.0",
     "matplotlib>=3.11.0",
     "antlr4-python3-runtime>=4.13.2,<4.14",
+    # Windows Python 3.14 不带 IANA 时区库, stdlib zoneinfo 需要 tzdata 才有
+    # Asia/Shanghai 等条目 (正负面清单写表/日程/系统 prompt 时间戳都会用到)。
+    "tzdata>=2024.1; platform_system == 'Windows'",
 ]
 
 [dependency-groups]
