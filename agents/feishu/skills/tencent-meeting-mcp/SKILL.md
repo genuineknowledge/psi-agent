@@ -45,7 +45,7 @@ metadata:
 - 先调用 `meeting_transcript_prepare` 获取最新已完成的文字转写，再用 `meeting_session_read` 逐块读完 `transcript`。原始转写是分析主依据，不能把一次工具返回当成全文，也不能只读取前几块。
 - 可读取 `smart_minutes` 作为上下文参考，但不得用智能纪要替代原始转写。会议分析应同时参考正负面清单 SOP 和对应会议 SOP。
 - 分析结果写入共享的 `meeting-session` 存储时调用 `meeting_session_write`；该链路仅保存分析和通知回执，明确不写正式正负面总表、不计分、不进入绩效。
-- 会议 `57152787045` 的纪要发程秀秀、正负面清单总览发 HR 罗霖；会议 `42654699903` 的纪要在 `HaiTun Agent主战场` 群创建原生话题发布、正负面清单总览发 HR 罗霖。使用 `meeting_session_notify`，收件人解析失败时不猜测 open_id、不向触发者兜底发送；同一 `record_file_id` 和收件人身份只发送一次。
+- 会议 `57152787045` 的纪要在 `HaiTun Agent主战场` 群创建原生话题发布、正负面清单总览发 HR 罗霖；会议 `42654699903` 的纪要发张浩和王金旺、正负面清单总览发 HR 罗霖。使用 `meeting_session_notify`，收件人解析失败时不猜测 open_id、不向触发者兜底发送；同一 `record_file_id` 和收件人身份只发送一次。
 - 任务通过 cron 定时触发，不使用十分钟轮询。若会议结束时间变化，只调整任务调度时间；不要在普通会话中自行创建重复的会议轮询任务。
 - 会议资料保存在独立的 `meeting-session` 中；工具会话可直接读取，飞书网页对所有已登录用户开放该 Session 的只读历史，其他调度 Session 仍隐藏。
 
