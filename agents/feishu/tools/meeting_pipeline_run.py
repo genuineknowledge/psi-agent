@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import anyio
+import yaml
 from _meeting_automation import (
     MeetingJob,
     atomic_write_text,
@@ -41,6 +42,9 @@ DAILY_MEETING_NAME = "weekday-alignment"
 DAILY_MEETING_CODE = "57152787045"
 ANALYSIS_CHUNK_CHARS = 8_000
 SKILLS_ROOT = Path(__file__).resolve().parent.parent / "skills"
+#: 会议 SOP 判定口径 (唯一业务来源, 与 config/todo-sop.yaml 同一模式: skills/tools
+#: 一律读本文件, 结构是契约只改值; 引擎纪律在 meeting-sop SKILL)。
+MEETING_SOP_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "meeting-sop.yaml"
 #: 正负面规则快照 (从 positive-negative-list/SKILL.md 抽取的规则本体, 供自动化上下文
 #: 注入; 不注入带私聊边界与对话流程的整篇 SKILL.md, 见 G11)。
 POSITIVE_NEGATIVE_RULES_PATH = SKILLS_ROOT / "positive-negative-list" / "references" / "analysis_rules.md"
@@ -151,13 +155,33 @@ def _meeting_meta(job: MeetingJob | None, chunk_index: int | None = None, chunk_
 
 
 async def _load_analysis_rules(job: MeetingJob) -> tuple[str, str]:
-    """读取版本化会议 SOP skill 与正负面规则快照; 缺失即显式失败, 不静默降级。"""
+    """读取会议 SOP 引擎/口径与正负面规则快照; 缺失或契约损坏即显式失败, 不静默降级。
+
+    会议 SOP = SKILL 引擎纪律 (meeting-sop/*/SKILL.md) + 判定口径
+    (config/meeting-sop.yaml, 与 todo-sop.yaml 同一契约模式); 口径缺失/字段结构不符
+    契约时本次运行直接失败。
+    """
     sop_parts: list[str] = []
     for rel in job.analysis_sop_skills:
         skill_md = SKILLS_ROOT / Path(rel) / "SKILL.md"
         if not skill_md.is_file():
             raise RuntimeError(f"会议 SOP skill 缺失: {skill_md} (检查 MeetingJob.analysis_sop_skills)")
-        sop_parts.append(f"===== {rel} =====\n{await anyio.Path(str(skill_md)).read_text(encoding='utf-8')}")
+        sop_parts.append(f"===== {rel} (引擎) =====\n{await anyio.Path(str(skill_md)).read_text(encoding='utf-8')}")
+    if not MEETING_SOP_CONFIG_PATH.is_file():
+        raise RuntimeError(f"会议 SOP 配置缺失: {MEETING_SOP_CONFIG_PATH}")
+    config_text = await anyio.Path(str(MEETING_SOP_CONFIG_PATH)).read_text(encoding="utf-8")
+    try:
+        config = yaml.safe_load(config_text)
+    except yaml.YAMLError as exc:
+        raise RuntimeError(f"会议 SOP 配置无法解析: {MEETING_SOP_CONFIG_PATH}: {exc}") from exc
+    if (
+        not isinstance(config, dict)
+        or not isinstance(config.get("meta"), dict)
+        or not isinstance(config.get("rules"), list)
+        or not config["meta"].get("version")
+    ):
+        raise RuntimeError(f"会议 SOP 配置不符合契约(需 meta.version + rules): {MEETING_SOP_CONFIG_PATH}")
+    sop_parts.append(f"===== config/meeting-sop.yaml (判定口径, 业务条目以 active 为准) =====\n{config_text}")
     if not POSITIVE_NEGATIVE_RULES_PATH.is_file():
         raise RuntimeError(f"正负面规则快照缺失: {POSITIVE_NEGATIVE_RULES_PATH}")
     positive_rules = await anyio.Path(str(POSITIVE_NEGATIVE_RULES_PATH)).read_text(encoding="utf-8")

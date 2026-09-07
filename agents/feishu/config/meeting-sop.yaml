@@ -1,0 +1,74 @@
+# 公司会议 SOP —— 可编辑的判定口径（周中对齐会，v0.1-draft）
+# skills 与 tools 的判定要求一律读本文件，不要写死在 SKILL.md / 代码里。
+# 换一家公司 / 换一场会议 = 替换或新增本文件；引擎（分析纪律、四态判定、注入与告警）零改动。
+# 字段名与结构是契约，不要改（引擎 / 工具按字段名读取）；只改值。
+#
+# 状态说明：v0.1-draft —— 机制版。下方 rules 各条的判定标准为待产品/管理口径定稿的
+# 占位（active: false 表示尚未生效，注入后模型只按"待补充证据"处理该条）；定稿后改
+# active: true 并填写判定标准/符合与反例/例外，改 version 后即成为可审计的规则版本。
+
+meta:
+  version: v0.1-draft
+  sop_name: 周中对齐会会议 SOP
+  scope_meetings: [weekday-alignment, weekday-alignment-1100]
+  updated_at: 2026-09-07
+
+# 观察面：SOP 符合性检查按这三个面逐条给出 judgment_states 之一，并附原文依据。
+observation_axes:
+  - id: prep
+    title: 会前准备
+  - id: session
+    title: 会中议题与决议
+  - id: followup
+    title: 会后跟进闭环
+
+# 判定四态：引擎只允许这四种输出，不允许"默认通过"。
+judgment_states:
+  - 符合
+  - 部分符合
+  - 不符合
+  - 证据不足
+
+# 会议 SOP 业务条目：每条一个稳定 ID（msop.*），供分析输出与将来卡片闭环引用。
+# 定稿前 active 一律 false —— 模型不得把未生效条目当作已成立口径。
+rules:
+  - id: msop.prep.01
+    active: false
+    title: 议题预告与材料齐备
+    axis: prep
+    criteria: ""        # 待产品定稿：判定标准
+    compliant_example: ""  # 待产品定稿：符合示例
+    violation_example: ""  # 待产品定稿：不符合示例
+    exception: ""       # 待产品定稿：例外与宽容边界
+  - id: msop.prep.02
+    active: false
+    title: 人员齐备与缺席代理
+    axis: prep
+    criteria: ""
+    compliant_example: ""
+    violation_example: ""
+    exception: ""
+  - id: msop.session.01
+    active: false
+    title: 议题聚焦与时间盒
+    axis: session
+    criteria: ""
+    compliant_example: ""
+    violation_example: ""
+    exception: ""
+  - id: msop.session.02
+    active: false
+    title: 决议项与负责人记录
+    axis: session
+    criteria: ""
+    compliant_example: ""
+    violation_example: ""
+    exception: ""
+  - id: msop.followup.01
+    active: false
+    title: 跟进项闭环与周中对齐节奏
+    axis: followup
+    criteria: ""
+    compliant_example: ""
+    violation_example: ""
+    exception: ""

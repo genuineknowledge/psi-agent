@@ -1258,12 +1258,17 @@ async def test_analysis_prompt_carries_meeting_metadata_and_rule_snapshots(
 
 
 @pytest.mark.anyio
-async def test_analysis_requires_committed_rule_snapshots() -> None:
-    """真实 job 必须能从仓库读到会议 SOP skill 与正负面规则快照, 缺失即显式报错。"""
+async def test_analysis_requires_committed_rule_snapshots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """真实 job 必须能读到 引擎 SKILL + meeting-sop.yaml 口径 + 正负面规则快照;
+
+    缺失或契约损坏即显式报错 (与 todo-sop.yaml 同一口径即配置模式)。
+    """
     jobs = {job.name: job for job in MEETING_JOBS}
     job = jobs["weekday-alignment"]
     sop_text, positive_text = await pipeline._load_analysis_rules(job)
-    assert "会议 SOP" in sop_text  # meeting-sop/weekday-alignment/SKILL.md 已注入
+    assert "会议 SOP" in sop_text  # 引擎 SKILL 已注入
+    assert "config/meeting-sop.yaml" in sop_text  # 判定口径 (YAML) 已注入
+    assert "judgment_states" in sop_text and "msop.prep.01" in sop_text
     assert "正负面分析规则" in positive_text
     assert "不得监听或自动分析" not in positive_text  # 注入的是快照, 不是私聊边界全文
     assert "负面候选三元组" in positive_text
@@ -1271,6 +1276,25 @@ async def test_analysis_requires_committed_rule_snapshots() -> None:
     broken = replace(job, analysis_sop_skills=("meeting-sop/not-shipped",))
     with pytest.raises(RuntimeError, match="会议 SOP skill 缺失"):
         await pipeline._load_analysis_rules(broken)
+
+
+@pytest.mark.anyio
+async def test_analysis_fails_when_meeting_sop_config_missing_or_broken(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """口径 YAML 缺失或不符合契约 → 显式失败, 绝不静默用旧口径/空口径分析。"""
+    jobs = {job.name: job for job in MEETING_JOBS}
+    job = jobs["weekday-alignment"]
+    missing = tmp_path / "missing.yaml"
+    monkeypatch.setattr(pipeline, "MEETING_SOP_CONFIG_PATH", missing)
+    with pytest.raises(RuntimeError, match="会议 SOP 配置缺失"):
+        await pipeline._load_analysis_rules(job)
+
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("meta:\n  version: v1\n", encoding="utf-8")  # 缺 rules 段
+    monkeypatch.setattr(pipeline, "MEETING_SOP_CONFIG_PATH", broken)
+    with pytest.raises(RuntimeError, match="不符合契约"):
+        await pipeline._load_analysis_rules(job)
 
 
 # ── P3: 超时 / 重试 / 协议校验 / 原子写 / 失败告警 ──────────────────────────
