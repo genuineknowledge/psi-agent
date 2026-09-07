@@ -23,6 +23,8 @@ import yaml
 from _meeting_automation import (
     MeetingJob,
     atomic_write_text,
+    automation_resources,
+    automation_runtime,
     meeting_artifact_root,
     meeting_job_for,
     path_lock,
@@ -40,14 +42,19 @@ from psi_agent.session.ai_client import AiClient
 
 DAILY_MEETING_NAME = "weekday-alignment"
 DAILY_MEETING_CODE = "57152787045"
-ANALYSIS_CHUNK_CHARS = 8_000
-SKILLS_ROOT = Path(__file__).resolve().parent.parent / "skills"
-#: 会议 SOP 判定口径 (唯一业务来源, 与 config/todo-sop.yaml 同一模式: skills/tools
-#: 一律读本文件, 结构是契约只改值; 引擎纪律在 meeting-sop SKILL)。
-MEETING_SOP_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "meeting-sop.yaml"
-#: 正负面规则快照 (从 positive-negative-list/SKILL.md 抽取的规则本体, 供自动化上下文
-#: 注入; 不注入带私聊边界与对话流程的整篇 SKILL.md, 见 G11)。
-POSITIVE_NEGATIVE_RULES_PATH = SKILLS_ROOT / "positive-negative-list" / "references" / "analysis_rules.md"
+#: 引擎运行参数单一来源: config/meeting-automation.yaml 的 runtime 段。
+_MEETING_RUNTIME = automation_runtime()
+_MEETING_RESOURCES = automation_resources()
+AGENT_ROOT = Path(__file__).resolve().parent.parent
+ANALYSIS_CHUNK_CHARS = int(_MEETING_RUNTIME["analysis"]["chunk_chars"])
+ANALYSIS_TEMPERATURE = float(_MEETING_RUNTIME["analysis"]["temperature"])
+ALERT_MESSAGE_PREFIX = str(_MEETING_RUNTIME["alerts"]["message_prefix"])
+ALERT_ERROR_TRUNCATE_CHARS = int(_MEETING_RUNTIME["alerts"]["error_truncate_chars"])
+SKILLS_ROOT = AGENT_ROOT / "skills"
+#: 会议 SOP 判定口径与正负面规则快照的路径来自 yaml resources (相对 agent 包根);
+#: 缺失/契约损坏由 _load_analysis_rules 显式失败。
+MEETING_SOP_CONFIG_PATH = AGENT_ROOT / str(_MEETING_RESOURCES["meeting_sop_config_file"])
+POSITIVE_NEGATIVE_RULES_PATH = AGENT_ROOT / str(_MEETING_RESOURCES["positive_rules_file"])
 
 
 def _json_file(path: Path) -> dict[str, Any]:
@@ -108,7 +115,7 @@ async def _stream_ai_json(
             {"role": "user", "content": user_content},
         ],
         "stream": True,
-        "temperature": 0,
+        "temperature": ANALYSIS_TEMPERATURE,
         # Route analysis turns into the scheduler Session that fired this tool
         # (any fixed org session id), never into a personal conversation.
         "routing": {"session_id": get_session_id()},
@@ -323,9 +330,9 @@ async def _notify_failure_alert(
     date = datetime.now().astimezone().date().isoformat()
     key_record = record_file_id or f"__alert_no_record__{meeting_name}__{date}"
     text = (
-        f"[会议自动化告警] {title}({meeting_name}) {status}"
+        f"{ALERT_MESSAGE_PREFIX} {title}({meeting_name}) {status}"
         f"{f' | record={record_file_id}' if record_file_id else ''}"
-        f" | {date}\n{error[:500]}"
+        f" | {date}\n{error[:ALERT_ERROR_TRUNCATE_CHARS]}"
     )
     for recipient in recipients:
         # 告警失败不得影响主结果
@@ -385,7 +392,9 @@ async def meeting_pipeline_run(
         if not prepare_result.get("ok"):
             error_text = str(prepare_result.get("error", "Tencent transcript preparation failed"))
             await _write_json(state_path, {"status": "transcript_prepare_failed", "prepare": prepare_result})
-            await _record("transcript_prepare_failed", record_file_id="", entry={"error": error_text[:500]})
+            await _record(
+                "transcript_prepare_failed", record_file_id="", entry={"error": error_text[:ALERT_ERROR_TRUNCATE_CHARS]}
+            )
             await _notify_failure_alert(
                 meeting_job,
                 base,
@@ -533,7 +542,9 @@ async def meeting_pipeline_run(
         error_text = f"{type(exc).__name__}: {exc}"
         # 兜底记录/告警失败不影响返回
         with suppress(Exception):
-            await _record("meeting_pipeline_failed", record_file_id="", entry={"error": error_text[:500]})
+            await _record(
+                "meeting_pipeline_failed", record_file_id="", entry={"error": error_text[:ALERT_ERROR_TRUNCATE_CHARS]}
+            )
             await _notify_failure_alert(
                 meeting_job,
                 base,

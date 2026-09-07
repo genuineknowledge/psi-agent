@@ -15,6 +15,7 @@ import anyio
 from _meeting_automation import (
     _json_payload,
     atomic_write_text,
+    automation_runtime,
     chunk_text,
     extract_latest_transcript_record,
     extract_paragraph_ids,
@@ -32,8 +33,10 @@ from psi_agent._appdata import resolve_appdata_root
 #: 单次 API 调用的有限重试 (指数退避)。只用于自愈瞬时失败: 网络错误、上游挂起
 #: (超时)、5xx/429; 业务错误 (参数/权限/会议不存在) 同样会重试到次数上限后
 #: 以明确异常失败 —— 宁可显式失败, 不再被静默当成"没有录制/没有转写"。
-_CALL_ATTEMPTS = 3
-_CALL_BACKOFF_SECONDS = (0.5, 1.0, 2.0)
+#: 参数来自 meeting-automation.yaml runtime.tencent (测试可覆写模块同名常量)。
+_TENCENT_RUNTIME = automation_runtime()["tencent"]
+_CALL_ATTEMPTS = int(_TENCENT_RUNTIME["retry_attempts"])
+_CALL_BACKOFF_SECONDS = tuple(float(v) for v in _TENCENT_RUNTIME["retry_backoff_seconds"])
 
 
 def _tool_params(name: str, arguments: dict[str, Any]) -> str:

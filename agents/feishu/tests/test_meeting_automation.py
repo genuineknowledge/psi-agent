@@ -12,11 +12,13 @@ from typing import Any
 
 import anyio
 import pytest
+import yaml
 
 TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
+import _meeting_automation as ma  # ty: ignore[unresolved-import]
 import meeting_pipeline_run as pipeline  # ty: ignore[unresolved-import]
 import meeting_session_notify as notify  # ty: ignore[unresolved-import]
 import meeting_transcript_prepare as transcript_prepare  # ty: ignore[unresolved-import]
@@ -1397,3 +1399,99 @@ async def test_failure_alert_sent_to_every_alert_recipient(tmp_path: Path, monke
     assert [recipient for recipient, _text in sent] == ["张浩", "王金旺"]
     assert all(text.startswith("[会议自动化告警]") and "transcript_prepare_failed" in text for _r, text in sent)
     assert all("token 无效" in text for _r, text in sent)
+
+
+# ── meeting-automation.yaml 配置化 ( 白名单留代码, 其余进 yaml) ──────────────
+
+
+def test_meeting_jobs_overlay_matches_config_yaml() -> None:
+    """meetings 覆盖层 (投递/SOP/告警口径) 必须与代码白名单精确对应。
+
+    - 每个代码白名单会议都有 yaml 条目;
+    - 覆盖键只允许 title/summary/overview/sop skills/alert recipients;
+    - 白名单配对 (name/meeting_code/token_env/cron) 不被 yaml 触碰 —— 两者同值断言。
+    """
+
+    config_path = ma.MEETING_AUTOMATION_CONFIG_PATH
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    meetings: dict[str, dict] = data["meetings"]
+
+    jobs = {job.name: job for job in MEETING_JOBS}
+    assert set(meetings) == set(jobs)
+    for name, overlay in meetings.items():
+        job = jobs[name]
+        assert set(overlay) <= {
+            "title",
+            "summary_recipients",
+            "overview_recipients",
+            "analysis_sop_skills",
+            "alert_recipients",
+        }
+        assert job.title == overlay["title"]
+        assert job.summary_recipients == tuple(overlay["summary_recipients"])
+        assert job.overview_recipients == tuple(overlay["overview_recipients"])
+        assert job.analysis_sop_skills == tuple(overlay["analysis_sop_skills"])
+        assert job.alert_recipients == tuple(overlay["alert_recipients"])
+        # 授权配对仍以代码白名单为准 (yaml 结构上不可能覆盖这些键)
+        whitelist_job = {j.name: j for j in ma._MEETING_JOBS_WHITELIST}[name]
+        assert job.meeting_code == whitelist_job.meeting_code
+        assert job.token_env == whitelist_job.token_env
+        assert job.cron == whitelist_job.cron
+
+
+def test_automation_config_loader_rejects_overreach_and_bad_contract(tmp_path: Path) -> None:
+    """越权键 (白名单/token_env/未知字段) 与契约损坏 → 显式报错。"""
+
+    overreach = tmp_path / "overreach.yaml"
+    overreach.write_text(
+        "meetings:\n  weekday-alignment:\n    token_env: TENCENT_MEETING_TOKEN_OTHER\nruntime: {}\nresources: {}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="不可经配置文件修改"):
+        ma.load_meeting_automation_config(overreach)
+
+    unknown = tmp_path / "unknown-key.yaml"
+    unknown.write_text(
+        "meetings:\n  weekday-alignment:\n    made_up: 1\nruntime: {}\nresources: {}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="未知字段"):
+        ma.load_meeting_automation_config(unknown)
+
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("meetings: 5\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="不符合契约"):
+        ma.load_meeting_automation_config(broken)
+
+
+def test_automation_config_forbids_whitelist_extension(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """yaml 不能新增白名单外会议: 覆盖合并阶段显式失败。"""
+
+    rogue = tmp_path / "rogue.yaml"
+    rogue.write_text(
+        "meetings:\n  weekday-alignment:\n    title: 周中对齐会\n  rogue-meeting:\n    title: 越权会议\n"
+        "runtime: {}\nresources: {}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ma, "MEETING_AUTOMATION_CONFIG", ma.load_meeting_automation_config(rogue))
+    with pytest.raises(RuntimeError, match="白名单外会议"):
+        ma._meeting_jobs_with_overlay()
+
+
+def test_runtime_constants_come_from_config_yaml() -> None:
+    """引擎常量 (分块/温度/超时/重试/告警前缀) 与 meeting-automation.yaml runtime 段一致。"""
+
+    data = yaml.safe_load(ma.MEETING_AUTOMATION_CONFIG_PATH.read_text(encoding="utf-8"))
+    runtime = data["runtime"]
+    assert runtime["analysis"]["chunk_chars"] == pipeline.ANALYSIS_CHUNK_CHARS
+    assert runtime["analysis"]["temperature"] == pipeline.ANALYSIS_TEMPERATURE
+    assert runtime["notify"]["chunk_chars"] == notify.MAX_NOTIFICATION_CHARS
+    assert runtime["tencent"]["call_timeout_seconds"] == tencent_meeting.DEFAULT_CALL_TIMEOUT
+    assert runtime["tencent"]["retry_attempts"] == transcript_prepare._CALL_ATTEMPTS
+    assert list(transcript_prepare._CALL_BACKOFF_SECONDS) == runtime["tencent"]["retry_backoff_seconds"]
+    assert runtime["alerts"]["message_prefix"] == pipeline.ALERT_MESSAGE_PREFIX
+    assert runtime["alerts"]["error_truncate_chars"] == pipeline.ALERT_ERROR_TRUNCATE_CHARS
+    # 资源路径引用 (相对 agent 包根) 与 yaml 一致
+    resources = data["resources"]
+    assert pipeline.AGENT_ROOT / resources["meeting_sop_config_file"] == pipeline.MEETING_SOP_CONFIG_PATH
+    assert pipeline.AGENT_ROOT / resources["positive_rules_file"] == pipeline.POSITIVE_NEGATIVE_RULES_PATH

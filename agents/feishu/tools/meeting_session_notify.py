@@ -10,11 +10,12 @@ import _feishu_api_impl as _api
 import _feishu_impl as _f
 import anyio
 import yaml
-from _meeting_automation import atomic_write_text, meeting_artifact_root
+from _meeting_automation import atomic_write_text, automation_runtime, meeting_artifact_root
 
 from psi_agent._appdata import resolve_appdata_root
 
-MAX_NOTIFICATION_CHARS = 8_000
+# 单段上限来自 meeting-automation.yaml runtime.notify.chunk_chars (测试可覆写)
+MAX_NOTIFICATION_CHARS = int(automation_runtime()["notify"]["chunk_chars"])
 _RECEIPT_LOCKS: dict[str, anyio.Lock] = {}
 _RECEIPT_LOCKS_GUARD = anyio.Lock()
 
