@@ -71,13 +71,15 @@ def test_meeting_jobs_use_fixed_post_meeting_crons() -> None:
     jobs = {job.name: job for job in MEETING_JOBS}
     assert jobs["weekday-alignment"].meeting_code == "57152787045"
     assert jobs["weekday-alignment"].cron == "0 12 * * 1,3,5"
-    assert jobs["weekday-alignment"].summary_recipients == ("程秀秀",)
+    assert jobs["weekday-alignment"].retry_crons == ()
+    assert jobs["weekday-alignment"].summary_recipients == ("HaiTun Agent主战场",)
     assert jobs["weekday-alignment"].overview_recipients == ("罗霖",)
     assert jobs["weekday-alignment-1100"].meeting_code == "42654699903"
     assert jobs["weekday-alignment-1100"].cron == "0 12 * * 1,3,5"
-    assert jobs["weekday-alignment-1100"].recipients == ("HaiTun Agent主战场", "罗霖")
+    assert jobs["weekday-alignment-1100"].retry_crons == ("30 17 * * 1,3,5",)
+    assert jobs["weekday-alignment-1100"].recipients == ("张浩", "王金旺", "罗霖")
     assert jobs["weekday-alignment-1100"].token_env == "TENCENT_MEETING_TOKEN_42654699903"
-    assert jobs["weekday-alignment-1100"].summary_recipients == ("HaiTun Agent主战场",)
+    assert jobs["weekday-alignment-1100"].summary_recipients == ("张浩", "王金旺")
     assert jobs["weekday-alignment-1100"].overview_recipients == ("罗霖",)
     assert len(jobs) == 2
     assert jobs["weekday-alignment"].fire == "tool"
@@ -118,6 +120,11 @@ async def test_provision_writes_only_schedule_files(tmp_path: Path) -> None:
         assert f'cron: "{job.cron}"' in body
         assert job.meeting_code in body
         assert "原始全文转写" in body
+    retry = workspace / "schedules" / "weekday-alignment-1100-retry-1730" / "TASK.md"
+    retry_body = retry.read_text(encoding="utf-8")
+    assert 'cron: "30 17 * * 1,3,5"' in retry_body
+    assert '"meeting_name":"weekday-alignment-1100"' in retry_body
+    assert '"meeting_code":"42654699903"' in retry_body
 
 
 @pytest.mark.anyio
@@ -176,7 +183,7 @@ def test_json_payload_unwraps_tencent_http_envelope() -> None:
     assert payload["_transport"]["rpc_uuid"] == "rpc-1"
 
 
-def test_extract_record_flattens_meeting_metadata_and_skips_active_occurrence() -> None:
+def test_extract_record_waits_when_latest_occurrence_is_active() -> None:
     payload = {
         "record_meetings": [
             {
@@ -215,10 +222,38 @@ def test_extract_record_flattens_meeting_metadata_and_skips_active_occurrence() 
 
     selected = extract_latest_transcript_record(payload, set())
 
+    assert selected is None
+
+
+def test_extract_record_selects_latest_occurrence_after_it_completes() -> None:
+    payload = {
+        "record_meetings": [
+            {
+                "sub_meeting_id": "today",
+                "record_type": "文字转写",
+                "state_int": 3,
+                "media_start_time": "2026-09-07T10:00:00+08:00",
+                "record_files": [
+                    {
+                        "record_file_id": "today-completed",
+                        "record_start_time": "2026-09-07T10:00:02+08:00",
+                    }
+                ],
+            },
+            {
+                "sub_meeting_id": "last-week",
+                "record_type": "文字转写",
+                "state_int": 3,
+                "media_start_time": "2026-09-04T10:00:00+08:00",
+                "record_files": [{"record_file_id": "last-week-full"}],
+            },
+        ]
+    }
+
+    selected = extract_latest_transcript_record(payload, set())
+
     assert selected is not None
-    assert selected["record_file_id"] == "last-week-full"
-    assert selected["record_file_type"] == "文字转写"
-    assert selected["state_int"] == 3
+    assert selected["record_file_id"] == "today-completed"
 
 
 def test_render_transcript_preserves_all_paragraphs_and_speakers() -> None:
@@ -497,7 +532,7 @@ async def test_daily_meeting_pipeline_runs_each_stage_once(tmp_path: Path, monke
     assert [name for name, _ in calls] == ["prepare", "read", "read", "analyze", "write", "notify", "notify", "write"]
     assert calls[2][1]["chunk_index"] == 1
     assert calls[3][1]["transcript"] == "原始片段0原始片段1"
-    assert {call[1]["recipient"] for call in calls if call[0] == "notify"} == {"罗霖", "程秀秀"}
+    assert {call[1]["recipient"] for call in calls if call[0] == "notify"} == {"罗霖", "HaiTun Agent主战场"}
 
 
 @pytest.mark.anyio
@@ -583,7 +618,7 @@ async def test_daily_meeting_pipeline_retries_notifications_without_reanalyzing(
         )
     )
     assert result["status"] == "completed"
-    assert calls == ["prepare", "notify:程秀秀", "notify:罗霖", "write"]
+    assert calls == ["prepare", "notify:HaiTun Agent主战场", "notify:罗霖", "write"]
 
 
 @pytest.mark.anyio
@@ -716,7 +751,7 @@ async def test_daily_meeting_pipeline_keeps_pending_when_a_notification_fails(
     )
 
     assert result["status"] == "notifications_pending"
-    assert calls == ["程秀秀", "罗霖", "write:notifications_pending"]
+    assert calls == ["HaiTun Agent主战场", "罗霖", "write:notifications_pending"]
 
 
 @pytest.mark.anyio
@@ -769,7 +804,7 @@ async def test_second_daily_meeting_routes_summary_to_two_recipients(
     )
 
     assert result["status"] == "completed"
-    assert recipients == ["HaiTun Agent主战场", "罗霖"]
+    assert recipients == ["张浩", "王金旺", "罗霖"]
 
 
 @pytest.mark.anyio
@@ -1016,6 +1051,22 @@ async def test_meeting_session_notify_resolves_cheng_from_tenant_roster(monkeypa
 
     assert (identity, display_name) == ("ou_cheng", "程秀秀")
     assert calls == [("0", True)]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("recipient", ["张浩", "王金旺"])
+async def test_meeting_session_notify_resolves_fixed_summary_recipient(
+    recipient: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_resolve(name: str) -> tuple[str, str]:
+        assert name == recipient
+        return f"ou_{recipient}", recipient
+
+    monkeypatch.setattr(notify, "_resolve_with_bot", fake_resolve)
+
+    identity, display_name = await notify._resolve_recipient(recipient, "")
+
+    assert (identity, display_name) == (f"ou_{recipient}", recipient)
 
 
 @pytest.mark.anyio

@@ -31,6 +31,7 @@ class MeetingJob:
     cron: str
     title: str
     recipients: tuple[str, ...]
+    retry_crons: tuple[str, ...] = ()
     summary_recipients: tuple[str, ...] = ("程秀秀",)
     overview_recipients: tuple[str, ...] = ("罗霖",)
     token_env: str = "TENCENT_MEETING_TOKEN"
@@ -45,7 +46,8 @@ MEETING_JOBS: tuple[MeetingJob, ...] = (
         meeting_code="57152787045",
         cron="0 12 * * 1,3,5",
         title="周中对齐会",
-        recipients=("程秀秀", "罗霖"),
+        recipients=(MAIN_MEETING_GROUP_NAME, "罗霖"),
+        summary_recipients=(MAIN_MEETING_GROUP_NAME,),
         tool_args=(("meeting_name", "weekday-alignment"), ("meeting_code", "57152787045")),
     ),
     MeetingJob(
@@ -53,8 +55,9 @@ MEETING_JOBS: tuple[MeetingJob, ...] = (
         meeting_code="42654699903",
         cron="0 12 * * 1,3,5",
         title="日会",
-        recipients=(MAIN_MEETING_GROUP_NAME, "罗霖"),
-        summary_recipients=(MAIN_MEETING_GROUP_NAME,),
+        recipients=("张浩", "王金旺", "罗霖"),
+        retry_crons=("30 17 * * 1,3,5",),
+        summary_recipients=("张浩", "王金旺"),
         overview_recipients=("罗霖",),
         token_env="TENCENT_MEETING_TOKEN_42654699903",
         tool_args=(("meeting_name", "weekday-alignment-1100"), ("meeting_code", "42654699903")),
@@ -184,7 +187,15 @@ def _is_transcript_record(record: dict[str, Any]) -> bool:
 
 
 def _record_sort_key(record: dict[str, Any]) -> str:
-    for key in ("start_time", "record_start_time", "end_time", "create_time", "created_at", "update_time"):
+    for key in (
+        "media_start_time",
+        "record_start_time",
+        "start_time",
+        "end_time",
+        "create_time",
+        "created_at",
+        "update_time",
+    ):
         value = record.get(key)
         if value:
             return str(value)
@@ -222,22 +233,30 @@ def _record_candidates(payload: Any) -> list[dict[str, Any]]:
 
 
 def extract_latest_transcript_record(payload: Any, processed_ids: set[str] | None = None) -> dict[str, Any] | None:
-    """Find the newest completed text-transcript recording in an API payload."""
+    """Find a completed transcript from the newest meeting occurrence only."""
     processed = processed_ids or set()
     records = _record_candidates(payload)
-    active_occurrences = {
-        str(record.get("sub_meeting_id"))
-        for record in records
-        if record.get("sub_meeting_id")
-        and record.get("state_int", record.get("state")) is not None
-        and not should_process_recording({**record, "record_file_id": "__state_check__"}, set())
-    }
+    occurrences: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        occurrence_id = str(record.get("sub_meeting_id") or "").strip()
+        if occurrence_id:
+            occurrences.setdefault(occurrence_id, []).append(record)
+    if occurrences:
+        latest_occurrence_id = max(
+            occurrences,
+            key=lambda occurrence_id: max(_record_sort_key(record) for record in occurrences[occurrence_id]),
+        )
+        records = occurrences[latest_occurrence_id]
+        if any(
+            record.get("state_int", record.get("state")) is not None
+            and not should_process_recording({**record, "record_file_id": "__state_check__"}, set())
+            for record in records
+        ):
+            return None
     candidates: list[dict[str, Any]] = []
     for record in records:
         record_file_id = str(record.get("record_file_id") or record.get("file_id") or "").strip()
         if not record_file_id or not _is_transcript_record(record):
-            continue
-        if str(record.get("sub_meeting_id") or "") in active_occurrences:
             continue
         normalized = dict(record)
         normalized["record_file_id"] = record_file_id
@@ -351,12 +370,12 @@ def should_process_recording(record: dict[str, Any], processed_ids: set[str]) ->
     return True
 
 
-def _task_body(job: MeetingJob) -> str:
+def _task_body(job: MeetingJob, *, name: str | None = None, cron: str | None = None) -> str:
     tool_args = json.dumps(dict(job.tool_args), ensure_ascii=False, separators=(",", ":"))
     return f"""---
-name: {job.name}
+name: {name or job.name}
 description: 会后自动获取{job.title}原始全文转写并分析
-cron: \"{job.cron}\"
+cron: \"{cron or job.cron}\"
 visibility: silent
 fire: {job.fire}
 tool: {job.tool_name}
@@ -365,12 +384,23 @@ tool_args: {tool_args}
 """
 
 
+def _job_schedules(job: MeetingJob) -> list[tuple[str, str]]:
+    schedules = [(job.name, job.cron)]
+    for retry_cron in job.retry_crons:
+        fields = retry_cron.split()
+        if len(fields) != 5:
+            raise ValueError(f"invalid retry cron for {job.name}: {retry_cron}")
+        minute, hour = fields[:2]
+        schedules.append((f"{job.name}-retry-{hour.zfill(2)}{minute.zfill(2)}", retry_cron))
+    return schedules
+
+
 async def provision_meeting_workspace(default_workspace: str | Path) -> Path:
     """Create the meeting workspace and its schedule files idempotently."""
 
     workspace = meeting_workspace(default_workspace)
     schedules = workspace / "schedules"
-    active_names = {job.name for job in MEETING_JOBS}
+    active_names = {name for job in MEETING_JOBS for name, _cron in _job_schedules(job)}
     if schedules.is_dir():
         # This workspace is code-owned. Remove only obsolete TASK.md files so
         # schedules deleted from MEETING_JOBS cannot continue firing.
@@ -383,12 +413,13 @@ async def provision_meeting_workspace(default_workspace: str | Path) -> Path:
                 with suppress(OSError):
                     task_dir.rmdir()
     for job in MEETING_JOBS:
-        task_dir = schedules / job.name
-        task_dir.mkdir(parents=True, exist_ok=True)
-        task_path = task_dir / "TASK.md"
-        body = _task_body(job)
-        if not task_path.exists() or task_path.read_text(encoding="utf-8") != body:
-            task_path.write_text(body, encoding="utf-8")
+        for schedule_name, cron in _job_schedules(job):
+            task_dir = schedules / schedule_name
+            task_dir.mkdir(parents=True, exist_ok=True)
+            task_path = task_dir / "TASK.md"
+            body = _task_body(job, name=schedule_name, cron=cron)
+            if not task_path.exists() or task_path.read_text(encoding="utf-8") != body:
+                task_path.write_text(body, encoding="utf-8")
     return workspace
 
 

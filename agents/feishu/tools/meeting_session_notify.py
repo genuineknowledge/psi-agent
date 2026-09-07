@@ -103,8 +103,9 @@ async def _resolve_recipient(recipient: str, user_key: str) -> tuple[str, str]:
     if value in {"hr", "罗霖"}:
         identity = _configured_hr_identity()
         return (identity, "罗霖") if identity else ("", "HR 收件人未配置")
-    if value in {"cheng", "程秀秀"}:
-        return await _resolve_with_bot("程秀秀")
+    person_aliases = {"cheng": "程秀秀", "程秀秀": "程秀秀", "张浩": "张浩", "王金旺": "王金旺"}
+    if value in person_aliases:
+        return await _resolve_with_bot(person_aliases[value])
     if value == "HaiTun Agent主战场":
         return await _resolve_group_with_bot(value)
     return "", f"不支持的会议收件人: {value}"
