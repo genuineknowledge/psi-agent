@@ -34,7 +34,7 @@ from psi_agent.gateway.feishu._auth import (
     warn_if_dev_bypass_enabled,
 )
 from psi_agent.gateway.feishu._feishu_manager import FeishuManager
-from psi_agent.gateway.feishu._identity import PUBLIC_MEETING_SESSION_ID, owns_session, visible_sessions
+from psi_agent.gateway.feishu._identity import is_org_session, owns_session, visible_sessions
 from psi_agent.gateway.feishu._jsapi import FeishuJsapiSigner, JsapiError
 from psi_agent.gateway.feishu._oauth_manager import OAuthRelay
 from psi_agent.gateway.server import _error, _json, _read_json, _serve_chat_sse, _session_data
@@ -408,8 +408,9 @@ async def _web_chat(request: web.Request) -> web.StreamResponse:
         workspace = sm.get_workspace(session_id)
     except LookupError:
         return _error(f"Session '{session_id}' not found", status=404)
-    if session_id == PUBLIC_MEETING_SESSION_ID:
-        return _error("meeting-session is read-only", status=403)
+    if is_org_session(session_id, workspace):
+        # 组织共享调度会话只读: 允许所有人看历史, 不允许任何人驱动其中的工具。
+        return _error("org session is read-only", status=403)
     if not owns_session(identity.open_id, session_id, workspace, fm):
         return _error("forbidden", status=403)
     return await _serve_chat_sse(request, session_id)

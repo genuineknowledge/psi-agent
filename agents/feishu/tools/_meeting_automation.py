@@ -1,9 +1,12 @@
 """Shared meeting automation primitives.
 
-Meeting jobs are deliberately code-owned rather than user-configured.  The
-workspace created by :func:`provision_meeting_workspace` only contains the
-normal ``TASK.md`` schedule files; meeting artifacts live in AppData so every
-Feishu Session can read the same source and analysis results.
+Meeting jobs are deliberately code-owned rather than user-configured.  Their
+schedules ship as static company seed tasks under ``agents/feishu/schedules``
+(one ``TASK.md`` per job and per retry, projected from :data:`MEETING_JOBS` by
+:func:`meeting_schedule_files`); the generic SchedulerManager seed mechanism
+drops them into the configured company workspace and owns the scheduler
+Session.  Meeting artifacts live in AppData so every Feishu Session can read
+the same source and analysis results.
 """
 
 from __future__ import annotations
@@ -11,15 +14,12 @@ from __future__ import annotations
 import json
 import os
 import re
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from psi_agent._appdata import resolve_appdata_root
 
-MEETING_SESSION_ID = "meeting-session"
-MEETING_WORKSPACE_NAME = ".meeting-session"
 TRANSCRIPT_CHUNK_CHARS = 8_000
 MAIN_MEETING_GROUP_NAME = "HaiTun Agent主战场"
 
@@ -87,12 +87,6 @@ def meeting_job_for(meeting_name: str, meeting_code: str) -> MeetingJob:
         if job.name == name and job.meeting_code == code:
             return job
     raise ValueError(f"meeting {name!r} and code {code!r} does not match a fixed meeting")
-
-
-def meeting_workspace(default_workspace: str | Path) -> Path:
-    """Return the stable, separate workspace used by the meeting Session."""
-
-    return Path(default_workspace).expanduser().resolve() / MEETING_WORKSPACE_NAME
 
 
 def meeting_store_root(appdata_root: str = "") -> Path:
@@ -395,40 +389,20 @@ def _job_schedules(job: MeetingJob) -> list[tuple[str, str]]:
     return schedules
 
 
-async def provision_meeting_workspace(default_workspace: str | Path) -> Path:
-    """Create the meeting workspace and its schedule files idempotently."""
+def meeting_schedule_files() -> dict[str, str]:
+    """Project ``MEETING_JOBS`` onto static seed TASK.md files.
 
-    workspace = meeting_workspace(default_workspace)
-    schedules = workspace / "schedules"
-    active_names = {name for job in MEETING_JOBS for name, _cron in _job_schedules(job)}
-    if schedules.is_dir():
-        # This workspace is code-owned. Remove only obsolete TASK.md files so
-        # schedules deleted from MEETING_JOBS cannot continue firing.
-        for task_dir in schedules.iterdir():
-            if not task_dir.is_dir() or task_dir.name in active_names:
-                continue
-            stale_task = task_dir / "TASK.md"
-            if stale_task.is_file():
-                stale_task.unlink()
-                with suppress(OSError):
-                    task_dir.rmdir()
+    Returns ``{schedule directory name: TASK.md content}`` for every job cron
+    and every retry cron.  The committed files under
+    ``agents/feishu/schedules/<name>/TASK.md`` must equal this projection —
+    the scheduler seeds them into the company workspace verbatim (only when
+    missing), and the consistency test pins both sides to this single source.
+    """
+    files: dict[str, str] = {}
     for job in MEETING_JOBS:
         for schedule_name, cron in _job_schedules(job):
-            task_dir = schedules / schedule_name
-            task_dir.mkdir(parents=True, exist_ok=True)
-            task_path = task_dir / "TASK.md"
-            body = _task_body(job, name=schedule_name, cron=cron)
-            if not task_path.exists() or task_path.read_text(encoding="utf-8") != body:
-                task_path.write_text(body, encoding="utf-8")
-    return workspace
-
-
-async def ensure_meeting_scheduler(
-    scheduler: Any, default_workspace: str | Path, *, ai_id: str = "", agent: str = ""
-) -> str:
-    """Provision the fixed meeting schedules and hand ownership to SchedulerManager."""
-    workspace = await provision_meeting_workspace(default_workspace)
-    return await scheduler.ensure(str(workspace), ai_id=ai_id, agent=agent, session_id=MEETING_SESSION_ID)
+            files[schedule_name] = _task_body(job, name=schedule_name, cron=cron)
+    return files
 
 
 def json_text(value: Any) -> str:
@@ -438,11 +412,9 @@ def json_text(value: Any) -> str:
 __all__ = [
     "MAIN_MEETING_GROUP_NAME",
     "MEETING_JOBS",
-    "MEETING_SESSION_ID",
     "MeetingJob",
     "async_meeting_store_root",
     "chunk_text",
-    "ensure_meeting_scheduler",
     "extract_latest_transcript_record",
     "extract_paragraph_ids",
     "extract_paragraph_items",
@@ -450,9 +422,8 @@ __all__ = [
     "meeting_artifact_root",
     "meeting_credential_env",
     "meeting_job_for",
+    "meeting_schedule_files",
     "meeting_store_root",
-    "meeting_workspace",
-    "provision_meeting_workspace",
     "read_meeting_manifest",
     "render_transcript_paragraphs",
     "should_process_recording",

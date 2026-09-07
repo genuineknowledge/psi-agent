@@ -15,6 +15,7 @@ from meeting_session_write import meeting_session_write
 from meeting_transcript_prepare import meeting_transcript_prepare
 
 from psi_agent._appdata import resolve_appdata_root
+from psi_agent._session_context import get_session_id
 from psi_agent.session.agent import current_tool_ai_socket
 from psi_agent.session.ai_client import AiClient
 
@@ -84,7 +85,9 @@ async def _stream_ai_json(
         ],
         "stream": True,
         "temperature": 0,
-        "routing": {"session_id": "meeting-session"},
+        # Route analysis turns into the scheduler Session that fired this tool
+        # (any fixed org session id), never into a personal conversation.
+        "routing": {"session_id": get_session_id()},
     }
     chunks: list[str] = []
     async for delta in ai_client.stream(request):

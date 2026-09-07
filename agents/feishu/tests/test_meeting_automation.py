@@ -21,14 +21,11 @@ import meeting_transcript_prepare as transcript_prepare  # ty: ignore[unresolved
 import tencent_meeting  # ty: ignore[unresolved-import]
 from _meeting_automation import (  # ty: ignore[unresolved-import]
     MEETING_JOBS,
-    MEETING_SESSION_ID,
     _json_payload,
     chunk_text,
-    ensure_meeting_scheduler,
     extract_latest_transcript_record,
     meeting_credential_env,
-    meeting_workspace,
-    provision_meeting_workspace,
+    meeting_schedule_files,
     read_meeting_manifest,
     render_transcript_paragraphs,
     should_process_recording,
@@ -86,13 +83,42 @@ def test_meeting_jobs_use_fixed_post_meeting_crons() -> None:
     assert jobs["weekday-alignment"].tool_name == "meeting_pipeline_run"
 
 
-def test_meeting_workspace_is_separate_and_stable(tmp_path: Path) -> None:
-    first = meeting_workspace(tmp_path)
-    second = meeting_workspace(str(tmp_path))
-    assert first == second
-    assert first != tmp_path
-    assert first.name == ".meeting-session"
-    assert MEETING_SESSION_ID == "meeting-session"
+def test_meeting_schedule_files_cover_every_job_and_retry() -> None:
+    files = meeting_schedule_files()
+    assert set(files) == {
+        "weekday-alignment",
+        "weekday-alignment-1100",
+        "weekday-alignment-1100-retry-1730",
+    }
+    for job in MEETING_JOBS:
+        body = files[job.name]
+        assert f"name: {job.name}" in body
+        assert f'cron: "{job.cron}"' in body
+        assert job.meeting_code in body
+        assert "原始全文转写" in body
+    retry = files["weekday-alignment-1100-retry-1730"]
+    assert 'cron: "30 17 * * 1,3,5"' in retry
+    assert '"meeting_name":"weekday-alignment-1100"' in retry
+    assert '"meeting_code":"42654699903"' in retry
+
+
+def test_committed_meeting_schedule_files_match_projection() -> None:
+    """``agents/feishu/schedules`` 下的静态 TASK.md 必须与 ``MEETING_JOBS`` 投影一致。
+
+    调度器把 agent 包 ``schedules/*/TASK.md`` 原样 seed 进公司 workspace (只在缺失
+    时复制), 改 ``MEETING_JOBS`` 的 cron/retry/参数必须同步改静态文件 —— 这条红绿
+    判据把两边钉在同一个事实源上, 防止改一处漏一处。
+
+    静态 TASK.md 文件由独立 PR (#856) 提供; 本分支不含这些文件时判据自动跳过,
+    两侧都合并到 main 后恢复强制。
+    """
+    schedules_root = Path(__file__).resolve().parents[1] / "schedules"
+    files = meeting_schedule_files()
+    if any(not (schedules_root / name / "TASK.md").is_file() for name in files):
+        pytest.skip("静态 meeting TASK.md 由独立 PR 提供, 合并前跳过一致性判据")
+    for name, expected in files.items():
+        committed = (schedules_root / name / "TASK.md").read_text(encoding="utf-8")
+        assert committed == expected, f"agents/feishu/schedules/{name}/TASK.md 与 MEETING_JOBS 投影不一致"
 
 
 def test_chunk_text_preserves_full_text_and_bounds_each_chunk() -> None:
@@ -108,34 +134,6 @@ def test_recording_dedup_uses_record_file_id_and_state() -> None:
     assert not should_process_recording({"record_file_id": "r1", "state_int": 3}, {"r1"})
     assert not should_process_recording({"record_file_id": "r2", "state_int": 2}, set())
     assert not should_process_recording({"record_file_id": "", "state_int": 3}, set())
-
-
-@pytest.mark.anyio
-async def test_provision_writes_only_schedule_files(tmp_path: Path) -> None:
-    workspace = await provision_meeting_workspace(tmp_path)
-    assert workspace == meeting_workspace(tmp_path)
-    for job in MEETING_JOBS:
-        task = workspace / "schedules" / job.name / "TASK.md"
-        body = task.read_text(encoding="utf-8")
-        assert f'cron: "{job.cron}"' in body
-        assert job.meeting_code in body
-        assert "原始全文转写" in body
-    retry = workspace / "schedules" / "weekday-alignment-1100-retry-1730" / "TASK.md"
-    retry_body = retry.read_text(encoding="utf-8")
-    assert 'cron: "30 17 * * 1,3,5"' in retry_body
-    assert '"meeting_name":"weekday-alignment-1100"' in retry_body
-    assert '"meeting_code":"42654699903"' in retry_body
-
-
-@pytest.mark.anyio
-async def test_provision_removes_stale_meeting_schedule_tasks(tmp_path: Path) -> None:
-    stale = tmp_path / ".meeting-session" / "schedules" / "weekly-review"
-    stale.mkdir(parents=True)
-    (stale / "TASK.md").write_text('---\nname: weekly-review\ncron: "0 17 * * 6"\n---\n', encoding="utf-8")
-
-    await provision_meeting_workspace(tmp_path)
-
-    assert not (stale / "TASK.md").exists()
 
 
 def test_extract_completed_text_record_selects_latest_transcript() -> None:
@@ -422,26 +420,6 @@ async def test_prepare_skips_already_processed_recording(tmp_path: Path, monkeyp
         )
     )
     assert result["status"] == "already_processed"
-
-
-@pytest.mark.anyio
-async def test_meeting_scheduler_is_provisioned_once_for_fixed_workspace(tmp_path: Path) -> None:
-    class FakeScheduler:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, str, str, str]] = []
-
-        async def ensure(self, workspace: str, *, ai_id: str = "", agent: str = "", session_id: str = "") -> str:
-            self.calls.append((workspace, ai_id, agent, session_id))
-            return "scheduler-meeting"
-
-    scheduler = FakeScheduler()
-    first = await ensure_meeting_scheduler(scheduler, str(tmp_path), ai_id="ai-1", agent="agents/feishu")
-    second = await ensure_meeting_scheduler(scheduler, str(tmp_path), ai_id="ai-1", agent="agents/feishu")
-    assert first == second == "scheduler-meeting"
-    assert scheduler.calls == [
-        (str(tmp_path / ".meeting-session"), "ai-1", "agents/feishu", "meeting-session"),
-        (str(tmp_path / ".meeting-session"), "ai-1", "agents/feishu", "meeting-session"),
-    ]
 
 
 @pytest.mark.anyio

@@ -4,12 +4,9 @@ from __future__ import annotations
 
 import os
 import socket
-import sys
 import webbrowser
 from collections.abc import Sequence
 from dataclasses import dataclass
-from importlib import util as importlib_util
-from pathlib import Path
 from typing import Literal
 
 import anyio
@@ -66,26 +63,6 @@ ALL_GATEWAYS: tuple[GatewayName, ...] = ("desktop", "feishu")
 **不是默认值** —— 该参数必填, 见 ``Gateway.gateway``。这里只用于 ``resolve_gateways``
 的报错文案列举可选值。
 """
-
-
-def _load_meeting_scheduler(agent_package: str):
-    """Load the optional meeting scheduler from the configured agent path."""
-    package = Path(agent_package).expanduser()
-    module_path = package / "tools" / "_meeting_automation.py"
-    if not module_path.is_file():
-        return None
-    module_name = "psi_agent_meeting_automation"
-    spec = importlib_util.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        return None
-    module = importlib_util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception:
-        sys.modules.pop(module_name, None)
-        raise
-    return getattr(module, "ensure_meeting_scheduler", None)
 
 
 def resolve_gateways(selected: Sequence[str]) -> tuple[str, ...]:
@@ -447,24 +424,9 @@ class Gateway:
             want_desktop = "desktop" in gateways
             want_feishu = "feishu" in gateways
             logger.info(f"Gateways: {' '.join(gateways)} (desktop={want_desktop}, feishu={want_feishu})")
-            if want_feishu:
-                # Meeting automation belongs to one fixed internal Session, not
-                # to whichever Feishu user happened to send the last message.
-                try:
-                    ensure_meeting_scheduler = _load_meeting_scheduler(agent_default)
-                    if ensure_meeting_scheduler is not None:
-                        meeting_scheduler_id = await ensure_meeting_scheduler(
-                            schedm,
-                            workspace_default,
-                            ai_id=self.scheduler_ai_id or self.feishu_ai_id,
-                            agent=agent_default,
-                        )
-                        if meeting_scheduler_id:
-                            logger.info(f"Meeting automation Session ready: {meeting_scheduler_id!r}")
-                    else:
-                        logger.warning("Meeting automation tool not found under configured agent path")
-                except Exception as e:
-                    logger.warning(f"Failed to initialize meeting automation: {e!r}")
+            # 公司级种子任务 (含会议自动化) 走 SchedulerManager 的 seed 机制: agent 包
+            # 自带 schedules/*/TASK.md, watch_loop 幂等补种并拉起隐藏/组织可见的调度
+            # Session —— Gateway 不再内置任何会议专用启动钩子。
             app = await create_core_app(
                 aim,
                 sm,
