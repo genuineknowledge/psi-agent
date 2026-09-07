@@ -33,7 +33,7 @@
 | base | `/spa/` | `/spa-v2/` |
 | 对话 | Gateway SSE | 同左（同一套 API） |
 | 交付物 | 气泡 blob chip | 宝箱 UI；SSE `blob` 写入 `deliverables`；抽屉内按 blob 真实渲染（对齐 spa v1：MD/HTML/图片音视频/代码/CSV/PDF/DOCX/XLSX/PPTX，重库动态 `import()`；无 blob 时明确空态）。MD 预览与聊天气泡共用 `renderMd` + `.md-table-card`。**刻意为之**：`renderMd` 超链接 `target=_blank`；附件 chip / 预览抽屉仍本页。DOCX：`ignoreWidth` 去掉页宽；**页边距仍是绝对长度**，预览 CSS 强制 `section.docx` 宽 100% + 适中 padding，避免窄抽屉里正文挤成细条；表格/图片 `max-width:100%` 防横向溢出。视觉对齐 MD：`fitDocxTables()` 清 Word 绝对列宽、包 `.docx-table-scroll`、首行标 `docx-table-header-row`；host CSS 用深色标题 / 灰边卡片表 / 正文 15px（勿保留 Word 主题蓝标题）。有 `[SEND:]` path 时，气泡 chip / 宝箱 / 预览抽屉可「在文件夹中显示」（`POST /workspace/reveal`） |
-| 账户区 | 头像菜单合一 | 头像菜单仅资料/登录；**模型池**与**设置**为侧栏独立快捷入口 |
+| 账户区 | 头像菜单合一 | 头像菜单仅账号/登录（「我的资料」已并进账号，入口已删）；**模型池**与**设置**为侧栏独立快捷入口 |
 | 默认工作区 | 无 / 必须先选 | 启动读 ``GET /defaults``.workspace（Gateway 软默认 `{Desktop}/haitun交付`，**只宣布不建目录**；首个 Session/对话时服务端再 mkdir）；遗留 `*-workspace` / 字面量 `workspace` / `haitun-workspace` 会忽略 |
 | 工作区切换 | 侧栏打开 PathPicker | 设置「切换工作区」→ 全屏选择页；**浏览**走 `/workspace/places` + `/browse`（对齐 v1）；偏好 `gw-v2-workspace` |
 | 顶栏新建 | — | 右上角「新建任务/聊天」+ 侧栏同入口（**刻意为之**：不绑 `⌘/Ctrl N`，与 Edge「打开新窗口」冲突；侧栏按钮亦不展示该快捷键）；**分屏聚焦**时对话栏「收起」旁也有同款入口（左栏收起后**仅**保留展开上下文钮，不再并排再建入口） |
@@ -44,7 +44,8 @@
 | 任务删除 | 侧栏 trash → DELETE session + 清本地 hist | 侧栏/卡片删除 → ``DELETE /sessions/{id}``（顺带清 JSONL + 标题）+ 清本地状态 |
 | 任务置顶 | 侧栏 pin → `gw-pinned-session-ids` | 侧栏历史任务行 pin 钮（`TaskRow`）→ `gw-v2-pinned-task-ids`；**只排侧栏列表**（置顶先、再原序），**不改**卡片栈顺序；bootReady 后再 prune 失效 id（冷启动 `tasks=[]` 时不写盘） |
 | 消息操作栏 | 助手：赞/踩/复制/重新生成；用户：复制 + 失败重试 | 同左（`FocusChatThread`）；feedback 仅内存态，刷新历史后不保留 |
-| 停止生成 | 输入栏 Send ↔ Stop 切换 | 同左：流式时发送键变为停止（`abortRef.abort()`）；停止后草稿回填输入框 |
+| 停止生成 | 输入栏 Send ↔ Stop 切换 | 同左：流式时 Stop + 可排队 Send；停止后草稿回填输入框（有待发送队列则不回填，改为自动发队列） |
+| 预发送队列 | — | 流式中 Enter/Send 把草稿排进输入框上方小字条（每卡一条，再发则替换）；成功后等 `refreshHistory` 再自动发出（期间保持 busy）；Stop 立刻发；身份/网络失败则回填输入框不连发；点 × 取消并还原 |
 | 任务翻页 | — | 总览：卡片栈两侧 `card-arrow`。**分屏/聚焦**：左右箭头贴在**对话面板**（`context-chat`）左右缘——随对话区走（上下文栏开则在右栏内；侧栏+上下文都收起则贴主区左右）。顶栏另有 `NN / MM` 翻页器。键盘 `←`/`→`（输入框内 `Alt+←/→`）。窄屏隐藏侧箭头，保留顶栏翻页器 |
 
 ## 映射
@@ -107,7 +108,16 @@ Hub「使用免费模型」→ **保留**已连接真实模型；hydrateAiForSes
 
 - **用户消息**：悬停显示复制；发送失败（`failed`）时显示**红色回退箭头**（`RotateCcw`）。加载 `/history` 后经 `normalizeFailedTurns` 把「有 user、无完整 agent 回复」标成 `failed`/`incomplete`（与 spa v1 同款）。**点击箭头 ≠ 立刻重发**：效果对齐 Stop——撤回该 user（及空 agent stub），文案与附件**顶掉**输入框里半成品草稿并 focus，由用户再按发送。
 - **助手消息**：完整回复结束后显示操作栏——点赞 / 点踩（互斥切换）、重新生成（丢掉该助手气泡并用上一条用户消息重跑 SSE）、复制。
-- **停止生成**：流式进行中输入栏右侧为红色停止键（替换发送）。中止后撤回本轮乐观 user+agent，把原文案与附件还原到输入框（对齐 Cursor）——**不**标 `failed`、不留红箭头气泡。**刻意为之**：Stop 后不立刻 `refreshHistory`（会与 Session abandon 竞态，把尚未剥离的 user 灌回并被 `normalizeFailedTurns` 标成异常）；标题只按本地剩余气泡改。停止键用 `pointerdown` + 短时 `suppressSubmit`，避免 Stop 变回 Send 后同一次点击误触重发。另用 `streamEpoch` / `signal.aborted` 丢掉中止后的迟到 SSE。网络等非 Abort 失败仍标记 `failed` / 可重试。
+- **停止生成**：流式进行中输入栏右侧为红色停止键；左侧仍可点发送把下一条排进队列。中止后若**无**待发送队列，撤回本轮乐观 user+agent，把原文案与附件还原到输入框（对齐 Cursor）——**不**标 `failed`、不留红箭头气泡。若**有**待发送队列，只撤回气泡、不回填中止草稿，回合 `finally` 里**立刻**发出队列（`bypassSuppress`，避免 Stop 后 400ms 门禁挡住自动发）。**刻意为之**：Stop 后不立刻 `refreshHistory`（会与 Session abandon 竞态，把尚未剥离的 user 灌回并被 `normalizeFailedTurns` 标成异常）；标题只按本地剩余气泡改。停止键用 `pointerdown` + 短时 `suppressSubmit`，避免 Stop 变回 Send 后同一次点击误触重发。另用 `streamEpoch` / `signal.aborted` 丢掉中止后的迟到 SSE。网络等非 Abort 失败仍标记 `failed` / 可重试。
+- **预发送（对齐 Cursor）**：流式中仍可编辑输入框；Enter/Send → `queuedSends[cardId]`（小字条在附件 chip 与 form 之间），清空输入；当前回合结束后自动 `sendMessage`。每卡最多一条待发送，再排队则替换。点 × 取消：有 chip 时还原到输入框；若已进入「成功后延迟发出」窗口（chip 已藏、仍 busy），× 同样可取消 `deferredQueueFlushRef`。
+  - **与回合结算正交（刻意为之）**：
+    | 结局 | 队列行为 |
+    |------|----------|
+    | **成功** (`turnOk`) | 先藏 chip → `deferredQueueFlushRef`；**保持 `streamingCards` busy** 直到 `refreshHistory` 完成后再 `flush`（避免成功瞬间空闲、用户手发一条 bump `streamEpoch` 把队列静默丢掉；也避免抢在 history 重水合之前开第二回合） |
+    | **Stop / abort** | 立刻 `queueMicrotask` flush（不等 history） |
+    | **失败**（401 身份/模型、网络、空完成等非 abort） | **不自动连发**；文案/附件回填输入框 + toast `app.queuedSendHeld`——否则登录失效时队列会被二次消费成又一次失败 |
+    | **epoch 被顶替**（删任务 / 手动抢发等） | deferred 回填输入框 + toast，不丢字 |
+  - 快捷按钮流式中仍 early-return（不入队）。多卡并行：队列按 `cardId` 隔离。
 - **粘贴 / 拖放附件**：对话栏 / 新建任务/聊天输入支持 `Ctrl/Cmd+V` 粘贴，以及从资源管理器或其他窗口拖入文件——均等价于回形针选文件，进入同一附件 chip 再走 multipart；纯文字粘贴不拦截。识图等由 workspace tool 处理。拖入时输入区高亮并提示「松开以添加附件」（`useComposerFileDrop` + `filesFromClipboard`）。
 - **换行**：输入为 `textarea`；`Enter` 发送，`Ctrl/Cmd+Enter` 换行（`Shift+Enter` 亦换行）。
 - **流式吸底（对齐 spa v1 / Cursor）**：`FocusChatThread` 距底 ≤60px 才跟随新内容滚底；手动上拉后不打断阅读；滚回底部恢复跟随。**发消息必跳底**：无论当前滚动位置，新增气泡切片里出现 `role=user` 即强制吸底并重新粘滞（`sendMessage` 一次追加 user+空 agent，不能只看 `messages.at(-1)`）。**直播思考框**（`.focus-chat-live-thinking`）同一规则：贴底才粘滞跟随思考增长；上拖断开、内容在下方继续生成；再拉回底恢复粘滞——禁止每 token 无条件 `scrollTop=scrollHeight`（会把框「粘死」）。
@@ -193,7 +203,17 @@ npm run dev
 
 **登录成功的落点是关窗回工作台**（原型 D4），不是账户面板：`finishAndClose()` 关窗 + toast，侧栏靠 `notifyAuthChanged()` 广播就地更新。账户面板（C1）只由「已登录后主动从侧栏点进来」到达。
 
-**登录态跨组件共享走 `services/useAuthAccount.ts`**（事件广播，无 module 级可变全局）。侧栏账户区必须读它而非 localStorage 里的本地昵称，否则登录完外面还显示「用户」和「登录账号」。
+**登录态跨组件共享走 `services/useAuthAccount.ts`**（事件广播，无 module 级可变全局）。侧栏账户区读它拿 `loggedIn` / `user` / `identities`，再用 `resolveAccountDisplayName`（`services/accountDisplayName.ts`）算展示名：
+
+| 优先级 | 规则 |
+|--------|------|
+| 1 | 已登录且云端 `displayName` **不像**登录身份（手机号/邮箱）→ 用云端昵称 |
+| 2 | 否则用本地 `gw-user-name`（建号「开始使用」会写入；账户面板可改） |
+| 3 | 再否则 i18n `app.defaultUser`（「用户」）——**刻意为之**：不回显手机号当用户名 |
+
+云端常把绑定手机号塞进 `displayName`（新用户空昵称 / 旧账号默认）。旧逻辑是「已登录一律云端优先」，于是侧栏一直显示号码，用户自写昵称（本地或建号时）被盖掉。身份形判定含 `+86` 与裸 `1XXXXXXXXXX`。
+
+Gateway **没有**改云端昵称的 PATCH；账户面板「保存昵称」只写本机 `gw-user-name`，在云端仍是手机号时侧栏靠上表回落。
 
 **首屏是硬门禁**（2026-08-15 团队决定，此前是可跳过的软门禁）：`HaiTunAgentWorkspace` 的 `authGate` 在 boot 后探一次登录态，未登录则弹登录窗并**关不掉**，同时压住首屏引导与模型池自动弹窗。
 
@@ -218,9 +238,9 @@ npm run dev
 src/
   App.tsx                 # 工作区门禁 → 工作台
   components/WorkspaceGate.tsx
-  services/               # api / sse / chatStream / sessionBridge / bootstrapAi / turnProgress / reasoningDisplay / clipboardFiles / composerFileDrop / authFlow / useAuthAccount
+  services/               # api / sse / chatStream / sessionBridge / bootstrapAi / turnProgress / reasoningDisplay / clipboardFiles / composerFileDrop / authFlow / useAuthAccount / accountDisplayName / userProfile
   haitun-agent/           # 任务 UI（设计包）；focus-chat-thread 含「已思考」展开
-  components/user-hub/    # 用户中心（自 v1：资料 / 大模型 / 登录 / 设置）
+  components/user-hub/    # 用户中心（账号/登录 / 大模型 / 设置；本地「我的资料」已删）
   styles/globals.css
 public/                   # 不打包, 由站点根提供; 引用一律走 import.meta.env.BASE_URL
   haitun-dolphin.png

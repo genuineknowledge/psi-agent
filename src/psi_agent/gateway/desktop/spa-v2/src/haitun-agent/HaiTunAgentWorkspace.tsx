@@ -87,6 +87,10 @@ import {
 import { filesFromClipboard } from "../services/clipboardFiles";
 import { useComposerFileDrop } from "../services/composerFileDrop";
 import { onComposerEnterKey } from "../services/composerKeys";
+import {
+  buildQueuedSend,
+  type QueuedSend,
+} from "../services/queuedSend";
 import { streamSessionChat } from "../services/chatStream";
 import {
   appendContentSegment,
@@ -210,6 +214,9 @@ export default function HaiTunAgentWorkspace({
   const [chatExpanded, setChatExpanded] = useState(false);
   const [contextPanelCollapsed, setContextPanelCollapsed] = useState(true);
   const [streamingCards, setStreamingCards] = useState<Record<string, boolean>>({});
+  /** Follow-up typed while a turn is streaming — auto-sends when that turn ends (Cursor-style). */
+  const [queuedSends, setQueuedSends] = useState<Record<string, QueuedSend | null>>({});
+  const queuedSendsRef = useRef<Record<string, QueuedSend | null>>({});
   /** Growing process lines (规划下一步 + sealed steps); kept per card so background turns stay live. */
   const [turnProgressLogs, setTurnProgressLogs] = useState<Record<string, ProgressLog | null>>({});
   /** Raw thinking prose shown live until the final body starts. */
@@ -244,6 +251,21 @@ export default function HaiTunAgentWorkspace({
   const turnContentSegByCardRef = useRef<Record<string, ContentSegments>>({});
   /** After Stop, block that card's submit briefly — Stop↔Send swap under the same click would re-send the restored draft. */
   const suppressSubmitUntilByCardRef = useRef<Record<string, number>>({});
+  /** Latest sendMessage — finally/flush must not close over a stale messages snapshot. */
+  const sendMessageRef = useRef<
+    (
+      text: string,
+      cardId?: string,
+      files?: File[],
+      opts?: { bypassSuppress?: boolean },
+    ) => Promise<void>
+  >(async () => {});
+  /**
+   * Follow-up waiting for turnOk bookkeeping (`refreshHistory`) before auto-send.
+   * 刻意为之: 成功回合不得在 history 同步前抢发下一条, 否则 epoch 被顶掉会跳过
+   * 交付物/摘要回读; 鉴权失败则不进这里(回填输入框), 避免连吃两次 401.
+   */
+  const deferredQueueFlushRef = useRef<Record<string, QueuedSend>>({});
   const historyLoadedRef = useRef<Set<string>>(new Set(["overview"]));
   /** Task ids with an in-flight GET /history (sidebar → focus empty-state spinner). */
   const [historyLoadingIds, setHistoryLoadingIds] = useState(() => new Set<string>());
@@ -832,6 +854,8 @@ export default function HaiTunAgentWorkspace({
         return next;
       });
     }
+    queuedSendsRef.current = { ...queuedSendsRef.current, [task.id]: null };
+    delete deferredQueueFlushRef.current[task.id];
 
     try {
       await deleteSession(task.id);
@@ -858,6 +882,11 @@ export default function HaiTunAgentWorkspace({
       return next;
     });
     setChatAttachments((current) => {
+      const next = { ...current };
+      delete next[task.id];
+      return next;
+    });
+    setQueuedSends((current) => {
       const next = { ...current };
       delete next[task.id];
       return next;
@@ -984,11 +1013,7 @@ export default function HaiTunAgentWorkspace({
    * 于是出现「输入框有草稿 + 上方红箭头异常消息」的回退布局。标题只按本地剩余气泡同步；
    * 服务端剥离由 abandon 负责，下次打开任务再走 ensureHistory。
    */
-  const restoreStoppedTurn = (
-    cardId: string,
-    text: string,
-    files: Array<File | ChatFile>,
-  ) => {
+  const discardOptimisticTurn = (cardId: string) => {
     let remaining: ChatMessage[] = [];
     setMessages((current) => {
       const list = [...(current[cardId] ?? [])];
@@ -1000,6 +1025,14 @@ export default function HaiTunAgentWorkspace({
     applyTitleFromChat(cardId, remaining, { emptyMeansDefault: true });
     // Allow a later ensureHistory to re-read after abandon has committed.
     historyLoadedRef.current.delete(cardId);
+  };
+
+  const restoreStoppedTurn = (
+    cardId: string,
+    text: string,
+    files: Array<File | ChatFile>,
+  ) => {
+    discardOptimisticTurn(cardId);
     const fileNames = files.map((f) => f.name).join("、");
     const uploadOnly =
       files.length > 0 && (!text.trim() || text === `${t("app.uploadedPrefix")}${fileNames}`);
@@ -1011,6 +1044,43 @@ export default function HaiTunAgentWorkspace({
       ...current,
       [cardId]: files.map((f) => (f instanceof File ? f : chatFileToFile(f))),
     }));
+    queueMicrotask(() => activeChatInputRef.current?.focus());
+  };
+
+  const clearQueuedSend = (cardId: string) => {
+    queuedSendsRef.current = { ...queuedSendsRef.current, [cardId]: null };
+    setQueuedSends((current) => ({ ...current, [cardId]: null }));
+  };
+
+  const flushQueuedSend = (cardId: string, queued: QueuedSend) => {
+    void sendMessageRef.current(queued.text, cardId, queued.files, {
+      bypassSuppress: true,
+    });
+  };
+
+  const enqueueFollowUp = (cardId: string, text: string, files: File[]) => {
+    const next = buildQueuedSend(text, files, t("app.uploadedPrefix"));
+    if (!next) return;
+    // During success→refreshHistory hold, chip may already be cleared and the real
+    // payload lives in deferredQueueFlushRef. Replace that target — do not delete it
+    // (deleting would strand the follow-up when busy finally clears).
+    if (deferredQueueFlushRef.current[cardId]) {
+      deferredQueueFlushRef.current[cardId] = next;
+    }
+    queuedSendsRef.current = { ...queuedSendsRef.current, [cardId]: next };
+    setQueuedSends((current) => ({ ...current, [cardId]: next }));
+    setChatDrafts((current) => ({ ...current, [cardId]: "" }));
+    setChatAttachments((current) => ({ ...current, [cardId]: [] }));
+  };
+
+  const cancelQueuedSend = (cardId: string) => {
+    const queued =
+      queuedSendsRef.current[cardId] ?? deferredQueueFlushRef.current[cardId] ?? null;
+    if (!queued) return;
+    clearQueuedSend(cardId);
+    delete deferredQueueFlushRef.current[cardId];
+    setChatDrafts((current) => ({ ...current, [cardId]: queued.text }));
+    setChatAttachments((current) => ({ ...current, [cardId]: [...queued.files] }));
     queueMicrotask(() => activeChatInputRef.current?.focus());
   };
 
@@ -1088,6 +1158,7 @@ export default function HaiTunAgentWorkspace({
     setTodoSegmentSelection((current) => ({ ...current, [cardId]: "live" }));
     const userVisible = titleSource ?? (text.trim() || t("app.attachment"));
     let turnOk = false;
+    let wasAborted = false;
     let assistantFull = "";
     // Enter advance phase for this turn (layer-1); todos refine the middle label.
     setTasks((current) =>
@@ -1167,7 +1238,12 @@ export default function HaiTunAgentWorkspace({
       );
       // Some browsers end the body with done instead of throwing AbortError.
       if (!live() || controller.signal.aborted) {
-        if (epoch === streamEpochByCardRef.current[cardId]) restoreStoppedTurn(cardId, text, files);
+        wasAborted = true;
+        if (epoch === streamEpochByCardRef.current[cardId]) {
+          // Queued follow-up wins over restoring the aborted draft into the composer.
+          if (queuedSendsRef.current[cardId]) discardOptimisticTurn(cardId);
+          else restoreStoppedTurn(cardId, text, files);
+        }
         return;
       }
       turnOk = true;
@@ -1209,7 +1285,11 @@ export default function HaiTunAgentWorkspace({
       }
     } catch (e) {
       if (isAbortError(e) || controller.signal.aborted) {
-        if (epoch === streamEpochByCardRef.current[cardId]) restoreStoppedTurn(cardId, text, files);
+        wasAborted = true;
+        if (epoch === streamEpochByCardRef.current[cardId]) {
+          if (queuedSendsRef.current[cardId]) discardOptimisticTurn(cardId);
+          else restoreStoppedTurn(cardId, text, files);
+        }
         return;
       }
       if (epoch !== streamEpochByCardRef.current[cardId]) return;
@@ -1257,35 +1337,83 @@ export default function HaiTunAgentWorkspace({
             return current;
           });
         }
-        setStreamingCards((current) => {
-          if (!current[cardId]) return current;
-          const next = { ...current };
-          delete next[cardId];
-          return next;
-        });
-        setTurnProgressLogs((current) => {
-          if (!(cardId in current)) return current;
-          const next = { ...current };
-          delete next[cardId];
-          return next;
-        });
-        setLiveThinkingByCard((current) => {
-          if (!(cardId in current)) return current;
-          const next = { ...current };
-          delete next[cardId];
-          return next;
-        });
         delete turnReasoningByCardRef.current[cardId];
         delete turnToolsByCardRef.current[cardId];
         delete turnContentSegByCardRef.current[cardId];
         if (abortByCardRef.current[cardId] === controller) delete abortByCardRef.current[cardId];
+
+        const queued = queuedSendsRef.current[cardId] ?? null;
+        // Hold busy UI across refreshHistory→flush so the user cannot sneak a manual
+        // send that bumps epoch and silently drops the deferred follow-up.
+        const holdBusyForDeferred = Boolean(queued && turnOk && !wasAborted);
+
+        if (!holdBusyForDeferred) {
+          setStreamingCards((current) => {
+            if (!current[cardId]) return current;
+            const next = { ...current };
+            delete next[cardId];
+            return next;
+          });
+          setTurnProgressLogs((current) => {
+            if (!(cardId in current)) return current;
+            const next = { ...current };
+            delete next[cardId];
+            return next;
+          });
+          setLiveThinkingByCard((current) => {
+            if (!(cardId in current)) return current;
+            const next = { ...current };
+            delete next[cardId];
+            return next;
+          });
+        }
+
+        if (queued) {
+          clearQueuedSend(cardId);
+          if (wasAborted) {
+            // Stop: user wants the next line out now — do not wait on history.
+            queueMicrotask(() => flushQueuedSend(cardId, queued));
+          } else if (turnOk) {
+            // Success: hide chip, send only after refreshHistory (see async IIFE).
+            deferredQueueFlushRef.current[cardId] = queued;
+          } else {
+            // Auth/network/empty failure: put follow-up back in the composer.
+            // 刻意为之: 不自动连发, 避免登录态/模型 401 时队列被二次消费.
+            setChatDrafts((current) => ({ ...current, [cardId]: queued.text }));
+            setChatAttachments((current) => ({
+              ...current,
+              [cardId]: [...queued.files],
+            }));
+            showToast(t("app.queuedSendHeld"));
+            queueMicrotask(() => activeChatInputRef.current?.focus());
+          }
+        }
       }
       void (async () => {
         const todosAfter = await refreshTodos(cardId, false);
         await refreshTodoSegments(cardId);
-        if (epoch !== streamEpochByCardRef.current[cardId]) return;
+        if (epoch !== streamEpochByCardRef.current[cardId]) {
+          const dropped = deferredQueueFlushRef.current[cardId];
+          if (dropped) {
+            delete deferredQueueFlushRef.current[cardId];
+            setChatDrafts((current) => ({ ...current, [cardId]: dropped.text }));
+            setChatAttachments((current) => ({
+              ...current,
+              [cardId]: [...dropped.files],
+            }));
+            showToast(t("app.queuedSendHeld"));
+          }
+          setStreamingCards((current) => {
+            if (!current[cardId]) return current;
+            const next = { ...current };
+            delete next[cardId];
+            return next;
+          });
+          return;
+        }
         if (!turnOk) {
           historyLoadedRef.current.delete(cardId);
+          delete deferredQueueFlushRef.current[cardId];
           return;
         }
         setTasks((current) =>
@@ -1308,6 +1436,51 @@ export default function HaiTunAgentWorkspace({
         });
         applyTitleFromChat(cardId, localChat);
         await refreshHistory(cardId);
+        if (epoch !== streamEpochByCardRef.current[cardId]) {
+          const dropped = deferredQueueFlushRef.current[cardId];
+          if (dropped) {
+            delete deferredQueueFlushRef.current[cardId];
+            setChatDrafts((current) => ({ ...current, [cardId]: dropped.text }));
+            setChatAttachments((current) => ({
+              ...current,
+              [cardId]: [...dropped.files],
+            }));
+            showToast(t("app.queuedSendHeld"));
+          }
+          setStreamingCards((current) => {
+            if (!current[cardId]) return current;
+            const next = { ...current };
+            delete next[cardId];
+            return next;
+          });
+          return;
+        }
+        const deferred = deferredQueueFlushRef.current[cardId];
+        delete deferredQueueFlushRef.current[cardId];
+        // Chip may have been re-queued during hold; prefer live chip, else deferred.
+        const liveChip = queuedSendsRef.current[cardId];
+        const toFlush = liveChip ?? deferred ?? null;
+        if (liveChip) clearQueuedSend(cardId);
+        // Release busy before flush so the next runChatTurn owns streamingCards.
+        setStreamingCards((current) => {
+          if (!current[cardId]) return current;
+          const next = { ...current };
+          delete next[cardId];
+          return next;
+        });
+        setTurnProgressLogs((current) => {
+          if (!(cardId in current)) return current;
+          const next = { ...current };
+          delete next[cardId];
+          return next;
+        });
+        setLiveThinkingByCard((current) => {
+          if (!(cardId in current)) return current;
+          const next = { ...current };
+          delete next[cardId];
+          return next;
+        });
+        if (toFlush) flushQueuedSend(cardId, toFlush);
       })();
     }
   };
@@ -1319,8 +1492,15 @@ export default function HaiTunAgentWorkspace({
     abortByCardRef.current[cardId]?.abort();
   }, []);
 
-  const sendMessage = async (text: string, cardId = currentCard.id, files: File[] = []) => {
-    if (Date.now() < (suppressSubmitUntilByCardRef.current[cardId] ?? 0)) return;
+  const sendMessage = async (
+    text: string,
+    cardId = currentCard.id,
+    files: File[] = [],
+    opts?: { bypassSuppress?: boolean },
+  ) => {
+    if (!opts?.bypassSuppress && Date.now() < (suppressSubmitUntilByCardRef.current[cardId] ?? 0)) {
+      return;
+    }
     const clean = text.trim();
     const pendingFiles = files.length ? files : (chatAttachments[cardId] ?? []);
     if (!clean && !pendingFiles.length) return;
@@ -1340,21 +1520,22 @@ export default function HaiTunAgentWorkspace({
     }
 
     const storedFiles = pendingFiles.length ? await filesToChatFiles(pendingFiles) : [];
-    const nextChat: ChatMessage[] = [
-      ...(messages[cardId] ?? []),
-      { role: "user", text: userVisible, files: storedFiles.length ? storedFiles : undefined },
-      { role: "agent", text: "" },
-    ];
-    setMessages((current) => ({
-      ...current,
-      [cardId]: nextChat,
-    }));
+    let nextChat: ChatMessage[] = [];
+    setMessages((current) => {
+      nextChat = [
+        ...(current[cardId] ?? []),
+        { role: "user", text: userVisible, files: storedFiles.length ? storedFiles : undefined },
+        { role: "agent", text: "" },
+      ];
+      return { ...current, [cardId]: nextChat };
+    });
     // First user bubble → title immediately (covers cards still stuck at「新任务」).
     applyTitleFromChat(cardId, nextChat);
     setChatDrafts((current) => ({ ...current, [cardId]: "" }));
     setChatAttachments((current) => ({ ...current, [cardId]: [] }));
     await runChatTurn(cardId, clean, pendingFiles, userVisible);
   };
+  sendMessageRef.current = sendMessage;
 
   const setMessageFeedback = (cardId: string, index: number, kind: Exclude<MessageFeedback, "">) => {
     setMessages((current) => {
@@ -1428,12 +1609,17 @@ export default function HaiTunAgentWorkspace({
 
   const handleChatSubmit = (event: FormEvent) => {
     event.preventDefault();
-    if (streamingCards[currentCard.id]) return;
-    if (Date.now() < (suppressSubmitUntilByCardRef.current[currentCard.id] ?? 0)) return;
-    const files = chatAttachments[currentCard.id] ?? [];
+    const cardId = currentCard.id;
+    if (Date.now() < (suppressSubmitUntilByCardRef.current[cardId] ?? 0)) return;
+    const files = chatAttachments[cardId] ?? [];
     if (!currentChatDraft.trim() && !files.length) return;
     if (!chatExpanded) setChatExpanded(true);
-    void sendMessage(currentChatDraft, currentCard.id, files);
+    // Busy → queue (replace prior queue); idle → send now.
+    if (streamingCards[cardId]) {
+      enqueueFollowUp(cardId, currentChatDraft, files);
+      return;
+    }
+    void sendMessage(currentChatDraft, cardId, files);
   };
 
   const addChatAttachments = (cardId: string, fileList: FileList | File[] | null) => {
@@ -1783,6 +1969,9 @@ export default function HaiTunAgentWorkspace({
     const unitDraft = chatDrafts[unitCard.id] ?? "";
     const expanded = interactive ? chatExpanded : visualExpanded;
     const unitBusy = !!streamingCards[unitCard.id];
+    const unitQueued = queuedSends[unitCard.id] ?? null;
+    const unitCanSend =
+      !!unitDraft.trim() || (chatAttachments[unitCard.id] ?? []).length > 0;
     const unitHasDelivery = !!unitTask && unitTask.newDeliverables.length > 0;
     const openUnitChest = () => {
       if (!unitHasDelivery || !unitTask) {
@@ -2071,6 +2260,30 @@ export default function HaiTunAgentWorkspace({
             </div>
           )}
 
+          {unitQueued && (
+            <div className="chat-queued-send" data-attach-control>
+              <span className="chat-queued-chip" title={unitQueued.display}>
+                <em>
+                  <span className="chat-queued-label">{t("app.queuedSend")}</span>
+                  {unitQueued.display}
+                </em>
+                <button
+                  type="button"
+                  data-attach-control
+                  disabled={!interactive}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (interactive) cancelQueuedSend(unitCard.id);
+                  }}
+                  aria-label={t("app.cancelQueuedSend")}
+                  title={t("app.cancelQueuedSend")}
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            </div>
+          )}
+
           <form
             onSubmit={interactive ? handleChatSubmit : (event) => event.preventDefault()}
             onClick={(event) => {
@@ -2130,27 +2343,37 @@ export default function HaiTunAgentWorkspace({
               readOnly={!interactive}
             />
             {unitBusy ? (
-              <button
-                type="button"
-                className="send-button stop-button"
-                data-attach-control
-                disabled={!interactive}
-                onPointerDown={(event) => {
-                  // preventDefault: avoid mouseup activating the Send that replaces this button.
-                  event.preventDefault();
-                  event.stopPropagation();
-                  if (interactive) stopChat(unitCard.id);
-                }}
-                aria-label={t("app.stop")}
-                title={t("app.stop")}
-              >
-                <Square size={14} fill="currentColor" />
-              </button>
+              <div className="chat-send-actions" data-attach-control>
+                <button
+                  type="submit"
+                  className="send-button"
+                  disabled={!interactive || !unitCanSend}
+                  aria-label={t("app.queueSend")}
+                  title={t("app.queueSend")}
+                >
+                  <Send size={16} />
+                </button>
+                <button
+                  type="button"
+                  className="send-button stop-button"
+                  disabled={!interactive}
+                  onPointerDown={(event) => {
+                    // preventDefault: avoid mouseup activating the Send that replaces this button.
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (interactive) stopChat(unitCard.id);
+                  }}
+                  aria-label={t("app.stop")}
+                  title={t("app.stop")}
+                >
+                  <Square size={14} fill="currentColor" />
+                </button>
+              </div>
             ) : (
               <button
                 type="submit"
                 className="send-button"
-                disabled={!interactive || (!unitDraft.trim() && !(chatAttachments[unitCard.id] ?? []).length)}
+                disabled={!interactive || !unitCanSend}
                 aria-label={t("app.send")}
                 title={t("app.send")}
               >
