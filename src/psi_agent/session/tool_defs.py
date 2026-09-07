@@ -111,6 +111,23 @@ TMPFIX_M2_CORE_TOOLS = frozenset(
         "feishu_department_members",
         "feishu_permission_list_members",
         "trigger_manage",
+        # 2026-09-07 扩展 (产品需要): 正负面清单链路 + 会议候选/纪要链路,
+        # 飞书私聊与会议场景需直接可见这些工具; 仍只收窄发现面, 不动 dispatch。
+        "positive_negative_rules",
+        "positive_negative_case_prepare",
+        "positive_negative_case_confirm",
+        "positive_negative_case_read",
+        "positive_negative_case_analyze",
+        "positive_negative_case_remind",
+        "positive_negative_case_review_start",
+        "positive_negative_case_review_submit",
+        "positive_negative_candidate_analyze",
+        "positive_negative_candidate_card",
+        "meeting_pipeline_run",
+        "meeting_session_notify",
+        "meeting_session_read",
+        "meeting_session_write",
+        "meeting_transcript_prepare",
     }
 )
 
