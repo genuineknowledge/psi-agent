@@ -217,8 +217,8 @@ def _select_value(semantic_name: str, value: Any, schema: TableSchema, field_id:
     }.get(value.casefold(), (value,))
     if not options and candidates:
         # Some Feishu deployments omit select-option metadata from the fields
-        # response.  The robot-owned test table is created with the formal
-        # Chinese labels, so keep the persisted value aligned in that case.
+        # response.  The public ledger is expected to carry the formal Chinese
+        # labels, so keep the persisted value aligned in that case.
         return candidates[0]
     for candidate in candidates:
         if candidate in options:

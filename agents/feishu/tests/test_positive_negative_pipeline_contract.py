@@ -308,18 +308,15 @@ def test_read_tool_returns_chinese_record_fields_without_internal_metadata(monke
     assert "case_id" not in serialized
 
 
-def test_robot_test_target_preflight_does_not_need_extra_view_config(monkeypatch) -> None:
+def test_official_write_target_preflight_uses_public_ledger_view_without_extra_config(monkeypatch) -> None:
     runtime = importlib.import_module("_positive_negative_list.runtime")
-    monkeypatch.setattr(runtime, "_TEST_APP_TOKEN", "test_app")
-    monkeypatch.setattr(runtime, "_TEST_TABLE_ID", "test_table")
-    monkeypatch.setattr(runtime, "_TEST_VIEW_ID", "default_view")
     config = {
         "write_target": {
             "mode": "existing_columns",
-            "field_names": dict(runtime._TEST_FIELD_NAMES),
+            "field_names": dict(runtime._LEDGER_FIELD_NAMES),
         }
     }
-    client = runtime.ConfiguredTableClient("test_app", "test_table", config)
+    client = runtime.ConfiguredTableClient(runtime._SOURCE_APP_TOKEN, runtime._SOURCE_TABLE_ID, config)
 
     async def fake_list_fields(*args, **kwargs):
         type_by_name = {
@@ -351,7 +348,7 @@ def test_robot_test_target_preflight_does_not_need_extra_view_config(monkeypatch
     result = asyncio.run(client.preflight("ou_writer"))
     assert result.ok is True
     assert result.schema is not None
-    assert result.schema.view_purposes == {"default_view": "public_ledger"}
+    assert result.schema.view_purposes == {runtime._SOURCE_VIEW_ID: "public_ledger"}
 
 
 def test_writer_may_be_subject_when_reporter_is_a_different_person() -> None:
@@ -699,20 +696,22 @@ def test_prepare_error_lists_legal_case_field_names(monkeypatch) -> None:
     assert "fact_summary" in payload["allowed_case_fields"]
 
 
-def test_test_table_request_keeps_formal_six_column_order() -> None:
+def test_write_target_is_the_formal_ledger_with_six_column_mapping() -> None:
     runtime = importlib.import_module("_positive_negative_list.runtime")
 
-    body = runtime._create_table_request("app_test").body
-    fields = body["table"]["fields"]
-
-    assert [field["field_name"] for field in fields] == [
-        "事件描述",
-        "正负面归属",
-        "员工姓名",
-        "记录日期",
-        "备注",
-        "填写人",
-    ]
+    assert runtime._target_coordinates({}, "write") == (
+        runtime._SOURCE_APP_TOKEN,
+        runtime._SOURCE_TABLE_ID,
+        runtime._SOURCE_VIEW_ID,
+    )
+    assert runtime._LEDGER_FIELD_NAMES == {
+        "nature": "正负面归属",
+        "subject_user_key": "员工姓名",
+        "fact_summary": "事件描述",
+        "occurred_at": "记录日期",
+        "note": "备注",
+        "reporter_user_key": "填写人",
+    }
 
 
 def test_existing_columns_store_human_note_and_formal_nature_label() -> None:
@@ -735,7 +734,7 @@ def test_existing_columns_store_human_note_and_formal_nature_label() -> None:
     client = runtime.ConfiguredTableClient(
         "app_test",
         "table_test",
-        {"write_target": {"mode": "existing_columns", "field_names": runtime._TEST_FIELD_NAMES}},
+        {"write_target": {"mode": "existing_columns", "field_names": runtime._LEDGER_FIELD_NAMES}},
     )
     schema_result = preflight.validate_table_schema(
         fields,

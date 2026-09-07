@@ -70,7 +70,7 @@ async def _confirmation_card(case: CaseDraft, digest: str) -> dict[str, Any]:
                         f"**发生时间**　{case.occurred_at}　·　**分类**　{case.category}\n"
                         f"**行为事实**　{case.fact_summary}\n"
                         f"**证据来源**　{', '.join(case.evidence_sources) or '未提供'}"
-                        f"{guidance}\n\n确认后仅写入机器人独立测试表，不修改正式总表；不计分、不进入绩效。"
+                        f"{guidance}\n\n确认后仅写入正负面清单正式总表；不计分、不进入绩效。"
                     ),
                 },
                 {"tag": "hr"},
@@ -209,7 +209,7 @@ async def positive_negative_case_prepare(
                 "case_id": case_id,
                 "rule_version": case.rule_version,
                 "message_id": sent.get("message_id", ""),
-                "confirmation_scope": "写入 HaiTun 机器人独立测试表",
+                "confirmation_scope": "写入正负面清单正式总表",
                 "preview_digest": digest,
                 "preview": await _public_case_preview(case),
             }

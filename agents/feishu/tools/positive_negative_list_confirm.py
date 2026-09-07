@@ -16,7 +16,6 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 import _feishu_impl as _f
-from _positive_negative_list import runtime
 from _positive_negative_list.drafts import delete_draft_body, save_draft
 from _positive_negative_list.models import CaseDraft
 from _positive_negative_list.notifications import (
@@ -180,14 +179,10 @@ async def _confirm_unlocked(card_action_json: str = "", user_key: str = "") -> s
     if case.red_line_candidate:
         return _f.dumps_result({"ok": False, "status": "red_line_manual_review"})
 
-    # The production writer is a robot-owned isolated test table.  Its
-    # coordinates are created once in AppData; no new environment variable or
-    # config field is required.  Tests may still inject an adapter directly.
-    if TABLE_ADAPTER is None and table_adapter is None:
-        try:
-            await runtime.ensure_test_table(user_key)
-        except Exception as exc:
-            return _f.dumps_result({"ok": False, "status": "test_table_init_failed", "error": str(exc)})
+    # The production writer is the existing public ledger itself.  There is no
+    # robot-provisioned test table and no AppData target file to initialize;
+    # the preflight below validates the real table before any write happens.
+    # Tests may still inject an adapter directly.
     adapter = _adapter()
     try:
         preflight = await adapter.preflight(user_key)
