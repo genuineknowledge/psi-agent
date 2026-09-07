@@ -24,7 +24,9 @@ from _positive_negative_list.table import TableAdapter, TableClient, _encode_fie
 # deployment configuration surface.  The write target is provisioned once in
 # AppData and is never the public base.
 _SOURCE_APP_TOKEN = "RNEvbLIJAaPPdksfv8YceTmjndg"
-_SOURCE_TABLE_ID = "tblwXV7Xlwu0hVYH"
+# 2026-09-07: 正式总表已迁移/重建, 原 tblwXV7Xlwu0hVYH 在该 base 中不存在;
+# 现行只读正式总表 = 「正负清单总表-战争版」(字段/视图与 _SOURCE_FIELD_NAMES/veweChthHV 一致)。
+_SOURCE_TABLE_ID = "tblbF6ZVQbNTNxxn"
 _SOURCE_VIEW_ID = "veweChthHV"
 _TEST_APP_TOKEN = ""
 _TEST_TABLE_ID = ""
