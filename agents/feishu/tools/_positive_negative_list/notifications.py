@@ -15,6 +15,7 @@ from typing import Any, ClassVar
 import _feishu_impl
 import anyio
 from _assignment_display import resolve_people_display
+from loguru import logger
 
 from _positive_negative_list.models import CaseDraft, LedgerRecord
 
@@ -365,6 +366,7 @@ class NotificationSender:
                         True, "notification_sent", message_id=str(response.get("message_id") or "")
                     )
             attempts.append((identity, result))
+            logger.info(f"pnl notice: case={case.case_id} subject={identity} status={result.status}")
             if self.appdata_root is not None:
                 self.save_record_receipt(record, result, notice_text=text, card_json=card_json)
         results = [result for _, result in attempts]
@@ -716,6 +718,7 @@ class NotificationSender:
             # not receive a second copy after a process interruption.
             per_target = self._read_record_receipt(record_id, identity) if record_id else None
             if per_target is not None and per_target.get("notification_status") == "notification_sent":
+                logger.info(f"pnl notice retry: skip already-sent subject={identity} record={record_id}")
                 result = NotificationResult(
                     True, "notification_sent", message_id=str(per_target.get("notification_message_id") or "")
                 )

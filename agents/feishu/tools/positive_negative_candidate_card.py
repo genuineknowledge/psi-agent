@@ -14,6 +14,8 @@ import re
 import sys
 from typing import Any
 
+from loguru import logger
+
 TOOLS_DIR = __import__("pathlib").Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
@@ -204,6 +206,7 @@ async def _handle_click(card_action_json: str, user_key: str) -> str:
             batch["status"] = "ready_for_analysis"
         if changed:
             await candidate_batches.save_batch(batch)
+            logger.info(f"pnl candidate: batch={batch_id} row={source_index} -> {row['status']}")
             message_id = str(action.get("_message_id") or batch.get("message_id") or "")
             if message_id:
                 await _f.edit_card_impl(

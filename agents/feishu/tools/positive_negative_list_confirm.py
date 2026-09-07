@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
@@ -214,6 +216,7 @@ async def _confirm_unlocked(card_action_json: str = "", user_key: str = "") -> s
                 return _f.dumps_result(
                     {"ok": False, "status": "write_failed", "error": "recovered record ID missing"}
                 )
+            logger.info(f"pnl confirm: recovered previously created row case={case_id} record={recovered_id}")
             recovered = {"record_id": recovered_id, "record_link": adapter.public_record_link(recovered_id)}
     if recovered is not None:
         written = recovered
@@ -248,6 +251,7 @@ async def _confirm_unlocked(card_action_json: str = "", user_key: str = "") -> s
     if not public_record_id:
         save_draft(root, user_key, session_id, case_id, case)
         return _f.dumps_result({"ok": False, "status": "write_failed", "error": "public record ID missing"})
+    logger.info(f"pnl confirm: row persisted case={case_id} record={public_record_id}")
 
     public_record_link = str(record.get("record_link") or public_record_id)
     sender = NotificationSender(root)

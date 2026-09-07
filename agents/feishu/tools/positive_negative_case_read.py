@@ -9,6 +9,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
+from loguru import logger
+
 TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
@@ -50,6 +52,7 @@ async def positive_negative_case_read(
         result = await reader.read_records(cast(reader.FeishuLedgerClient, adapter._client), query, user_key)
         result = await reader.public_result_with_names(result)
     except (TypeError, ValueError) as exc:
+        logger.warning(f"pnl case_read: query rejected: {type(exc).__name__}: {exc}")
         result = {
             "ok": False,
             "状态": "读取失败",
@@ -57,6 +60,7 @@ async def positive_negative_case_read(
             "error": str(exc),
         }
     except (OSError, RuntimeError) as exc:
+        logger.warning(f"pnl case_read: read failed: {type(exc).__name__}: {exc}")
         result = {
             "ok": False,
             "状态": "读取失败",

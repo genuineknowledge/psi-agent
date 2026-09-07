@@ -32,6 +32,7 @@ from _positive_negative_list.dedupe import (
 from _positive_negative_list.drafts import delete_draft_body, save_draft
 from _positive_negative_list.models import CaseDraft
 from _positive_negative_list.validation import validate_case
+from loguru import logger
 
 from psi_agent._appdata import resolve_appdata_root as _resolve_appdata_root
 from psi_agent.session.runtime_context import get_session_id as _get_session_id
@@ -251,6 +252,7 @@ async def positive_negative_case_prepare(
             orphan_case = reservation.case_id
             if orphan_case and not _case_has_durable_state(root, orphan_case):
                 release_source_key(root, source_key, orphan_case)
+                logger.warning(f"pnl prepare: reclaimed orphan reservation source={source_key} case={orphan_case}")
                 reservation = reserve_source_key(root, source_key, case_id)
         if reservation.status not in {"reserved", "idempotent"}:
             return _f.dumps_result({"ok": False, "status": reservation.status, "case_id": reservation.case_id})
@@ -278,6 +280,7 @@ async def positive_negative_case_prepare(
             release_source_key(root, source_key, case_id)
             message = sent.get("message") if isinstance(sent, dict) else "确认卡发送失败"
             return _f.dumps_result({"ok": False, "status": "confirmation_card_failed", "error": message})
+        logger.info(f"pnl prepare: confirmation card sent case={case_id} source={source_key}")
         return _f.dumps_result(
             {
                 "ok": True,
