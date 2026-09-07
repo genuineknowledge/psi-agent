@@ -497,9 +497,17 @@ def configured_read_view_id() -> str:
     return _target_coordinates(config, "read")[2]
 
 
+def read_target_coordinates() -> tuple[str, str]:
+    """Public-ledger coordinates used by the read-side capability guard."""
+    config = _load_config()
+    app_token, table_id, _ = _target_coordinates(config, "read")
+    return app_token, table_id
+
+
 __all__ = [
     "ConfiguredTableClient",
     "configured_read_table_adapter",
     "configured_read_view_id",
     "configured_table_adapter",
+    "read_target_coordinates",
 ]

@@ -1789,3 +1789,98 @@ def test_notice_text_never_leaks_raw_record_id_as_link() -> None:
     assert "记录链接" not in record_text
     record_text_linked = notifications._record_notice_text(record_with("https://feishu.cn/base/x?record=rec_x"))
     assert "记录链接" in record_text_linked
+
+
+# ---------------------------------------------------------------------------
+# R5: read path never reports a silent empty table for unusable filters and
+# the single-page tool no longer invites impossible pagination loops.
+# ---------------------------------------------------------------------------
+
+
+def test_read_rejects_category_filter_when_ledger_has_no_category_column(monkeypatch) -> None:
+    read_tool = importlib.import_module("positive_negative_case_read")
+    reader = importlib.import_module("_positive_negative_list.reader")
+    runtime = importlib.import_module("_positive_negative_list.runtime")
+
+    async def fake_read_records(client, query, user_key):
+        raise AssertionError("guard must reject before any read")
+
+    async def fake_names(*args):
+        return frozenset({"事件描述", "正负面归属", "员工姓名", "记录日期", "备注", "填写人", "记录ID"})
+
+    monkeypatch.setattr(reader, "read_records", fake_read_records)
+    monkeypatch.setattr(reader, "list_table_field_names", fake_names)
+    payload = json.loads(
+        asyncio.run(read_tool.positive_negative_case_read(query_json='{"category": "迅速行动、及时反馈"}'))
+    )
+    assert payload["ok"] is False
+    assert payload["状态"] == "读取失败"
+    assert "分类" in payload["说明"]
+    assert "汇总分析" in payload["说明"]
+
+
+def test_read_rejects_person_name_filter_without_identity(monkeypatch) -> None:
+    read_tool = importlib.import_module("positive_negative_case_read")
+    reader = importlib.import_module("_positive_negative_list.reader")
+
+    async def fake_read_records(client, query, user_key):
+        raise AssertionError("guard must reject before any read")
+
+    monkeypatch.setattr(reader, "read_records", fake_read_records)
+    payload = json.loads(
+        asyncio.run(
+            read_tool.positive_negative_case_read(
+                query_json='{"subject_user_key": "王炜博"}', user_key="ou_writer"
+            )
+        )
+    )
+    assert payload["ok"] is False
+    assert "姓名" in payload["说明"]
+    assert "涉事人" in payload["说明"]
+
+
+def test_read_accepts_trusted_identity_filter_and_reads(monkeypatch) -> None:
+    read_tool = importlib.import_module("positive_negative_case_read")
+    reader = importlib.import_module("_positive_negative_list.reader")
+    runtime = importlib.import_module("_positive_negative_list.runtime")
+    from types import SimpleNamespace as _SN
+
+    async def fake_read_records(client, query, user_key):
+        assert query.subject_user_key == "ou_subject"
+        assert query.page_size == 100
+        return {"ok": True, "records": [], "has_more": False, "page_token": ""}
+
+    async def fake_public(result):
+        return {"ok": True, "记录": [], "本页记录数": 0, "读取状态": "已读完全部记录"}
+
+    async def fake_names(*args):
+        return frozenset({"事件描述", "正负面归属", "员工姓名", "记录日期", "备注", "填写人", "记录ID"})
+
+    monkeypatch.setattr(runtime, "configured_read_table_adapter", lambda: _SN(_client=object()))
+    monkeypatch.setattr(reader, "read_records", fake_read_records)
+    monkeypatch.setattr(reader, "public_result_with_names", fake_public)
+    monkeypatch.setattr(reader, "list_table_field_names", fake_names)
+    payload = json.loads(
+        asyncio.run(
+            read_tool.positive_negative_case_read(
+                query_json='{"subject_user_key": "ou_subject"}', user_key="ou_writer"
+            )
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["读取状态"] == "已读完全部记录"
+
+
+def test_read_bad_query_returns_unified_chinese_failure() -> None:
+    read_tool = importlib.import_module("positive_negative_case_read")
+    payload = json.loads(asyncio.run(read_tool.positive_negative_case_read(query_json="not-json")))
+    assert payload["ok"] is False
+    assert payload["状态"] == "读取失败"
+    assert "解析" in payload["说明"]
+
+
+def test_single_page_read_text_points_to_analyze_tool_not_manual_paging() -> None:
+    reader = importlib.import_module("_positive_negative_list.reader")
+    projection = reader._public_result({"ok": True, "records": [], "has_more": True})
+    assert "汇总分析" in projection["读取状态"]
+    assert "下一页" not in projection["读取状态"]
