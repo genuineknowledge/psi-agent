@@ -1902,6 +1902,7 @@ def test_runtime_config_yaml_overrides_ledger_defaults(monkeypatch, tmp_path) ->
         "\n".join(
             [
                 "ledger:",
+                "  host: ledger.example.cn",
                 "  app_token: app_custom",
                 "  table_id: tbl_custom",
                 "  view_id: vew_custom",
@@ -1920,6 +1921,7 @@ def test_runtime_config_yaml_overrides_ledger_defaults(monkeypatch, tmp_path) ->
 
     assert runtime._target_coordinates({}, "read") == ("app_custom", "tbl_custom", "vew_custom")
     assert runtime._default_ledger_field_names()["nature"] == "正负面归属"
+    assert runtime._default_ledger_web_host() == "ledger.example.cn"
     # Built-in constants are untouched and still serve as fallbacks.
     assert runtime._SOURCE_APP_TOKEN == "RNEvbLIJAaPPdksfv8YceTmjndg"
 
@@ -1935,6 +1937,7 @@ def test_runtime_config_falls_back_to_builtins_when_missing(monkeypatch, tmp_pat
         runtime._SOURCE_VIEW_ID,
     )
     assert runtime._default_ledger_field_names() == dict(runtime._LEDGER_FIELD_NAMES)
+    assert runtime._default_ledger_web_host() == runtime._SOURCE_WEB_HOST
 
 
 def test_runtime_config_falls_back_when_malformed(monkeypatch, tmp_path) -> None:
@@ -1950,3 +1953,21 @@ def test_runtime_config_falls_back_when_malformed(monkeypatch, tmp_path) -> None
         runtime._SOURCE_TABLE_ID,
         runtime._SOURCE_VIEW_ID,
     )
+
+
+def test_record_links_use_tenant_domain_not_generic_feishu() -> None:
+    table = importlib.import_module("_positive_negative_list.table")
+
+    adapter = table.TableAdapter(object())
+    adapter._schema = SimpleNamespace(app_token="app_x", table_id="tbl_y")
+    link = adapter.public_record_link("rec_1")
+    assert link.startswith("https://genuineknowledge.feishu.cn/base/app_x?table=tbl_y&record=rec_1")
+
+    class HostedClient:
+        web_host = "custom.example.feishu.cn"
+
+    adapter_hosted = table.TableAdapter(HostedClient())
+    adapter_hosted._schema = SimpleNamespace(app_token="app_x", table_id="tbl_y")
+    hosted_link = adapter_hosted.public_record_link("rec_1")
+    assert hosted_link.startswith("https://custom.example.feishu.cn/base/app_x?table=tbl_y&record=rec_1")
+    assert "genuineknowledge.feishu.cn" not in hosted_link

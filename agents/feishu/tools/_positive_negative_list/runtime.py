@@ -30,6 +30,10 @@ from _positive_negative_list.table import TableAdapter, TableClient, _encode_fie
 _SOURCE_APP_TOKEN = "RNEvbLIJAaPPdksfv8YceTmjndg"
 _SOURCE_TABLE_ID = "tblwXV7Xlwu0hVYH"
 _SOURCE_VIEW_ID = "veweChthHV"
+# Tenant web domain for employee-visible record links (kept in sync with
+# ``table._DEFAULT_WEB_HOST``); ``ledger.host`` in the editable config
+# overrides it per deployment.
+_SOURCE_WEB_HOST = "genuineknowledge.feishu.cn"
 _LEDGER_FIELD_NAMES = {
     "nature": "正负面归属",
     "subject_user_key": "员工姓名",
@@ -125,6 +129,9 @@ def _ledger_file_config() -> dict[str, Any]:
     view_id = str(ledger.get("view_id") or "").strip()
     if view_id:
         result["view_id"] = view_id
+    host = str(ledger.get("host") or "").strip()
+    if host:
+        result["host"] = host
     columns = ledger.get("columns")
     if isinstance(columns, dict):
         names = {str(semantic): str(field_name) for semantic, field_name in columns.items() if str(field_name).strip()}
@@ -148,6 +155,12 @@ def _default_ledger_field_names() -> dict[str, str]:
     file_config = _ledger_file_config()
     columns = file_config.get("columns") if file_config else None
     return dict(columns) if columns else dict(_LEDGER_FIELD_NAMES)
+
+
+def _default_ledger_web_host() -> str:
+    file_config = _ledger_file_config()
+    host = file_config.get("host") if file_config else None
+    return str(host).strip() if host else _SOURCE_WEB_HOST
 
 
 def _field_config(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -264,6 +277,7 @@ class ConfiguredTableClient(FeishuLedgerClient):
         }
         super().__init__(app_token, table_id, names)
         self._config = config
+        self.web_host = str(config.get("web_host") or "").strip()
         self._fields = fields
         self._field_names_by_id = {
             str(value.get("field_id")): str(value.get("field_name") or semantic)
@@ -548,7 +562,10 @@ class ConfiguredTableClient(FeishuLedgerClient):
 def configured_table_adapter() -> TableAdapter:
     config = _load_config()
     app_token, table_id, _ = _target_coordinates(config, "write")
-    effective = config or {"write_target": {"mode": "existing_columns", "field_names": _default_ledger_field_names()}}
+    effective = config or {
+        "write_target": {"mode": "existing_columns", "field_names": _default_ledger_field_names()},
+        "web_host": _default_ledger_web_host(),
+    }
     return TableAdapter(ConfiguredTableClient(app_token, table_id, effective))
 
 

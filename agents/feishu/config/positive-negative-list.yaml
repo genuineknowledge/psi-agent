@@ -4,6 +4,8 @@
 # 员工侧规则文本仍以 SKILL.md 与 skills/positive-negative-list/6.0-shadow.yaml 为准。
 
 ledger:
+  # 租户 Web 域名, 用于拼接员工可见的记录链接(默认 genuineknowledge.feishu.cn); 换租户只改这里。
+  host: genuineknowledge.feishu.cn
   app_token: RNEvbLIJAaPPdksfv8YceTmjndg
   table_id: tblwXV7Xlwu0hVYH
   view_id: veweChthHV

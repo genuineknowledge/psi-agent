@@ -12,6 +12,12 @@ from zoneinfo import ZoneInfo
 from _positive_negative_list.models import CaseDraft, LedgerQuery, LedgerRecord
 from _positive_negative_list.preflight import TableSchema, TableSchemaValidation
 
+# Tenant web domain used to build employee-visible record links.  Never use
+# the generic ``feishu.cn`` here: this tenant's Feishu is served under its own
+# domain.  Deployments may override it per client through the editable PNL
+# config (``ledger.host`` in config/positive-negative-list.yaml).
+_DEFAULT_WEB_HOST = "genuineknowledge.feishu.cn"
+
 
 class TableClient(Protocol):
     async def preflight(self, user_key: str) -> TableSchemaValidation: ...
@@ -195,15 +201,17 @@ class TableAdapter:
             if record_id and "record_link" not in created:
                 return {
                     **dict(created),
-                    "record_link": (
-                        f"https://feishu.cn/base/{schema.app_token}?table={schema.table_id}&record={record_id}"
-                    ),
+                    "record_link": self._link_for(record_id),
                 }
         return created
 
-    def public_record_link(self, record_id: str) -> str:
+    def _link_for(self, record_id: str) -> str:
         schema = self._require_schema()
-        return f"https://feishu.cn/base/{schema.app_token}?table={schema.table_id}&record={record_id}"
+        host = str(getattr(self._client, "web_host", "") or "").strip() or _DEFAULT_WEB_HOST
+        return f"https://{host}/base/{schema.app_token}?table={schema.table_id}&record={record_id}"
+
+    def public_record_link(self, record_id: str) -> str:
+        return self._link_for(record_id)
 
     def _require_schema(self) -> TableSchema:
         if self._schema is None:
