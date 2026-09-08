@@ -686,16 +686,103 @@ async def test_refresh_mixed_changes(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_get_last_file_wins(tmp_path: Path) -> None:
-    """get() searches files in insertion order, returns first match."""
-    tools_dir = tmp_path / "tools"
-    await anyio.Path(tools_dir).mkdir()
-    await anyio.Path(tools_dir / "a.py").write_text("async def echo() -> str:\n    return 'a'\n", encoding="utf-8")
-    await anyio.Path(tools_dir / "b.py").write_text("async def echo() -> str:\n    return 'b'\n", encoding="utf-8")
-    tr = await ToolRegistry.load(tools_dir)
+async def test_get_last_file_wins() -> None:
+    """get() resolves a duplicate name to the last-registered file."""
+
+    async def echo_a() -> str:
+        return "a"
+
+    async def echo_b() -> str:
+        return "b"
+
+    tr = ToolRegistry(
+        files={
+            "a.py": FileEntry(
+                file_hash="h1",
+                tools={"echo": ToolFunction.from_callable(echo_a)},
+                funcs={"echo": echo_a},
+            ),
+            "b.py": FileEntry(
+                file_hash="h2",
+                tools={"echo": ToolFunction.from_callable(echo_b)},
+                funcs={"echo": echo_b},
+            ),
+        }
+    )
     func = tr.get("echo")
     assert func is not None
-    assert await func() in ("a", "b")  # glob order is filesystem-dependent
+    assert await func() == "b"
+
+
+@pytest.mark.anyio
+async def test_duplicate_name_metadata_and_callable_come_from_same_file(tmp_path: Path) -> None:
+    """A name defined in two files resolves to one layer, not two.
+
+    ``tools`` (what the model sees) is built by overwriting per file, so
+    the last-loaded file wins there.  ``get()`` (what actually runs) has
+    to land on that same file — otherwise the model is shown one layer's
+    description and schema while a different layer's body executes.
+    """
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "a_official.py").write_text(
+        textwrap.dedent("""\
+        async def echo() -> str:
+            \"\"\"OFFICIAL DOC.\"\"\"
+            return 'OFFICIAL'
+    """),
+        encoding="utf-8",
+    )
+    await anyio.Path(tools_dir / "z_personal.py").write_text(
+        textwrap.dedent("""\
+        async def echo() -> str:
+            \"\"\"PERSONAL DOC.\"\"\"
+            return 'PERSONAL'
+    """),
+        encoding="utf-8",
+    )
+    tr = await ToolRegistry.load(tools_dir)
+
+    func = tr.get("echo")
+    assert func is not None
+    # Both sides name the same layer: "PERSONAL DOC." ↔ "PERSONAL".
+    assert tr.tools["echo"].description.split()[0] == await func()
+    # And that layer is the last-loaded file, matching ``tools``' overwrite order.
+    assert await func() == "PERSONAL"
+
+
+@pytest.mark.anyio
+async def test_get_reaches_tools_shadowed_by_a_later_file(tmp_path: Path) -> None:
+    """Losing a name collision must not make a file's other tools unreachable."""
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "a_official.py").write_text(
+        textwrap.dedent("""\
+        async def echo() -> str:
+            return 'OFFICIAL'
+        async def official_only() -> str:
+            return 'official_only'
+    """),
+        encoding="utf-8",
+    )
+    await anyio.Path(tools_dir / "z_personal.py").write_text(
+        textwrap.dedent("""\
+        async def echo() -> str:
+            return 'PERSONAL'
+        async def personal_only() -> str:
+            return 'personal_only'
+    """),
+        encoding="utf-8",
+    )
+    tr = await ToolRegistry.load(tools_dir)
+
+    for name in ("echo", "official_only", "personal_only"):
+        assert tr.get(name) is not None, f"{name} became unreachable"
+    official_only = tr.get("official_only")
+    personal_only = tr.get("personal_only")
+    assert official_only is not None and personal_only is not None
+    assert await official_only() == "official_only"
+    assert await personal_only() == "personal_only"
 
 
 # ── bare-name private helper imports ─────────────────────────────────────────

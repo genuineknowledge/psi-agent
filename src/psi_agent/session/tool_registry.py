@@ -437,8 +437,18 @@ class ToolRegistry:
         return result
 
     def get(self, name: str) -> Callable[..., Any] | None:
-        """Return the callable for *name*, or None if not registered."""
-        for entry in self._files.values():
+        """Return the callable for *name*, or None if not registered.
+
+        Files are searched in reverse insertion order so a duplicate name
+        resolves to the same file ``tools`` resolves it to — that property
+        overwrites per file, so the last-loaded one wins there.  Searching
+        forwards would run the first file's body while advertising the
+        last file's description and schema (content layering derives
+        personal tools from official ones by reusing the name, so the two
+        directions have to agree).  Names unique to an earlier file are
+        still found; only the winner of a collision changes.
+        """
+        for entry in reversed(self._files.values()):
             func = entry.funcs.get(name)
             if func is not None:
                 return func
