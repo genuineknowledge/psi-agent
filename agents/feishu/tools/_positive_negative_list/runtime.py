@@ -22,7 +22,7 @@ from _positive_negative_list.table import TableAdapter, TableClient, _encode_fie
 # and no AppData target file; the write path reuses the public ledger's own
 # six columns after a fail-closed preflight.
 _SOURCE_APP_TOKEN = "RNEvbLIJAaPPdksfv8YceTmjndg"
-_SOURCE_TABLE_ID = "tblwXV7Xlwu0hVYH"
+_SOURCE_TABLE_ID = "tblbF6ZVQbNTNxxn"  # 正负清单总表-战争版 (2026-09-08 核实; 旧 tblwXV7Xlwu0hVYH 已删/重建)
 _SOURCE_VIEW_ID = "veweChthHV"
 _LEDGER_FIELD_NAMES = {
     "nature": "正负面归属",
