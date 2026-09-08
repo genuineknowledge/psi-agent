@@ -27,14 +27,10 @@ _TABLE_SEPARATOR = "|---|---|---|---|"
 
 def _md_cell(value: str) -> str:
     """Escape one GFM table cell: pipes and newlines break the table otherwise."""
-    return (
-        (value or "").replace("\\", "\\\\").replace("|", "\\|").replace("\r", "").replace("\n", "<br>")
-    )
+    return (value or "").replace("\\", "\\\\").replace("|", "\\|").replace("\r", "").replace("\n", "<br>")
 
 
-def _build_card_json(
-    mentor_name: str, cycle_date: str, rows: list[dict], align_notes: str, notes: str = ""
-) -> dict:
+def _build_card_json(mentor_name: str, cycle_date: str, rows: list[dict], align_notes: str, notes: str = "") -> dict:
     lines = [
         _REMINDER_LINE,
         "",
