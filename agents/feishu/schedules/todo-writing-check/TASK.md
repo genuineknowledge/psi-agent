@@ -15,7 +15,7 @@ fire: prompt
 | 判定口径(唯一来源) | 依次 `skill_manage(action="view", skill_name="...")` 加载三个技能:`todo-writing-standard`、`todo-truthfulness-check`、`todo-alignment-check`。判定以技能规则为准,不自行增减规则 |
 | 团队 TODO 看板表 | 链接 https://genuineknowledge.feishu.cn/wiki/H6icwLWn1iwpXAk73QMcA6MgnWc —— /wiki/ 链接先 `feishu_api` GET /open-apis/wiki/v2/spaces/get_node 换 obj_token,再读表;表结构(表头行/人名列/mentor 列/最新日期列)每次现场探,不写死 |
 | 请假事实 | `feishu_leave_query`,approval_code=`99EEC396-536A-4C7A-8B2D-412584E35CE3`(只算已通过;审批中/读不出必须单独报告) |
-| 工作树 | `feishu_worktree_read`(mindnote_token=OTRKbopcVm8J5xnJQx8cjzwAnvI,需 mindnote 授权)——D7 重要全覆盖用 |
+| 工作树 | `feishu_worktree_read`(mindnote_token=OTRKbopcVm8J5xnJQx8cjzwAnvI,需 mindnote 授权;**user_key 必须传授权人名下的 open_id——定时回合无 <feishu_context> 可推断,不传读不到授权**)——D7 重要全覆盖用 |
 
 ## 流程
 
