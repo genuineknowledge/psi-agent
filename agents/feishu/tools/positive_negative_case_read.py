@@ -24,6 +24,14 @@ async def positive_negative_case_read(
 ) -> str:
     """Read paginated positive-negative records from the configured Feishu table.
 
+    台账调用规范 (务必遵守):
+    - 本工具是正负面台账读取的唯一入口, 台账坐标由代码固定:
+      base RNEvbLIJAaPPdksfv8YceTmjndg / 表 tblwXV7Xlwu0hVYH(正负清单总表-全员版) / 视图 veweChthHV。
+    - 禁止为读台账自写 bash/python/urllib 脚本, 禁止经 feishu_api 列表后改读其它表;
+      同库 tblbF6ZVQbNTNxxn(正负清单总表-战争版) 等不是本工具目标。
+    - 工具报权限或表不存在错误时, 把错误原文反馈给用户并提示检查应用协作者权限,
+      不要自行改坐标或换表重试。
+
     Args:
         query_json: JSON object containing optional filters and pagination fields.
         page_size: Number of rows to request, from 1 to 500.
