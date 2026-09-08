@@ -102,6 +102,9 @@ class SchedulerManager:
         但有可用 AI 时把 workspace 记入 ``_pending``, 由 ``watch_loop`` 稍后自动拉起
         —— 首个定时任务无需任何外部事件即可生效。任何异常都只记 warning 并返回
         ``""`` —— 调度起不来不该拖垮建会话 / 收消息的主链路。
+
+        session id 一律由 workspace 派生 (``scheduler-<sha256 前缀>``), 调用方不指定:
+        组织级任务用哪个 Session 由公司 seed workspace 决定, 不依赖某个固定字符串。
         """
         if not workspace.strip():
             return ""
@@ -232,13 +235,13 @@ class SchedulerManager:
     async def _sweep_once(self) -> None:
         """一轮 pending 重查: 有 schedules 的 workspace 立即拉起调度 Session。
 
-        同时兜底 seed workspace 的冷启动 —— 它可能从没被任何用户消息 ensure 过
-        (不在 ``_pending`` 里), 不在这里主动 ensure 的话, 部署后种子任务永远不落盘。
+        同时每轮都对 seed workspace 跑一次幂等 ``ensure``: 冷启动兜底 (它可能从没被
+        任何用户消息 ensure 过, 不在 ``_pending`` 里) 之外, 也保证**后续部署**新增的
+        公司级种子任务最迟一个轮询周期内落盘 —— 重启后调度 Session 由 state 恢复、
+        不复走 spawn 路径, 旧「只在会话缺失时补种」会让新任务一直等不到 seed。
         """
         if self.seed_workspace.strip():
-            seed_sid = self._session_id_from_key(await self._workspace_key(self.seed_workspace))
-            if not self._sm.has(seed_sid):
-                await self.ensure(self.seed_workspace, ai_id=self._ai_id, agent=self.seed_agent)
+            await self.ensure(self.seed_workspace, ai_id=self._ai_id, agent=self.seed_agent)
         for key, (workspace, ai_id, agent) in list(self._pending.items()):
             sid = self._session_id_from_key(key)
             if self._sm.has(sid):

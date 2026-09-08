@@ -21,6 +21,7 @@ import {
   maskPhone,
   needsComplete,
   normalizeCode,
+  normalizePhoneDigits,
   remainingOf,
   retryAfterOf,
   screenOf,
@@ -45,9 +46,28 @@ describe('手机号校验与服务端同规则', () => {
   })
 
   it('不自行去 +86 前缀：归一化是服务端的职责，前端只做格式提示', () => {
-    // 若前端偷偷去前缀，用户会以为格式没问题；实际请求体仍带 +86，
-    // 反而掩盖问题。这里明确断言前端不做这件事。
+    // isValidPhone 仍要求已经是 11 位国内号；带 +86 的原文直接校验应失败。
+    // 输入框归一化见 normalizePhoneDigits，不在这里偷偷放行。
     expect(isValidPhone('+8613800000000')).toBe(false)
+  })
+})
+
+describe('登录框手机号归一化（左侧已有 +86）', () => {
+  it('剥掉 autofill / 粘贴带来的国家码后再截 11 位', () => {
+    expect(normalizePhoneDigits('+8613800138000')).toBe('13800138000')
+    expect(normalizePhoneDigits('+86 138 0013 8000')).toBe('13800138000')
+    expect(normalizePhoneDigits('8613800138000')).toBe('13800138000')
+    expect(normalizePhoneDigits('008613800138000')).toBe('13800138000')
+  })
+
+  it('已是国内号则原样保留', () => {
+    expect(normalizePhoneDigits('13800138000')).toBe('13800138000')
+    expect(normalizePhoneDigits('138 0013 8000')).toBe('13800138000')
+  })
+
+  it('先剥国家码再截断，避免 +86138… 被截成 86138…', () => {
+    // 旧逻辑 replace+slice(0,11) 会得到 86138001380
+    expect(normalizePhoneDigits('+8613800138000999')).toBe('13800138000')
   })
 })
 

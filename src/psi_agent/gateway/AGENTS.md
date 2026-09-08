@@ -209,7 +209,7 @@ schedules → `{workspace}/schedules/`（归 workspace，非 agent 包 / 非 App
 | **谁调 `ensure`** | `POST /sessions`（建会话后）、`POST /feishu/route`（路由用户/群后）、`Gateway.run` 启动恢复 state 后；另有常驻 `watch_loop` 兜底「首个 TASK.md」的发现（无需任何外部事件） |
 | **AI 实例** | `--scheduler-ai-id`，空则回落 `--feishu-ai-id`；两者都空时不 spawn（记 warning）——`fire=prompt` 需要 AI 后端，spawn 一个连不上上游的 Session 更糟 |
 | **失败不扩散** | `ensure` 捕获全部异常，只记 warning 返回 `""`。调度起不来不该拖垮建会话 / 收消息的主链路 |
-| **对 SPA / state 隐藏** | 见上方 `list_all(include_scheduler=False)` |
+| **默认对 SPA / state 隐藏** | 见上方 `list_all(include_scheduler=False)`；飞书侧把公司级种子 workspace（`PSI_SEED_SCHEDULES_WORKSPACE`，如 `/workspace/.meeting-session`）派生的调度会话对全体已登录用户开放**只读历史**（组织共享任务如会议自动化，可见性是公司级任务的固有属性、不另设开关），聊天仍由路由层拒绝；个人 workspace 的调度会话一律隐藏 |
 
 Session 侧的对应契约（逐条激活、未激活条目仍加载、display 结果不再回流用户）见 `session/AGENTS.md` 的「调度归属 workspace，触发权归属 (session × schedule)」。
 

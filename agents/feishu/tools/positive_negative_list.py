@@ -17,7 +17,12 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 import _feishu_impl as _f
-from _assignment_display import resolve_feishu_display_names
+from _assignment_display import (
+    readable_name,
+    render_people_display,
+    resolve_feishu_display_names,
+    resolve_people_display,
+)
 from _positive_negative_list.dedupe import (
     build_cross_source_fingerprint,
     make_source_key,
@@ -43,49 +48,83 @@ def _preview_digest(case: CaseDraft) -> str:
 
 async def _confirmation_card(case: CaseDraft, digest: str) -> dict[str, Any]:
     nature = {"positive": "正面行为", "negative": "负面行为"}.get(case.nature, case.nature)
-    subject_ids = {
-        identity.strip() for identity in case.subject_user_key.replace("，", ",").split(",") if identity.strip()
-    }
-    names = await resolve_feishu_display_names(subject_ids, _f.get_users_batch_impl)
-    subject_display = "、".join(names.get(identity, "姓名未解析") for identity in sorted(subject_ids))
-    if not subject_display:
-        subject_display = "姓名未提供"
-    teaching = ""
+    subject_display = await resolve_people_display(case.subject_user_key, _f.get_users_batch_impl)
+    guidance = ""
     if case.nature == "negative":
-        teaching = (
-            f"\n**正确做法**：{case.correct_behavior}"
-            f"\n**立即补救**：{case.immediate_remedy}"
-            f"\n**预防措施**：{case.prevention}"
+        guidance = (
+            f"\n**正确做法 · 建议**　{case.correct_behavior}"
+            f"\n**立即补救**　{case.immediate_remedy}"
+            f"\n**预防措施**　{case.prevention}"
         )
     action_value = {"action": "positive_negative_case_confirm", "case_id": case.case_id, "preview_digest": digest}
     return {
-        "config": {"wide_screen_mode": True},
-        "header": {"template": "blue", "title": {"tag": "plain_text", "content": "正负面清单记录确认"}},
-        "elements": [
-            {
-                "tag": "markdown",
-                "content": (
-                    f"**涉事人**：{subject_display}\n"
-                    f"**发生时间**：{case.occurred_at}\n"
-                    f"**行为性质**：{nature}\n"
-                    f"**分类**：{case.category}\n"
-                    f"**行为事实**：{case.fact_summary}\n"
-                    f"**证据状态**：{', '.join(case.evidence_sources)}"
-                    f"{teaching}\n\n确认后将写入 HaiTun 机器人独立测试表，不会修改正式总表。当前不计分、不进入绩效。"
-                ),
-            },
-            {
-                "tag": "action",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "确认写入"},
-                        "type": "primary",
-                        "value": action_value,
-                    }
-                ],
-            },
-        ],
+        "schema": "2.0",
+        "config": {"width_mode": "regular"},
+        "header": {"template": "blue", "title": {"tag": "plain_text", "content": "正负面清单 · 记录确认"}},
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": (
+                        f"**对象**　{subject_display} · {nature}\n"
+                        f"**发生时间**　{case.occurred_at}　·　**分类**　{case.category}\n"
+                        f"**行为事实**　{case.fact_summary}\n"
+                        f"**证据来源**　{', '.join(case.evidence_sources) or '未提供'}"
+                        f"{guidance}\n\n确认后仅写入正负面清单正式总表；不计分、不进入绩效。"
+                    ),
+                },
+                {"tag": "hr"},
+                {
+                    "tag": "column_set",
+                    "flex_mode": "none",
+                    "columns": [
+                        {
+                            "tag": "column",
+                            "width": "weighted",
+                            "weight": 1,
+                            "elements": [
+                                {
+                                    "tag": "button",
+                                    "text": {"tag": "plain_text", "content": "确认写入"},
+                                    "type": "primary",
+                                    "behaviors": [{"type": "callback", "value": action_value}],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ]
+        },
+    }
+
+
+async def _public_case_preview(case: CaseDraft) -> dict[str, Any]:
+    """Return a confirmation preview without exposing storage identities."""
+    identities = {
+        part.strip()
+        for value in (case.writer_user_key, case.reporter_user_key, case.subject_user_key)
+        for part in value.replace("，", ",").split(",")
+        if readable_name(part.strip()) is None
+    }
+    names = await resolve_feishu_display_names(identities, _f.get_users_batch_impl)
+
+    nature = {"positive": "正面行为", "negative": "负面行为"}.get(case.nature, case.nature)
+    return {
+        "写入者": render_people_display(case.writer_user_key, names),
+        "报告人": render_people_display(case.reporter_user_key, names),
+        "涉事人": render_people_display(case.subject_user_key, names),
+        "发生时间": case.occurred_at,
+        "观察到的行为": case.observed_behavior,
+        "场合/背景": case.context,
+        "影响": case.impact,
+        "证据来源": list(case.evidence_sources),
+        "行为性质": nature,
+        "分类": case.category,
+        "行为事实": case.fact_summary,
+        "判断说明": case.agent_inference,
+        "正确做法": case.correct_behavior,
+        "立即补救": case.immediate_remedy,
+        "预防措施": case.prevention,
     }
 
 
@@ -170,9 +209,9 @@ async def positive_negative_case_prepare(
                 "case_id": case_id,
                 "rule_version": case.rule_version,
                 "message_id": sent.get("message_id", ""),
-                "confirmation_scope": "写入 HaiTun 机器人独立测试表",
+                "confirmation_scope": "写入正负面清单正式总表",
                 "preview_digest": digest,
-                "preview": case.to_mapping(),
+                "preview": await _public_case_preview(case),
             }
         )
     except (TypeError, ValueError, json.JSONDecodeError) as exc:

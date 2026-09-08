@@ -33,6 +33,7 @@ import {
   isTempTokenExpired,
   maskAccount,
   needsComplete,
+  normalizePhoneDigits,
   remainingOf,
   retryAfterOf,
   validateAccount,
@@ -502,10 +503,11 @@ export default function HubLoginPanel({
             <span className="cc">+86</span>
             <input
               value={groupPhone(account)}
-              onChange={(e) => setAccount(e.target.value.replace(/\D/g, '').slice(0, 11))}
+              onChange={(e) => setAccount(normalizePhoneDigits(e.target.value))}
               placeholder="138 0013 8000"
               inputMode="numeric"
-              autoComplete="tel"
+              /* tel-national：提示浏览器填国内号、别再塞 +86（左侧已有区号）。 */
+              autoComplete="tel-national"
               disabled={busy}
               aria-label={t('auth.phoneAria')}
             />

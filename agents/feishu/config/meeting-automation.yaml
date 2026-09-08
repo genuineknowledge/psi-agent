@@ -1,0 +1,48 @@
+# 公司会议自动化配置 —— 可编辑的运行口径（meeting-automation v0.1）
+# 与 config/todo-sop.yaml 同一契约模式，但层级不同：
+#
+#   ⛔ 硬边界（永不允许经本文件修改，改动必须走代码 PR）：
+#      - 会议白名单 (name + meeting_code)、cron/retry 调度、token_env 配对
+#        （哪场会议用哪个账号凭据 = 授权门，留在 _meeting_automation.py 的
+#        MEETING_JOBS 代码中；加载器发现本文件含这些键会直接报错）
+#      - 腾讯 token 值（永远只从进程环境变量读取）
+#
+#   ✅ 本文件可编辑部分（加载器逐键白名单校验后并入 MeetingJob）：
+#      - 每场会议的展示/投递口径：title、summary/overview 收件人、
+#        analysis_sop_skills（会议 SOP 引擎 skill）、alert_recipients（失败告警）
+#      - runtime：引擎运行参数（分块/温度/超时/重试/告警文案）
+#      - resources：引擎引用的文件路径（相对 agents/feishu 包根）
+#   meetings 段只允许出现代码白名单里存在的会议名，多一个就报错。
+
+meetings:
+  weekday-alignment:
+    title: 周中对齐会
+    summary_recipients: ["HaiTun Agent主战场"]
+    overview_recipients: ["罗霖"]
+    analysis_sop_skills: ["meeting-sop/weekday-alignment"]
+    alert_recipients: ["张浩", "王金旺"]
+  weekday-alignment-1100:
+    title: 日会
+    summary_recipients: ["张浩", "王金旺"]
+    overview_recipients: ["罗霖"]
+    analysis_sop_skills: ["meeting-sop/weekday-alignment"]
+    alert_recipients: ["张浩", "王金旺"]
+
+runtime:
+  analysis:
+    chunk_chars: 8000
+    temperature: 0
+  notify:
+    chunk_chars: 8000
+  tencent:
+    call_timeout_seconds: 60      # 子进程单次调用超时 (TENCENT_MEETING_CALL_TIMEOUT 环境变量可覆盖)
+    http_timeout_seconds: 30      # skill HTTP 代理 urlopen 超时
+    retry_attempts: 3
+    retry_backoff_seconds: [0.5, 1.0, 2.0]
+  alerts:
+    message_prefix: "[会议自动化告警]"
+    error_truncate_chars: 500
+
+resources:
+  positive_rules_file: skills/positive-negative-list/references/analysis_rules.md
+  meeting_sop_config_file: config/meeting-sop.yaml

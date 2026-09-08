@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import _feishu_impl as _f
+from _assignment_display import readable_name, render_people_display, resolve_feishu_display_names
 
 from _positive_negative_list.models import LedgerQuery, LedgerRecord
 
@@ -316,7 +317,10 @@ async def read_records(client: FeishuLedgerClient, query: LedgerQuery, user_key:
     }
 
 
-def public_result(result: Mapping[str, Any]) -> dict[str, Any]:
+def _public_result(
+    result: Mapping[str, Any],
+    display_names: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     """Project an internal page into a readable response for the chat model."""
     if not result.get("ok", True):
         return {
@@ -335,11 +339,14 @@ def public_result(result: Mapping[str, Any]) -> dict[str, Any]:
             "neutral": "未发现正负面行为",
             "insufficient_evidence": "证据不足",
         }.get(record.nature, record.nature)
+        names = display_names or {}
+        reporter = render_people_display(record.reporter_user_key, dict(names))
+        subject = render_people_display(record.subject_user_key, dict(names))
         records.append(
             {
                 "记录编号": record.record_id,
-                "报告人": record.reporter_user_key,
-                "涉事人": record.subject_user_key,
+                "报告人": reporter,
+                "涉事人": subject,
                 "发生时间": record.occurred_at,
                 "行为性质": nature,
                 "分类": record.category,
@@ -359,3 +366,32 @@ def public_result(result: Mapping[str, Any]) -> dict[str, Any]:
         "本页记录数": len(records),
         "读取状态": "本页已读完，请继续读取下一页" if result.get("has_more") else "已读完全部记录",
     }
+
+
+async def public_result_with_names(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Project a page with all person fields rendered as display names."""
+    if not result.get("ok", True):
+        return _public_result(result)
+    identities: set[str] = set()
+    normalized: list[LedgerRecord] = []
+    for raw in result.get("records", ()):
+        if not isinstance(raw, Mapping):
+            continue
+        record = LedgerRecord.from_mapping(raw)
+        normalized.append(record)
+        identities.update(
+            part.strip()
+            for value in (record.reporter_user_key, record.subject_user_key)
+            for part in value.replace("，", ",").split(",")
+            if readable_name(part.strip()) is None
+        )
+    names = await resolve_feishu_display_names(identities, _f.get_users_batch_impl)
+    return _public_result({**dict(result), "records": [record.to_mapping() for record in normalized]}, names)
+
+
+def public_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Backward-compatible projection for internal callers.
+
+    User-facing entry points should use :func:`public_result_with_names`.
+    """
+    return _public_result(result)

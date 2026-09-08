@@ -125,6 +125,50 @@ function formatJsonl(text: string): string {
   return formatted ? output.join('\n') : text
 }
 
+const _WIDTH_STYLE_RE = /\b(?:min-|max-)?width\s*:/i
+
+const _MONO_FONT_RE = /mono|consolas|courier|menlo|cascadia|jetbrains|source.?code|fira.?code|nsimsun|仿宋|宋体.?mono/i
+
+/** Strip Word absolute widths so preview tables can reflow like MD (`table-layout: fixed`). */
+export function fitDocxTables(root: ParentNode): void {
+  const tables = root.querySelectorAll('table')
+  for (const table of tables) {
+    if (!(table instanceof HTMLElement)) continue
+    if (!table.closest('.docx-table-scroll')) {
+      const wrap = document.createElement('div')
+      // Same chrome as `.md-table-card` (rounded card + header tint); scroll lives on this wrap.
+      wrap.className = 'docx-table-scroll'
+      table.parentNode?.insertBefore(wrap, table)
+      wrap.append(table)
+    }
+    clearDocxWidthHints(table)
+    for (const el of table.querySelectorAll('col, th, td')) {
+      if (el instanceof HTMLElement) clearDocxWidthHints(el)
+    }
+    // Word rarely emits <th>; first row is usually the header — mark it for MD-like tint.
+    if (!table.querySelector('th')) {
+      const first = table.querySelector('tr')
+      first?.classList.add('docx-table-header-row')
+    }
+    for (const span of table.querySelectorAll('span')) {
+      if (!(span instanceof HTMLElement)) continue
+      if (span.classList.contains('docx-inline-code')) continue
+      const ff = span.style.fontFamily || ''
+      if (ff && _MONO_FONT_RE.test(ff)) span.classList.add('docx-inline-code')
+    }
+  }
+}
+
+function clearDocxWidthHints(el: HTMLElement): void {
+  el.removeAttribute('width')
+  const style = el.getAttribute('style')
+  if (!style || !_WIDTH_STYLE_RE.test(style)) return
+  el.style.removeProperty('width')
+  el.style.removeProperty('min-width')
+  el.style.removeProperty('max-width')
+  if (!el.getAttribute('style')?.trim()) el.removeAttribute('style')
+}
+
 function normalizeRow(row: unknown): unknown[] {
   return Array.isArray(row) ? row : [row]
 }
@@ -403,12 +447,15 @@ export async function renderBlobPreview(
       // ignoreWidth: drop Word page width (~794px) so the drawer can own layout.
       // Page *margins* are still absolute lengths — CSS overrides them so the
       // body fills the panel instead of a skinny centered column.
+      // ignoreWidth drops page + tcW widths, but tblW / tblGrid col widths remain.
+      // fitDocxTables clears those so CSS can reflow like MD preview tables.
       await renderAsync(bytesToArrayBuffer(bytes), stage, undefined, {
         inWrapper: true,
         ignoreWidth: true,
         ignoreHeight: true,
         breakPages: true,
       })
+      fitDocxTables(stage)
       return { cleanup, notice }
     }
 

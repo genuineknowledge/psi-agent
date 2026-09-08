@@ -699,6 +699,14 @@ async def _notify_auth_outcome(user_key: str, state: _auth_watch.WatchState) -> 
     起不了回合时 (没有在服务的 live agent, 例如单进程直连或 session 已停) 退回原来的
     私聊回执: 说一句总比彻底静默好, 但要如实说需要用户再招呼一声。
     """
+    if state.status == _auth_watch.STATUS_TIMEOUT and await _core._get_valid_uat(user_key) is not None:
+        # The watcher inbox is per-process, but ``uat.json`` is a shared file:
+        # another instance (or a delayed relay) may have completed this very
+        # authorization while we were polling an empty inbox. Re-check the token
+        # store before telling the user we got nothing — otherwise the user who
+        # already clicked "同意授权" hears "还没收到你的授权".
+        state.status = _auth_watch.STATUS_GRANTED
+        state.message = "授权已完成 (延迟到账, 已复核 uat.json)"
     if state.status == _auth_watch.STATUS_GRANTED:
         session_id = get_session_id()
         resumed = False

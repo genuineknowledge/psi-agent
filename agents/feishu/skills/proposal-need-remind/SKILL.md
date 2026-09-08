@@ -1,6 +1,6 @@
 ---
 name: proposal-need-remind
-description: "公司决策分级(大事/中事/小事)下的方案入口提醒者(一层, 非监督者). LOAD when the user is about to decide, change a plan, seek collaboration, ask for extra resources, discuss TODO risk, assign work that may need a written proposal, or asks 「这算中事吗」「要不要写方案」「能不能自己定」. Soft-remind only: if it looks like 中事, suggest writing a multi-option proposal and offer to help via proposal-writing-standard; never block the turn, never force a doc. NOT for 半强制卡方案/未写不许继续(二层监督者, 未做). NOT for 行政财务假勤报销分级(admin-finance-governance). NOT for 最终拍板或 RFC 结构检查(见 proposal-review-standard / proposal-writing-standard)."
+description: "公司决策分级(大事/中事/小事)下的方案入口提醒者(一层, 非监督者). MUST LOAD first (do not skip) when the user changes a plan, seeks cross-role collaboration, asks for extra resources/budget/machines, discusses TODO/project risk needing a decision, assigns work that may need a written proposal, or asks 「这算中事吗」「要不要写方案」「能不能自己定」— even if they only ask「怎么推进」and never say 方案. Soft-remind only: if it looks like 中事, suggest writing a multi-option proposal and offer to help via proposal-writing-standard; never block the turn, never force a doc. Forbidden: answer with only a schedule/PM checklist and omit 大事/中事/小事. NOT for 半强制卡方案/未写不许继续(二层监督者, 未做). NOT for 行政财务假勤报销分级(admin-finance-governance). NOT for 最终拍板或 RFC 结构检查(见 proposal-review-standard / proposal-writing-standard)."
 category: knowledge-base
 ---
 
@@ -16,10 +16,15 @@ category: knowledge-base
 **刻意为之:** 一层宁可略多提醒, 也不要在证据不足时假装「小事可自决」而漏提醒;
 但提醒必须可跳过, 用户说「先不写 / 这是小事」后本回合不再纠缠.
 
+**加载硬闸门(与 system Skills 段同口径):** 命中改计划 / 跨角色协作 / 要额外资源 /
+「能不能自己定」等信号时,**必须先读本文再答**, 禁止只给排期/推进 checklist 而跳过分级提醒.
+系统提示里的 decision-grade gate 覆盖「none clearly apply → read none」.
+
 ## When to use
 
 - 用户在商量「能不能自己定」「要不要找人一起定」「要不要写方案/RFC」.
 - 对话里出现: 改原计划、找人协作、要额外资源、TODO/项目有可控风险、跨人决策.
+- 用户只问「怎么推进 / 怎么排」但内容已含上列信号 —— **仍必须加载本文**(识别力核心; 勿等用户点名方案).
 - 派活/交办时事项看起来超过「本人职责内可自决」([`work-assignment-delegation`](../work-assignment-delegation/SKILL.md) 可并行; 需要方案时用本文提醒 + 方案 skill).
 - 用户贴了意图但还没文档, 不确定要不要上方案.
 

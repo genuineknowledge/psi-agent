@@ -13,6 +13,7 @@ import os
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
+from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -480,7 +481,13 @@ class ScheduleRegistry:
                 logger.error(f"Schedule {schedule.name!r}: {result}")
             else:
                 try:
-                    raw = await func(**args)
+                    current_tool_ai_socket = import_module("psi_agent.session.agent")._CURRENT_TOOL_AI_SOCKET
+                    ai_socket = getattr(getattr(agent, "_ai_client", None), "ai_socket", "")
+                    token = current_tool_ai_socket.set(ai_socket)
+                    try:
+                        raw = await func(**args)
+                    finally:
+                        current_tool_ai_socket.reset(token)
                     result = str(raw)
                     logger.info(f"Schedule tool result ({tool_name!r}): {result[:1000]!r}")
                 except Exception as e:

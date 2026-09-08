@@ -59,6 +59,18 @@ export function isValidPhone(v: string): boolean {
   return PHONE_RE.test(v.trim())
 }
 
+/**
+ * 登录框左侧已固定展示 +86，输入区只要 11 位国内号。
+ * 浏览器 autofill / 粘贴常带 `+86`/`86`/`0086`；若先截 11 位再剥前缀，
+ * 会把国家码吃进号码（`+86138…` → `86138001380`）。必须先剥再截。
+ */
+export function normalizePhoneDigits(raw: string): string {
+  let d = raw.replace(/\D/g, '')
+  if (d.startsWith('0086')) d = d.slice(4)
+  else if (d.startsWith('86')) d = d.slice(2)
+  return d.slice(0, 11)
+}
+
 export function isValidEmail(v: string): boolean {
   const s = v.trim()
   if (s.split('@').length !== 2 || /\s/.test(s)) return false
