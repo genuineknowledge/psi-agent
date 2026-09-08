@@ -54,11 +54,6 @@ def get_agent() -> str:
     return _agent.get()
 
 
-def get_user_message() -> str:
-    """Compatibility shim; turn text is no longer stored in runtime context."""
-    return ""
-
-
 @contextmanager
 def path_scope(*, workspace: str = "", agent: str = "") -> Iterator[None]:
     """Bind workspace + agent package paths for the current turn."""
@@ -83,7 +78,6 @@ def runtime_scope(*, session_id: str, workspace: str = "", agent: str = "") -> I
 __all__ = [
     "get_agent",
     "get_session_id",
-    "get_user_message",
     "get_workspace",
     "path_scope",
     "reset_session_id",

@@ -150,14 +150,8 @@ async def workflow_sample_record(
 async def _record_workflow_authoring(
     flow_path: str,
     plan: list[str],
-    _legacy_user_message: str = "",
 ) -> str | None:
-    """Record an executed workflow against the prompt bound for this turn.
-
-    The third argument is temporarily accepted for source compatibility with
-    the existing ``run_flow`` call site. It is intentionally ignored; prompt
-    data no longer comes from ``psi_agent.session.runtime_context``.
-    """
+    """Record an executed workflow against the prompt bound for this turn."""
 
     user_message = _current_authoring_prompt()
     if not user_message.strip():

@@ -29,7 +29,6 @@ from loguru import logger
 from psi_agent.session.agent import SessionAgent, current_tool_ai_socket
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
-from psi_agent.session.runtime_context import get_user_message
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 
@@ -1188,7 +1187,6 @@ async def _record_workflow_sample_if_needed(
         result = await _record_workflow_authoring(
             flow_path,
             _workflow_sample_plan(compiled),
-            get_user_message(),
         )
     except Exception as error:
         logger.warning(f"Could not record local workflow authoring sample: {error!r}")
