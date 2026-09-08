@@ -186,7 +186,8 @@ before / after 有内核默认值，`turn_context_fn` 和 `compaction_fn` 的 `N
 
 - AI 连接超时：`ClientTimeout(total=None)` — 语义：不超时，与 channel 一致（由 `AiClient.stream()` 管理）
 - 流式 `delta` 字段可能为 `null`（非缺失 key），`AiClient` 用 `isinstance(delta_data, dict)` 校验后产出 `AiDelta`
-- Tool 模块在 `sys.modules` 中以 `psi_tool_{name}_{session_id}_{file_hash}` 注册（完整 64 位 SHA-256 hash，不截断），同进程多 session 互不冲突
+- Tool 模块在 `sys.modules` 中以 `psi_tool_{name}_{session_id}_{file_hash}` 注册（完整 64 位 SHA-256 hash，不截断）。这个名字**只是注册键，不参与复用判定**——`session_id` 在里面不影响是否重编
+- 编译复用由**进程级模块缓存** `_module_cache` 决定，键是 `(layer_id, file_hash)`：`load()` 每次新建实例并传 `old_files=None`，实例内的 hash 比对只在 `refresh()` 路径上生效，所以跨 session 的复用必须落在进程级。`layer_id` 当前是 tools 目录的 resolve 后绝对路径（分层落地后换成真正的 layer id）——**键里必须有它**，否则两个 workspace 里同名同内容的文件会共享模块、连带共享对方的 `_priv_helper` 绑定。文件内容变了则 hash 变、必然重编。缓存不淘汰
 - Schedule 加载时捕获各种 per-task 错误（IO、YAML 解析、cron 验证），单个 schedule 失败不影响整体加载
 
 ## 协议适配层
