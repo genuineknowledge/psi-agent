@@ -76,7 +76,7 @@ def test_meeting_jobs_use_fixed_post_meeting_crons() -> None:
     jobs = {job.name: job for job in MEETING_JOBS}
     assert jobs["weekday-alignment"].meeting_code == "57152787045"
     assert jobs["weekday-alignment"].cron == "0 12 * * 1,3,5"
-    assert jobs["weekday-alignment"].retry_crons == ()
+    assert jobs["weekday-alignment"].retry_crons == ("30 17 * * 1,3,5",)
     assert jobs["weekday-alignment"].summary_recipients == ("HaiTun Agent主战场",)
     assert jobs["weekday-alignment"].overview_recipients == ("罗霖",)
     assert jobs["weekday-alignment-1100"].meeting_code == "42654699903"
@@ -97,6 +97,7 @@ def test_meeting_schedule_files_cover_every_job_and_retry() -> None:
         "weekday-alignment",
         "weekday-alignment-1100",
         "weekday-alignment-1100-retry-1730",
+        "weekday-alignment-retry-1730",
     }
     for job in MEETING_JOBS:
         body = files[job.name]
@@ -108,6 +109,10 @@ def test_meeting_schedule_files_cover_every_job_and_retry() -> None:
     assert 'cron: "30 17 * * 1,3,5"' in retry
     assert '"meeting_name":"weekday-alignment-1100"' in retry
     assert '"meeting_code":"42654699903"' in retry
+    retry = files["weekday-alignment-retry-1730"]
+    assert 'cron: "30 17 * * 1,3,5"' in retry
+    assert '"meeting_name":"weekday-alignment"' in retry
+    assert '"meeting_code":"57152787045"' in retry
 
 
 def test_committed_meeting_schedule_files_match_projection() -> None:
