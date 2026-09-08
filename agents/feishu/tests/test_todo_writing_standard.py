@@ -254,19 +254,29 @@ def test_priority_urgency_trap_prompts_downgrade_not_violation() -> None:
     assert "不报 mentor" in block, "the urgency-trap hint must stay with the member only"
 
 
-def test_priority_is_model_judged_members_do_not_mark() -> None:
-    """做法 A(已定): 优先级不要求成员标注, 由海豚按 importance 三档 + urgency_trap 模型判定。"""
+def test_priority_is_member_mark_first_then_model_fallback() -> None:
+    """已定口径: 成员自标优先(第一判断), 未标海豚判定兜底, 判定全程提示级。"""
     body = _body()
-    assert "成员不标注" in body or "成员**不标注**" in body, "members must not be required to mark quadrants"
+    assert "不强制标注" in body, "members must not be REQUIRED to mark quadrants"
+    assert "第一判断" in body, "the member's own mark must be the first judgment"
     block = _subsection("按优先级", within=_section("规则集段"))
-    assert "海豚检测时对每条 TODO 判" in block, "the rule must describe the model judgment flow"
+    assert "成员自标优先" in block, "the rule must state member-mark-first"
+    assert "兜底" in block, "the rule must state the model fallback for unmarked items"
     assert "建议排序" in block, "the rule must output a suggested ordering"
+
+
+def test_priority_uses_structured_evidence_for_fallback() -> None:
+    """兜底判定用结构证据: 紧急轴 deadline+urgency_trap, 重要轴 importance 三档+小目标拆解背书。"""
+    block = _subsection("按优先级", within=_section("规则集段"))
+    assert "deadline" in block, "urgency must read the deadline field as hard evidence"
+    assert "拆解证据" in block, "importance must use sub-goal decomposition as backing"
+    assert "不进排序" in block, "chat history must NOT enter the ordering weight"
 
 
 def test_priority_judgment_consistency_with_value_is_hint_level() -> None:
     """模型判定的象限 vs 该条价值表述不一致 → 提示级, 给理由与依据。"""
     block = _subsection("按优先级", within=_section("规则集段"))
-    assert "判定与价值一致" in block, "must check the judged quadrant against the value statement"
+    assert "标注与价值一致" in block, "must check the member mark against the value statement"
     assert "提示级" in block, "a mismatch must be a hint, never a violation"
     assert "理由与依据" in block, "the hint must carry the tier judgment and its grounds"
 
