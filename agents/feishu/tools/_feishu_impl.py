@@ -141,6 +141,17 @@ _PERMISSION_MSG_HINTS = (
 )
 
 
+# User-level authorization revoked/downgraded on the Feishu side. Observed as
+# 99991679 on user-token calls after console-side permission changes or silent
+# authorization expiry. This is NOT the same class as the plain per-resource
+# denials above: a revoked grant makes the offline capability ledger stale, so
+# the fix is to shrink the ledger and ask the user to authorize again — never to
+# fall back to the tenant token (that would silently produce bot-owned content
+# the user believes they created). The set is code-based on purpose: message
+# text varies and generic hints would clear grants on unrelated failures.
+_USER_AUTH_REVOKED_CODES = {99991679}
+
+
 def _is_permission_error(res: dict[str, Any]) -> bool:
     """True if ``res`` is a Feishu permission/authorization failure (so a UAT retry
     could help). Distinct from transport errors or empty-but-ok responses."""
@@ -230,7 +241,11 @@ async def _send_as_user(request: Any, user_key: str) -> dict[str, Any] | None:
         resp = await client.arequest(_fresh(request), option)
     except Exception as exc:  # SDK/transport failure
         return _error(f"Feishu request failed: {type(exc).__name__}: {exc}")
-    return _resp_to_result(resp)
+    result = _resp_to_result(resp)
+    # A user-token call is the ground truth for the offline capability ledger:
+    # success proves the grant, 99991679 proves Feishu-side revocation. Keep the
+    # two reconciliations here so every domain benefits without per-domain hooks.
+    return _reconcile_user_result(result, user_key, capabilities=capabilities_for(request))
 
 
 _RATE_LIMIT_STATUS = 429
@@ -403,6 +418,11 @@ async def _invoke_write(request: Any, key: str, identity: str, capabilities: lis
         # No usable token at all: the user chose to own this, so ask them to
         # authorize rather than producing it under the bot's name behind their back.
         return _error(_AUTH_PROMPT, need_auth=True, need_capabilities=needed)
+    if user_res.get("need_auth"):
+        # 99991679-class revocation: the user's authorization died on the Feishu
+        # side. Re-authorizing is the only fix — never silently finish under the
+        # bot's identity when the user chose to own this result.
+        return user_res
     if not _is_permission_error(user_res):
         return user_res
     # The user authorized the app, but Feishu refuses their identity on THIS resource
@@ -673,6 +693,93 @@ def missing_capabilities(user_key: str, needed: list[str]) -> list[str]:
     """Which of ``needed`` this user has not authorized yet."""
     have = set(granted_capabilities(user_key))
     return [c for c in needed if c in _SCOPE_CATALOG and c not in have]
+
+
+def _write_json_map(path: str, data: dict[str, Any]) -> None:
+    """Persist a ``{user_key: value}`` map; a failed write must not break the caller."""
+    with contextlib.suppress(OSError), open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+
+
+def _drop_granted_capabilities(user_key: str) -> bool:
+    """Remove every capability the offline ledger claims for ``user_key``.
+
+    Called when Feishu answers with a user-authorization-revoked error: the
+    ledger only ever grows (see ``_feishu.auth._record_granted_capabilities``),
+    so a console-side revocation would otherwise keep the offline check green
+    while every real call fails. Returns True when a record was removed.
+    """
+    path = _granted_scopes_path()
+    data = _read_json_map(path)
+    key = _norm_user_key(user_key)
+    if key not in data:
+        return False
+    data.pop(key, None)
+    _write_json_map(path, data)
+    return True
+
+
+def _record_observed_capabilities(user_key: str, capabilities: list[str]) -> None:
+    """Union newly *observed* capabilities into the offline ledger.
+
+    The flip side of the ledger drift: a successful user-token call proves the
+    grant exists even when the ledger never recorded it (written before this
+    capability shipped, or refreshed from a token whose ``scope`` echo was
+    empty). Offline checks then stop re-prompting for something already granted.
+    """
+    caps = [c for c in capabilities if c in _SCOPE_CATALOG]
+    if not caps:
+        return
+    path = _granted_scopes_path()
+    data = _read_json_map(path)
+    key = _norm_user_key(user_key)
+    stored = data.get(key)
+    merged = (
+        {c for c in [*stored, *caps] if isinstance(c, str) and c in _SCOPE_CATALOG}
+        if isinstance(stored, list)
+        else set(caps)
+    )
+    data[key] = [c for c in scope_catalog_keys() if c in merged]
+    _write_json_map(path, data)
+
+
+def _is_user_auth_revoked(res: dict[str, Any]) -> bool:
+    """True when Feishu says the user-level authorization itself is no longer valid."""
+    if res.get("ok"):
+        return False
+    code = res.get("code")
+    return isinstance(code, int) and code in _USER_AUTH_REVOKED_CODES
+
+
+def _reconcile_user_result(
+    result: dict[str, Any], user_key: str, *, capabilities: list[str] | None = None
+) -> dict[str, Any]:
+    """Sync the offline capability ledger with one user-token call's outcome.
+
+    Success: union the inferred capabilities into ``granted_scopes.json`` so a
+    missing offline record stops causing false ``need_auth`` prompts.
+    Revocation (99991679): drop the user's whole ledger entry so the next call
+    re-prompts with the right capabilities instead of claiming permissions that
+    Feishu no longer honors, and annotate the result so callers surface a
+    re-authorization request rather than a raw API error.
+    """
+    if result.get("ok"):
+        if capabilities:
+            _record_observed_capabilities(user_key, capabilities)
+        return result
+    if not _is_user_auth_revoked(result):
+        return result
+    dropped = _drop_granted_capabilities(user_key)
+    annotated = dict(result)
+    note = (
+        "该用户授权已在飞书侧失效(99991679); "
+        + ("本地能力记录已清除, " if dropped else "")
+        + "请按 need_auth 引导重新授权。"
+    )
+    base = str(annotated.get("msg") or annotated.get("message") or "")
+    annotated["msg"] = f"{base} {note}".strip()
+    annotated["need_auth"] = True
+    return annotated
 
 
 _IDENTITY_USER = "user"
