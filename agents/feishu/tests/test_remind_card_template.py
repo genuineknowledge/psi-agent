@@ -40,7 +40,7 @@ def test_template_renders_a_schema2_card_with_clickable_link() -> None:
         template_name="remind-card",
         values_json=json.dumps(
             {
-                "name": "黄子建",
+                "name": "张三",
                 "hint": "按三层结构写,每条带时间与标准",
                 "board_link": "https://genuineknowledge.feishu.cn/wiki/H6icwLWn1iwpXAk73QMcA6MgnWc",
             }
