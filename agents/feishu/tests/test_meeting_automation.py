@@ -1203,7 +1203,13 @@ async def test_pipeline_appends_run_metrics_on_success_and_failure(
     assert ok_row["transcript_chars"] == 4
     assert isinstance(ok_row["stages_ms"]["total"], int)
     assert set(ok_row["stages_ms"]) == {"prepare", "read", "analyze", "notify", "total"}
-    assert ok_row["analysis"] == {"ai_calls": 0, "ai_input_chars": 0}
+    assert ok_row["analysis"] == {
+        "ai_calls": 0,
+        "ai_input_chars": 0,
+        "ai_content_chars": 0,
+        "ai_reasoning_chars": 0,
+        "ai_empty_calls": 0,
+    }
     assert set(ok_row["notifications"]) == {"HaiTun Agent主战场", "罗霖"}
     assert fail_row["record_file_id"] == ""
     assert "provider unavailable" in fail_row["error"]

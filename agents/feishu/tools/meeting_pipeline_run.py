@@ -6,6 +6,15 @@ SOP / positive-negative rule snapshots → fixed-route delivery with idempotent
 receipts.  Every terminal state is appended to ``run_metrics.jsonl``; hard
 failures additionally alert the job's ``alert_recipients`` (once per record /
 per day), so a silent scheduler never fails silently.
+
+Terminal states: ``completed`` / ``notifications_pending`` /
+``transcript_prepare_failed`` / ``transcript_pending`` and **``analysis_empty``**
+(刻意为之): when every AI call comes back without body text (or the parsed JSON
+carries only empty fields), the run ends as ``analysis_empty`` instead of
+``completed``, sends **no** placeholder message to the recipients, and persists
+per-call stream diagnostics (``analysis.ai_content_chars`` /
+``ai_reasoning_chars`` / ``ai_empty_calls`` in run metrics) so an empty-output
+incident is distinguishable from a normal run on the next morning.
 """
 
 from __future__ import annotations
@@ -86,6 +95,36 @@ def _extract_json(text: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {"analysis_text": text.strip()}
 
 
+#: 模型未产出任何正文时的 analysis_text 兜底文案。判定「空分析」时该值视为空
+#: (见 _analysis_has_content), 避免占位文案被当成真内容投递出去(曾经整段占位
+#: 消息被发给收件人, 见 analysis_empty 状态引入的原因)。
+_EMPTY_ANALYSIS_MARKER = "未生成分析结果。"
+
+
+def _analysis_has_content(analysis: dict[str, Any]) -> bool:
+    """True 当三个正文字段中至少一个非空且不等于占位文案。"""
+    for key in ("analysis_text", "meeting_summary", "positive_negative_overview"):
+        value = str(analysis.get(key) or "").strip()
+        if value and value != _EMPTY_ANALYSIS_MARKER:
+            return True
+    return False
+
+
+def _analysis_stats_entry(stats: dict[str, int]) -> dict[str, int]:
+    """run_metrics 的 analysis 统计块: 调用数/输入字符 + AI 流诊断。
+
+    ai_content_chars / ai_reasoning_chars / ai_empty_calls 区分两类空分析事故:
+    content=0 且 reasoning>0 说明模型只思考未产出正文, 两者都 0 说明上游空回。
+    """
+    return {
+        "ai_calls": stats.get("ai_calls", 0),
+        "ai_input_chars": stats.get("ai_input_chars", 0),
+        "ai_content_chars": stats.get("ai_content_chars", 0),
+        "ai_reasoning_chars": stats.get("ai_reasoning_chars", 0),
+        "ai_empty_calls": stats.get("ai_empty_calls", 0),
+    }
+
+
 def _normalize_analysis(value: dict[str, Any]) -> dict[str, str]:
     analysis = str(value.get("analysis_text") or value.get("analysis") or "").strip()
     summary = str(value.get("meeting_summary") or value.get("minutes") or "").strip()
@@ -97,7 +136,7 @@ def _normalize_analysis(value: dict[str, Any]) -> dict[str, str]:
     if not overview:
         overview = analysis
     return {
-        "analysis_text": analysis or "未生成分析结果。",
+        "analysis_text": analysis or _EMPTY_ANALYSIS_MARKER,
         "meeting_summary": summary,
         "positive_negative_overview": overview,
     }
@@ -121,10 +160,25 @@ async def _stream_ai_json(
         "routing": {"session_id": get_session_id()},
     }
     chunks: list[str] = []
+    reasoning_chars = 0
+    finish_reason: str | None = None
     async for delta in ai_client.stream(request):
         if delta.content:
             chunks.append(delta.content)
-    return _extract_json("".join(chunks))
+        if delta.reasoning:
+            reasoning_chars += len(delta.reasoning)
+        if delta.finish_reason:
+            finish_reason = delta.finish_reason
+    value = _extract_json("".join(chunks))
+    if isinstance(value, dict):
+        # 诊断块(非分析字段, 消费方须在拼装前剥离): 记录本调用的流统计, 让
+        # 「空分析」事故能区分 content 空回 / 只思考无正文 / 正常但字段空。
+        value["_ai_stream"] = {
+            "content_chars": sum(len(chunk) for chunk in chunks),
+            "reasoning_chars": reasoning_chars,
+            "finish_reason": finish_reason or "",
+        }
+    return value
 
 
 def _analysis_system_prompt(job: MeetingJob | None = None) -> str:
@@ -228,11 +282,22 @@ async def _analyze_meeting_transcript(
             parts.append(f"正负面分析规则(快照):\n{positive_rules}")
         return "\n\n".join(parts)
 
-    def _counted_call(system_prompt: str, user_content: str) -> Any:
+    async def _counted_call(system_prompt: str, user_content: str) -> Any:
         if stats is not None:
             stats["ai_calls"] = stats.get("ai_calls", 0) + 1
             stats["ai_input_chars"] = stats.get("ai_input_chars", 0) + len(user_content)
-        return _stream_ai_json(ai_client, system_prompt=system_prompt, user_content=user_content)
+        result = await _stream_ai_json(ai_client, system_prompt=system_prompt, user_content=user_content)
+        if stats is not None and isinstance(result, dict):
+            stream_info = result.get("_ai_stream")
+            if isinstance(stream_info, dict):
+                content_chars = int(stream_info.get("content_chars") or 0)
+                stats["ai_content_chars"] = stats.get("ai_content_chars", 0) + content_chars
+                stats["ai_reasoning_chars"] = stats.get("ai_reasoning_chars", 0) + int(
+                    stream_info.get("reasoning_chars") or 0
+                )
+                if content_chars == 0:
+                    stats["ai_empty_calls"] = stats.get("ai_empty_calls", 0) + 1
+        return result
 
     partials: list[dict[str, Any]] = []
     for index, transcript_chunk in enumerate(transcript_chunks, start=1):
@@ -245,7 +310,11 @@ async def _analyze_meeting_transcript(
         user_content = f"{guidance}\n\n原始转写片段:\n{transcript_chunk}"
         if rules:
             user_content = f"{guidance}\n\n{rules}\n\n原始转写片段:\n{transcript_chunk}"
-        partials.append(await _counted_call(_analysis_system_prompt(job), user_content))
+        partial = await _counted_call(_analysis_system_prompt(job), user_content)
+        if isinstance(partial, dict):
+            # 诊断块只服务 run_metrics, 不进各段分析(避免污染 synthesis 输入)。
+            partial.pop("_ai_stream", None)
+        partials.append(partial)
     if len(partials) == 1:
         return _normalize_analysis(partials[0])
     meta = _meeting_meta(job) if job is not None else ""
@@ -443,6 +512,49 @@ async def meeting_pipeline_run(
             )
             analyze_ms = int((time.perf_counter() - analyze_started) * 1000)
             analysis_new = True
+            if not _analysis_has_content(analysis):
+                # 模型未产出任何正文(全调用 content 空或字段空)。不向收件人投递
+                # 占位消息, 落 analysis_empty 终态与 AI 流统计供复盘; state 不保留
+                # 可复用文本, 同一 record 下次触发会重新分析。
+                await _write_json(
+                    state_path,
+                    {
+                        "record_file_id": record_file_id,
+                        "status": "analysis_empty",
+                        "source_chunks": source_chunks,
+                        "analysis_text": "",
+                        "meeting_summary": "",
+                        "positive_negative_overview": "",
+                    },
+                )
+                await _record(
+                    "analysis_empty",
+                    record_file_id=record_file_id,
+                    entry={
+                        "stages_ms": {
+                            "prepare": prepare_ms,
+                            "read": read_ms,
+                            "analyze": analyze_ms,
+                            "notify": None,
+                            "total": _ms(),
+                        },
+                        "analysis_reused": False,
+                        "analysis": _analysis_stats_entry(analysis_stats),
+                        "transcript_chars": int(manifest.get("transcript_chars") or 0),
+                        "paragraph_count": int(manifest.get("paragraph_count") or 0),
+                        "chunk_count": int(manifest.get("chunk_count") or 0),
+                        "analysis_empty": True,
+                    },
+                )
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "status": "analysis_empty",
+                        "error": "模型未产出会议分析正文(全部 AI 调用 content 为空), 未发送任何消息; "
+                        "详见 run_metrics 的 ai_content_chars/ai_reasoning_chars/ai_empty_calls",
+                    },
+                    ensure_ascii=False,
+                )
             state = {
                 "record_file_id": record_file_id,
                 "status": "notifications_pending",
@@ -507,10 +619,7 @@ async def meeting_pipeline_run(
                 "total": _ms(),
             },
             "analysis_reused": not analysis_new,
-            "analysis": {
-                "ai_calls": analysis_stats.get("ai_calls", 0),
-                "ai_input_chars": analysis_stats.get("ai_input_chars", 0),
-            },
+            "analysis": _analysis_stats_entry(analysis_stats),
             "transcript_chars": int(manifest.get("transcript_chars") or 0),
             "paragraph_count": int(manifest.get("paragraph_count") or 0),
             "chunk_count": int(manifest.get("chunk_count") or 0),
