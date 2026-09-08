@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import anyio
+from _meeting_archive import archive_meeting_record
 from _meeting_automation import (
     _json_payload,
     atomic_write_text,
@@ -257,6 +258,9 @@ async def meeting_transcript_prepare(
                 "status": "ready",
             }
             await _write(manifest_path, json.dumps(next_manifest, ensure_ascii=False, indent=2))
+        # 新场次正文落位后立即入永久档(archive/<record_file_id>/): 即使后续分析
+        # 失败或换场覆盖, 本场原文/纪要/manifest 也已保留。归档失败不阻断主线。
+        await archive_meeting_record(base, meeting_name, record_file_id)
         return json.dumps(
             {
                 "ok": True,

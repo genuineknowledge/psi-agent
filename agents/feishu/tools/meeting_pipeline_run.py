@@ -29,6 +29,7 @@ from typing import Any
 
 import anyio
 import yaml
+from _meeting_archive import archive_meeting_record
 from _meeting_automation import (
     MeetingJob,
     atomic_write_text,
@@ -547,6 +548,8 @@ async def meeting_pipeline_run(
                         "analysis_empty": True,
                     },
                 )
+                # 空分析也算一轮完整运行: 状态(analysis_empty)入档供复盘。
+                await archive_meeting_record(base, meeting_name, record_file_id)
                 return json.dumps(
                     {
                         "ok": False,
@@ -658,6 +661,8 @@ async def meeting_pipeline_run(
             },
         }
         await _record(final_status, record_file_id=record_file_id, entry=entry)
+        # 每轮收尾把该场全套产物(正文/纪要/分析/状态/收据)补进永久档。
+        await archive_meeting_record(base, meeting_name, record_file_id)
         if not notifications_ok:
             failures = {
                 name: str(r.get("status") or r.get("error") or "failed")
