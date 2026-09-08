@@ -33,18 +33,9 @@ fire: prompt
    - **新开**:本期新增;
    - **请假顺延**:按查假结果;
    - **回流**:按技能口径。
-4. 生成**结构化卡片表格**:用 `feishu_message_send_card` 发飞书交互卡片,body 用 `{"tag": "markdown", "content": "..."}` 组件放 GFM 表格——飞书渲染成真表格。卡片 JSON 固定模板(schema 2.0):
-
-   ```json
-   {
-     "schema": "2.0",
-     "config": {"wide_screen_mode": true},
-     "header": {"title": {"tag": "plain_text", "content": "TODO 前后对比 · <mentor>组(<当期列日期>期)"}},
-     "body": {"elements": [
-       {"tag": "markdown", "content": "请检查你手下成员的当期填报是否合理:\n\n| 成员 | 上期(前一日) | 本期(今日) | 搞定情况 |\n|---|---|---|---|\n| 张三 | ... | ... | ... |\n\n**对齐存疑**:...(有则附,无则整行去掉)\n\n看板表: https://genuineknowledge.feishu.cn/wiki/H6icwLWn1iwpXAk73QMcA6MgnWc"}
-     ]}
-   }
-   ```
-
-   表格列固定:成员 | 上期(前一日) | 本期(今日) | 搞定情况;条目写标题简写;搞定情况写清「搞定/进行中/新开/消失待确认/请假顺延」;前后两天对比;对齐存疑清单(align-pending.txt 该组人员的行,有则附)与看板表链接放表格下方 markdown 里。
-5. `feishu_message_send_card` 发送给该 mentor(每组各收各的);任何一步失败明说,不静默跳过。
+4. 生成并发送**结构化卡片表格**:调 `feishu_todo_compare_card_send`(卡片布局由工具代码固定,不要自己拼卡片 JSON):
+   - `receive_id` = 该 mentor 的 open_id,`mentor_name` = 该 mentor 姓名,`cycle_date` = 当期列日期;
+   - `rows_json` = 本组逐人对比行:`[{"member": 姓名, "prev": 上期条目简写(多条用「;」隔), "curr": 本期条目简写, "status": 搞定情况}, ...]`;
+   - 搞定情况写清「搞定/进行中/新开/消失待确认/请假顺延」,按紧邻两期对比(周期不固定,不写具体是哪一日);
+   - `align_notes` = align-pending.txt 里该组人员的行(有则传,无则传空)。
+5. 工具发送后核对返回 message_id;任何一步失败明说,不静默跳过。
