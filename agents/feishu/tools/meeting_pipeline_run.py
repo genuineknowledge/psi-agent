@@ -30,6 +30,7 @@ from _meeting_automation import (
     path_lock,
     read_meeting_manifest,
 )
+from _meeting_card import notify_meeting_card, render_meeting_summary_card
 from meeting_session_notify import meeting_session_notify
 from meeting_session_read import meeting_session_read
 from meeting_session_write import meeting_session_write
@@ -467,23 +468,51 @@ async def meeting_pipeline_run(
         receipts: dict[str, Any] = dict(raw_receipts) if isinstance(raw_receipts, dict) else {}
         notify_started = time.perf_counter()
         notifications_ok = True
-        notification_targets = [
-            (recipient, analysis["meeting_summary"]) for recipient in meeting_job.summary_recipients
-        ] + [(recipient, analysis["positive_negative_overview"]) for recipient in meeting_job.overview_recipients]
-        for recipient, text in notification_targets:
-            if not text.strip():
-                text = analysis["analysis_text"]
-            receipt = json.loads(
-                await meeting_session_notify(
-                    meeting_name=meeting_name,
-                    recipient=recipient,
-                    text=text,
-                    record_file_id=record_file_id,
-                    appdata_root=base,
+        # 卡片优先: 每收件人一张会议总结卡(summary/analysis/overview 合成一张,
+        # 收件人 = summary + overview 名单去重)。渲染失败(模板缺失/数据异常)
+        # 回落文本双名单, 与历史行为一致。
+        card_render = render_meeting_summary_card(
+            meeting_title=meeting_job.title,
+            meeting_code=meeting_code,
+            meeting_date=datetime.now().astimezone().date().isoformat(),
+            analysis=analysis,
+        )
+        if card_render.get("ok") and isinstance(card_render.get("card"), dict):
+            card_json = json.dumps(card_render["card"], ensure_ascii=False)
+            card_recipients: list[str] = []
+            for candidate in (*meeting_job.summary_recipients, *meeting_job.overview_recipients):
+                if candidate not in card_recipients:
+                    card_recipients.append(candidate)
+            for recipient in card_recipients:
+                receipt = json.loads(
+                    await notify_meeting_card(
+                        meeting_name=meeting_name,
+                        recipient=recipient,
+                        card_json=card_json,
+                        record_file_id=record_file_id,
+                        appdata_root=base,
+                    )
                 )
-            )
-            receipts[recipient] = receipt
-            notifications_ok = notifications_ok and bool(receipt.get("ok"))
+                receipts[recipient] = receipt
+                notifications_ok = notifications_ok and bool(receipt.get("ok"))
+        else:
+            notification_targets = [
+                (recipient, analysis["meeting_summary"]) for recipient in meeting_job.summary_recipients
+            ] + [(recipient, analysis["positive_negative_overview"]) for recipient in meeting_job.overview_recipients]
+            for recipient, text in notification_targets:
+                if not text.strip():
+                    text = analysis["analysis_text"]
+                receipt = json.loads(
+                    await meeting_session_notify(
+                        meeting_name=meeting_name,
+                        recipient=recipient,
+                        text=text,
+                        record_file_id=record_file_id,
+                        appdata_root=base,
+                    )
+                )
+                receipts[recipient] = receipt
+                notifications_ok = notifications_ok and bool(receipt.get("ok"))
         notify_ms = int((time.perf_counter() - notify_started) * 1000)
         final_status = "completed" if notifications_ok else "notifications_pending"
         state.update({"status": final_status, "recipient_receipts": receipts})

@@ -504,6 +504,20 @@ async def test_daily_meeting_pipeline_runs_each_stage_once(tmp_path: Path, monke
     monkeypatch.setattr(pipeline, "meeting_session_write", fake_write)
     monkeypatch.setattr(pipeline, "meeting_session_notify", fake_notify)
 
+    def fake_render_card(**_kwargs: object) -> dict[str, object]:
+        return {
+            "ok": True,
+            "card": {
+                "schema": "2.0",
+                "header": {"title": {"tag": "plain_text", "content": "会议总结"}},
+                "body": {"elements": []},
+            },
+            "handlers": {},
+        }
+
+    monkeypatch.setattr(pipeline, "render_meeting_summary_card", fake_render_card)
+    monkeypatch.setattr(pipeline, "notify_meeting_card", fake_notify)
+
     async def resolve_root(_root: str = "") -> str:
         return _root or str(tmp_path)
 
@@ -591,6 +605,20 @@ async def test_daily_meeting_pipeline_retries_notifications_without_reanalyzing(
     monkeypatch.setattr(pipeline, "meeting_transcript_prepare", fail_if_prepare)
     monkeypatch.setattr(pipeline, "_analyze_meeting_transcript", fail_if_analyze)
     monkeypatch.setattr(pipeline, "meeting_session_notify", fake_notify)
+
+    def fake_render_card(**_kwargs: object) -> dict[str, object]:
+        return {
+            "ok": True,
+            "card": {
+                "schema": "2.0",
+                "header": {"title": {"tag": "plain_text", "content": "会议总结"}},
+                "body": {"elements": []},
+            },
+            "handlers": {},
+        }
+
+    monkeypatch.setattr(pipeline, "render_meeting_summary_card", fake_render_card)
+    monkeypatch.setattr(pipeline, "notify_meeting_card", fake_notify)
     monkeypatch.setattr(pipeline, "meeting_session_write", fake_write)
 
     async def resolve_root(_root: str = "") -> str:
@@ -628,6 +656,7 @@ async def test_daily_meeting_pipeline_does_not_reuse_stale_artifacts_after_prepa
 
     monkeypatch.setattr(pipeline, "meeting_transcript_prepare", failed_prepare)
     monkeypatch.setattr(pipeline, "meeting_session_notify", fail_if_not_stopped)
+    monkeypatch.setattr(pipeline, "notify_meeting_card", fail_if_not_stopped)
     monkeypatch.setattr(pipeline, "meeting_session_write", fail_if_not_stopped)
 
     result = json.loads(
@@ -727,6 +756,20 @@ async def test_daily_meeting_pipeline_keeps_pending_when_a_notification_fails(
 
     monkeypatch.setattr(pipeline, "meeting_transcript_prepare", fake_prepare)
     monkeypatch.setattr(pipeline, "meeting_session_notify", fake_notify)
+
+    def fake_render_card(**_kwargs: object) -> dict[str, object]:
+        return {
+            "ok": True,
+            "card": {
+                "schema": "2.0",
+                "header": {"title": {"tag": "plain_text", "content": "会议总结"}},
+                "body": {"elements": []},
+            },
+            "handlers": {},
+        }
+
+    monkeypatch.setattr(pipeline, "render_meeting_summary_card", fake_render_card)
+    monkeypatch.setattr(pipeline, "notify_meeting_card", fake_notify)
     monkeypatch.setattr(pipeline, "meeting_session_write", fake_write)
     monkeypatch.setattr(pipeline, "resolve_appdata_root", resolve_root)
 
@@ -787,6 +830,20 @@ async def test_second_daily_meeting_routes_summary_to_two_recipients(
 
     monkeypatch.setattr(pipeline, "meeting_transcript_prepare", fake_prepare)
     monkeypatch.setattr(pipeline, "meeting_session_notify", fake_notify)
+
+    def fake_render_card(**_kwargs: object) -> dict[str, object]:
+        return {
+            "ok": True,
+            "card": {
+                "schema": "2.0",
+                "header": {"title": {"tag": "plain_text", "content": "会议总结"}},
+                "body": {"elements": []},
+            },
+            "handlers": {},
+        }
+
+    monkeypatch.setattr(pipeline, "render_meeting_summary_card", fake_render_card)
+    monkeypatch.setattr(pipeline, "notify_meeting_card", fake_notify)
     monkeypatch.setattr(pipeline, "meeting_session_write", fake_write)
     monkeypatch.setattr(pipeline, "resolve_appdata_root", resolve_root)
 
@@ -1175,6 +1232,20 @@ async def test_pipeline_appends_run_metrics_on_success_and_failure(
     monkeypatch.setattr(pipeline, "meeting_session_read", fake_read)
     monkeypatch.setattr(pipeline, "_analyze_meeting_transcript", fake_analyze)
     monkeypatch.setattr(pipeline, "meeting_session_notify", fake_notify)
+
+    def fake_render_card(**_kwargs: object) -> dict[str, object]:
+        return {
+            "ok": True,
+            "card": {
+                "schema": "2.0",
+                "header": {"title": {"tag": "plain_text", "content": "会议总结"}},
+                "body": {"elements": []},
+            },
+            "handlers": {},
+        }
+
+    monkeypatch.setattr(pipeline, "render_meeting_summary_card", fake_render_card)
+    monkeypatch.setattr(pipeline, "notify_meeting_card", fake_notify)
     monkeypatch.setattr(pipeline, "meeting_session_write", fake_write)
     monkeypatch.setattr(pipeline, "resolve_appdata_root", resolve_root)
 
