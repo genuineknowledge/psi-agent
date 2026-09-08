@@ -120,6 +120,40 @@ def _stash_private_modules(entry: str) -> None:
         _private_module_stash[entry] = stash
 
 
+# ── process-wide compiled-module cache ───────────────────────────────────────
+
+# ``ToolRegistry.load()`` builds a fresh instance and passes ``old_files=None``,
+# so the per-instance hash comparison in ``_exec_tool_files`` can only ever fire
+# on the ``refresh()`` path — every new session re-compiled and re-exec'd every
+# tool file from scratch.  This cache lifts that reuse to the process: same
+# bytes in the same layer means the already-exec'd module object is handed out
+# again, with no ``compile`` and no second round of module-level side effects.
+#
+# The key must carry a layer identifier as well as the hash.  Byte-identical
+# files live in different tools dirs (two workspaces ship the same file with a
+# different same-directory ``_priv_helper``), and a hash-only key would hand the
+# second dir the first dir's module — including its helper bindings.
+#
+# Entries are keyed by content hash and never evicted, so editing a tool file
+# leaves the old module behind.  That matches what ``sys.modules`` already does
+# with these per-hash module names; a bounded cache would be a separate change.
+_module_cache: dict[tuple[str, str], types.ModuleType] = {}
+_module_cache_lock = threading.Lock()
+
+
+def _layer_id(tools_dir: Path) -> str:
+    """Cache-key component isolating one tools dir from another.
+
+    Content layering is not in place yet, so the resolved tools-dir path stands
+    in for the layer.  Once layers land this becomes the layer id, and files
+    shared by a layer stop being re-compiled per workspace.
+    """
+    try:
+        return str(tools_dir.resolve())
+    except OSError:
+        return str(tools_dir)
+
+
 # ── ToolFunction — metadata + annotation parsing ─────────────────────────────
 
 
@@ -564,12 +598,15 @@ class ToolRegistry:
     ) -> dict[str, FileEntry]:
         """Compile and exec each tool file; caller owns the ``sys.path`` scope."""
 
+        layer_id = _layer_id(tools_dir)
+
         try:
             async for py_file in tools_anyio.glob("*.py"):
                 if py_file.name.startswith("_"):
                     continue
 
                 module_name = None
+                compiled_here = False
                 try:
                     file_bytes = await py_file.read_bytes()
                     file_hash = hashlib.sha256(file_bytes).hexdigest()
@@ -583,17 +620,34 @@ class ToolRegistry:
                         )
                         continue
 
-                    module_name = f"psi_tool_{py_file.stem}_{session_id}_{file_hash}"
+                    with _module_cache_lock:
+                        cached = _module_cache.get((layer_id, file_hash))
 
-                    source = await py_file.read_text(encoding="utf-8")
-                    compiled = compile(source, str_path, "exec")
+                    if cached is not None:
+                        # Same bytes, same layer: reuse the module that was already
+                        # exec'd.  Its functions carry the *original* load's
+                        # ``__module__``, so the ownership filter below has to match
+                        # against that name rather than one built from this session.
+                        module = cached
+                        module_name = module.__name__
+                        sys.modules.setdefault(module_name, module)
+                        logger.debug(f"Reusing compiled module for {py_file!r}")
+                    else:
+                        module_name = f"psi_tool_{py_file.stem}_{session_id}_{file_hash}"
 
-                    module = types.ModuleType(module_name)
-                    module.__file__ = str_path
-                    sys.modules[module_name] = module
-                    registered_modules.append(module_name)
+                        source = await py_file.read_text(encoding="utf-8")
+                        compiled = compile(source, str_path, "exec")
 
-                    exec(compiled, module.__dict__)
+                        module = types.ModuleType(module_name)
+                        module.__file__ = str_path
+                        sys.modules[module_name] = module
+                        registered_modules.append(module_name)
+                        compiled_here = True
+
+                        exec(compiled, module.__dict__)
+
+                        with _module_cache_lock:
+                            _module_cache.setdefault((layer_id, file_hash), module)
 
                     attr_names = sorted(name for name in dir(module) if not name.startswith("_"))
                     tools: dict[str, ToolFunction] = {}
@@ -624,7 +678,10 @@ class ToolRegistry:
                         fresh=True,
                     )
                 except Exception as e:
-                    if module_name is not None:
+                    # Only unregister a module this iteration created.  A reused
+                    # cached module belongs to an earlier load that is still using
+                    # it, so evicting it here would break that registry.
+                    if module_name is not None and compiled_here:
                         sys.modules.pop(module_name, None)
                         with suppress(ValueError):
                             registered_modules.remove(module_name)
