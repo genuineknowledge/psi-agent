@@ -1,0 +1,11 @@
+<!--
+  判断卡 · 修改候选卡(记录确认阶段点「修改内容」后发出)
+  values:title / original(原句)/ hint / placeholder / record_id
+  context:case_id 等;输入动作 judge_edit_input(确认修改并记入)。
+-->
+<card title="{title}" template="blue">
+  <info label="原句" value="{original}"/>
+  <text value="{hint}"/>
+  <comment placeholder="{placeholder}" bind-record="{record_id}" action="judge_edit_input"
+           confirm-title="确认修改并记入" confirm-text="用修改后的内容记录这条行为？"/>
+</card>

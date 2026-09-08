@@ -1,0 +1,31 @@
+<!--
+  boss 整体统计卡模板(company-todo-audit 每周期审计后推送,私聊 boss 本人)
+  {key} 为占位符,渲染时由 values_json 填充(值自动 XML 转义)。
+  使用方式:feishu_card_render(template="boss-stats", values_json="{...}", context_json="{...}")
+  values:
+    cycle_date / total / goals / subgoals / todos / delivered / closed / close_rate /
+    overdue / postponed / scored_count / avg_score /
+    delta_note(可选「对比上期」行,如「闭环 +3 · 逾期 -2 · 均分 +0.2」;为空则整行不渲染)
+  context(注入展示数据):mentors = 各 mentor 团队聚合行
+    [{mentor, total, delivered, closed, overdue, avg_score, link}],供 <table> 渲染。
+  boss 只读:本卡纯信息、无交互,渲染结果 handlers 为空。
+-->
+<card title="TODO 统计·周期 {cycle_date}·全公司" template="green">
+  <info label="总条目" value="{total} 条（大目标 {goals} / 小目标 {subgoals} / todo {todos}）"/>
+  <info label="已交付" value="{delivered} 条"/>
+  <info label="已闭环" value="{closed} 条（闭环率 {close_rate}）"/>
+  <info label="逾期" value="{overdue} 条"/>
+  <info label="请假顺延" value="{postponed} 条"/>
+  <info label="评分" value="{scored_count} 条 / 平均 {avg_score} 分"/>
+  {delta_note}
+  <divider/>
+  <table source="mentors" empty="暂无 mentor 团队数据">
+    <col field="mentor" label="mentor"/>
+    <col field="total" label="条目"/>
+    <col field="delivered" label="已交付"/>
+    <col field="closed" label="已闭环"/>
+    <col field="overdue" label="逾期"/>
+    <col field="avg_score" label="平均分"/>
+    <col field="link" label="台账"/>
+  </table>
+</card>

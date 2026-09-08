@@ -1,0 +1,14 @@
+<!--
+  判断卡 · 结果反馈卡(判断定稿后发给被记录人)
+  values:title / verdict(最终判断,含分数星)/ feedback_note(备注,空则无)/ evidence / record_id
+  按钮动作 feedback_note(补充说明 → 打开补充说明输入卡)/ feedback_start(开始复盘)。
+-->
+<card title="{title}" template="blue">
+  <text value="{verdict}"/>
+  <text value="{feedback_note}"/>
+  <info label="证据" value="{evidence}"/>
+  <action-row>
+    <button text="补充说明" type="primary" action="feedback_note"/>
+    <button text="开始复盘" type="accept" action="feedback_start"/>
+  </action-row>
+</card>

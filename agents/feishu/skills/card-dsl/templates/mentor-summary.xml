@@ -1,0 +1,32 @@
+<!--
+  mentor 摘要卡模板(company-todo-sync 每周期派发,私聊 mentor 本人)
+  {key} 为占位符,渲染时由 values_json 填充(值自动 XML 转义)。
+  使用方式:feishu_card_render(template="mentor-summary", values_json="{...}", context_json="{...}")
+  values:
+    cycle_date / mentor_name / people_count / total / level_summary / status_summary /
+    overdue / scored_summary / pending_review / ledger_link(「打开台账」markdown 链接) /
+    note(可选状态行,如逾期提醒;为空则整行不渲染)
+  context(注入展示数据):rows = 本周期全部台账行(已由 _summary_stats.preprocess_rows_for_display
+    预处理成可展示文本),供 <table> 渲染真表格。
+  本卡纯信息、无交互(没有 button/score/comment),渲染结果 handlers 为空。
+-->
+<card title="TODO 摘要·{cycle_date}·{mentor_name} 团队" template="blue">
+  <info label="团队人数" value="{people_count} 人"/>
+  <info label="条目总数" value="{total} 条"/>
+  <info label="层级构成" value="{level_summary}"/>
+  <info label="状态分布" value="{status_summary}"/>
+  <info label="逾期" value="{overdue} 条"/>
+  <info label="已评分" value="{scored_summary}"/>
+  <info label="待评价" value="{pending_review} 条"/>
+  <info label="台账" value="{ledger_link}"/>
+  {note}
+  <divider/>
+  <table source="rows" empty="本周期暂无条目">
+    <col field="负责人" label="负责人"/>
+    <col field="层级" label="层级"/>
+    <col field="标题" label="标题"/>
+    <col field="截止日期" label="截止"/>
+    <col field="状态" label="状态"/>
+    <col field="mentor打分" label="评分"/>
+  </table>
+</card>
