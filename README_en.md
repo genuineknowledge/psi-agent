@@ -189,10 +189,21 @@ Protocol errors between components take two forms:
 | `PSI_AI_MODEL` | Model name |
 | `PSI_AI_API_KEY` | API key |
 | `PSI_AI_BASE_URL` | Upstream base URL |
+| `PSI_MAX_CONTEXT_TOKENS` | AI context compaction token threshold (default 100K, 0 disabled) |
 | `PSI_TELEGRAM_BOT_TOKEN` | Telegram bot token |
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 proxy |
 | `PSI_FEISHU_APP_ID` | Feishu app ID |
 | `PSI_FEISHU_APP_SECRET` | Feishu app secret |
+| `PSI_FEISHU_DEV_OPEN_ID` | Feishu development bypass open_id |
+| `PSI_FEISHU_EXTERNAL_SESSIONS` | Feishu external session addresses |
+| `PSI_SEED_SCHEDULES_WORKSPACE` | Shared seed schedules workspace path |
+| `PSI_PRIVATE_OPEN_IDS` | Feishu private space whitelist open_ids |
+| `PSI_AUTH_ENDPOINT` | Cloud authentication endpoint (empty to disable) |
+| `PSI_AUTH_PREFIX` | Cloud authentication API prefix (default /auth) |
+| `PSI_OAUTH_CALLBACK_BASE` | OAuth callback base URL |
+| `PSI_APPDATA` | AppData memory root directory |
+| `PSI_DEBUG_MODULES` | Debug log module prefix whitelist |
+| `PSI_DEBUG_LOG_PATH` | Debug log file output path |
 
 CLI args take precedence over environment variables. AI params (provider, model, api_key, base_url) and channel auth params are optional and fall back to env vars when omitted. Socket path params (--session-socket, --channel-socket, --ai-socket) are required.
 
@@ -322,16 +333,27 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | POST | `/ais` | Create AI instance |
 | DELETE | `/ais/{ai_id}` | Delete AI |
 | GET | `/ais` | List all AIs |
+| POST | `/routers` | Create and start Router |
+| DELETE | `/routers/{router_id}` | Stop and delete Router |
+| GET | `/routers` | List all Routers |
 | POST | `/sessions` | Create Session |
 | DELETE | `/sessions/{session_id}` | Delete Session |
 | GET | `/sessions` | List all Sessions |
 | POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream) |
 | GET | `/sessions/{session_id}/history` | Get conversation history |
+| GET | `/sessions/{session_id}/todos` | Read Session todos list |
+| GET | `/sessions/{session_id}/todo-segments` | Get Session todo sub-task segments |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | Get single todo segment details |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | Update todo segment label |
 | POST | `/feishu/route` | Idempotently route a Feishu chat to a Session: group chats by chat_id (whole chat shares one), DMs by open_id (one per user); spawn on first use |
 | GET | `/feishu/routes` | List Feishu chat → Session routes |
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
+| GET | `/summaries` | Get all session task summaries |
+| POST | `/summaries` | Set session task summary |
+| POST | `/summaries/generate` | AI generate task summary |
+| GET | `/defaults` | Get default agent, workspace, and appdata |
 | GET | `/workspace/browse` | Browse directory (`?path=...`) |
 | GET | `/workspace/cwd` | Get working directory |
 | GET | `/openapi.json` | OpenAPI schema |

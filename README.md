@@ -189,10 +189,21 @@ AI 和 Session 组件无需关心通信介质——由 `_sockets.py` 统一处�
 | `PSI_AI_MODEL` | 模型名 |
 | `PSI_AI_API_KEY` | API key |
 | `PSI_AI_BASE_URL` | 上游 base URL |
+| `PSI_MAX_CONTEXT_TOKENS` | AI 上下文压缩 token 阈值（默认 100K，0 禁用） |
 | `PSI_TELEGRAM_BOT_TOKEN` | Telegram bot token |
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 代理 |
 | `PSI_FEISHU_APP_ID` | 飞书 app ID |
 | `PSI_FEISHU_APP_SECRET` | 飞书 app secret |
+| `PSI_FEISHU_DEV_OPEN_ID` | 飞书开发免登旁路 open_id |
+| `PSI_FEISHU_EXTERNAL_SESSIONS` | 飞书外部托管 Session 地址列表 |
+| `PSI_SEED_SCHEDULES_WORKSPACE` | 共享种子 workspace 路径 |
+| `PSI_PRIVATE_OPEN_IDS` | 飞书私密空间白名单 open_id 列表 |
+| `PSI_AUTH_ENDPOINT` | 云端账号服务地址（空串显式关闭认证） |
+| `PSI_AUTH_PREFIX` | 云端账号服务 API 前缀（默认 /auth） |
+| `PSI_OAUTH_CALLBACK_BASE` | OAuth 回调基址 |
+| `PSI_APPDATA` | AppData 记忆区根目录 |
+| `PSI_DEBUG_MODULES` | Debug 日志白名单模块前缀 |
+| `PSI_DEBUG_LOG_PATH` | Debug 日志输出路径 |
 
 CLI 参数优先于环境变量。AI 参数（provider、model、api_key、base_url）及 channel 认证参数均可选，未传时回退到环境变量。Socket 路径参数（--session-socket、--channel-socket、--ai-socket）为必填。
 
@@ -310,16 +321,27 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | POST | `/ais` | 创建 AI 实例 |
 | DELETE | `/ais/{ai_id}` | 删除 AI |
 | GET | `/ais` | 列出所有 AI |
+| POST | `/routers` | 创建并启动 Router |
+| DELETE | `/routers/{router_id}` | 停止并删除 Router |
+| GET | `/routers` | 列出所有 Router |
 | POST | `/sessions` | 创建 Session |
 | DELETE | `/sessions/{session_id}` | 删除 Session |
 | GET | `/sessions` | 列出所有 Session |
 | POST | `/sessions/{session_id}/chat` | Web UI 对话（SSE 流式） |
 | GET | `/sessions/{session_id}/history` | 获取会话历史 |
+| GET | `/sessions/{session_id}/todos` | 读取 Session todos 清单 |
+| GET | `/sessions/{session_id}/todo-segments` | 获取 Session todo 子任务分段列表 |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | 获取单段 todo 分段详情 |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | 修改 todo 分段标题 |
 | POST | `/feishu/route` | 幂等路由飞书会话到 Session：群聊按 chat_id（整群共用），私聊按 open_id（一人一个），首次按需 spawn |
 | GET | `/feishu/routes` | 列出飞书会话 → Session 路由 |
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |
+| GET | `/summaries` | 获取所有 Session 任务摘要 |
+| POST | `/summaries` | 设置任务摘要 |
+| POST | `/summaries/generate` | AI 生成任务摘要 |
+| GET | `/defaults` | 获取默认 agent、workspace 及 appdata |
 | GET | `/workspace/browse` | 浏览目录（`?path=...`） |
 | GET | `/workspace/cwd` | 获取工作目录 |
 | GET | `/openapi.json` | OpenAPI schema |
