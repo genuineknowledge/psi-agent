@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 SKILLS_DIR = Path(__file__).resolve().parents[1] / "skills"
 TEMPLATE = SKILLS_DIR / "card-dsl" / "templates" / "remind-card.xml"
@@ -30,12 +34,9 @@ def test_template_placeholders_are_declared() -> None:
 
 
 def test_template_renders_a_schema2_card_with_clickable_link() -> None:
-    import sys
+    card_dsl = importlib.import_module("_card_dsl")
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-    import _card_dsl
-
-    out = _card_dsl.render_template(
+    out = card_dsl.render_template(
         template_name="remind-card",
         values_json=json.dumps(
             {
