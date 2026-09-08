@@ -6,8 +6,9 @@ JSON inline reorders columns or drops the board link occasionally), so this tool
 owns the layout: caller passes rows + a few labels, the code builds the exact card
 JSON (schema 2.0, one markdown element with a GFM table) and sends it.
 
-Table columns are fixed: 成员 / 上期 / 本期 / 搞定情况(上期=上一期填报, 周期不固定, 不写具体是哪一日). The reminder
-line, alignment-pending notes and the board link sit below the table in that order.
+Table columns are fixed: 成员 / 上期 / 本期 / 搞定情况(上期=上一期填报, 周期不固定, 不写具体是哪一日). Below the
+table sit, in order: an optional notes line (period/definition/未填报名单等说明), the
+alignment-pending notes, and the board link.
 """
 
 from __future__ import annotations
@@ -31,7 +32,9 @@ def _md_cell(value: str) -> str:
     )
 
 
-def _build_card_json(mentor_name: str, cycle_date: str, rows: list[dict], align_notes: str) -> dict:
+def _build_card_json(
+    mentor_name: str, cycle_date: str, rows: list[dict], align_notes: str, notes: str = ""
+) -> dict:
     lines = [
         _REMINDER_LINE,
         "",
@@ -46,6 +49,9 @@ def _build_card_json(mentor_name: str, cycle_date: str, rows: list[dict], align_
             f"| {_md_cell(str(row.get('status', '')))} |"
         )
     lines.append("")
+    if notes.strip():
+        lines.append(f"说明:{_md_cell(notes.strip())}")
+        lines.append("")
     if align_notes.strip():
         lines.append(f"**对齐存疑**:{_md_cell(align_notes.strip())}")
         lines.append("")
@@ -70,6 +76,7 @@ async def feishu_todo_compare_card_send(
     rows_json: str,
     receive_id_type: str = "open_id",
     align_notes: str = "",
+    notes: str = "",
     user_key: str = "",
 ) -> str:
     """Send the fixed-layout cycle compare card to one mentor.
@@ -84,6 +91,9 @@ async def feishu_todo_compare_card_send(
         receive_id_type: ``open_id`` (private) / ``chat_id`` (group); auto-corrected on send.
         align_notes: Optional alignment-pending notes (from align-pending.txt), rendered
             as one 「**对齐存疑**」 line below the table; empty = omitted.
+        notes: Optional explanation line rendered as 「说明:...」 right below the table —
+            period dates (上期=9.4、本期=9.7), 搞定定义, 未填报名单, 回流计数, and the
+            mobile hint 「手机上点表格行可展开查看详情」. Empty = omitted.
         user_key: Identity for the send (usual convention); omitted uses the bot.
     """
     if not receive_id.strip():
@@ -97,7 +107,7 @@ async def feishu_todo_compare_card_send(
     if not isinstance(rows, list):
         return _f.dumps_result(_f._error("rows_json must be a JSON array of row objects."))
 
-    card = _build_card_json(mentor_name.strip(), cycle_date.strip(), rows, align_notes)
+    card = _build_card_json(mentor_name.strip(), cycle_date.strip(), rows, align_notes, notes)
     outcome = await _f.send_card_impl(
         receive_id=receive_id.strip(),
         card_json=json.dumps(card, ensure_ascii=False),

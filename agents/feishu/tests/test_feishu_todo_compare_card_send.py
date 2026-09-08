@@ -11,7 +11,8 @@ def _build(mod, **kwargs):
     align_notes = kwargs.pop("align_notes", "")
     mentor = kwargs.pop("mentor_name", "孙逊")
     cycle = kwargs.pop("cycle_date", "9.7")
-    return mod._build_card_json(mentor, cycle, rows, align_notes)
+    notes = kwargs.pop("notes", "")
+    return mod._build_card_json(mentor, cycle, rows, align_notes, notes)
 
 
 def test_card_uses_schema2_and_single_markdown_element() -> None:
@@ -60,3 +61,19 @@ def test_tool_rejects_missing_receiver_and_bad_rows() -> None:
     assert err["ok"] is False
     err2 = json.loads(f.dumps_result(f._error("rows_json must be valid JSON: x")))
     assert "JSON" in err2["message"]
+
+
+def test_notes_section_sits_below_table_above_align_and_link() -> None:
+    mod = importlib.import_module("feishu_todo_compare_card_send")
+    card = _build(
+        mod,
+        align_notes="王五|缺对齐依据",
+        notes="上期=9.4、本期=9.7;手机上点表格行可展开查看详情",
+    )
+    markdown = card["body"]["elements"][0]["content"]
+    table_pos = markdown.index("| 成员 |")
+    notes_pos = markdown.index("说明:上期=9.4")
+    align_pos = markdown.index("**对齐存疑**")
+    link_pos = markdown.index("看板表: https://")
+    assert table_pos < notes_pos < align_pos < link_pos, "顺序必须是 表格→说明→对齐存疑→看板链接"
+    assert "手机上点表格行可展开查看详情" in markdown, "说明里要带手机展开提示"
