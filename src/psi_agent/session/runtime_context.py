@@ -42,7 +42,6 @@ from psi_agent._session_context import (
 
 _workspace: ContextVar[str] = ContextVar("psi_workspace", default="")
 _agent: ContextVar[str] = ContextVar("psi_agent", default="")
-_user_message: ContextVar[str] = ContextVar("psi_user_message", default="")
 
 
 def get_workspace() -> str:
@@ -56,8 +55,8 @@ def get_agent() -> str:
 
 
 def get_user_message() -> str:
-    """Exact user text for the current turn, or an empty string."""
-    return _user_message.get()
+    """Compatibility shim; turn text is no longer stored in runtime context."""
+    return ""
 
 
 @contextmanager
@@ -73,20 +72,10 @@ def path_scope(*, workspace: str = "", agent: str = "") -> Iterator[None]:
 
 
 @contextmanager
-def runtime_scope(
-    *,
-    session_id: str,
-    workspace: str = "",
-    agent: str = "",
-    user_message: str = "",
-) -> Iterator[None]:
-    """Bind session, path, and the current user message for one turn or event dispatch."""
+def runtime_scope(*, session_id: str, workspace: str = "", agent: str = "") -> Iterator[None]:
+    """Bind session id + workspace + agent for one turn or event dispatch."""
     with session_id_scope(session_id), path_scope(workspace=workspace, agent=agent):
-        message_token = _user_message.set(user_message)
-        try:
-            yield
-        finally:
-            _user_message.reset(message_token)
+        yield
 
 
 # Explicit so the re-exports from ``_session_context`` are part of this module's

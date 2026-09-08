@@ -693,17 +693,12 @@ class SessionAgent:
             {key: value for key, value in user_message.items() if key != _HISTORY_PROVENANCE_KEY}, user_kind
         )
 
-        turn_user_text = user_message.get("content", "")
-        if not isinstance(turn_user_text, str):
-            turn_user_text = ""
-
         # Gateway embeds many Sessions in one process — bind this turn so
         # tools can read session id / workspace / agent paths via ContextVars.
         with runtime_scope(
             session_id=self._conversation.session_id,
             workspace=str(self._workspace_path) if self._workspace_path is not None else "",
             agent=str(self._agent_path) if self._agent_path is not None else "",
-            user_message=turn_user_text,
         ):
             async with self._conversation:
                 # Reload tools and schedules from their configured roots.

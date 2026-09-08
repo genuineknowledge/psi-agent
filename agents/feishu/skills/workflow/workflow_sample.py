@@ -1,8 +1,8 @@
 """Persist local snapshots for workflow authoring.
 
 This module lives beside the Workflow runtime rather than in the user-visible
-tool directory. The Session/runtime calls the private authoring hook directly,
-so recording does not depend on the model remembering to call a tool.
+tool directory. ``run_flow`` calls the private authoring hook directly, so
+recording does not depend on the model remembering to call a separate tool.
 
 Each event is one immutable JSON file with this shape:
 
@@ -29,7 +29,8 @@ Field contract:
   absolute workspace path in the event.
 * created_at is the UTC capture time and is used to order events.
 * Exactly one of question and adjustment is non-null. The original user text,
-  including surrounding whitespace, is preserved verbatim.
+  including surrounding whitespace, is recovered from the Session's already
+  committed current user row rather than propagated through runtime ContextVars.
 * plan contains only short, public, observable workflow steps; it is metadata
   and never controls execution or stores private chain-of-thought.
 * flow.path is a validated path below the workspace flows directory.
@@ -48,14 +49,54 @@ from pathlib import Path
 
 import anyio
 
-from psi_agent._appdata import resolve_appdata_root as _resolve_appdata_root
-from psi_agent.session.runtime_context import get_workspace
+from psi_agent._appdata import appdata_history_path, resolve_appdata_root as _resolve_appdata_root
+from psi_agent.session.runtime_context import get_session_id, get_workspace
 
 
 def _workspace_dir() -> str:
     """Resolve the current user workspace without importing a sibling tool."""
 
     return get_workspace() or str(Path(__file__).parents[2])
+
+
+async def _current_user_prompt() -> str:
+    """Return the current committed chat prompt for this Session, or ``\"\"``.
+
+    ``SessionAgent.run`` commits the current user row before dispatching
+    workspace tools, so a normal ``run_flow`` call can recover the exact prompt
+    from the Session history without adding request payload to ``runtime_scope``.
+
+    Fail closed for schedule/trigger/non-chat rows: do not walk past the newest
+    user row and accidentally associate an older human prompt with an automatic
+    workflow execution.
+    """
+
+    session_id = get_session_id().strip()
+    if not session_id:
+        return ""
+    history_path = appdata_history_path(await _resolve_appdata_root(), session_id)
+    if not await history_path.is_file():
+        return ""
+    try:
+        lines = (await history_path.read_text(encoding="utf-8")).splitlines()
+    except (OSError, UnicodeError):
+        return ""
+
+    for line in reversed(lines):
+        if not line.strip():
+            continue
+        try:
+            message = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        kind = message.get("kind", "chat")
+        if not isinstance(kind, str) or kind.strip().casefold() != "chat":
+            return ""
+        content = message.get("content")
+        return content if isinstance(content, str) and content.strip() else ""
+    return ""
 
 
 async def _resolve_flow(flow_path: str) -> tuple[anyio.Path, str, str]:
@@ -148,10 +189,16 @@ async def workflow_sample_record(
 async def _record_workflow_authoring(
     flow_path: str,
     plan: list[str],
-    user_message: str,
+    _legacy_user_message: str = "",
 ) -> str | None:
-    """Record an executed workflow when it is new or its source changed."""
+    """Record an executed workflow against the current committed chat prompt.
 
+    The third argument remains temporarily accepted so the existing ``run_flow``
+    call site stays source-compatible while prompt propagation is removed from
+    Session runtime context. Its value is intentionally ignored.
+    """
+
+    user_message = await _current_user_prompt()
     if not user_message.strip():
         return None
     resolved, _relative_path, flow_key = await _resolve_flow(flow_path)
