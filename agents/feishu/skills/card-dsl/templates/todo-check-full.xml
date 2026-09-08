@@ -1,0 +1,27 @@
+<!--
+  TODO 检测卡 · 新版 = 原版判断 + 五条增量(todo-writing-check 15:00 · v0.5 口径修正)
+  上半=原版判断(纪律项:按时/按质/按量/按优先级/mentor check/不复制/验收),逐项符号;
+  下半=在原版判断上新增的五条检测点(①无过去时间点 ②小目标粒度 ③说清用户价值
+       ④个人↔小组对齐 ⑤重要全覆盖)。判定由调用方完成,本模板只做呈现。
+  values:person_name / cycle_date / note
+  context:rows_a = 原版判断行 [{段固定=原版, 检测点, 判定, 说明}]
+          rows_b = 五条增量行 [{段固定=新增五条, 检测点, 判定, 说明}]
+  纯信息卡,handlers 为空。
+-->
+<card title="TODO 检测·{cycle_date}（新版·原版判断+五条）" template="blue">
+  <info label="被检人" value="{person_name}"/>
+  <text value="新版 = 原版判断(纪律七项)之上新增五条检测点,并非替换。机器初判,存疑用 ❓,未核用 —,不硬判;有异议找 mentor 复核。"/>
+  <divider/>
+  <table source="rows_a" empty="—">
+    <col field="检测点" label="原版判断"/>
+    <col field="判定" label="判定"/>
+    <col field="说明" label="说明"/>
+  </table>
+  <divider/>
+  <table source="rows_b" empty="—">
+    <col field="检测点" label="新增五条"/>
+    <col field="判定" label="判定"/>
+    <col field="说明" label="说明"/>
+  </table>
+  {note}
+</card>

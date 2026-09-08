@@ -1,0 +1,15 @@
+<!--
+  判断卡 · 周小结卡(每周汇总行为记录)
+  values:title / period / summary / stats(数量行,可空)/ records_detail(查看时展开,可空)
+  按钮动作 weekly_view(查看本周记录)/ weekly_start(开始复盘)。
+-->
+<card title="{title}" template="blue">
+  <info label="周期" value="{period}"/>
+  <text value="{summary}"/>
+  <text value="{stats}"/>
+  <text value="{records_detail}"/>
+  <action-row>
+    <button text="查看本周记录" type="primary" action="weekly_view"/>
+    <button text="开始复盘" type="accept" action="weekly_start"/>
+  </action-row>
+</card>

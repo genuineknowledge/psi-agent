@@ -1,0 +1,35 @@
+<!--
+  mentor 台账推送卡(todo-ledger-push 16:00 · v2.5 入口版)
+  定位(马晨柯 2026-09-07 多轮定稿):
+    - 主交付物是**结构化多维表格**(对比明细-<周期>:每条 TODO 一行、关系单选,可筛可查),
+      卡片只是**摘要入口**,不再塞松散长文本;
+    - 卡片让 mentor **3 秒决策**:谁要处理(点名行)→ 谁正常(全员表,状态固定词)
+      → 明细去哪看(base 链接自动展开)。
+  数据由调用方(16:00 定时 LLM)按 company-todo-audit 六项口径读该 mentor base 计算后传入;
+  本工具只做:校验 → 渲染 → 发卡。纯信息卡,无按钮,handlers 为空。
+  铁律:消失≠未闭环≠失实(标消失·待确认);请假顺延不计逾期;承接只对任务去重。
+  {key} 占位符由 values_json 填充;行数据经 context_json 的 rows 注入。
+  values:last_cycle / cycle_date / mentor_name / group_summary / board_link /
+    legend(图例) / note
+  context:rows = **全员一人一行** [{成员, 状态, 要点, 备注}]
+    - 状态:白名单固定词 正常 / 需处理 / 请假顺延 / 空白 / 不可达
+      (工具据此自动生成顶部点名行:需处理→⚠️点名、请假顺延→🏖知会)
+    - 要点:该人本期一句固定摘要(如「承接 2 · 闭环 1」),空渲染 —
+    - 备注:风险说明(如「消失 1 条待确认」),空渲染 —
+  点名行(alert_line)由工具从 rows 聚合生成,不另传参数 → 机器可读、不松散。
+-->
+<card title="TODO 台账·{cycle_date}·{mentor_name}组" template="blue">
+  <info label="对比" value="{last_cycle} → {cycle_date}"/>
+  <info label="组内" value="{group_summary}"/>
+  <info label="明细" value="{board_link}"/>
+  <text value="{alert_line}"/>
+  <divider/>
+  <table source="rows" empty="本期暂无成员数据">
+    <col field="成员" label="成员"/>
+    <col field="状态" label="状态"/>
+    <col field="要点" label="本期要点"/>
+    <col field="备注" label="备注"/>
+  </table>
+  <text value="图例:{legend}"/>
+  {note}
+</card>

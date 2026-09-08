@@ -1,0 +1,16 @@
+<!--
+  判断卡 · 候选确认卡(海豚三号判断卡流程第 1 步)
+  {key} 为占位符,渲染时由 values_json 填充(值自动 XML 转义)。
+  使用方式:feishu_card_render(template="judgement-confirm",
+    values_json="{...}", context_json="{...}",
+    handler_overrides_json="{cand_0_yes/cand_0_no/... 的直调工具映射}")
+  values:title(卡标题)/ subtitle(副题,如"2/3 待确认,确认一条记一条")/
+    picks(候选行数组,每行 {title, tag, side, bind_record, state})/ footer(底注,可空)
+  context(注入回调 value):case_id / case_kind / person_open_id / mentor_open_id 等业务字段
+  按钮动作:每候选行 cand_{i}_yes(记入)/ cand_{i}_no(不记),round 轮次自动后缀。
+-->
+<card title="{title}" template="blue">
+  <text value="{subtitle}"/>
+  {picks}
+  <text value="{footer}"/>
+</card>

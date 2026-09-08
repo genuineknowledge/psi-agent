@@ -1,0 +1,24 @@
+<!--
+  TODO 检测结果卡(todo-writing-check 15:00 定时 · v3 通用三列版)
+  {key} 为占位符,渲染时由 values_json 填充(值自动 XML 转义);行数据经 context_json 的 rows 注入。
+  使用方式:feishu_todo_check_result_send(person_name=..., cycle_date=..., rows_json=...)
+  values:person_name / cycle_date / note(可选状态行,如「请假顺延未检」;为空整行不渲染)
+  context:rows = 检测结果行 [{检测项, 结果, 说明}] —— 工具层自动编号:第一列「序号+检测项」,
+          序号由工具按行序生成(1. / 2. / 3. …),不要求调用方传;第二列「结果」,
+          第三列「说明」可空(渲染为 —)。
+  v3 通用化(2026-09-08 马晨柯):不再区分「五条」与「原规范」两版,检测项一次列全、
+  通用渲染;不再写死五条口径(口径见 config/todo-check-points.yaml 与各检测技能,
+  本模板只做呈现)。判定值建议带符号:✅ 合规 / ⚠️ 提示 / ❓ 存疑 / ❌ 违规 / ❌ 缺必填。
+  本卡纯信息、无交互(无 button/score/comment),渲染结果 handlers 为空。
+-->
+<card title="TODO 检测·{cycle_date}" template="blue">
+  <info label="被检人" value="{person_name}"/>
+  <text value="机器初判,仅供自查参考;有异议找 mentor 复核或按 SOP 申诉。本次检测覆盖目标规范与执行质量,全部检测项一次完成。"/>
+  <divider/>
+  <table source="rows" empty="暂无检测项">
+    <col field="检测项" label="序号+检测项"/>
+    <col field="结果" label="结果"/>
+    <col field="说明" label="说明"/>
+  </table>
+  {note}
+</card>

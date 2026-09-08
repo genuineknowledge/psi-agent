@@ -1,0 +1,22 @@
+<!--
+  判断卡 · 复核卡(海豚三号判断卡流程第 2 步,发给 mentor)
+  values:title(如"⚖️ 判断复核 · 马晨柯 · 负面")/ status(状态行,如"待 mentor 复核")/
+    verdict(判断结论段,可含分数星,如"计划失能——这是承诺失控… ★★☆☆☆")/
+    evidence(证据)/ advice(正确做法/建议)/ note(可选状态注,重建时用,空则无)
+  context(注入回调 value):case_id / case_kind / person_open_id / mentor_open_id /
+    person_name / verdict_text / verdict_score 等
+  按钮动作:judge_agree(同意判断)/ judge_revise(调整判断)/ judge_reject(退回补证),
+  由调用方经 handler_overrides_json 映射到直调工具。
+-->
+<card title="{title}" template="blue">
+  <info label="状态" value="{status}"/>
+  <text value="{verdict}"/>
+  <info label="证据" value="{evidence}"/>
+  <info label="建议" value="{advice}"/>
+  {note}
+  <action-row>
+    <button text="同意判断" type="accept" action="judge_agree"/>
+    <button text="调整判断" type="primary" action="judge_revise"/>
+    <button text="退回补证" type="reject" action="judge_reject"/>
+  </action-row>
+</card>

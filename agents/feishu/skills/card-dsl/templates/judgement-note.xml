@@ -1,0 +1,12 @@
+<!--
+  判断卡 · 补充说明输入卡(结果反馈卡点「补充说明」后发,给被记录人)
+  values:title / original(当前判断,供参考)/ hint / placeholder / record_id
+  context(注入回调 value):case_id / case_kind / edit_kind=note / person_open_id /
+    mentor_open_id 等;输入动作 judge_note_input(提交补充说明)。
+-->
+<card title="{title}" template="blue">
+  <text value="{original}"/>
+  <text value="{hint}"/>
+  <comment placeholder="{placeholder}" bind-record="{record_id}" action="judge_note_input"
+           confirm-title="提交补充说明" confirm-text="把补充说明附到这条记录？"/>
+</card>

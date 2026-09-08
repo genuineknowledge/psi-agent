@@ -1,0 +1,29 @@
+<!--
+  mentor 检查提醒卡(mentor-check-remind 15:10 定时 · v2 新卡;原版纯文本提醒保留)
+  逐人一行:判定速览(①②③④⑤)+ 第四条「个人 TODO 与小组 TODO 对齐」详情 + 需 mentor 人工确认的存疑项。
+  第四条是 15:10 环节的重点:SOP「个人 TODO 要与小组 TODO 对齐」,
+  依据 = 看板 mentor 列当期任务的承接/拆解/支撑关系(拿不准的存疑项由 mentor 人工把关)。
+  {key} 为占位符,由 values_json 填充;行数据经 context_json 的 rows 注入。
+  使用方式:feishu_mentor_check_card_send(receive_id=..., mentor_name=..., cycle_date=...,
+    filled_summary=..., missing_summary=..., board_link=..., rows_json=...)
+  values:cycle_date / mentor_name / filled_summary / missing_summary / board_link /
+    note(可选状态行,如「本组有 N 条对齐存疑」;为空整行不渲染)
+  context:rows = [{成员, 判定速览, 对齐依据, 待确认}]
+  判定速览列写法:五条符号串,如「①✅ ②⚠️ ③✅ ④❓ ⑤✅」
+  图例:✅ 合规 ⚠️ 提示(建议拆解/补写) ❓ 存疑(待人工确认)
+  本卡纯信息、无交互,handlers 为空。
+-->
+<card title="TODO 检查·{cycle_date}·{mentor_name}组" template="blue">
+  <info label="已填" value="{filled_summary}"/>
+  <info label="未填/免填" value="{missing_summary}"/>
+  <info label="看板" value="{board_link}"/>
+  <text value="判定速览 = ①时间 ②粒度 ③价值 ④对齐 ⑤全覆盖。第四条「个人 TODO 与小组/mentor TODO 对齐」请重点把关。图例:✅ 合规 ⚠️ 提示 ❓ 存疑"/>
+  <divider/>
+  <table source="rows" empty="本组暂无成员数据">
+    <col field="成员" label="成员"/>
+    <col field="判定速览" label="①②③④⑤"/>
+    <col field="对齐依据" label="④ 对齐依据"/>
+    <col field="待确认" label="需你人工确认"/>
+  </table>
+  {note}
+</card>

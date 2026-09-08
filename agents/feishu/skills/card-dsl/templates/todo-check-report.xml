@@ -1,0 +1,30 @@
+<!--
+  TODO 规范体检卡 · 版本一·原版 —— 规格存档(2026-09-07 v0.5,马晨柯生产截图同款)
+
+  ⚠️ 本文件已不再参与渲染:该卡为静态体检报告(无按钮/打分/评论交互),
+  feishu_todo_check_report_send 直拼卡 2.0 JSON(橙头 + 统计三格 column_set +
+  markdown 跳转链接),DSL 渲染器表达不了 column_set 统计格与橙头色。
+  本文件只作卡面规格的权威文字记录,防止实现与规格漂移。
+
+  卡面结构(自上而下):
+    header : template=orange, title=「TODO 规范体检 · {period} 第{cycle}周期」
+    body   : ① meta_line 元信息行(生成时间·体检环节·发送范围,可空)
+             ② 「**{person_name}**，机器初判你 {period} 的 TODO 填报有 规范问题,请对照修正:」
+             ③ column_set 三格统计: 合规 N / 待完善 N / 缺必填 N(灰底)
+             ④ 「📋 待完善项」+ 逐条 markdown bullet
+                (行形如「小目标缺『截止日期』」,由 {层级,缺} 或整句 {项} 拼出)
+             ⑤ 「去修改 TODO LIST」链接(cta_url,指向 TODO 看板/填写表)
+             ⑥ 底部规范依据(footer):
+                大目标/小目标 必填 标题+截止;todo 必填 标题+截止+验收人。
+                机器初判,以人工复核为准(落款·机器人名由调用方拼在 footer 尾)
+
+  判定口径(调用方 LLM,见 schedules/todo-writing-check/TASK.md 第 4 步):
+    大目标 : 标题+截止 必填;另查 外部成果 声明(负责人/小组长另查 友商对比)
+    小目标 : 标题+截止 必填
+    todo   : 标题+截止+验收人 必填
+    统计桶 : 整份填报按结构单元逐项归桶——缺硬必填(标题/截止/验收人)→ 缺必填;
+             必填齐但价值声明缺(外部成果/友商对比)→ 待完善;齐 → 合规。
+             (精确归桶以 todo-writing-standard / todo-alignment-check 技能为准)
+-->
+<card title="TODO 规范体检 · {period} 第{cycle}周期" template="orange">
+</card>
