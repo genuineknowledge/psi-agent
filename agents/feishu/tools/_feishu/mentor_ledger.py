@@ -32,63 +32,24 @@ import _feishu_impl as _core
 from lark_channel.core.enum import AccessTokenType, HttpMethod
 from lark_channel.core.model import BaseRequest
 
+# The schema and its inert request builders live in ``ledger_schema`` — imported
+# by ``_feishu_impl`` at module scope, so keeping them here made this module
+# un-importable unless ``_feishu_impl`` happened to load first (circular import).
+from _feishu.ledger_schema import (
+    _LEDGER_NAME_PREFIX,
+    _LEDGER_SCHEMA_FIELDS,
+    _build_list_tables_request,
+    _ledger_base_name,
+)
 from _feishu.todo_sop import load_todo_sop
 
-_LEDGER_NAME_PREFIX = "TODO 台账-"
-
-# Fixed column definition for directly-provisioned ledgers. 负责人/mentor are
-# PERSON (11) columns — never text. 层级 and 父项 are both single-select (3)
-# whose options company-todo-sync syncs from the current cycle BEFORE writing
-# rows: 层级 options are per-item level tags ("大目标1", "小目标1", "todo1",
-# numbered independently per level, color by level kind — palette 1/3/5);
-# 父项 options are the parent-able subset of those tags (大目标*/小目标*).
-# 截止日期 is a plain date (5) — callers write nothing (not a default) when
-# the source cell has no deadline.
-_LEDGER_SCHEMA_FIELDS: list[dict[str, Any]] = [
-    {"field_name": "周期日期", "type": 5},
-    {"field_name": "负责人", "type": 11},
-    {"field_name": "mentor", "type": 11},
-    {"field_name": "层级", "type": 3, "property": {"options": []}},
-    {"field_name": "父项", "type": 3, "property": {"options": []}},
-    {"field_name": "标题", "type": 1},
-    {"field_name": "截止日期", "type": 5},
-    {
-        "field_name": "状态",
-        "type": 3,
-        "property": {
-            "options": [
-                {"name": "待开始", "color": 0},
-                {"name": "进行中", "color": 1},
-                {"name": "已交付", "color": 2},
-                {"name": "已闭环", "color": 3},
-                {"name": "未闭环逾期", "color": 4},
-                {"name": "请假顺延", "color": 5},
-            ]
-        },
-    },
-    {
-        "field_name": "闭环五要素",
-        "type": 4,
-        "property": {
-            "options": [
-                {"name": "有验收人"},
-                {"name": "截止到期或提前"},
-                {"name": "已勾选提交成果"},
-                {"name": "mentor已评分"},
-                {"name": "评价已回写wiki"},
-            ]
-        },
-    },
-    {"field_name": "mentor打分", "type": 2},
-    {"field_name": "mentor评语", "type": 1},
-    {"field_name": "外部成果", "type": 1},
-    {"field_name": "友商对比", "type": 1},
-    {"field_name": "任务GUID", "type": 1},
+__all__ = [
+    "_LEDGER_NAME_PREFIX",
+    "_LEDGER_SCHEMA_FIELDS",
+    "_build_list_tables_request",
+    "_ledger_base_name",
+    "mentor_ledger_ensure_impl",
 ]
-
-
-def _ledger_base_name(mentor_name: str) -> str:
-    return f"{_LEDGER_NAME_PREFIX}{mentor_name.strip()}"
 
 
 def _build_list_folder_request(folder_token: str, page_token: str) -> BaseRequest:
@@ -193,16 +154,6 @@ async def _provision_direct(
         "confirm-code flow (batch_delete) so the base keeps only 台账."
     )
     return app_token, {"ok": True, "table_id": table_id, "cleanup_note": cleanup_note}
-
-
-def _build_list_tables_request(app_token: str) -> BaseRequest:
-    req = BaseRequest()
-    req.http_method = HttpMethod.GET
-    req.uri = "/open-apis/bitable/v1/apps/:app_token/tables"
-    req.paths["app_token"] = app_token
-    req.add_query("page_size", "20")
-    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
-    return req
 
 
 async def _first_table_id(app_token: str, user_key: str) -> tuple[str | None, dict[str, Any] | None]:

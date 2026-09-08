@@ -1134,10 +1134,21 @@ from _feishu.leave import (  # noqa: E402,F401
     _widgets,
     query_leave_impl,
 )
-from _feishu.mentor_ledger import (  # noqa: E402,F401
+
+# Only the inert half of the mentor-ledger domain is re-exported here. Importing
+# anything from ``_feishu.mentor_ledger`` would rebuild the import cycle: that module
+# imports *this* one as ``_core``, so whenever it loads first (tool-registry glob
+# order decides) it is only partially initialized by the time this line runs, and
+# every name defined below its own import fails with "cannot import name ... from
+# partially initialized module". ``ledger_schema`` imports nothing from the tools
+# tree, so it is safe to depend on from either direction.
+# ``mentor_ledger_ensure_impl`` is reached directly by its one caller,
+# ``feishu_mentor_ledger_ensure.py``, rather than through this re-export.
+from _feishu.ledger_schema import (  # noqa: E402,F401
+    _LEDGER_NAME_PREFIX,
     _LEDGER_SCHEMA_FIELDS,
     _build_list_tables_request,
-    mentor_ledger_ensure_impl,
+    _ledger_base_name,
 )
 from _feishu.message import (  # noqa: E402,F401
     _ANNOUNCEMENT_ERROR_HINTS,

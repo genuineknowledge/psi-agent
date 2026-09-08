@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 
-import _feishu_impl as _f
+# Reached directly rather than through ``_feishu_impl``'s re-exports: that module no
+# longer imports ``_feishu.mentor_ledger`` (doing so was a circular import).
+from _feishu.mentor_ledger import mentor_ledger_ensure_impl
 
 
 async def feishu_mentor_ledger_ensure(
@@ -42,7 +44,7 @@ async def feishu_mentor_ledger_ensure(
         identity: ``"user"`` / ``"bot"`` ownership choice; omit to use the
             remembered choice (returns ``need_identity_choice`` on first use).
     """
-    outcome = await _f.mentor_ledger_ensure_impl(
+    outcome = await mentor_ledger_ensure_impl(
         mentor_open_id=mentor_open_id,
         mentor_name=mentor_name,
         folder_token=folder_token,
