@@ -1552,6 +1552,10 @@ export default function HaiTunAgentWorkspace({
     const list = messages[cardId] ?? [];
     const agent = list[agentIndex];
     if (!agent || agent.role !== "agent") return;
+    // 只允许末条助手重新生成：`runChatTurn` 只更新列表末条 agent，点中间会抹掉最新一轮。
+    for (let i = list.length - 1; i > agentIndex; i--) {
+      if (list[i]?.role === "agent") return;
+    }
     let userIndex = -1;
     for (let i = agentIndex - 1; i >= 0; i--) {
       if (list[i]?.role === "user") {
