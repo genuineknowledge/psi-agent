@@ -36,9 +36,7 @@ def _normalize_person_filters(raw_query: dict[str, Any], user_key: str) -> dict[
         value = value.strip()
         if value in _SELF_MARKERS:
             if not user_key:
-                raise ValueError(
-                    f"{key}: 值 '我/本人' 需要当前会话用户身份, 但 user_key 为空"
-                )
+                raise ValueError(f"{key}: 值 '我/本人' 需要当前会话用户身份, 但 user_key 为空")
             raw_query[key] = user_key
         elif value.startswith(_PERSON_ID_PREFIXES):
             raw_query[key] = value
