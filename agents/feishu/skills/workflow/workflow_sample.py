@@ -47,9 +47,9 @@ import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 
+from _workflow_authoring_context import current_prompt as _current_authoring_prompt
 import anyio
 
-from _workflow_authoring_context import current_prompt as _current_authoring_prompt
 from psi_agent._appdata import resolve_appdata_root as _resolve_appdata_root
 from psi_agent.session.runtime_context import get_workspace
 
