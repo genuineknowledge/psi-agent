@@ -23,8 +23,11 @@ fire: prompt
    - 请假免填 → 跳过,不提醒;
    - 审批中(skipped_not_approved)/日期读不出(needs_fix)→ 不提醒,但记录;
    - 无请假 → **未写**。
-4. 对未写的人 `feishu_message_send` 私聊提醒:文案「<姓名>,今天(<日期>)的 TODO 还没填,记得去 TODO LIST 表填一下」+ 规范要点(三层结构:大目标/小目标/TODO;每条 TODO 要有 deadline;TODO 不超过 5 条;不用过去式)。
-5. 消息只发给本人,不提其他人;不发群、不发 boss/mentor 报告。
+4. 对每个未写的人,用 DSL 提醒卡(模板 remind-card)私聊发卡——**不要自己拼卡片 JSON,不要发纯文本**:
+   - `feishu_card_render(template="remind-card", values_json="{\"name\":\"<姓名>\",\"hint\":\"<规范要点一句>\",\"board_link\":\"https://genuineknowledge.feishu.cn/wiki/H6icwLWn1iwpXAk73QMcA6MgnWc\"}")` 渲染拿卡片 JSON;
+   - hint 规范要点一句(按 todo-writing-standard schema 段概括:三层结构 大目标/小目标/TODO;每条 TODO 带时间与标准、有 deadline;不超过 5 条),不复述全文;
+   - `feishu_message_send_card(receive_id=<该人 open_id>, receive_id_type="open_id", card_json=<渲染结果>)` 私聊发送。
+5. 卡片只发给未写者本人,不提其他人;不发群、不发 boss/mentor 报告;已填的人不打扰。
 
 ## 硬顺序与红线
 
