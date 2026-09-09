@@ -1148,6 +1148,13 @@ from _feishu.sheet import (  # noqa: E402,F401
     read_sheet_range_impl,
     write_sheet_impl,
 )
+from _feishu.strike import (  # noqa: E402,F401
+    _col_letter,
+    _find_col,
+    _norm_name,
+    _parse_cell_strikes,
+    sheet_strike_read_impl,
+)
 from _feishu.task import (  # noqa: E402,F401
     _build_create_task_request,
     _due_to_ms,

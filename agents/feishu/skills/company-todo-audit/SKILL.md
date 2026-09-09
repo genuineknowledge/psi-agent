@@ -46,6 +46,8 @@ cron 已经错开（本技能 `30 14 * * 1,3,5`，sync `0 15 * * 1,3,5`），正
 动作由 `company-todo-review` 在 mentor 提交评价时立即执行，本技能用 `wiki_read` 核对快照页该
 todo 之后确实有评语文本即可。
 
+**删除线 = 上级验收通过的硬证据**(SOP v1.1:验收方式 = 上级用删除线划掉已完成且达标的 TODO)。删除线样式普通读表会拍平丢失,判验收状态时用确定性工具 `feishu_sheet_strike_read(board_link, person_name, cycle_date)` 读该人该期单元格的删除线:返回每段文本的 strike 状态。有删除线的段 = 已验收;无删除线 = 未验收(或验收未达标,守住「验收一定要守住标准」)。
+
 ## SOP v1.1 删除线验收衔接
 
 真知TODO list SOP v1.1 把 TODO 定为小方案，验收方式暂定为：上级在 todo 库用**删除线**删除
