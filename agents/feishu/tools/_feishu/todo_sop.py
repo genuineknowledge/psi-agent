@@ -13,8 +13,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import _runtime_paths as _paths
 import _feishu_impl as _core
+import _runtime_paths as _paths
 import yaml
 from lark_channel.core.enum import AccessTokenType, HttpMethod
 from lark_channel.core.model import BaseRequest
@@ -137,8 +137,11 @@ async def todo_fill_status_impl(
     needs_fix: set[str] = set()
     if blanks:
         leave = await query_leave_impl(
-            _LEAVE_CODE, date_from=cycle_date, date_to=cycle_date,
-            names_json=json.dumps(blanks, ensure_ascii=False), user_key=user_key,
+            await _leave_code(),
+            date_from=cycle_date,
+            date_to=cycle_date,
+            names_json=json.dumps(blanks, ensure_ascii=False),
+            user_key=user_key,
         )
         if leave.get("ok"):
             for item in leave.get("on_leave", []) if isinstance(leave.get("on_leave"), list) else []:
@@ -184,6 +187,17 @@ def _build_buckets(
         else:
             bucket["缺写"].append(n)
     return bucket
+
+
+async def _leave_code() -> str:
+    """请假审批定义码:读 config,读不到退回内置默认(与既有口径一致)。"""
+    sop = await load_todo_sop()
+    leave = sop.get("leave", {}) if isinstance(sop.get("leave"), dict) else {}
+    code = str(leave.get("leave_approval_code", "")).strip()
+    return code or _LEAVE_CODE_FALLBACK
+
+
+_LEAVE_CODE_FALLBACK = "99EEC396-536A-4C7A-8B2D-412584E35CE3"
 
 
 def _find_col(header: list[str], candidates: tuple[str, ...]) -> int:
