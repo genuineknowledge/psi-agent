@@ -752,3 +752,53 @@ async def user_group_members_impl(
     if failed:
         result["message"] = f"{len(succeeded)} 个成功, {len(failed)} 个失败; 看 failed 里每个人的原因。"
     return result
+
+
+async def member_status_check_impl(names: list[str], user_key: str = "") -> dict[str, Any]:
+    """Classify display names against the org directory (one recursive listing).
+
+    active = name matches exactly one directory entry; resigned = no match;
+    unresolved = multiple entries share the name (ambiguous) — needs a human.
+    """
+    # 全公司通讯录一次拉全(递归),名字比对纯确定性,不靠模型判断。
+    res = await list_department_members_impl("0", "open_department_id", "open_id", recursive=True)
+    if not res.get("ok"):
+        return _core._error(f"directory read failed: {res.get('message', 'unknown')}")
+    members: list[dict[str, Any]] = []
+    for it in res.get("members", []) if isinstance(res.get("members"), list) else []:
+        members.append({"name": str(it.get("name", "")).strip(), "open_id": it.get("open_id", "")})
+
+    classified = _classify_names(names, members)
+    classified["ok"] = True
+    classified["directory_size"] = len(members)
+    return classified
+
+
+def _classify_names(names: list[str], members: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pure classification: every name lands in exactly one bucket."""
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for m in members:
+        if m.get("name"):
+            by_name.setdefault(m["name"], []).append(m)
+
+    active: list[dict[str, str]] = []
+    resigned: list[str] = []
+    unresolved: list[str] = []
+    for raw in names:
+        name = raw.strip()
+        if not name:
+            continue
+        hits = by_name.get(name, [])
+        if not hits:
+            resigned.append(name)
+        elif len(hits) == 1:
+            active.append({"name": name, "open_id": hits[0]["open_id"]})
+        else:
+            unresolved.append(name)
+
+    return {
+        "total": len(names),
+        "active": active,
+        "resigned": resigned,
+        "unresolved": unresolved,
+    }

@@ -458,3 +458,12 @@ invoked by the current framework — do not "clean them up" as dead code:
 ```bash
 uv run python agents/feishu/systems/system.py   # prints the assembled prompt
 ```
+
+## 点名/催办/缺写判定的硬纪律(每回合生效)
+
+凡是要**按姓名点名、催办、判缺写、列名单、说「XX 没写 todo」**的场景(对话与定时任务一律):
+
+1. 先把名单交给确定性工具 `feishu_member_status_check(names_json=[...])` 分类,**以工具输出为准**,禁止凭名字自行判断在职状态;
+2. 疑似离职(resigned)→ 不催、不判违规、不点名,单列「疑似离职 N 人(已跳过)」;
+3. 解析失败(unresolved)→ 单列「解析失败,需人工」,与疑似离职分开;
+4. 禁止静默删除——两类都必须在回答/报告里明示。

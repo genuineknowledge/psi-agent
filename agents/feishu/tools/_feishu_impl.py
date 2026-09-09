@@ -891,6 +891,7 @@ from _feishu.contact import (  # noqa: E402,F401
     _build_group_member_request,
     _child_department_ids,
     _child_departments,
+    _classify_names,
     _department_record,
     _members_of_department,
     _split_contacts,
@@ -899,6 +900,7 @@ from _feishu.contact import (  # noqa: E402,F401
     find_users_by_contact_impl,
     get_users_batch_impl,
     list_department_members_impl,
+    member_status_check_impl,
     user_group_members_impl,
 )
 from _feishu.doc import (  # noqa: E402,F401
@@ -1152,6 +1154,12 @@ from _feishu.task import (  # noqa: E402,F401
     _build_create_task_request,
     _due_to_ms,
     create_task_impl,
+)
+from _feishu.todo_sop import (  # noqa: E402,F401
+    _build_buckets,
+    _find_col,
+    load_todo_sop,
+    todo_fill_status_impl,
 )
 from _feishu.worktree import (  # noqa: E402,F401
     _node_text,
