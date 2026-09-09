@@ -1353,7 +1353,7 @@ async def test_analysis_requires_committed_rule_snapshots(tmp_path: Path, monkey
     sop_text, positive_text = await pipeline._load_analysis_rules(job)
     assert "会议 SOP" in sop_text  # 引擎 SKILL 已注入
     assert "config/meeting-sop.yaml" in sop_text  # 判定口径 (YAML) 已注入
-    assert "judgment_states" in sop_text and "msop.prep.01" in sop_text
+    assert "judgment_states" in sop_text and "msop.core.01" in sop_text
     assert "正负面分析规则" in positive_text
     assert "不得监听或自动分析" not in positive_text  # 注入的是快照, 不是私聊边界全文
     assert "负面候选三元组" in positive_text
@@ -1379,6 +1379,134 @@ async def test_analysis_fails_when_meeting_sop_config_missing_or_broken(
     broken.write_text("meta:\n  version: v1\n", encoding="utf-8")  # 缺 rules 段
     monkeypatch.setattr(pipeline, "MEETING_SOP_CONFIG_PATH", broken)
     with pytest.raises(RuntimeError, match="不符合契约"):
+        await pipeline._load_analysis_rules(job)
+
+
+# ── 周中对齐会 SOP v1.1: 核心原则 1/3/4/5 定稿生效 ─────────────────────────
+
+
+def test_meeting_sop_v11_core_principles_1_3_4_5_are_active_with_criteria() -> None:
+    """meeting-sop.yaml 契约值: v1.1 已将 docx「核心原则」编号 1/3/4/5 四条
+    (必有产出 / 会中控制时间 / 会后纪要与闭环执行 / 杜绝流水账) 定稿为 active
+    且判定标准非空; 编号 2 (会前准备落实到责任人, msop.core.02) 未纳入本判定
+    引擎, 必须保持 active: false。"""
+    path = Path(pipeline.MEETING_SOP_CONFIG_PATH)
+    assert path.is_file(), "meeting-sop.yaml 缺失, 无法定稿"
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert config["meta"]["version"] == "v1.1"
+    by_id = {rule["id"]: rule for rule in config["rules"]}
+    assert set(by_id) == {
+        "msop.core.01",
+        "msop.core.02",
+        "msop.core.03",
+        "msop.core.04",
+        "msop.core.05",
+    }
+    active_ids = [rule_id for rule_id, rule in by_id.items() if rule.get("active") is True]
+    assert active_ids == [
+        "msop.core.01",
+        "msop.core.03",
+        "msop.core.04",
+        "msop.core.05",
+    ]
+    assert by_id["msop.core.02"]["active"] is False
+    for rule_id in active_ids:
+        rule = by_id[rule_id]
+        for field in ("criteria", "compliant_example", "violation_example", "exception"):
+            assert str(rule.get(field) or "").strip(), f"{rule_id}.{field} 必须已定稿非空"
+
+
+@pytest.mark.anyio
+async def test_analysis_injects_v11_active_rule_checklist() -> None:
+    """管道注入的规则文本 = 引擎 SKILL + 口径 YAML + 机器渲染的「生效判定清单」:
+    版本 v1.1、生效 4 条逐一列明、未生效条目单独声明 (模型不得判其符合/不符合)。"""
+    jobs = {job.name: job for job in MEETING_JOBS}
+    sop_text, _ = await pipeline._load_analysis_rules(jobs["weekday-alignment"])
+    assert "口径 v1.1" in sop_text
+    assert "生效判定清单" in sop_text
+    assert "4 条生效规则" in sop_text
+    assert "未生效" in sop_text and "msop.core.02" in sop_text
+    for rule_id in (
+        "msop.core.01",
+        "msop.core.03",
+        "msop.core.04",
+        "msop.core.05",
+    ):
+        assert rule_id in sop_text
+
+
+@pytest.mark.anyio
+async def test_analysis_fails_when_active_rule_has_no_criteria(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """定稿后的防线: active: true 的规则必须携带非空判定标准; 空标准 = 契约损坏,
+    本次运行显式失败, 不允许把无口径的规则当已生效去判。"""
+    cfg = tmp_path / "active-empty.yaml"
+    cfg.write_text(
+        "meta:\n"
+        "  version: v1.1\n"
+        "  sop_name: 周中对齐会会议 SOP\n"
+        "observation_axes:\n"
+        "  - {id: prep, title: 会前准备}\n"
+        "  - {id: session, title: 会中议题与决议}\n"
+        "judgment_states: [符合, 部分符合, 不符合, 证据不足]\n"
+        "rules:\n"
+        "  - id: msop.core.01\n"
+        "    active: true\n"
+        "    title: 必有产出\n"
+        "    axis: session\n"
+        '    criteria: ""\n'
+        '    compliant_example: ""\n'
+        '    violation_example: ""\n'
+        '    exception: ""\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pipeline, "MEETING_SOP_CONFIG_PATH", cfg)
+    jobs = {job.name: job for job in MEETING_JOBS}
+    with pytest.raises(RuntimeError, match="判定标准为空"):
+        await pipeline._load_analysis_rules(jobs["weekday-alignment"])
+
+
+@pytest.mark.anyio
+async def test_analysis_fails_on_duplicate_rule_id_or_unknown_axis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """口径契约: rules[].id 全仓唯一、axis 必须落在 observation_axes 内;
+    重复 id 或未知 axis 都属契约损坏 → 显式失败。"""
+    jobs = {job.name: job for job in MEETING_JOBS}
+    job = jobs["weekday-alignment"]
+    duplicate = tmp_path / "duplicate.yaml"
+    duplicate.write_text(
+        "meta:\n"
+        "  version: v1.1\n"
+        "  sop_name: 周中对齐会会议 SOP\n"
+        "observation_axes:\n"
+        "  - {id: prep, title: 会前准备}\n"
+        "judgment_states: [符合, 部分符合, 不符合, 证据不足]\n"
+        "rules:\n"
+        "  - {id: msop.prep.01, active: true, title: a, axis: prep, criteria: c1,"
+        " compliant_example: e, violation_example: e, exception: e}\n"
+        "  - {id: msop.prep.01, active: true, title: b, axis: prep, criteria: c2,"
+        " compliant_example: e, violation_example: e, exception: e}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pipeline, "MEETING_SOP_CONFIG_PATH", duplicate)
+    with pytest.raises(RuntimeError, match="重复"):
+        await pipeline._load_analysis_rules(job)
+
+    unknown_axis = tmp_path / "unknown-axis.yaml"
+    unknown_axis.write_text(
+        "meta:\n"
+        "  version: v1.1\n"
+        "  sop_name: 周中对齐会会议 SOP\n"
+        "observation_axes:\n"
+        "  - {id: prep, title: 会前准备}\n"
+        "judgment_states: [符合, 部分符合, 不符合, 证据不足]\n"
+        "rules:\n"
+        "  - {id: msop.prep.01, active: true, title: a, axis: other, criteria: c,"
+        " compliant_example: e, violation_example: e, exception: e}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pipeline, "MEETING_SOP_CONFIG_PATH", unknown_axis)
+    with pytest.raises(RuntimeError, match="observation_axes"):
         await pipeline._load_analysis_rules(job)
 
 

@@ -217,6 +217,68 @@ def _meeting_meta(job: MeetingJob | None, chunk_index: int | None = None, chunk_
     )
 
 
+def _flat_rule_text(value: Any) -> str:
+    """多行口径正文折叠成单行, 保证注入清单每条目一行可审计。"""
+    return " ".join(str(value or "").split())
+
+
+def _render_sop_checklist(config: dict[str, Any]) -> str:
+    """把已定稿 (rules[].active=true) 的会议 SOP 业务条目渲染成「生效判定清单」。
+
+    生效范围由代码按 YAML 渲染, 模型无需自行解析注释; 无效配置在此显式抛错:
+    重复规则 id、axis 不在 observation_axes、生效规则判定标准为空。
+    """
+    meta_version = str(config.get("meta", {}).get("version") or "?")
+    axes = {
+        str(axis.get("id")): str(axis.get("title") or "")
+        for axis in config.get("observation_axes") or []
+        if isinstance(axis, dict)
+    }
+    seen: dict[str, int] = {}
+    active_rules: list[dict[str, Any]] = []
+    inactive_rules: list[dict[str, Any]] = []
+    for rule in config.get("rules") or []:
+        if not isinstance(rule, dict) or not str(rule.get("id") or "").strip():
+            raise RuntimeError(f"会议 SOP 配置不符合契约(rule 需含非空 id): {MEETING_SOP_CONFIG_PATH}")
+        rule_id = str(rule["id"])
+        seen[rule_id] = seen.get(rule_id, 0) + 1
+        if seen[rule_id] > 1:
+            raise RuntimeError(f"会议 SOP 配置不符合契约(规则 id 重复: {rule_id}): {MEETING_SOP_CONFIG_PATH}")
+        if rule.get("axis") not in axes:
+            raise RuntimeError(
+                f"会议 SOP 配置不符合契约(规则 {rule_id} 的 axis 不在 observation_axes): {MEETING_SOP_CONFIG_PATH}"
+            )
+        if rule.get("active") is True and not str(rule.get("criteria") or "").strip():
+            raise RuntimeError(f"会议 SOP 配置不符合契约(生效规则 {rule_id} 判定标准为空): {MEETING_SOP_CONFIG_PATH}")
+        (active_rules if rule.get("active") is True else inactive_rules).append(rule)
+
+    def _item(rule: dict[str, Any]) -> str:
+        return (
+            f"- [{rule['id']}] {_flat_rule_text(rule.get('title'))}"
+            f" [axis {axes.get(rule.get('axis'), '')}]\n"
+            f"  判定标准: {_flat_rule_text(rule.get('criteria'))}\n"
+            f"  符合示例: {_flat_rule_text(rule.get('compliant_example'))}\n"
+            f"  不符合示例: {_flat_rule_text(rule.get('violation_example'))}\n"
+            f"  例外/宽容边界: {_flat_rule_text(rule.get('exception'))}"
+        )
+
+    lines = [
+        f"===== 生效判定清单 (口径 {meta_version}, {len(active_rules)} 条生效规则) =====",
+    ]
+    if active_rules:
+        lines.append(
+            "对以下每条生效规则逐一给出 judgment_states 四态之一(符合/部分符合/不符合/证据不足), "
+            "引用规则 id 并附原文依据(时间+发言人):"
+        )
+        lines.extend(_item(rule) for rule in active_rules)
+    else:
+        lines.append("(当前无生效规则, 全部业务条目按未生效处理)")
+    if inactive_rules:
+        inactive_ids = "、".join(f"{rule['id']}({_flat_rule_text(rule.get('title'))})" for rule in inactive_rules)
+        lines.append(f"以下条目未生效(不得判 符合/部分符合/不符合, 一律按'证据不足/待补充证据'): {inactive_ids}")
+    return "\n".join(lines)
+
+
 async def _load_analysis_rules(job: MeetingJob) -> tuple[str, str]:
     """读取会议 SOP 引擎/口径与正负面规则快照; 缺失或契约损坏即显式失败, 不静默降级。
 
@@ -245,6 +307,8 @@ async def _load_analysis_rules(job: MeetingJob) -> tuple[str, str]:
     ):
         raise RuntimeError(f"会议 SOP 配置不符合契约(需 meta.version + rules): {MEETING_SOP_CONFIG_PATH}")
     sop_parts.append(f"===== config/meeting-sop.yaml (判定口径, 业务条目以 active 为准) =====\n{config_text}")
+    # 生效判定清单由代码渲染: 契约校验 + 生效条目逐条列出, 与 rules[].active 严格一致。
+    sop_parts.append(_render_sop_checklist(config))
     if not POSITIVE_NEGATIVE_RULES_PATH.is_file():
         raise RuntimeError(f"正负面规则快照缺失: {POSITIVE_NEGATIVE_RULES_PATH}")
     positive_rules = await anyio.Path(str(POSITIVE_NEGATIVE_RULES_PATH)).read_text(encoding="utf-8")
