@@ -252,8 +252,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          binary="pyinstaller-dist/psi-agent"
-          [ -f "$binary" ] || binary="pyinstaller-dist/psi-agent.exe"
+          # 先试 .exe。反过来写 (`[ -f psi-agent ] || binary=...exe`) 在 Windows 上
+          # 必错: Git Bash 的 `[ -f ]` 会给无扩展名的路径自动补 `.exe` 并返回真, 于是
+          # 兜底那行永不执行, 而接手的 **原生** Python 不做这个补全, 拿到
+          # `pyinstaller-dist/psi-agent` 直接 FileNotFoundError (run 34319981768)。
+          binary="pyinstaller-dist/psi-agent.exe"
+          [ -f "$binary" ] || binary="pyinstaller-dist/psi-agent"
           bytes="$(uv run python -c "import sys,os;print(os.path.getsize(sys.argv[1]))" "$binary")"
           echo "::notice::${{ matrix.os }} $binary = $bytes bytes ($((bytes / 1048576)) MiB)"
       - uses: actions/upload-artifact@v7
