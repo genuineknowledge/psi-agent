@@ -13,6 +13,7 @@ PyInstaller 静态 import 图里, 它导入的内核模块没被打包保证 -> 
 from __future__ import annotations
 
 import importlib.util
+import io
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -189,6 +190,28 @@ def _workflow_at(tmp_path: Path, flags: str, name: str = "flags.yml") -> Path:
 def test_repo_state_passes() -> None:
     """库内真实配置应为绿。改动 flags 却漏掉 workspace 依赖时这条会红。"""
     assert chk.main([]) == 0
+
+
+def test_survives_cp1252_stdout(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """cp1252 的 stdout 下, 库内配置仍要返回 0。
+
+    实测的 CI 失败 (PR 878, run 34313907771): windows-latest 的 stdout 是 cp1252,
+    `main()` 第一条中文 print 抛 UnicodeEncodeError 退出 1 —— flags 覆盖其实是完整的,
+    却在 PyInstaller 开跑之前就把整个打包 job 判红。用真的 cp1252 缓冲区复现,
+    不 mock print 了事: 要锁的正是「中文能编出去」。
+    """
+    with capsys.disabled():
+        buf = io.BytesIO()
+        cp1252 = io.TextIOWrapper(buf, encoding="cp1252", newline="")
+        monkeypatch.setattr(sys, "stdout", cp1252)
+        try:
+            rc = chk.main([])
+        finally:
+            cp1252.flush()
+
+    assert rc == 0
+    # reconfigure 之后写进去的是 UTF-8 字节, 所以按 UTF-8 读回来。
+    assert "整包收进" in buf.getvalue().decode("utf-8")
 
 
 def test_repo_systems_include_the_module_that_broke_1_0_14() -> None:

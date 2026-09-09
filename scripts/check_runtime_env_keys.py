@@ -77,7 +77,26 @@ def injection_env_blocks(text: str) -> list[dict[str, str]]:
     return blocks
 
 
+def _force_utf8_output() -> None:
+    """把 stdout/stderr 切成 UTF-8。**本脚本所有输出都是中文, 不切会直接崩。**
+
+    与 `scripts/check_pyinstaller_workspace_imports.py` 同款做法。这一步排在那个判据
+    之后 (pyinstaller.yml:191), PR 878 里前一个先崩, 于是这个**根本没跑到** —— 缺陷
+    一模一样, 只是被上一步的失败掩盖着。别等它自己在 CI 上露头。
+
+    修在脚本里而不是给 workflow 加 `PYTHONIOENCODING`: 判据不该依赖调用方的环境才不崩。
+
+    `reconfigure` 在流被替换成非 `TextIOWrapper` 时可能不存在(某些捕获实现), 所以先探
+    再调; 探不到就维持原样, 不为了日志把主流程搞挂。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.parse_args(argv)
 

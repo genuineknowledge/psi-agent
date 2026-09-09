@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -72,6 +73,33 @@ def test_aligned_blocks_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     keys = ["SERPER_API_KEY", "DASHSCOPE_API_KEY"]
     _setup(tmp_path, monkeypatch, "\n".join(keys), _workflow(_aligned(keys), _aligned(keys)))
     assert chk.main([]) == 0
+
+
+def test_survives_cp1252_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """cp1252 的 stdout 下, 对齐的配置仍要返回 0。
+
+    这一步排在 `check_pyinstaller_workspace_imports` 之后 (pyinstaller.yml:191)。
+    PR 878 里前一个先抛 UnicodeEncodeError, 于是这个**根本没跑到** —— 它有一模一样的
+    缺陷, 只是被上一步的失败掩盖着。用真的 cp1252 缓冲区复现, 不 mock print 了事:
+    要锁的正是「中文能编出去」。
+    """
+    keys = ["SERPER_API_KEY", "DASHSCOPE_API_KEY"]
+    _setup(tmp_path, monkeypatch, "\n".join(keys), _workflow(_aligned(keys), _aligned(keys)))
+
+    with capsys.disabled():
+        buf = io.BytesIO()
+        cp1252 = io.TextIOWrapper(buf, encoding="cp1252", newline="")
+        monkeypatch.setattr(sys, "stdout", cp1252)
+        try:
+            rc = chk.main([])
+        finally:
+            cp1252.flush()
+
+    assert rc == 0
+    # reconfigure 之后写进去的是 UTF-8 字节, 所以按 UTF-8 读回来。
+    assert "两处注入的清单一致" in buf.getvalue().decode("utf-8")
 
 
 def test_one_block_missing_a_key_fails(

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -86,6 +87,30 @@ def test_collect_flags_mode_needs_the_env_var(monkeypatch: pytest.MonkeyPatch) -
     """
     monkeypatch.delenv("PYINSTALLER_COMMON_FLAGS", raising=False)
     assert probe.main(["--collect-flags"]) == 1
+
+
+def test_collect_flags_error_survives_cp1252_stderr(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """上一条那个报错走 stderr, cp1252 下也必须编得出去。
+
+    只切 stdout 时 (改前的写法) 这条路两头都漏: `--collect-flags` 不走 `probe()`,
+    所以根本没切过; 而它打的是 stderr。于是「flags 是空的」这句本身再抛一次
+    UnicodeEncodeError, 真正的原因被一个编码栈回溯盖掉。
+    """
+    monkeypatch.delenv("PYINSTALLER_COMMON_FLAGS", raising=False)
+
+    with capsys.disabled():
+        buf = io.BytesIO()
+        cp1252 = io.TextIOWrapper(buf, encoding="cp1252", newline="")
+        monkeypatch.setattr(sys, "stderr", cp1252)
+        try:
+            rc = probe.main(["--collect-flags"])
+        finally:
+            cp1252.flush()
+
+    assert rc == 1
+    assert "PYINSTALLER_COMMON_FLAGS 是空的" in buf.getvalue().decode("utf-8")
 
 
 def test_collect_flags_mode_prints_stripped_flags(

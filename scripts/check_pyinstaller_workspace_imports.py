@@ -68,6 +68,25 @@ def _is_kernel(module: str) -> bool:
     return module == ROOT_PACKAGE or module.startswith(f"{ROOT_PACKAGE}.")
 
 
+def _force_utf8_output() -> None:
+    """把 stdout/stderr 切成 UTF-8。**本脚本所有输出都是中文, 不切会直接崩。**
+
+    实测的 CI 失败 (PR 878, run 34313907771): windows-latest 的 stdout 是 cp1252,
+    `print("扫到 N 个 system.py...")` 抛 UnicodeEncodeError 退出 1 —— 覆盖其实是
+    完整的, 却在打包开始前就把整个 job 判红。这比漏检更坏: 判据变成了「Windows 上必红」。
+
+    修在脚本里而不是给 workflow 加 `PYTHONIOENCODING`: 判据不该依赖调用方的环境才不崩,
+    且本仓开发机就是 Windows, 人在 cmd.exe 里跑会撞同一个坑。
+
+    `reconfigure` 在流被替换成非 `TextIOWrapper` 时可能不存在(某些捕获实现), 所以先探
+    再调; 探不到就维持原样, 不为了日志把主流程搞挂。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def _workflow_flags() -> str:
     """The workflow text, with YAML folding collapsed to single spaces.
 
@@ -87,6 +106,7 @@ def _hidden_imports(flags: str) -> set[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.parse_args(argv)
 

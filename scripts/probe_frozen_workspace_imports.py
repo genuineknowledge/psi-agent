@@ -60,21 +60,26 @@ ALLOWED_MISSING = {
 }
 
 
-def _force_utf8_stdout() -> None:
-    """把 stdout 切成 UTF-8。
+def _force_utf8_output() -> None:
+    """把 stdout/stderr 切成 UTF-8。
 
-    这个仓库踩过一次: windows-latest 的 stdout 是 cp1252/cp936, 中文编不出去,
+    这个仓库踩过两次: windows-latest 的 stdout 是 cp1252/cp936, 中文编不出去,
     于是**判据本身**抛 UnicodeEncodeError 退出 1 —— 明明产物是好的却报红
     (见 tests/test_gen_legal_html.py 的 cp1252 那条用例)。探针跑在打包 job 的
     windows runner 上, 同一个坑就在脚下。
+
+    stderr 也要切: `--collect-flags` 的失败分支往 stderr 打中文, 只切 stdout 时
+    那条**报错信息本身**会在 cp1252 下再抛一次 UnicodeEncodeError, 真正的原因
+    (flags 是空的) 就被一个编码栈回溯盖掉。
     """
-    stream = getattr(sys.stdout, "reconfigure", None)
-    if stream is not None:
-        stream(encoding="utf-8", errors="replace")
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
 
 
 def probe() -> int:
-    _force_utf8_stdout()
+    _force_utf8_output()
     missing: list[str] = []
     for name in REQUIRED:
         try:
@@ -129,6 +134,8 @@ def collect_flags(raw: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 在分支之前切: `--collect-flags` 的失败分支也打中文, 而它不走 probe()。
+    _force_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list", action="store_true", help="只打印清单, 不做 import")
     parser.add_argument(
