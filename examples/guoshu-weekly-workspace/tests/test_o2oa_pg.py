@@ -12,8 +12,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mock-mcp"))
 
-import _admission as adm
-import _o2oa_templates as o2
+# mock-mcp is a sys.path tool dir, not a package: ty cannot resolve these
+# statically, pytest can (path inserted above).  Same pattern as the tools.
+import _admission as adm  # ty: ignore
+import _o2oa_templates as o2  # ty: ignore
 
 
 class TestAdmissionRules:

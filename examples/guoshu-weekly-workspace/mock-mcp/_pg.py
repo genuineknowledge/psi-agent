@@ -27,7 +27,9 @@ DB_SCHEMA = os.environ.get("PGSCHEMA", "public")
 try:
     import psycopg  # formal source only, kept top-level guarded
 except ImportError:  # pragma: no cover
-    psycopg = None  # runtime error raised from connect()
+    # Rebind to None is intentional so the demo stack (no psycopg installed)
+    # can still import this module; connect() raises a helpful error later.
+    psycopg = None  # ty: ignore (module-typed name cannot be rebound)
 
 
 def dsn() -> str:
