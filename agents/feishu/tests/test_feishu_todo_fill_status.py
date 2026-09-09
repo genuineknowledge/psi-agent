@@ -17,9 +17,13 @@ def test_buckets_are_exclusive_and_complete() -> None:
         {"name": "名字对不上请假", "filled": False},
     ]
     out = f._build_buckets(
-        "9.9", "孙逊", people,
-        resigned={"离职"}, unresolved={"重名"},
-        on_leave={"在职请假"}, needs_fix={"名字对不上请假"},
+        "9.9",
+        "孙逊",
+        people,
+        resigned={"离职"},
+        unresolved={"重名"},
+        on_leave={"在职请假"},
+        needs_fix={"名字对不上请假"},
     )
     assert out["缺写"] == ["在职缺写"]
     assert out["请假免填"] == ["在职请假"]

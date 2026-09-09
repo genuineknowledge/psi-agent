@@ -44,7 +44,5 @@ async def feishu_todo_fill_status(
     if not cycle_date.strip():
         return _f.dumps_result(_f._error("cycle_date is required (the column header, e.g. 9.9)."))
 
-    outcome = await _f.todo_fill_status_impl(
-        board_link.strip(), cycle_date.strip(), mentor_name.strip(), user_key
-    )
+    outcome = await _f.todo_fill_status_impl(board_link.strip(), cycle_date.strip(), mentor_name.strip(), user_key)
     return json.dumps(outcome, ensure_ascii=False, default=str)
