@@ -1,9 +1,10 @@
 # 周中对齐会 SOP v1.1 —— 核心原则 1/3/4/5 agent 化定稿说明
 
-> 日期：2026-09-09|代码分支：`feat/meeting-sop-v1-rules`（origin/main `07c774e7c` 起）
+> 日期：2026-09-09｜代码分支：`feat/meeting-sop-v1-rules`（origin/main `07c774e7c` 起）
 > 权威依据：《真知周中对齐会 SOP》**v1.1（已生效，2026-09-09 桌面 docx 快照）**
 > 相关既有方案：`会议SOP交接文档.md`（2026-09-07）、`HaiTun会议自动分析-后续开发方案.md`、
 > `config/meeting-sop.yaml` v0.1-draft（机制占位版）。
+> 口径版本：**v1.2**（2026-09-09 在 v1.1 定稿基础上澄清主持人豁免，见 §3 msop.core.03）
 
 ## 1. 本次任务：把 SOP「核心原则」1、3、4、5 推进为 agent 代码
 
@@ -51,8 +52,11 @@ P1-P5 推进；本回只动“会议 SOP 判定口径 + 注入”这一段。
   行动项/负责人/截止时间；完全缺失 → 不符合，缺个别要素 → 部分符合，含糊到辨不出“谁+何时”
   → 证据不足。依据：核心原则 1。
 - `msop.core.03` 会中控制时间（axis: session）：按 议程一 ≤5 分钟、议程二 ≤5 分钟、
-  议程三每人 ≤3 分钟、整场 ≤30 分钟 用时间戳核对；超时打断/会后单独聊 = 执行控制；
-  时间戳缺失不凭篇幅猜测。依据：核心原则 3 + 会中·议程。
+  整场 ≤30 分钟 用时间戳核对；**“每人 ≤3 分钟”只适用于议程三成员个人汇报发言——
+  主持人/小组负责人/Mentor/领导（一人或多人）承担主持职能（开场/议程推进/逐人点评/
+  追问/打断分流/总结）时的发言不受该上限约束，不得以主持人累计/单次发言超 3 分钟判
+  不符合**；超时打断/会后单独聊 = 执行控制；时间戳缺失不凭篇幅猜测。依据：核心原则
+  3 + 会中·议程（口径 v1.2 澄清）。
 - `msop.core.04` 会后纪要与闭环执行（axis: followup）：可观察锚点 = 会尾“更新 TODO”
   安排 + 跨场次开场复查验收；锚点皆无 → 证据不足留待下场复查；生效首场无上次行动项
   不判不符合。依据：核心原则 4 + 会后·必须项 + 议程一。
@@ -74,12 +78,14 @@ P1-P5 推进；本回只动“会议 SOP 判定口径 + 注入”这一段。
 ## 5. 验证与上线
 
 - 测试：`agents/feishu/tests/test_meeting_automation.py`
-  - 新增 `test_meeting_sop_v11_core_principles_1_3_4_5_are_active_with_criteria`
-    （契约值：4 条生效且标准非空、core.02 未生效）
-  - 新增 `test_analysis_injects_v11_active_rule_checklist`（注入含生效清单）
+  - 新增 `test_meeting_sop_core_principles_1_3_4_5_are_active_with_criteria`
+    （契约值：4 条生效且标准非空、core.02 未生效、口径 v1.2）
+  - 新增 `test_meeting_sop_core03_host_speech_exempt_from_3min_cap`
+    （v1.2 澄清：主持人/组长/Mentor/领导 主持职能发言不受每人 ≤3 分钟上限约束）
+  - 新增 `test_analysis_injects_active_rule_checklist`（注入含生效清单）
   - 新增 `test_analysis_fails_when_active_rule_has_no_criteria`、
     `test_analysis_fails_on_duplicate_rule_id_or_unknown_axis`（契约防线）
-  - 全文件 **52 passed / 1 skipped**（基线 46+，只增不减）。
+  - 全文件 **53 passed / 1 skipped**（基线 46+，只增不减）。
 - 上线动作：合并后随 agent 包一起部署即生效（口径文件与 skill 属包内文件）；
   最近一场 12:00 / 17:30 触发起，SOP 符合性部分将输出按
   `msop.core.01/03/04/05` 的逐条判定（含证据引用），未生效条目仍按

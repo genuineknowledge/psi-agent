@@ -1382,18 +1382,18 @@ async def test_analysis_fails_when_meeting_sop_config_missing_or_broken(
         await pipeline._load_analysis_rules(job)
 
 
-# ── 周中对齐会 SOP v1.1: 核心原则 1/3/4/5 定稿生效 ─────────────────────────
+# ── 周中对齐会 SOP v1.1(docx): 核心原则 1/3/4/5 定稿生效 (口径 v1.2) ───────────
 
 
-def test_meeting_sop_v11_core_principles_1_3_4_5_are_active_with_criteria() -> None:
-    """meeting-sop.yaml 契约值: v1.1 已将 docx「核心原则」编号 1/3/4/5 四条
+def test_meeting_sop_core_principles_1_3_4_5_are_active_with_criteria() -> None:
+    """meeting-sop.yaml 契约值: 口径 v1.2 (依据 docx「核心原则」编号 1/3/4/5) 已将四条
     (必有产出 / 会中控制时间 / 会后纪要与闭环执行 / 杜绝流水账) 定稿为 active
     且判定标准非空; 编号 2 (会前准备落实到责任人, msop.core.02) 未纳入本判定
     引擎, 必须保持 active: false。"""
     path = Path(pipeline.MEETING_SOP_CONFIG_PATH)
     assert path.is_file(), "meeting-sop.yaml 缺失, 无法定稿"
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert config["meta"]["version"] == "v1.1"
+    assert config["meta"]["version"] == "v1.2"
     by_id = {rule["id"]: rule for rule in config["rules"]}
     assert set(by_id) == {
         "msop.core.01",
@@ -1417,12 +1417,12 @@ def test_meeting_sop_v11_core_principles_1_3_4_5_are_active_with_criteria() -> N
 
 
 @pytest.mark.anyio
-async def test_analysis_injects_v11_active_rule_checklist() -> None:
+async def test_analysis_injects_active_rule_checklist() -> None:
     """管道注入的规则文本 = 引擎 SKILL + 口径 YAML + 机器渲染的「生效判定清单」:
-    版本 v1.1、生效 4 条逐一列明、未生效条目单独声明 (模型不得判其符合/不符合)。"""
+    口径 v1.2、生效 4 条逐一列明、未生效条目单独声明 (模型不得判其符合/不符合)。"""
     jobs = {job.name: job for job in MEETING_JOBS}
     sop_text, _ = await pipeline._load_analysis_rules(jobs["weekday-alignment"])
-    assert "口径 v1.1" in sop_text
+    assert "口径 v1.2" in sop_text
     assert "生效判定清单" in sop_text
     assert "4 条生效规则" in sop_text
     assert "未生效" in sop_text and "msop.core.02" in sop_text
@@ -1433,6 +1433,31 @@ async def test_analysis_injects_v11_active_rule_checklist() -> None:
         "msop.core.05",
     ):
         assert rule_id in sop_text
+
+
+def test_meeting_sop_core03_host_speech_exempt_from_3min_cap() -> None:
+    """口径澄清 (v1.2): 「每人 ≤3 分钟」只适用于议程三成员个人汇报发言;
+
+    主持人/小组负责人/Mentor/领导 承担主持职能 (开场/议程推进/逐人点评/追问/打断
+    分流/总结) 时的发言不受该上限约束 (一人或多人主持均可); 引擎不得以主持人累计/
+    单次发言超 3 分钟判不符合。该豁免不回退议程时间盒 (议程一/二 ≤5 分钟、整场 ≤30
+    分钟) 与成员发言 3 分钟上限本身。"""
+    path = Path(pipeline.MEETING_SOP_CONFIG_PATH)
+    assert path.is_file()
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    rule = next(item for item in config["rules"] if item["id"] == "msop.core.03")
+    criteria = str(rule.get("criteria") or "")
+    exception = str(rule.get("exception") or "")
+    # 3 分钟上限被限定在议程三成员汇报, 主持人职能发言豁免
+    assert "议程三" in criteria and "成员个人汇报发言" in criteria
+    assert "主持职能发言豁免每人 ≤3 分钟上限" in criteria
+    assert "主持人/小组负责人/Mentor/领导" in criteria
+    assert "不受" in criteria and "≤3 分钟" in criteria
+    # 不得以主持人超 3 分钟判不符合 (反例示例也明确主持人点评不算成员超时)
+    assert "不得以" in criteria and "判定不符合" in criteria
+    assert "主持人正常点评/追问/总结不被计为成员超时发言" in str(rule.get("violation_example") or "")
+    # 识别不清时不判违规, 记证据不足
+    assert "识别不清" in exception and "证据不足" in exception
 
 
 @pytest.mark.anyio
