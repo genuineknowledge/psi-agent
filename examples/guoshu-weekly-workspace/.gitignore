@@ -1,0 +1,11 @@
+# psi-agent session history
+histories/
+
+# demo mock store — rebuild with mock-mcp/build_sqlite.py
+mock-mcp/*.sqlite3
+mock-mcp/*.sqlite3-wal
+mock-mcp/*.sqlite3-shm
+
+# python
+__pycache__/
+*.pyc

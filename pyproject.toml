@@ -63,6 +63,11 @@ dependencies = [
     # Windows Python 3.14 不带 IANA 时区库, stdlib zoneinfo 需要 tzdata 才有
     # Asia/Shanghai 等条目 (正负面清单写表/日程/系统 prompt 时间戳都会用到)。
     "tzdata>=2024.1; platform_system == 'Windows'",
+    # guoshu-weekly demo 的 mock 取数服务连 MySQL;ChatBI 正式源为 O2OA PostgreSQL
+    # (oa-weekly,2026-09-08 字段说明)。psycopg 在 mock-mcp/_pg.py 延迟导入,
+    # 仅在 TASK_BOARD_DATA_SOURCE=o2oa 时加载。
+    "pymysql>=1.1.1",
+    "psycopg[binary]>=3.2,<4",
 ]
 
 [dependency-groups]
