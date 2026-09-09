@@ -18,16 +18,17 @@ fire: prompt
 ## 流程(只管"写没写",不管"写得规不规范")
 
 1. 换 token 后读表:认表头,定位**最新日期列**(当期列),读人名列。
-2. 逐人看当期列:非空 → 跳过,不打扰。
-3. 空白 → 先 `feishu_leave_query` 查该人该日是否落在**已通过**请假区间:
+2. **离职/无法识别人员先过滤**:逐人把姓名解析成 open_id(通讯录查询)。查不到该人(疑似离职)→ 标记「疑似离职」,**不提醒、不催,只在收尾单列「疑似离职 N 人(已跳过)」**;名字解析失败但通讯录查得到 → 标记「解析失败,需人工」,不提醒,单列。不得把解析失败的人当「未写」催,也不得静默删除。
+3. 逐人看当期列:非空 → 跳过,不打扰。
+4. 空白 → 先 `feishu_leave_query` 查该人该日是否落在**已通过**请假区间:
    - 请假免填 → 跳过,不提醒;
    - 审批中(skipped_not_approved)/日期读不出(needs_fix)→ 不提醒,但记录;
    - 无请假 → **未写**。
-4. 对每个未写的人,用 DSL 提醒卡(模板 remind-card)私聊发卡——**不要自己拼卡片 JSON,不要发纯文本**:
+5. 对每个未写的人,用 DSL 提醒卡(模板 remind-card)私聊发卡——**不要自己拼卡片 JSON,不要发纯文本**:
    - `feishu_card_render(template="remind-card", values_json="{\"name\":\"<姓名>\",\"hint\":\"<规范要点一句>\",\"board_link\":\"https://genuineknowledge.feishu.cn/wiki/H6icwLWn1iwpXAk73QMcA6MgnWc\"}")` 渲染拿卡片 JSON;
    - hint 规范要点一句(按 todo-writing-standard schema 段概括:三层结构 大目标/小目标/TODO;每条 TODO 带时间与标准、有 deadline;不超过 5 条),不复述全文;
    - `feishu_message_send_card(receive_id=<该人 open_id>, receive_id_type="open_id", card_json=<渲染结果>)` 私聊发送。
-5. 卡片只发给未写者本人,不提其他人;不发群、不发 boss/mentor 报告;已填的人不打扰。
+6. 卡片只发给未写者本人,不提其他人;不发群、不发 boss/mentor 报告;已填的人不打扰。
 
 ## 硬顺序与红线
 
