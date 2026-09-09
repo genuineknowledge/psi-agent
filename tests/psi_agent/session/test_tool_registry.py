@@ -989,7 +989,7 @@ def _count_compiles(tools_dir: Path) -> Iterator[list[str]]:
     try:
         yield calls
     finally:
-        builtins.compile = real_compile  # ty: ignore
+        builtins.compile = real_compile
 
 
 @pytest.mark.anyio
