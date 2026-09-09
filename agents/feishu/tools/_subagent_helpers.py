@@ -19,6 +19,7 @@ import anyio
 from psi_agent._sockets import resolve_connector_and_endpoint
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._types import TextChunk
+from psi_agent.protocol import parse_sse_data
 
 _GATEWAY_URL_FILE = Path(".psi") / "gateway.url"
 _DEFAULT_GATEWAY_URLS = (
@@ -839,6 +840,149 @@ async def chat_subagent(
         "files": files,
         "missing": missing,
         "errors": errors,
+    }
+
+
+async def chat_via_gateway(
+    *,
+    gateway_url: str,
+    session_id: str,
+    message: str,
+    timeout_seconds: float = 600.0,
+) -> dict[str, Any]:
+    """Drive a Session through Gateway HTTP chat SSE (cross-host safe).
+
+    刻意为之: Named Pipe / Unix ``channel_socket`` only works on the Gateway host.
+    Cross-stack feature UAT must POST ``/sessions/{id}/chat`` on the *target*
+    Gateway and consume SSE ``type=text`` events — same surface spa-v2 uses.
+    """
+    base = gateway_url.strip().rstrip("/")
+    sid = session_id.strip()
+    text_in = message.strip()
+    if not base:
+        return {
+            "ok": False,
+            "message": "gateway_url must not be empty",
+            "text": "",
+            "reply_text": "",
+        }
+    if not sid:
+        return {
+            "ok": False,
+            "message": "session_id must not be empty",
+            "text": "",
+            "reply_text": "",
+            "gateway_url": base,
+        }
+    if not text_in:
+        return {
+            "ok": False,
+            "message": "message must not be empty",
+            "text": "",
+            "reply_text": "",
+            "gateway_url": base,
+            "session_id": sid,
+        }
+
+    url = f"{base}/sessions/{sid}/chat"
+    body = {"chunks": [{"type": "text", "text": text_in}]}
+    text_parts: list[str] = []
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+    try:
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.post(url, json=body) as resp,
+        ):
+            if resp.status >= 400:
+                err_body = await resp.text()
+                msg = f"Gateway HTTP {resp.status}"
+                try:
+                    payload = json.loads(err_body)
+                    if isinstance(payload, dict) and payload.get("error"):
+                        msg = str(payload["error"])
+                except json.JSONDecodeError:
+                    if err_body.strip():
+                        msg = err_body.strip()[:500]
+                return {
+                    "ok": False,
+                    "message": msg,
+                    "text": "",
+                    "reply_text": "",
+                    "gateway_url": base,
+                    "session_id": sid,
+                }
+
+            buf = ""
+            async for raw in resp.content.iter_any():
+                buf += raw.decode("utf-8", errors="replace")
+                buf = buf.replace("\r\n", "\n")
+                while "\n" in buf:
+                    line, buf = buf.split("\n", 1)
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = parse_sse_data(line)
+                    if data_str is None or not data_str:
+                        continue
+                    if data_str.strip() == "[DONE]":
+                        buf = ""
+                        break
+                    try:
+                        event = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    if event.get("type") == "text":
+                        piece = event.get("text")
+                        if isinstance(piece, str) and piece:
+                            text_parts.append(piece)
+                    elif event.get("type") == "error":
+                        err = str(event.get("error", "chat error"))
+                        return {
+                            "ok": False,
+                            "message": err,
+                            "text": "".join(text_parts),
+                            "reply_text": "".join(text_parts),
+                            "gateway_url": base,
+                            "session_id": sid,
+                        }
+    except TimeoutError:
+        return {
+            "ok": False,
+            "message": f"timed out after {timeout_seconds}s",
+            "text": "".join(text_parts),
+            "reply_text": "".join(text_parts),
+            "gateway_url": base,
+            "session_id": sid,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": str(exc),
+            "text": "".join(text_parts),
+            "reply_text": "".join(text_parts),
+            "gateway_url": base,
+            "session_id": sid,
+        }
+
+    text = "".join(text_parts)
+    if not text.strip():
+        return {
+            "ok": False,
+            "message": "empty response from gateway chat",
+            "text": text,
+            "reply_text": text,
+            "gateway_url": base,
+            "session_id": sid,
+        }
+    return {
+        "ok": True,
+        "message": "ok",
+        "text": text,
+        "reply_text": text,
+        "gateway_url": base,
+        "session_id": sid,
     }
 
 

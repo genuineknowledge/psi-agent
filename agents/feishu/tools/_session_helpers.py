@@ -1592,10 +1592,21 @@ async def create_session(
     workspace_raw: str = "",
     session_id: str = "",
     ai_id: str = "",
+    agent: str = "",
+    gateway_url: str = "",
     include_gateway: bool = True,
     ready_timeout_seconds: float = 30.0,
+    wait_channel: bool = True,
 ) -> dict[str, Any]:
-    """Create a new Gateway-managed session (in-process runtime)."""
+    """Create a new Gateway-managed session (in-process runtime).
+
+    *agent*: explicit capability-pack path for ``POST /sessions``. Empty →
+    ``GET /defaults``.agent (刻意为之: tool-spawned sessions share SPA/Feishu
+    pack unless callers override for WIP UAT).
+    *gateway_url*: talk to this Gateway instead of workspace discovery. Use for
+    cross-stack feature UAT; pair with ``wait_channel=False`` + HTTP chat —
+    remote ``channel_socket`` (Named Pipe / Unix) is not reachable cross-host.
+    """
     if not include_gateway:
         return {
             "ok": False,
@@ -1606,8 +1617,12 @@ async def create_session(
     workspace_path = Path(str(workspace))
     workspace_abs = str(workspace_path)
 
-    gateway_url = await _sub.resolve_gateway_url(workspace_path)
-    if not gateway_url:
+    explicit_gateway = gateway_url.strip().rstrip("/")
+    if explicit_gateway:
+        resolved_gateway = explicit_gateway
+    else:
+        resolved_gateway = await _sub.resolve_gateway_url(workspace_path)
+    if not resolved_gateway:
         return {
             "ok": False,
             "message": "Gateway is not reachable; cannot create session",
@@ -1617,7 +1632,7 @@ async def create_session(
     resolved_ai = ai_id.strip()
     if not resolved_ai:
         resolved_ai = await _sub._resolve_ai_id_for_workspace(
-            gateway_url,
+            resolved_gateway,
             workspace=workspace_path,
         )
     if not resolved_ai:
@@ -1625,7 +1640,7 @@ async def create_session(
             "ok": False,
             "message": "ai_id is required (link an AI in Gateway or pass ai_id)",
             "workspace": workspace_abs,
-            "gateway_url": gateway_url,
+            "gateway_url": resolved_gateway,
         }
 
     body: dict[str, Any] = {
@@ -1636,20 +1651,26 @@ async def create_session(
     if sid:
         body["id"] = sid
 
-    # Step 2: prefer Gateway defaults.agent so tool-spawned sessions share the
-    # same capability pack as SPA / Feishu (relative-path I/O still later).
-    try:
-        defaults = await _sub._fetch_gateway_json(f"{gateway_url.rstrip('/')}/defaults")
-        if isinstance(defaults, dict):
-            agent = str(defaults.get("agent", "")).strip()
-            if agent:
-                body["agent"] = agent
-    except Exception:
-        pass
+    explicit_agent = agent.strip()
+    if explicit_agent:
+        body["agent"] = explicit_agent
+    else:
+        # Prefer Gateway defaults.agent so tool-spawned sessions share the same
+        # capability pack as SPA / Feishu unless the caller overrides.
+        try:
+            defaults = await _sub._fetch_gateway_json(
+                f"{resolved_gateway.rstrip('/')}/defaults"
+            )
+            if isinstance(defaults, dict):
+                default_agent = str(defaults.get("agent", "")).strip()
+                if default_agent:
+                    body["agent"] = default_agent
+        except Exception:
+            pass
 
     try:
         created = await _sub.post_gateway_json(
-            f"{gateway_url.rstrip('/')}/sessions",
+            f"{resolved_gateway.rstrip('/')}/sessions",
             body,
             timeout_seconds=ready_timeout_seconds,
         )
@@ -1658,8 +1679,9 @@ async def create_session(
             "ok": False,
             "message": f"failed to create session: {exc}",
             "workspace": workspace_abs,
-            "gateway_url": gateway_url,
+            "gateway_url": resolved_gateway,
             "ai_id": resolved_ai,
+            "agent": body.get("agent", ""),
         }
 
     if not isinstance(created, dict):
@@ -1667,7 +1689,7 @@ async def create_session(
             "ok": False,
             "message": "Gateway returned unexpected create-session payload",
             "workspace": workspace_abs,
-            "gateway_url": gateway_url,
+            "gateway_url": resolved_gateway,
         }
 
     new_id = str(created.get("id", "")).strip()
@@ -1677,39 +1699,42 @@ async def create_session(
             "ok": False,
             "message": "Gateway did not return a session id",
             "workspace": workspace_abs,
-            "gateway_url": gateway_url,
+            "gateway_url": resolved_gateway,
         }
 
-    deadline = anyio.current_time() + ready_timeout_seconds
-    ready: dict[str, Any] = {"ok": False}
-    while anyio.current_time() < deadline:
-        ready = await resolve_channel_socket(
-            session_id=new_id,
-            workspace_raw=workspace_raw,
-            include_gateway=include_gateway,
-        )
-        if ready.get("ok"):
-            channel_socket = str(ready.get("channel_socket", channel_socket))
-            break
-        await anyio.sleep(0.2)
+    if wait_channel:
+        deadline = anyio.current_time() + ready_timeout_seconds
+        ready: dict[str, Any] = {"ok": False}
+        while anyio.current_time() < deadline:
+            ready = await resolve_channel_socket(
+                session_id=new_id,
+                workspace_raw=workspace_raw,
+                include_gateway=include_gateway,
+            )
+            if ready.get("ok"):
+                channel_socket = str(ready.get("channel_socket", channel_socket))
+                break
+            await anyio.sleep(0.2)
 
-    if not ready.get("ok"):
-        return {
-            "ok": False,
-            "message": f"session {new_id!r} was created but channel is not ready yet",
-            "session_id": new_id,
-            "ai_id": resolved_ai,
-            "workspace": workspace_abs,
-            "gateway_url": gateway_url,
-            "channel_socket": channel_socket,
-        }
+        if not ready.get("ok"):
+            return {
+                "ok": False,
+                "message": f"session {new_id!r} was created but channel is not ready yet",
+                "session_id": new_id,
+                "ai_id": resolved_ai,
+                "workspace": workspace_abs,
+                "gateway_url": resolved_gateway,
+                "channel_socket": channel_socket,
+                "agent": body.get("agent", ""),
+            }
 
     return {
         "ok": True,
         "session_id": new_id,
         "ai_id": str(created.get("ai_id", resolved_ai)),
         "workspace": str(created.get("workspace", workspace_abs)),
-        "gateway_url": gateway_url,
+        "gateway_url": resolved_gateway,
         "channel_socket": channel_socket,
+        "agent": str(created.get("agent", body.get("agent", ""))),
         "running": True,
     }

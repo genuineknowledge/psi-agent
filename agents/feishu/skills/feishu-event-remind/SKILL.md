@@ -24,7 +24,7 @@ category: knowledge-base
 
 ## When not to use
 
-- 定时（发薪日等）→ `feishu-schedule-message` / `schedule_manage`
+- 定时（发薪日 / 方案 DDL 催办等）→ `feishu-schedule-message` / **`schedule_manage`** + 参数 **`schedule_name`**（**禁止**把定时写成 `trigger_manage` / `trigger_name`）
 - 纯对话入口、口语办业务、现场问答（SOP-1/5/7 主路径）
 - **尚未**在 `channel_events/feishu/` 定义的事 → 告诉用户暂不支持（不要 invent）
 

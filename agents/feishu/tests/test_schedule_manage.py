@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -49,6 +50,8 @@ def test_tool_metadata_is_loadable() -> None:
         "fire",
         "tool",
         "tool_args",
+        "workspace",
+        "trigger_name",
     }
     # All params have defaults, so nothing is required.
     assert meta.parameters.get("required", []) == []
@@ -56,6 +59,21 @@ def test_tool_metadata_is_loadable() -> None:
 
 async def test_list_empty(workspace: Path) -> None:
     assert await tool.schedule_manage(action="list") == "No schedules found."
+
+
+async def test_create_accepts_trigger_name_as_schedule_name_alias(workspace: Path) -> None:
+    """Models confuse twin APIs and pass trigger_name; treat it as schedule_name."""
+    msg = await tool.schedule_manage(
+        action="create",
+        trigger_name="prop-alias-s1-ddl",
+        once_at=(datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d 10:00"),
+        fire="tool",
+        tool="feishu_message_send",
+        tool_args='{"receive_id":"oc_real","text":"hi","receive_id_type":"chat_id"}',
+        visibility="silent",
+    )
+    assert "created" in msg
+    assert (workspace / "schedules" / "prop-alias-s1-ddl" / "TASK.md").is_file()
 
 
 async def test_create_view_and_list(workspace: Path) -> None:
@@ -146,6 +164,55 @@ async def test_create_one_shot_rejects_placeholder_receive_id(workspace: Path) -
     )
     assert msg.startswith("[Error]")
     assert "placeholder" in msg.casefold()
+
+
+async def test_create_proposal_nudge_one_shot(workspace: Path) -> None:
+    """方案跟进定时须挂 feishu_proposal_nudge(文字+卡), 不是裸 message_send."""
+    items = json.dumps(
+        [{"title": "M1", "detail": "POC", "done": False}],
+        ensure_ascii=False,
+    )
+    tool_args = json.dumps(
+        {
+            "receive_id": "ou_realuser",
+            "text": "【方案跟进】M1 DDL",
+            "items_json": items,
+            "title": "方案进度",
+            "receive_id_type": "open_id",
+        },
+        ensure_ascii=False,
+    )
+    msg = await tool.schedule_manage(
+        action="create",
+        schedule_name="prop-demo-s1-ddl",
+        once_at="2099-07-24 15:30",
+        fire="tool",
+        tool="feishu_proposal_nudge",
+        tool_args=tool_args,
+        visibility="silent",
+        description="方案跟进 · M1 · DDL · 文字+进度卡",
+    )
+    assert "one-shot" in msg
+    raw = _read(workspace, "prop-demo-s1-ddl")
+    assert "fire: tool" in raw
+    assert "feishu_proposal_nudge" in raw
+    assert "items_json" in raw
+    assert "ou_realuser" in raw
+
+
+async def test_create_proposal_nudge_rejects_missing_items_json(workspace: Path) -> None:
+    msg = await tool.schedule_manage(
+        action="create",
+        schedule_name="prop-bad-nudge",
+        once_at="2099-07-24 15:30",
+        fire="tool",
+        tool="feishu_proposal_nudge",
+        tool_args='{"receive_id":"ou_real","text":"hi"}',
+        visibility="silent",
+    )
+    assert msg.startswith("[Error]")
+    assert "items_json" in msg
+    assert not (workspace / "schedules" / "prop-bad-nudge" / "TASK.md").exists()
 
 
 async def test_create_rejects_both_cron_and_once_at(workspace: Path) -> None:

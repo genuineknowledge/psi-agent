@@ -1,0 +1,72 @@
+{
+  "id": "proposal-sop-closed-loop",
+  "title": "方案 SOP 闭环 · L2 能力自测",
+  "l2_scope": "haitun_capability",
+  "description": "核对提案撰写/验收/催办闭环是否按设计接在能力包里(非业务盖章).",
+  "steps": [
+    {
+      "id": "writing-skill",
+      "kind": "assert_path",
+      "root": "agent",
+      "path": "skills/proposal-writing-standard/SKILL.md",
+      "expect": "exists"
+    },
+    {
+      "id": "writing-v2-skeleton",
+      "kind": "assert_file_contains",
+      "root": "agent",
+      "path": "skills/proposal-writing-standard/SKILL.md",
+      "must_contain": ["四期", "feishu_proposal_nudge", "预备"]
+    },
+    {
+      "id": "nudge-tool",
+      "kind": "assert_tool",
+      "tool": "feishu_proposal_nudge"
+    },
+    {
+      "id": "schedule-tool",
+      "kind": "assert_tool",
+      "tool": "schedule_manage"
+    },
+    {
+      "id": "acceptance-poc-skill",
+      "kind": "assert_path",
+      "root": "agent",
+      "path": "skills/proposal-acceptance-poc/SKILL.md",
+      "expect": "exists"
+    },
+    {
+      "id": "acceptance-poc-no-rerun",
+      "kind": "assert_file_contains",
+      "root": "agent",
+      "path": "skills/proposal-acceptance-poc/SKILL.md",
+      "must_contain": ["不做", "重跑"]
+    },
+    {
+      "id": "l2-skill",
+      "kind": "assert_path",
+      "root": "agent",
+      "path": "skills/poc-l2-reproduce/SKILL.md",
+      "expect": "exists"
+    },
+    {
+      "id": "l2-probe-tool",
+      "kind": "assert_tool",
+      "tool": "poc_l2_probe"
+    },
+    {
+      "id": "need-remind",
+      "kind": "assert_path",
+      "root": "agent",
+      "path": "skills/proposal-need-remind/SKILL.md",
+      "expect": "exists"
+    },
+    {
+      "id": "nudge-contract-in-schedule",
+      "kind": "assert_file_contains",
+      "root": "agent",
+      "path": "tools/schedule_manage.py",
+      "must_contain": ["feishu_proposal_nudge"]
+    }
+  ]
+}

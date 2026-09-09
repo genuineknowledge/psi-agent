@@ -29,13 +29,14 @@ category: knowledge-base
 
 ## Hard rules
 
-1. 先 `read` 本文件，再调 **`schedule_manage`**（唯一设立入口）。
-2. **一次 create 就要完整**：`fire="tool"` + `tool="feishu_message_send"` + `tool_args` JSON（真实 id / 文案）写在**同一调用**里。禁止先 `fire=prompt` / 把调用写进 `content` 再 patch；工具会对 `once_at` 直接拒掉缺 `fire=tool` 的创建。
-3. `receive_id` 来自 `<feishu_context>` 的 `chat_id`（或指定 `open_id`）；**禁止** Gateway `session_id`（`feishu-ou_…`）。
-4. 单次用 `once_at`（本机墙钟）；周期用 `cron`；二者不要同时传。
-5. 飞书提醒建议 `visibility="silent"`。
-6. Gateway/Session 进程必须已设 `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET`。
-7. 成功后一句话确认即可；**不要**为了「复查 fire 模式」再 delete/recreate（除非用户改时间）。
+1. 先 `read` 本文件，再调 **`schedule_manage`**（唯一设立入口）。**禁止** `trigger_manage`：那是事件触发器（进群/人事），不是到点提醒。
+2. 任务名参数必须是 **`schedule_name=`**。**禁止** `trigger_name=`（与 `trigger_manage` 平行 API 串台时常见；传了会被静默丢掉，等于没给名，create 全失败）。
+3. **一次 create 就要完整**：`fire="tool"` + `tool="feishu_message_send"` + `tool_args` JSON（真实 id / 文案）写在**同一调用**里。禁止先 `fire=prompt` / 把调用写进 `content` 再 patch；工具会对 `once_at` 直接拒掉缺 `fire=tool` 的创建。
+4. `receive_id` 来自 `<feishu_context>` 的 `chat_id`（或指定 `open_id`）；**禁止** Gateway `session_id`（`feishu-ou_…`）。
+5. 单次用 `once_at`（本机墙钟）；周期用 `cron`；二者不要同时传。
+6. 飞书提醒建议 `visibility="silent"`。
+7. Gateway/Session 进程必须已设 `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET`。
+8. 成功后一句话确认即可；**不要**为了「复查 fire 模式」再 delete/recreate（除非用户改时间）。
 
 ## Procedure（对话这一轮只调 schedule_manage）
 
@@ -68,6 +69,7 @@ Session 读到 `fire: tool` → 直接调用 `feishu_message_send(**tool_args)` 
 ## Boundaries
 
 - 禁止手写 / 手改 `schedules/*/TASK.md`（一律 `schedule_manage`）
+- 禁止 `trigger_manage` / 参数 `trigger_name`（定时走 `schedule_manage` + `schedule_name`）
 - 禁止 `fire=prompt` 做飞书 IM 提醒
 - 禁止把 `fire` 当成工具名去调
 - 禁止占位 `oc_xxx` / 空 `tool_args`

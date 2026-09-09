@@ -1,6 +1,6 @@
 ---
 name: proposal-need-remind
-description: "公司决策分级(大事/中事/小事)下的方案入口提醒者(一层, 非监督者). MUST LOAD first (do not skip) when the user changes a plan, seeks cross-role collaboration, asks for extra resources/budget/machines, discusses TODO/project risk needing a decision, assigns work that may need a written proposal, or asks 「这算中事吗」「要不要写方案」「能不能自己定」— even if they only ask「怎么推进」and never say 方案. Soft-remind only: if it looks like 中事, suggest writing a multi-option proposal and offer to help via proposal-writing-standard; never block the turn, never force a doc. Forbidden: answer with only a schedule/PM checklist and omit 大事/中事/小事. NOT for 半强制卡方案/未写不许继续(二层监督者, 未做). NOT for 行政财务假勤报销分级(admin-finance-governance). NOT for 最终拍板或 RFC 结构检查(见 proposal-review-standard / proposal-writing-standard)."
+description: "公司决策分级(大事/中事/小事)下的方案入口提醒者(一层, 非监督者). MUST LOAD first (do not skip) when the user changes a plan, seeks cross-role collaboration, asks for extra resources/budget/machines, discusses TODO/project risk needing a decision, assigns work that may need a written proposal, or asks 「这算中事吗」「要不要写方案」「能不能自己定」— even if they only ask「怎么推进」and never say 方案. Soft-remind only: if it looks like 中事, suggest writing a multi-option proposal and offer to help via proposal-writing-standard (SOP v2.0 四期); never block the turn, never force a doc. Forbidden: answer with only a schedule/PM checklist and omit 大事/中事/小事. NOT for 半强制卡方案/未写不许继续(二层监督者, 未做). NOT for 行政财务假勤报销分级(admin-finance-governance). NOT for 最终拍板或 v2.0 四期结构检查(见 proposal-review-standard / proposal-writing-standard)."
 category: knowledge-base
 ---
 
@@ -10,7 +10,8 @@ category: knowledge-base
 **中事** 的制度动作是: **拟定方案(须含多种方案与分析) → 直属上级共同决策**.
 
 本文只做 **提醒者一层**: 对话里疑似中事(或吃不准)时, **提醒**对方先走方案小闭环,
-并可接到 [`proposal-writing-standard`](../proposal-writing-standard/SKILL.md) 帮写/检查.
+并可接到 [`proposal-writing-standard`](../proposal-writing-standard/SKILL.md)
+(权威 **执行跟进与验收 SOP v2.0** 四期: 预备/实验/实施/跟进验收) 帮写/检查.
 **不做监督者二层**(半强制要求写出方案、未写就卡住流程) —— 那是另一套验收, 未实现.
 
 **刻意为之:** 一层宁可略多提醒, 也不要在证据不足时假装「小事可自决」而漏提醒;
@@ -22,7 +23,7 @@ category: knowledge-base
 
 ## When to use
 
-- 用户在商量「能不能自己定」「要不要找人一起定」「要不要写方案/RFC」.
+- 用户在商量「能不能自己定」「要不要找人一起定」「要不要写方案」.
 - 对话里出现: 改原计划、找人协作、要额外资源、TODO/项目有可控风险、跨人决策.
 - 用户只问「怎么推进 / 怎么排」但内容已含上列信号 —— **仍必须加载本文**(识别力核心; 勿等用户点名方案).
 - 派活/交办时事项看起来超过「本人职责内可自决」([`work-assignment-delegation`](../work-assignment-delegation/SKILL.md) 可并行; 需要方案时用本文提醒 + 方案 skill).
@@ -30,8 +31,13 @@ category: knowledge-base
 
 ## When not to use
 
-- 用户已经在写/改 RFC, 要结构检查或润色 → 只用 [`proposal-writing-standard`](../proposal-writing-standard/SKILL.md).
-- 用户要评审档位 → [`proposal-review-standard`](../proposal-review-standard/SKILL.md).
+- 用户已经在写/改方案, 或丢来方案要检查/改成成品 → 只用
+  [`proposal-writing-standard`](../proposal-writing-standard/SKILL.md)
+  (按 v2.0 四期; 通过即同步跟进定时; 不通过只改稿; 旧 11 章壳判结构违规并改写).
+- 用户要评审档位 → [`proposal-review-standard`](../proposal-review-standard/SKILL.md)
+  (口径同 v2.0; 可进入深评亦同步定时).
+- POC/交付文档材料到达 → [`proposal-acceptance-poc`](../proposal-acceptance-poc/SKILL.md) /
+  [`proposal-acceptance-doc`](../proposal-acceptance-doc/SKILL.md).
 - 假勤/报销等行政财务分级 → [`admin-finance-governance`](../admin-finance-governance/SKILL.md)(另一套阈值, 勿混用本文的大中小).
 - 要 **强制**「不写方案不许继续」→ **本文禁止**; 那是二层, 未交付.
 
@@ -87,7 +93,8 @@ category: knowledge-base
 中事 / 吃不准 → 输出「方案入口提醒」+ 依据信号; 询问是否现在帮写/检查
 大事 → 输出「会议集体决策提醒」+ 依据信号; 不假装中事方案可替代
     ↓
-用户同意写方案 → 加载 proposal-writing-standard(帮写/检查/补救)
+用户同意写方案 / 已扔来草案 → 加载 proposal-writing-standard
+  (检查通过或落盘通过稿 → 同步 prop-<id>-* 定时)
 用户跳过 → 尊重; 本回合不再半强制追问
 ```
 
@@ -97,7 +104,8 @@ category: knowledge-base
 2. 中事提醒必须点明制度要求: **多种方案 + 分析**、**直属上级共同决策**.
 3. 明确这是 **建议**, 例如: 「按制度这更像中事, **建议**先写方案再决策; 你也可以说明为何按小事自决.」
 4. **一次提醒即可**; 用户已拒绝或已声明自决后, 同话题不反复刷屏.
-5. 用户愿意写时: 主动提出用方案 SOP 帮起草或检查飞书文档, 再进 `proposal-writing-standard`.
+5. 用户愿意写时: 主动提出按 **执行跟进与验收 SOP v2.0**(四期骨架)帮起草或检查飞书文档,
+   再进 `proposal-writing-standard`(勿再按旧 RFC+11 章模板起草).
 6. **禁止** 二层语气: 「必须先交方案才能继续」「不写方案我拒绝对话」「已为你创建强制待办」等.
 
 ### 吃不准时
@@ -112,7 +120,7 @@ category: knowledge-base
 
 - 交办记录照常走;
 - 另加一句中事/大事提醒;
-- 需要方案时协助接收者形成可评审草案 → 转 `proposal-writing-standard`, 不在本文展开 11 章.
+- 需要方案时协助接收者形成可评审草案 → 转 `proposal-writing-standard`, 不在本文展开四期正文.
 
 ## Boundaries
 
@@ -120,10 +128,10 @@ category: knowledge-base
 - 不维护 Bitable「谁该写方案未写」名单(那是二层监督者的事).
 - 不与 `admin-finance-governance` 的金额/假别阈值混用.
 - 不替上级做中事共同决策, 不替第一责任人拍大事板.
-- 提醒不是 RFC 结构检查; 检查交给 `proposal-writing-standard`.
+- 提醒不是 v2.0 四期结构检查; 检查交给 `proposal-writing-standard`.
 
 ## 别做的事(一层硬边界)
 
 - 不因「疑似中事」拒绝回答或拒绝执行用户明确要求的下一步(除非另有安全/权限硬规则).
 - 不把「提醒过了」写成「用户已同意写方案」或「方案已通过」.
-- 不在本 skill 内复制技术方案 11 章全文 —— 需要时引用 `proposal-writing-standard`.
+- 不在本 skill 内复制四期骨架全文 —— 需要时引用 `proposal-writing-standard`.
