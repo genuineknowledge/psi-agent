@@ -95,6 +95,35 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+    # `--collect-submodules psi_agent` 是第一条 (其余 20 条都是三方包): 内核自己
+    # 也需要被显式收集。打包入口是 `src/psi_agent/cli.py`, 而
+    # `agents/*/systems/system.py` 是运行时按路径 exec 的, **不在静态 import 图
+    # 里** —— 它导入的内核模块只有恰好被 cli.py 那条链间接引用到的才会进包, 谁进
+    # 谁不进是巧合。1.0.14 装机版就赌输了这个巧合:
+    # `ModuleNotFoundError: No module named 'psi_agent.session._compaction'`
+    # (err.log line 127) 让 system.py 加载失败, `system_after_turn` 静默退化成
+    # 默认 no-op, Fusion Memory 一条都没自动摄取 (evidence_spans /
+    # ingest_checkpoints / memory_items / summary_cards / fts_memory 实测全 0)。
+    # 会话历史照写、Memory 工具手动调也正常, 所以线上零告警。
+    #
+    # 整包收而不是逐条 `--hidden-import`: 后者要求"每加一个 import 都记得同步这个
+    # 文件", 那正是这次事故的形状。下面 `Check ...` 那步在 compile 之前守着覆盖
+    # 面, 两种写法都认。
+    #
+    # `sqlite3` / `wave` 是同一个病根的另两例, 只是缺的是**标准库**而不是内核模块 ——
+    # `--collect-submodules psi_agent` 覆盖不到它们:
+    #   - `sqlite3` 只被 agents/desktop/tools/_fusion_memory/store.py 导入 (src/ 里
+    #     零引用), 而那是 Fusion Memory 的存储层 —— 缺了它摄取链照样断, 等于 A 只修
+    #     一半;
+    #   - `wave` 只被 agents/desktop/tools/_xfyun_stt.py 导入, 缺了语音转写工具整个
+    #     加载不了。
+    # 两者都是无守卫的模块级 import, 所以是加载期失败而非降级。
+    #
+    # 这两条是**实测**定的, 不是照静态清单补的: 按"workspace 导入而 src/ 不导入"扫出
+    # 42 个候选, 但在真实 exe 里逐个 import 只有 4 个缺 (另两个是 `fcntl` —— Windows
+    # 上本就走 msvcrt 分支, 缺席正确; 和 `pygount` —— 缺的是 dist-info 元数据, 且
+    # tools/github.py 有 friendly 降级路径)。静态清单会产生 38 个假阳性, 所以判据的
+    # 第 3 层用产物探针而不是清单比对。
     env:
       PYINSTALLER_COMMON_FLAGS: >-
         --onefile
@@ -103,6 +132,9 @@ jobs:
         --add-data src/psi_agent/gateway/desktop/spa/dist:psi_agent/gateway/desktop/spa/dist
         --add-data src/psi_agent/gateway/desktop/spa-v2/dist:psi_agent/gateway/desktop/spa-v2/dist
         --add-data src/psi_agent/i18n:psi_agent/i18n
+        --collect-submodules psi_agent
+        --hidden-import sqlite3
+        --hidden-import wave
         --collect-submodules any_llm
         --collect-submodules mcp
         --collect-submodules serper_mcp_server
@@ -149,8 +181,87 @@ jobs:
         working-directory: src/psi_agent/gateway/desktop/spa-v2
       - run: npm run build
         working-directory: src/psi_agent/gateway/desktop/spa-v2
+      # 第 1 层 (源码层): workspace 的 system.py 导入的内核模块, flags 是否都覆盖到。
+      # 放在 compile 之前 —— 缺覆盖时不该先花 10 min 编一个装机后必然静默失效的包。
+      - name: Check workspace kernel imports are covered by packaging flags
+        run: uv run python scripts/check_pyinstaller_workspace_imports.py
+      # 两处 .env 注入 (Windows 的 pwsh 步 / macOS 的 bash 步) 与 runtime-env-keys.txt
+      # 是否对齐。放在这个 job 里是因为它最早跑, 分叉时不必等两个打包 job 起来才知道。
+      - name: Check runtime .env key lists agree
+        run: uv run python scripts/check_runtime_env_keys.py
+      # 第 2 层 (构建层): flags 有条目 ≠ 模块真被收进去。留下 PyInstaller 日志并直接
+      # 断言事故里那个模块出现在收集结果里。
+      #
+      # 判据读 `--log-level DEBUG` 的输出而不是 `xref`: onefile 模式下 warn 文件只
+      # 记缺失, 收进去的模块不在里面。
       - shell: bash
-        run: uv run pyinstaller $PYINSTALLER_COMMON_FLAGS src/psi_agent/cli.py
+        run: |
+          set -o pipefail
+          uv run pyinstaller --log-level DEBUG $PYINSTALLER_COMMON_FLAGS \
+            src/psi_agent/cli.py 2>&1 | tee pyinstaller-build.log
+      - name: Verify kernel modules landed in the bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 与第 1 层同一份来源: 脚本扫出的模块名逐个在构建日志里核。硬编码一个
+          # 模块名会让"下次新增的 import"重新变成盲区。
+          modules="$(uv run python scripts/check_pyinstaller_workspace_imports.py \
+            | sed -n 's/^  \(psi_agent[^ ]*\) .*/\1/p')"
+          if [ -z "$modules" ]; then
+            echo "::error::第 1 层没吐出模块清单, 第 2 层判据失效"
+            exit 1
+          fi
+          missing=0
+          for module in $modules; do
+            if grep -qF "$module" pyinstaller-build.log; then
+              echo "OK  $module 出现在构建日志里"
+            else
+              echo "::error::$module 不在 PyInstaller 构建日志里 —— flags 写了但没收进包"
+              missing=$((missing + 1))
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+      # 第 3 层 (产物层) —— **8-18 事故缺的就是这层**。前两层都能在产物坏掉的情况下
+      # 通过: flags 有条目、构建日志有记录, 而装出来的 exe 仍然 import 不到。
+      #
+      # 做法: 用**同一份 flags** 编一个一次性探针 exe, 在里面真的 import 一遍。不
+      # 复用主产物是因为 cli.py 没有、也不该有调试入口 —— 给生产 CLI 开一个后门来
+      # 满足判据, 是把判据的成本转嫁给产品。
+      #
+      # 本地实测 (2026-09-09, Windows): 未修 flags 编出的探针跑出
+      # `ModuleNotFoundError: No module named 'psi_agent'`, 修后 7 个模块全 OK ——
+      # 判据在两个方向上都验过, 不是只见过绿灯。
+      - name: Verify the frozen bundle can import what the workspace needs
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 只剥掉产物命名/落点和 --add-data (探针不需要 spa 资源), 收集类 flag 一条
+          # 不动 —— 探针要跟主产物在"收了哪些模块"上完全一致, 否则它证明不了主产物。
+          # 剥离逻辑在脚本的 --collect-flags 里 (按 token 剥, 因为 --add-data 的值
+          # 带路径和冒号), 不写在这里: YAML 块标量容不下顶格的多行 Python。
+          collect_flags="$(uv run python scripts/probe_frozen_workspace_imports.py --collect-flags)"
+          # shellcheck disable=SC2086  # 故意分词: 这些是独立的 flag
+          uv run pyinstaller --onefile --name import-probe \
+            --distpath probe-dist --workpath probe-build --specpath probe-build \
+            $collect_flags scripts/probe_frozen_workspace_imports.py
+          probe="probe-dist/import-probe"
+          [ -f "$probe" ] || probe="probe-dist/import-probe.exe"
+          "./$probe"
+      # 体积如实记账: `--collect-submodules psi_agent` 把整包收进来, 代价要能被看到。
+      - name: Report bundle size
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="pyinstaller-dist/psi-agent"
+          [ -f "$binary" ] || binary="pyinstaller-dist/psi-agent.exe"
+          bytes="$(uv run python -c "import sys,os;print(os.path.getsize(sys.argv[1]))" "$binary")"
+          echo "::notice::${{ matrix.os }} $binary = $bytes bytes ($((bytes / 1048576)) MiB)"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pyinstaller-build-log-${{ matrix.os }}
+          path: pyinstaller-build.log
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v7
         with:
           name: psi-agent-pyinstaller-${{ matrix.os }}
@@ -272,19 +383,51 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "AzureSignTool failed for application executables (exit code $LASTEXITCODE)."
           }
+      # 清单的唯一来源是 .github/inno-setup/runtime-env-keys.txt, macOS 侧那步读的是
+      # 同一份文件。下面 `env:` 块仍要逐个列出: `secrets` 上下文不支持变量索引, 名字
+      # 只能写死。两者是否一致由 `Check runtime .env key lists agree` 那步守着。
       - name: Inject runtime .env
         shell: pwsh
         env:
           SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          FUSION_MEMORY_MODEL_PROVIDER: ${{ secrets.FUSION_MEMORY_MODEL_PROVIDER }}
+          FUSION_MEMORY_MODEL_NAME: ${{ secrets.FUSION_MEMORY_MODEL_NAME }}
+          FUSION_MEMORY_MODEL_API_KEY: ${{ secrets.FUSION_MEMORY_MODEL_API_KEY }}
+          FUSION_MEMORY_MODEL_BASE_URL: ${{ secrets.FUSION_MEMORY_MODEL_BASE_URL }}
         run: |
           # 只把 key 写进打包目录，不落库；PR 分支没有 secret 时生成空 .env，打包照常成功。
+          $keys = Get-Content ".github\inno-setup\runtime-env-keys.txt" |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -and -not $_.StartsWith('#') }
           $path = "agents\desktop\.env"
           $lines = [System.Collections.Generic.List[string]]::new()
-          if ($env:SERPER_API_KEY) {
-            $lines.Add("SERPER_API_KEY=$env:SERPER_API_KEY")
+          $present = [System.Collections.Generic.List[string]]::new()
+          foreach ($key in $keys) {
+            $value = [System.Environment]::GetEnvironmentVariable($key)
+            # 存在性布尔进日志, 值本身绝不打印。
+            $present.Add("$key present: $([bool]$value)")
+            if ($value) { $lines.Add("$key=$value") }
           }
           [System.IO.File]::WriteAllText($path, ($lines -join "`r`n"), [System.Text.UTF8Encoding]::new($false))
-          Write-Output "runtime .env prepared (SERPER_API_KEY present: $([bool]$env:SERPER_API_KEY))"
+          Write-Output "runtime .env prepared ($($lines.Count)/$($keys.Count) keys written)"
+          $present | ForEach-Object { Write-Output "  $_" }
+          # provider 拼错会让 embedding.py:126 把 llm 置 None 而**不报错** —— 静默失效。
+          # 只在它有值时校验: 缺席是允许的 (空 .env 照常打包), 拼错不是。
+          $provider = $env:FUSION_MEMORY_MODEL_PROVIDER
+          if ($provider -and $provider -notin @('openai', 'openai-compatible', 'deepseek', 'dashscope')) {
+            throw "FUSION_MEMORY_MODEL_PROVIDER 不在 {openai, openai-compatible, deepseek, dashscope} 之内, Fusion Memory 的 LLM 会静默置 None。"
+          }
+          # 四个一组, 缺一个整组落空 (embedding.py:118 是 all(...))。够不成一组时
+          # 只警告不失败: PR 分支本来就没有 secret。
+          $llmKeys = @('FUSION_MEMORY_MODEL_PROVIDER', 'FUSION_MEMORY_MODEL_NAME', 'FUSION_MEMORY_MODEL_API_KEY', 'FUSION_MEMORY_MODEL_BASE_URL')
+          $llmSet = @($llmKeys | Where-Object { [System.Environment]::GetEnvironmentVariable($_) }).Count
+          if ($llmSet -gt 0 -and $llmSet -lt 4) {
+            Write-Output "::warning::LLM 四件套只齐了 $llmSet/4, Fusion Memory 的记忆项抽取会整组落空 (embedding.py 是 all(...))"
+          }
+          if (-not $env:DASHSCOPE_API_KEY) {
+            Write-Output "::warning::DASHSCOPE_API_KEY 缺席: Fusion Memory 的 embedding 和 rerank 两条都不工作"
+          }
       - shell: pwsh
         run: |
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl" -OutFile ".github\inno-setup\ChineseSimplified.isl"
@@ -407,18 +550,55 @@ jobs:
         with:
           name: psi-agent-pyinstaller-macos-latest
           path: dist-bin
+      # 清单读的是 .github/inno-setup/runtime-env-keys.txt —— 与 Windows 侧同一份文件。
       - name: Inject runtime .env
         env:
           SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          FUSION_MEMORY_MODEL_PROVIDER: ${{ secrets.FUSION_MEMORY_MODEL_PROVIDER }}
+          FUSION_MEMORY_MODEL_NAME: ${{ secrets.FUSION_MEMORY_MODEL_NAME }}
+          FUSION_MEMORY_MODEL_API_KEY: ${{ secrets.FUSION_MEMORY_MODEL_API_KEY }}
+          FUSION_MEMORY_MODEL_BASE_URL: ${{ secrets.FUSION_MEMORY_MODEL_BASE_URL }}
         run: |
+          set -euo pipefail
           # 与 Windows 侧同一套做法: 只写进打包目录, 不落库; PR 分支没有 secret
           # 时生成空 .env, 打包照常成功。
-          if [ -n "$SERPER_API_KEY" ]; then
-            printf 'SERPER_API_KEY=%s\n' "$SERPER_API_KEY" > agents/desktop/.env
-          else
-            : > agents/desktop/.env
+          keys="$(sed -e 's/#.*//' -e 's/[[:space:]]//g' .github/inno-setup/runtime-env-keys.txt | grep -v '^$')"
+          : > agents/desktop/.env
+          written=0
+          total=0
+          for key in $keys; do
+            total=$((total + 1))
+            # 间接展开取值; 值本身不进日志, 只报存在性。
+            value="${!key:-}"
+            if [ -n "$value" ]; then
+              printf '%s=%s\n' "$key" "$value" >> agents/desktop/.env
+              written=$((written + 1))
+              echo "  $key present: True"
+            else
+              echo "  $key present: False"
+            fi
+          done
+          echo "runtime .env prepared ($written/$total keys written)"
+          # provider 拼错会让 embedding.py:126 把 llm 置 None 而**不报错**。
+          case "${FUSION_MEMORY_MODEL_PROVIDER:-}" in
+            ''|openai|openai-compatible|deepseek|dashscope) ;;
+            *)
+              echo "::error::FUSION_MEMORY_MODEL_PROVIDER 不在 {openai, openai-compatible, deepseek, dashscope} 之内, Fusion Memory 的 LLM 会静默置 None。"
+              exit 1
+              ;;
+          esac
+          # 四个一组, 缺一个整组落空 (embedding.py:118 是 all(...))。
+          llm_set=0
+          for key in FUSION_MEMORY_MODEL_PROVIDER FUSION_MEMORY_MODEL_NAME FUSION_MEMORY_MODEL_API_KEY FUSION_MEMORY_MODEL_BASE_URL; do
+            [ -n "${!key:-}" ] && llm_set=$((llm_set + 1))
+          done
+          if [ "$llm_set" -gt 0 ] && [ "$llm_set" -lt 4 ]; then
+            echo "::warning::LLM 四件套只齐了 $llm_set/4, Fusion Memory 的记忆项抽取会整组落空 (embedding.py 是 all(...))"
           fi
-          echo "runtime .env prepared (SERPER_API_KEY present: ${SERPER_API_KEY:+yes})"
+          if [ -z "${DASHSCOPE_API_KEY:-}" ]; then
+            echo "::warning::DASHSCOPE_API_KEY 缺席: Fusion Memory 的 embedding 和 rerank 两条都不工作"
+          fi
       # 公证默认全开, 特性分支和 PR 也公证。
       #
       # 这里曾按「只有 main / v* tag 才公证」收窄, 理由是公证要同步等 Apple 队列

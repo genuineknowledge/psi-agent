@@ -6,7 +6,7 @@
 ;   - (default)        -> HaiTun_Agent_Setup.exe (full install)
 
 #define MyAppName "HaiTun Agent"
-#define MyAppVersion "1.0.14"
+#define MyAppVersion "1.0.15"
 #define MyMsysVersion "env-1"
 #define MyAppPublisher "Hefei Zhenzhi Artificial Intelligence Application Software Co., Ltd"
 #define MyAppExeName "haitun.exe"
@@ -70,7 +70,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 #ifdef COMPONENT_MSYS
 Source: "..\..\agents\feishu\msys64\*"; DestDir: "{app}\msys64"; Flags: ignoreversion recursesubdirs createallsubdirs
 #else
-; .env 由 CI 打包前从 GitHub Secret SERPER_API_KEY 注入到 agents\feishu\.env，随 workspace 一并安装到 {app}\app。
+; .env 由 CI 打包前注入到 agents\desktop\.env (pyinstaller.yml 的 "Inject runtime .env" 步),
+; 随 workspace 一并安装到 {app}\app, 再由 haitun.exe 的 load_env_file 灌进 psi-agent 子进程。
+; 注入哪些 key 见 .github\inno-setup\runtime-env-keys.txt —— 那份清单是唯一来源, 别在这里重复。
+; (曾写作"从 GitHub Secret SERPER_API_KEY 注入": 清单已不止这一个 key。)
 ;
 ; 出厂内容与用户数据 (SOUL.md / USER.md / schedules) 目前仍在这一条通配里, 结构上分不出来。
 ; 分包内 / 包外的改法已在 B3 试过又撤回 —— 它牵动升级时的保数据语义, 归属讨论后单独开 PR,
