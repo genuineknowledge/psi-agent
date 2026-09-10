@@ -146,6 +146,9 @@ def test_export_fetches_address_by_recording_id_when_list_has_none(
 
     assert result["ok"] is True
     assert [name for name, _, _ in calls] == ["get_records_list", "get_record_addresses"]
+    # 腾讯要求 meeting_record_id 必填(只给 record_file_id 会报缺参数), 两个都带上
+    assert calls[1][1]["meeting_record_id"] == "2097519494798155776"
+    assert calls[1][1]["record_file_id"] == RECORD_ID
     assert result["record_links"]["view_address"] == ADDRESS
     md = (Path(result["output_dir"]) / "录制与转写信息.md").read_text(encoding="utf-8")
     assert ADDRESS in md and "近似匹配" not in md

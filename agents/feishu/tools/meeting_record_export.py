@@ -166,12 +166,19 @@ async def _fetch_record_meta(job: Any, record_file_id: str, token_env: str) -> t
         return {}, False, "腾讯返回里没有该会议号的录制记录"
     meta = _record_meta(record)
     if exact and not (meta.get("view_address") or meta.get("download_address")):
-        # 列表不带地址时, 按云录制文件 id 单独取一次下载/观看地址(短时效, 每次现取)。
+        # 列表不带地址时按 id 现取一次(短时效)。腾讯要求 meeting_record_id 必填,
+        # 只给 record_file_id 会报"缺少必填参数: meeting_record_id"(实测)。
         recording_id = str(meta.get("record_file_id") or "").strip()
-        if recording_id:
+        meeting_record_id = str(meta.get("meeting_record_id") or "").strip()
+        if recording_id or meeting_record_id:
+            arguments = {
+                key: value
+                for key, value in (("meeting_record_id", meeting_record_id), ("record_file_id", recording_id))
+                if value
+            }
             try:
                 address_payload = _unwrap_payload(
-                    await _tencent_call("get_record_addresses", {"record_file_id": recording_id}, token_env=token_env)
+                    await _tencent_call("get_record_addresses", arguments, token_env=token_env)
                 )
                 address = _find_address(address_payload)
                 if address:
