@@ -1287,3 +1287,113 @@ async def test_duplicate_name_winner_is_the_last_in_sorted_order(tmp_path: Path)
     # Metadata and callable have to name the same file, so the description is
     # checked too — a distinct docstring per file makes the source observable.
     assert tr.tools["pick"].description == "From z_late."
+
+
+# ── load order on the real filesystem ────────────────────────────────────────
+#
+# The three criteria above stub ``glob`` so they can drive a known-bad order.
+# That is the only way to observe the sorting layer, but it also means they say
+# nothing about what any *actual* filesystem returns: they are equally green on
+# NTFS, ext4 and APFS because none of those filesystems is consulted.
+#
+# The fix exists for a cross-filesystem difference, so at least one criterion
+# has to let the real filesystem answer.  The two below do, by writing files in
+# an order deliberately unlike sorted order and never touching ``glob``:
+#
+# * On a filesystem that returns creation order (ext4 for small directories),
+#   the raw order here is reverse-sorted and the sorting layer is what makes
+#   the assertion hold.
+# * On a filesystem that hashes names (NTFS, ext4 with dir_index on larger
+#   directories), the raw order is that hash order — also not sorted.
+#
+# Neither of those is asserted, because which one a runner has is not this
+# repository's business.  What is asserted is the property the preamble case
+# needs: whatever the filesystem says, the file that installs ``sys.path``
+# precedes the file consuming it, and exec order is sorted order.
+#
+# ``scripts/check_tool_glob_order.py`` reports the raw-vs-sorted distance as a
+# number for the record; these criteria judge the consequence.
+
+
+@pytest.mark.anyio
+async def test_real_filesystem_glob_does_not_decide_exec_order(tmp_path: Path) -> None:
+    """Exec order is sorted order with the real filesystem in the loop.
+
+    Files are *created* in reverse-sorted order so that creation order and
+    sorted order disagree maximally.  A raw scan on a creation-order
+    filesystem would then exec them backwards; a hashing filesystem yields
+    some third order.  Sorted order is the only outcome consistent with both.
+    """
+    stems = ("alpha", "bravo", "charlie", "delta", "echo_", "foxtrot")
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir(parents=True)
+    for stem in sorted(stems, reverse=True):
+        await anyio.Path(tools_dir / f"{stem}.py").write_text(
+            f"async def tool_{stem}() -> str:\n    return {stem!r}\n", encoding="utf-8"
+        )
+
+    with _record_exec_order() as order:
+        tr = await ToolRegistry.load(tools_dir, f"realfs-{tmp_path.name}")
+
+    loaded = [name for name in order if Path(name).stem in stems]
+    assert loaded == [f"{stem}.py" for stem in sorted(stems)], (
+        f"files exec'd in {loaded} on this filesystem, not sorted order"
+    )
+    assert set(tr.tools) == {f"tool_{stem}" for stem in stems}
+
+
+@pytest.mark.anyio
+async def test_real_filesystem_loads_preamble_file_before_its_consumer(tmp_path: Path) -> None:
+    """The production failure shape, judged against the real filesystem.
+
+    ``a_preamble.py`` is the file that puts the tools dir on ``sys.path``;
+    ``z_consumer.py`` imports a private helper by bare name and can only load
+    after it.  This is what took down 59 tool files.  Both files are created
+    consumer-first, so on a creation-order filesystem a raw scan reaches the
+    consumer while ``sys.path`` is still missing the dir.
+
+    The verdict is read from the loaded tool set rather than from a log:
+    a file that fails to load is skipped with an ERROR and contributes no
+    tool, so a missing name *is* the failure.
+    """
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir(parents=True)
+
+    # Created first, must load last.  Nothing else puts the dir on sys.path.
+    await anyio.Path(tools_dir / "z_consumer.py").write_text(
+        textwrap.dedent(
+            """
+            from _preamble_helper import MARKER
+
+            async def consumer_marker() -> str:
+                return MARKER
+            """
+        ),
+        encoding="utf-8",
+    )
+    await anyio.Path(tools_dir / "_preamble_helper.py").write_text('MARKER = "via-preamble"\n', encoding="utf-8")
+    await anyio.Path(tools_dir / "a_preamble.py").write_text(
+        textwrap.dedent(
+            """
+            import sys
+            from pathlib import Path
+
+            _here = str(Path(__file__).resolve().parent)
+            if _here not in sys.path:
+                sys.path.insert(0, _here)
+
+            async def preamble_marker() -> str:
+                return "preamble"
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    tr = await ToolRegistry.load(tools_dir, f"preamble-{tmp_path.name}")
+
+    consumer = tr.get("consumer_marker")
+    assert consumer is not None, (
+        "z_consumer.py did not load: its bare-name helper import ran before a_preamble.py "
+        "put the tools dir on sys.path — this is the 59-file production failure"
+    )
+    assert await consumer() == "via-preamble"
