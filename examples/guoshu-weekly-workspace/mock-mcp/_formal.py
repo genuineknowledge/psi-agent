@@ -574,6 +574,41 @@ def _rank(args: dict[str, Any]) -> dict[str, Any] | None:
 
 _NEW_HANDLERS_9 = {"weekly_rank": _rank}
 
+
+def _person_stats(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_person_stats:人员统计(9 个已迁移 scope)。"""
+    scope = (args.get("scope") or "workload").strip().lower()
+    if scope not in tpl.PERSON_SCOPES:
+        return None  # 其余 scope(id_variants/id_longest/reviewers/self_review...)交给演示路径
+    role = (args.get("role") or "lead_owner").strip() or "lead_owner"
+    top = int(args.get("top") or MAX_ROWS)
+    board = (args.get("board") or "").strip() or None
+    group = (args.get("project_group") or "").strip() or None
+    sql, params = tpl.person_stats(scope, role=role, project_group=group, board_code=board, top=top)
+    result = envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            f"{adm.BUSINESS_STATUS_NOTE};按「{tpl.PERSON_ROLES.get(role, ('', role, ''))[1]}」分组;"
+            "姓名为空的行不计入人头;workload 是硬切(并列被切掉),workload_top 用 HAVING = MAX 保留并列;"
+            "workload_summary 的均值是全局均值;group_roster 数去重后的人(不是任务条数);"
+            "id_format 只统计有标识的任务;reporters 走任务闸门 + 进展行发布闸门两道"
+        ),
+        limit=top,
+        cap_last_param=scope
+        in ("workload", "single_task", "group_roster", "workload_top", "cross_group", "dual_role", "reporters"),
+    )
+    if scope == "workload":
+        tsql, tparams = tpl.person_ties(role=role, board_code=board)
+        ties = envelope(sql=tsql, params=tparams, caliber="并列自检", limit=1)
+        first = (ties.get("rows") or [{}])[0]
+        result["top_task_count"] = first.get("top_task_count")
+        result["tied_at_top"] = first.get("tied_at_top")
+    return result
+
+
+_NEW_HANDLERS_10 = {"weekly_person_stats": _person_stats}
+
 _HANDLERS = {
     "weekly_task_query": _task_query,
     "weekly_progress_coverage": _coverage,
@@ -588,6 +623,7 @@ _HANDLERS = {
     "weekly_workflow_query": _workflow,
     "weekly_scale": _scale,
     "weekly_rank": _rank,
+    "weekly_person_stats": _person_stats,
 }
 
 # _NEW_HANDLERS 只是构建期的清单,避免手工漏接线

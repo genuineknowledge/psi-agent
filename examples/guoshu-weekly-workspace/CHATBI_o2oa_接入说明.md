@@ -84,7 +84,7 @@
 5. **提交单域只加 `t.is_deleted = 0`**(462 = 470 − 8 个软删任务下的单),**不带任务发布门**;看板在 `task` 上,按看板提问必须从任务侧下推(462 张单 vs 清单封顶 200 行);
 6. **「在途」按成员枚举 `SUBMISSION_INFLIGHT`**(含 `rejected`、不含 `cancelled`),写成 `status <> 'published'` 会多算 cancelled 那张(60 vs 59);
 7. **文本规则的进展正文在两个地方**:技术组 `task_progress.latest_progress`、集团组 `task_group_progress_history.progress_effect`。只扫前者会漏掉集团任务的历史版本(任务 103 的 V8 冲突就在历史表里),必须 UNION 两张表,并在集团表未授权时显式说明这一限制;
-8. **SQL 文本里的字面 `%` 必须写成 `%%`**:psycopg 会对整条 SQL 做占位符解析,`可用性(\d+)%` 这种正则会被当成参数标记并报 `only '%s', '%b', '%t' are allowed as placeholders`。这是真库验证抓到的运行时错误,纯单测与语法解析都照不出来;
+8. **SQL 文本里的字面 `%` 必须写成 `%%`**:psycopg 会对整条 SQL 做占位符解析,`可用性(\d+)%` 这种正则会被当成参数标记并报 `only '%s', '%b', '%t' are allowed as placeholders`。这是真库验证抓到的运行时错误,纯单测与语法解析都照不出来;(**注释也一样**:写在 SQL 文本里的注释含单个 `%` 会被同样解析 —— 实测把说明写成 SQL 注释后,`id_format` 直接报 `incomplete placeholder: '%'`;注释要写在 Python 侧)
 9. **`latest_round` 按 `version_no DESC, id DESC` 取最新一期**,不按 `progress_date`:补报的老期号可能有更晚的日期。
 
 ### 3.0.1 性能与索引要求(2026-09-10 实测,真 PG 15.5)
@@ -143,7 +143,8 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 | `weekly_workflow_query` | ✅ 已接线 | 审批动作流水(可选表):分布 955/460/150/**13**、日志 **1,578** 行 / 150 任务 / 10.52、node×action **6 档**、`scope=recent` 按动作时间倒序;**`opinion` 按权限才出列** |
 | `weekly_scale` | ✅ 已接线 | 三种 mode × 三种分组轴;技术组 totals 82/77/294/402、集团组 46/40/180/52(各组里程碑相加 = 全库 474,自校验未被 JOIN 放大);completeness 82/77/80/73;intensity 82 任务 / 943 行 / 11.5 |
 | `weekly_rank` | ✅ 已接线 | 三种并列语义 × 六种子表度量:**cut 前 3 名 = 3 行**、**keep_ties 前 3 名 = 12 行**(第 3 名并列)、per_group 每组一行;附件第一名任务 73(20 个);未授权表(附件/集团历史)报 `table_not_granted` |
-| 其余 18 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
+| `weekly_person_stats` | ✅ 已接线(9/14 scope) | 牵头人任务量首位 吴晓东 **14** 个且 **tied_at_top=3**;workload_top 保留三名并列;汇总 128 任务 / 16 人 / 全局均值 8.0;只带 1 个任务 4 人;标准安全组 **9 位牵头人 / 19 条任务**;跨组 12 人;双重角色 6 人;工号写法 69/50/9;填报首位 10515(63 轮 / 4 任务)。未迁移的 4 个 scope 仍走演示路径 |
+| 其余 17 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
 
 三条硬规则:
 

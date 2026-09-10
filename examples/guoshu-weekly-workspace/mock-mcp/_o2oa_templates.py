@@ -1963,3 +1963,250 @@ ORDER BY metric_value {direction} {nulls}, task_id
 LIMIT %s
 """
     return sql, (*params, bound)
+
+
+# ---- batch 10: 人员统计(person_stats 的 9 个 scope)--------------------------
+
+PERSON_SCOPES = (
+    "workload",
+    "workload_top",
+    "workload_summary",
+    "single_task",
+    "group_roster",
+    "cross_group",
+    "dual_role",
+    "id_format",
+    "reporters",
+)
+
+# role -> (分组列, 中文标签, 对应姓名列或空)
+# 「主责人」落在工号列上,与姓名列不是同一批人(演示数据里技术组 owner_user_id 45 人、
+# 姓名列 45 人,而牵头人只有 16 人),所以三者必须分开问。
+PERSON_ROLES: dict[str, tuple[str, str, str]] = {
+    "lead_owner": ("lead_owner_name", "牵头领导", ""),
+    "project_owner": ("project_owner_name", "项目负责人", ""),
+    "owner": ("owner_user_id", "主责人", ""),
+}
+
+
+def _person_columns(role: str) -> tuple[str, str]:
+    if role not in PERSON_ROLES:
+        raise ValueError(f"不支持的 role:{role};支持 {', '.join(PERSON_ROLES)}")
+    column, label, _name_column = PERSON_ROLES[role]
+    return column, label
+
+
+def person_stats(
+    scope: str,
+    role: str = "lead_owner",
+    project_group: str | None = None,
+    board_code: str | None = None,
+    top: int = 200,
+) -> tuple[str, tuple]:
+    """人员统计(按任务数聚合),对齐 mock 的 ``weekly_person_stats``。
+
+    口径要点:
+
+    * **姓名为空的行不是「一个叫空的人」**:计人头时必须排除,否则人数会多 1;
+    * ``workload`` 是**硬切**(`top=1` 只给首行,并列被切掉),``workload_top`` 是
+      ``HAVING = MAX`` **保留并列**(两者答的是两个问题,不能互相代答);
+      并列个数由服务端给出(``tied_at_top``),不让模型在明细上临场裁决;
+    * ``workload_summary`` 的 ``avg_tasks_per_person`` 是**全局均值**,不是组内均值的平均;
+    * ``group_roster`` 数的是**去重后的人**(标准安全组 19 条任务只有 9 位牵头人),
+      不能拿任务条数当人数;
+    * ``id_format`` 只统计**有标识**的任务,空标识不进任何档,各档相加不等于任务总数;
+    * ``reporters`` 的口径是"任务闸门 + ``p.is_published = 1``"两道闸门,
+      填报人在 ``task_progress`` 上而不在 ``task`` 上。
+    """
+    if scope not in PERSON_SCOPES:
+        raise ValueError(f"未知 scope:{scope};可选 {', '.join(PERSON_SCOPES)}")
+    column, _label = _person_columns(role)
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    joins = ""
+    if board:
+        joins = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    gate_sql = "\n  AND ".join(where)
+    named = f"{gate_sql}\n  AND t.{column} IS NOT NULL\n  AND t.{column} <> ''"
+
+    if scope in ("workload", "single_task", "group_roster"):
+        extra = ""
+        if scope == "group_roster":
+            target = (project_group or "").strip()
+            if not target:
+                raise ValueError("group_roster 需要 project_group(先用规模横截面看有哪些组)")
+            extra = "\n  AND t.project_group = %s"
+            params.append(target)
+        having = "\nHAVING count(*) = 1" if scope == "single_task" else ""
+        sql = f"""
+SELECT t.{column} AS person, count(*) AS task_count
+FROM task t
+{joins}
+WHERE {named}{extra}
+GROUP BY t.{column}{having}
+ORDER BY task_count DESC, person
+LIMIT %s
+"""
+        return sql, (*params, int(top))
+
+    if scope == "workload_top":
+        # 子查询自己也要看板闸门(它只查 task,别名换成 t2/b2),否则带 board 过滤时
+        # 会引用一个不存在的别名。参数按 SQL 文本顺序:外层先、子查询后。
+        inner_where = [adm.sql_task_admission("pg", "t2")]
+        inner_join = ""
+        inner_params: list[object] = []
+        if board:
+            inner_join = f"JOIN task_board b2 ON b2.id = t2.board_id AND {adm.sql_soft_delete('b2')}"
+            inner_where.append("b2.code = %s")
+            inner_params.append(board)
+        sql = f"""
+SELECT t.{column} AS person, count(*) AS task_count
+FROM task t
+{joins}
+WHERE {named}
+GROUP BY t.{column}
+HAVING count(*) = (
+    SELECT max(g.c) FROM (
+        SELECT count(*) AS c FROM task t2
+        {inner_join}
+        WHERE {" AND ".join(inner_where)}
+          AND t2.{column} IS NOT NULL AND t2.{column} <> ''
+        GROUP BY t2.{column}
+    ) g
+)
+ORDER BY person
+"""
+        return sql, (*params, *inner_params)
+
+    if scope == "workload_summary":
+        sql = f"""
+SELECT count(*)                                                AS tasks,
+       count(DISTINCT t.{column})                              AS people,
+       round(count(*)::numeric / NULLIF(count(DISTINCT t.{column}), 0), 2) AS avg_tasks_per_person
+FROM task t
+{joins}
+WHERE {named}
+"""
+        return sql, tuple(params)
+
+    if scope == "cross_group":
+        sql = f"""
+SELECT t.{column} AS person,
+       count(DISTINCT t.project_group)                              AS group_count,
+       string_agg(DISTINCT t.project_group, ',' ORDER BY t.project_group) AS group_list,
+       count(*)                                                     AS task_count
+FROM task t
+{joins}
+WHERE {named}
+  AND t.project_group IS NOT NULL
+GROUP BY t.{column}
+HAVING count(DISTINCT t.project_group) > 1
+ORDER BY group_count DESC, person
+LIMIT %s
+"""
+        return sql, (*params, int(top))
+
+    if scope == "dual_role":
+        sql = f"""
+SELECT x.person, x.as_lead, x.as_project_owner
+FROM (
+    SELECT t.lead_owner_name AS person,
+           count(*)         AS as_lead,
+           (SELECT count(*) FROM task t2
+             WHERE {adm.sql_task_admission("pg", "t2")}
+               AND t2.project_owner_name = t.lead_owner_name) AS as_project_owner
+    FROM task t
+    {joins}
+    WHERE {gate_sql}
+      AND t.lead_owner_name IS NOT NULL
+      AND t.lead_owner_name <> ''
+    GROUP BY t.lead_owner_name
+) x
+WHERE x.as_project_owner > 0
+ORDER BY x.as_lead DESC, x.person
+LIMIT %s
+"""
+        return sql, (*params, int(top))
+
+    if scope == "id_format":
+        # LIKE 模式里的百分号要写成双百分号:psycopg 会对整条 SQL 文本做占位符解析。
+        # 注意注释也别写进 SQL 文本里 —— 注释里的单个百分号同样会被解析(踩过)。
+        sql = f"""
+SELECT CASE
+           WHEN t.owner_user_id ~ '^[0-9]+$'   THEN '纯数字工号'
+           WHEN t.owner_user_id LIKE 'u%%'     THEN 'u 前缀账号'
+           WHEN t.owner_user_id LIKE 'NDG%%'   THEN 'NDG 域账号'
+           ELSE '其他'
+       END      AS id_format,
+       count(*) AS task_count
+FROM task t
+{joins}
+WHERE {gate_sql}
+  AND t.owner_user_id IS NOT NULL
+  AND t.owner_user_id <> ''
+GROUP BY id_format
+ORDER BY task_count DESC, id_format
+"""
+        return sql, tuple(params)
+
+    # reporters:任务闸门 + 进展行发布闸门,两道都要
+    sql = f"""
+SELECT p.reporter_id, count(*) AS reported_rounds, count(DISTINCT p.task_id) AS tasks
+FROM task_progress p
+JOIN task t ON t.id = p.task_id
+{joins}
+WHERE {gate_sql}
+  AND {adm.sql_published_progress("pg", "p")}
+GROUP BY p.reporter_id
+ORDER BY reported_rounds DESC, p.reporter_id
+LIMIT %s
+"""
+    return sql, (*params, int(top))
+
+
+def person_ties(role: str = "lead_owner", board_code: str | None = None) -> tuple[str, tuple]:
+    """``workload`` 的并列自检:首名的任务数以及与他并列的人数。
+
+    单独一条查询,因为它是**数据**(并列人数),不是让模型去看明细自己数——
+    问句是单数("最多的是谁")时按首行答,再据 ``tied_at_top`` 补一句"另有 N 人并列"。
+    """
+    column, _label = _person_columns(role)
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    joins = ""
+    if board:
+        joins = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    inner_where = [adm.sql_task_admission("pg", "t2")]
+    inner_join = ""
+    inner_params: list[object] = []
+    if board:
+        inner_join = f"JOIN task_board b2 ON b2.id = t2.board_id AND {adm.sql_soft_delete('b2')}"
+        inner_where.append("b2.code = %s")
+        inner_params.append(board)
+    sql = f"""
+SELECT max(g.c)                                                        AS top_task_count,
+       count(*) FILTER (WHERE g.c = (SELECT max(g2.c) FROM (
+           SELECT count(*) AS c FROM task t2
+           {inner_join}
+           WHERE {" AND ".join(inner_where)}
+             AND t2.{column} IS NOT NULL AND t2.{column} <> ''
+           GROUP BY t2.{column}) g2))                                  AS tied_at_top
+FROM (
+    SELECT count(*) AS c FROM task t
+    {joins}
+    WHERE {"\n  AND ".join(where)}
+      AND t.{column} IS NOT NULL AND t.{column} <> ''
+    GROUP BY t.{column}
+) g
+"""
+    return sql, (*params, *inner_params)

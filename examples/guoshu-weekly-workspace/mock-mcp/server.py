@@ -2440,6 +2440,12 @@ def weekly_person_stats(
         top: Row cap for the listing scopes.
     """
 
+    formal = _formal.dispatch(
+        "weekly_person_stats", scope=scope, role=role, project_group=project_group, board=board, top=top
+    )
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         key = (scope or "workload").strip().lower()
         if key not in _PERSON_STATS_SCOPES:
