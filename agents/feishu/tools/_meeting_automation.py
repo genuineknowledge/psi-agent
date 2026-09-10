@@ -470,7 +470,7 @@ def _task_body(job: MeetingJob, *, name: str | None = None, cron: str | None = N
     tool_args = json.dumps(dict(job.tool_args), ensure_ascii=False, separators=(",", ":"))
     return f"""---
 name: {name or job.name}
-description: 会后自动获取{job.title}原始全文转写并分析
+description: 会后自动获取{job.title}原始全文转写并分析, 产出本场评价与后续建议
 cron: \"{cron or job.cron}\"
 visibility: silent
 fire: {job.fire}
