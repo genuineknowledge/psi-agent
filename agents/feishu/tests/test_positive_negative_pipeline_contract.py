@@ -1326,3 +1326,127 @@ def test_confirmation_writes_only_test_adapter_then_sends_notice_card_without_au
     active = reviews.find_active_reviews(tmp_path, "ou_subject")
     assert active == ()
     assert result["private_review_status"] == "not_started"
+
+
+def _prepare_with_fakes(monkeypatch, tmp_path, *, source_event_id: str):
+    """准备一个案件并返回 (prepared, cards, adapter, modules)。"""
+    positive_negative = importlib.import_module("positive_negative_list")
+    confirm = importlib.import_module("positive_negative_list_confirm")
+
+    class FakeAdapter:
+        creates = 0
+
+        async def preflight(self, user_key):
+            return SimpleNamespace(ok=True, errors=(), schema=object())
+
+        async def create_public_record(self, case, user_key):
+            self.creates += 1
+            return {"record_id": "rec_cancel_case"}
+
+    adapter = FakeAdapter()
+    cards: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_send_card(receive_id, card_json, *args, **kwargs):
+        cards.append((receive_id, json.loads(card_json)))
+        return {"ok": True, "message_id": "msg_confirm_card"}
+
+    async def fake_get_users_batch(user_ids: str, user_id_type: str = "open_id"):
+        names = {"ou_subject": "王炜博", "ou_reporter": "罗霖"}
+        return {"ok": True, "users": [{"open_id": item, "name": names[item]} for item in user_ids.split(",")]}
+
+    async def fake_root():
+        return tmp_path
+
+    monkeypatch.setattr(positive_negative._f, "send_card_impl", fake_send_card)
+    monkeypatch.setattr(positive_negative, "_get_session_id", lambda: "session_cancel")
+    monkeypatch.setattr(positive_negative, "_resolve_appdata_root", fake_root)
+    monkeypatch.setattr(confirm, "get_session_id", lambda: "session_cancel")
+    monkeypatch.setattr(confirm, "resolve_appdata_root", fake_root)
+    monkeypatch.setattr(confirm, "TABLE_ADAPTER", adapter)
+    monkeypatch.setattr(confirm, "table_adapter", None)
+
+    case = _negative_case().to_mapping() | {"writer_user_key": "ou_reporter", "reporter_user_key": "ou_reporter"}
+    prepared = json.loads(
+        asyncio.run(
+            positive_negative.positive_negative_case_prepare(
+                json.dumps(case, ensure_ascii=False),
+                source_event_id=source_event_id,
+                user_key="ou_reporter",
+            )
+        )
+    )
+    return prepared, cards, adapter, confirm
+
+
+def _cancel_callback(prepared: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "action": {"value": {"action": "positive_negative_case_cancel"}},
+            "business_context": {"case_id": prepared["case_id"], "preview_digest": prepared["preview_digest"]},
+        },
+        ensure_ascii=False,
+    )
+
+
+def test_confirmation_card_offers_cancel_and_cancel_writes_nothing_then_allows_re_record(monkeypatch, tmp_path) -> None:
+    """确认卡必须有「取消录入」按钮; 取消 = 不写表 + 释放同源占位 + 可重新发起。"""
+    prepared, cards, adapter, confirm = _prepare_with_fakes(monkeypatch, tmp_path, source_event_id="evt_cancel")
+    card_blob = json.dumps(cards[0][1], ensure_ascii=False)
+    assert "确认写入" in card_blob and "取消录入" in card_blob
+    assert "positive_negative_case_cancel" in card_blob
+    handlers = cards[0]
+    assert handlers[0] == "ou_reporter"
+    card_actions = [
+        element["behaviors"][0]["value"]["action"]
+        for column in cards[0][1]["body"]["elements"][-1]["columns"]
+        for element in column["elements"]
+    ]
+    assert card_actions == ["positive_negative_case_confirm", "positive_negative_case_cancel"]
+
+    cancelled = json.loads(
+        asyncio.run(confirm.positive_negative_case_confirm(_cancel_callback(prepared), user_key="ou_reporter"))
+    )
+    assert cancelled["ok"] is True
+    assert cancelled["status"] == "cancelled"
+    assert adapter.creates == 0  # 取消绝不写表
+    draft_files = list((tmp_path / "positive-negative-list" / "drafts").glob("*/*.json"))
+    assert draft_files
+    saved = json.loads(draft_files[0].read_text(encoding="utf-8"))
+    assert saved["case"]["workflow"] == "cancelled"
+
+    repeat = json.loads(
+        asyncio.run(confirm.positive_negative_case_confirm(_cancel_callback(prepared), user_key="ou_reporter"))
+    )
+    assert repeat["ok"] is True and repeat["status"] == "already_cancelled"
+
+    # 同源占位已释放: 同一条消息可以重新发起记录
+    again, cards2, _, _ = _prepare_with_fakes(monkeypatch, tmp_path, source_event_id="evt_cancel")
+    assert again["ok"] is True
+    assert again["case_id"] != prepared["case_id"]
+    assert len(cards2) == 1
+
+
+def test_cancel_after_written_is_rejected_and_other_writer_is_unauthorized(monkeypatch, tmp_path) -> None:
+    """已写入正式总表的记录不可取消(提示走更正/申诉); 非写入者点击取消 = unauthorized。"""
+    prepared, _, adapter, confirm = _prepare_with_fakes(monkeypatch, tmp_path, source_event_id="evt_cancel_written")
+    confirm_cb = json.dumps(
+        {
+            "action": {"value": {"action": "positive_negative_case_confirm"}},
+            "business_context": {"case_id": prepared["case_id"], "preview_digest": prepared["preview_digest"]},
+        },
+        ensure_ascii=False,
+    )
+    written = json.loads(asyncio.run(confirm.positive_negative_case_confirm(confirm_cb, user_key="ou_reporter")))
+    assert written["ok"] is True and adapter.creates == 1
+
+    late = json.loads(
+        asyncio.run(confirm.positive_negative_case_confirm(_cancel_callback(prepared), user_key="ou_reporter"))
+    )
+    assert late["ok"] is False and late["status"] == "already_written"
+    assert adapter.creates == 1
+
+    other, _, _, _ = _prepare_with_fakes(monkeypatch, tmp_path, source_event_id="evt_cancel_other_writer")
+    stranger = json.loads(
+        asyncio.run(confirm.positive_negative_case_confirm(_cancel_callback(other), user_key="ou_stranger"))
+    )
+    assert stranger["ok"] is False and stranger["status"] == "unauthorized"

@@ -57,6 +57,7 @@ async def _confirmation_card(case: CaseDraft, digest: str) -> dict[str, Any]:
             f"\n**预防措施**　{case.prevention}"
         )
     action_value = {"action": "positive_negative_case_confirm", "case_id": case.case_id, "preview_digest": digest}
+    cancel_value = {"action": "positive_negative_case_cancel", "case_id": case.case_id, "preview_digest": digest}
     return {
         "schema": "2.0",
         "config": {"width_mode": "regular"},
@@ -71,6 +72,7 @@ async def _confirmation_card(case: CaseDraft, digest: str) -> dict[str, Any]:
                         f"**行为事实**　{case.fact_summary}\n"
                         f"**证据来源**　{', '.join(case.evidence_sources) or '未提供'}"
                         f"{guidance}\n\n确认后仅写入正负面清单正式总表；不计分、不进入绩效。"
+                        "取消录入不写入任何表，可重新发起。"
                     ),
                 },
                 {"tag": "hr"},
@@ -90,7 +92,20 @@ async def _confirmation_card(case: CaseDraft, digest: str) -> dict[str, Any]:
                                     "behaviors": [{"type": "callback", "value": action_value}],
                                 }
                             ],
-                        }
+                        },
+                        {
+                            "tag": "column",
+                            "width": "weighted",
+                            "weight": 1,
+                            "elements": [
+                                {
+                                    "tag": "button",
+                                    "text": {"tag": "plain_text", "content": "取消录入"},
+                                    "type": "default",
+                                    "behaviors": [{"type": "callback", "value": cancel_value}],
+                                }
+                            ],
+                        },
                     ],
                 },
             ]
@@ -191,7 +206,13 @@ async def positive_negative_case_prepare(
                 json.dumps(
                     {"case_id": case_id, "preview_digest": digest, "writer_open_id": user_key}, ensure_ascii=False
                 ),
-                json.dumps({"positive_negative_case_confirm": "positive_negative_case_confirm"}, ensure_ascii=False),
+                json.dumps(
+                    {
+                        "positive_negative_case_confirm": "positive_negative_case_confirm",
+                        "positive_negative_case_cancel": "positive_negative_case_confirm",
+                    },
+                    ensure_ascii=False,
+                ),
             )
         except Exception as exc:
             delete_draft_body(root, user_key, case_id)
