@@ -717,6 +717,23 @@ def _reset_uat_state() -> None:
 
 
 _REFRESH_URL = "https://open.feishu.cn/open-apis/authen/v1/refresh_access_token"
+
+#: Per-user refresh locks — the same refresh_token must never be refreshed
+#: concurrently (two paths — a scheduled task and a chat turn — can both touch
+#: one user's token; Feishu may invalidate the old refresh_token on either use).
+_refresh_locks: dict[str, Any] = {}
+
+
+def _refresh_lock(user_key: str) -> Any:
+    import asyncio  # noqa: PLC0415
+
+    lock = _refresh_locks.get(user_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _refresh_locks[user_key] = lock
+    return lock
+
+
 _APP_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
 
 
@@ -774,20 +791,25 @@ async def _get_valid_uat(user_key: str = "") -> Any:
         return None
     old_scopes = list(uat.scopes or [])
     if uat_needs_refresh(uat) and uat.refresh_token:
-        app_token = await _get_app_access_token()
-        if app_token is not None:
-            payload = await _post_json(
-                _REFRESH_URL,
-                {"grant_type": "refresh_token", "refresh_token": uat.refresh_token},
-                headers={"Authorization": f"Bearer {app_token}"},
-            )
-            if payload.get("code") in (0, None) and (payload.get("data") or payload).get("access_token"):
-                uat = _uat_from_token_response(payload)
-                if not uat.scopes and old_scopes:
-                    # 刷新响应通常不回显 scope(首次授权才带);清空会让授权
-                    # 卡片等展示层误以为权限丢了,保留旧值只回填展示信息。
-                    uat.scopes = old_scopes
-                await store.set(key, uat)
+        async with _refresh_lock(key):
+            # 锁内重读:并发等待者进来时 token 可能已被上一家刷新好
+            uat = await store.get(key)
+            if uat is None or not uat_needs_refresh(uat) or not uat.refresh_token:
+                return uat
+            app_token = await _get_app_access_token()
+            if app_token is not None:
+                payload = await _post_json(
+                    _REFRESH_URL,
+                    {"grant_type": "refresh_token", "refresh_token": uat.refresh_token},
+                    headers={"Authorization": f"Bearer {app_token}"},
+                )
+                if payload.get("code") in (0, None) and (payload.get("data") or payload).get("access_token"):
+                    uat = _uat_from_token_response(payload)
+                    if not uat.scopes and old_scopes:
+                        # 刷新响应通常不回显 scope(首次授权才带);清空会让授权
+                        # 卡片等展示层误以为权限丢了,保留旧值只回填展示信息。
+                        uat.scopes = old_scopes
+                    await store.set(key, uat)
     return uat
 
 
