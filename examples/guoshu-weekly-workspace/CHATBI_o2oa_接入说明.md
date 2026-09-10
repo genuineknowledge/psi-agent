@@ -13,7 +13,6 @@
 - 发布准入等硬约束由服务端固化,见 `mock-mcp/_admission.py`,不得写散在单条查询里。
 
 ## 2. 配置
-
 | 环境变量 | 用途 | 默认 |
 |---|---|---|
 | `TASK_BOARD_DATA_SOURCE` | 数据源选择:`mock`(演示)/`o2oa`(正式) | mock(未设置时) |
@@ -23,6 +22,28 @@
 | `PGSCHEMA` | schema | public |
 
 凭据只经环境/Secret 注入,不落代码与镜像。
+
+### 2.1 交付形式:服务 / Docker(2026-09-10)
+
+取数能力以**独立 MCP 服务**交付,不附带任何前端 —— 由主 Agent 通过 MCP 调用。
+仓库里的 `Dockerfile` 就是这层封装(streamable-http,默认 18900):
+
+```bash
+docker build -t guoshu-weekly-mcp:latest examples/guoshu-weekly-workspace
+docker run --rm -p 18900:18900 --env-file o2oa.env guoshu-weekly-mcp:latest
+```
+
+`o2oa.env` 至少要有:`TASK_BOARD_DATA_SOURCE=o2oa`、`PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD/PGSCHEMA`;
+联调期再加 `GUOSHU_AS_OF=2026-08-15`(固定基准日,与演示快照日对齐)与
+`TASK_BOARD_GRANTED_OPTIONAL_TABLES=task_attachment,task_group_progress_history,task_workflow_action`。
+
+三条交付注意:
+
+1. **`mcp` 必须钉在 1.x**(镜像里已写死):2.x 把 `FastMCP` 改名成 `MCPServer`,直接导入失败;
+2. **启动不再探演示库**:正式源模式下没有 MySQL 是正常的,此前探测失败会让容器以退出码 2 起不来 ——
+   现已按当前实际使用的源来探,并在日志里打印"用的是哪个源";
+3. **端点鉴权由部署侧负责**:容器绑 `0.0.0.0` 只为容器外可访问,生产须置于内网/反代之后;
+   库侧只读由连接参数保证(`default_transaction_read_only=on` + `statement_timeout`)。
 
 ## 3. 已落地的第一批代码
 

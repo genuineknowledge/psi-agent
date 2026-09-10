@@ -6644,14 +6644,19 @@ def main() -> int:
         probe = store.connect()
         probe.close()
     except store.QueryError as exc:
-        print(f"mock store unreachable: {exc}", file=sys.stderr)
-        print("start MySQL and import the dump -- see README", file=sys.stderr)
-        return 2
+        # 正式源模式下演示库(MySQL)本来就不存在:这时去探它是**误报**,
+        # 容器化交付会因此起不来(退出码 2)。只探当前实际使用的那个源。
+        if _formal.enabled():
+            print(f"mock store absent (expected in formal mode): {exc}", file=sys.stderr)
+        else:
+            print(f"mock store unreachable: {exc}", file=sys.stderr)
+            print("start MySQL and import the dump -- see README", file=sys.stderr)
+            return 2
 
     mcp.settings.host = args.host
     mcp.settings.port = args.port
     print(f"mock weekly MCP on http://{args.host}:{args.port}/mcp", flush=True)
-    print(f"store: {_db.DSN_DESCRIPTION}", flush=True)
+    print(f"store: {'正式只读源(o2oa/PG)' if _formal.enabled() else _db.DSN_DESCRIPTION}", flush=True)
     mcp.run(transport="streamable-http")
     return 0
 
