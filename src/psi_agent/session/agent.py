@@ -33,6 +33,7 @@ from psi_agent.protocol import (
 )
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
+from psi_agent.session.content_roots import ContentRoot, content_roots_from_env
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.event_protocol import EventProtocolError, parse_event_envelope
 from psi_agent.session.history_display import (
@@ -369,7 +370,25 @@ class SessionAgent:
             session_id,
             appdata_root=appdata_root,
         )
-        tool_registry = await ToolRegistry.load(agent_root / "tools", conversation.session_id)
+        # Content roots, when the deployment declares any, are the tool layers:
+        # the agent package becomes the top (most specific) root so a user's own
+        # tools still override the shared ones, and the shared roots below it are
+        # identified by name — which is what lets many workspaces mount one
+        # official root and compile it once. Nothing declared → the previous
+        # single-dir load, unchanged.
+        content_roots = content_roots_from_env()
+        if content_roots:
+            top = ContentRoot(
+                name=str(agent_root.resolve()),
+                path=agent_root,
+                priority=max(root.priority for root in content_roots) + 10,
+            )
+            tool_registry = await ToolRegistry.load_content_roots([*content_roots, top], conversation.session_id)
+        else:
+            tool_registry = await ToolRegistry.load(agent_root / "tools", conversation.session_id)
+        # 刻意为之: schedules 仍然挂 ``workspace_path``, 不跟着分层走 agent_root/内容根。
+        # 日程是「谁的提醒」——属于挂载侧、属于这个用户的 workspace, 内容根答不了这个问题。
+        # 顺手统一成 agent_root 会静默丢掉所有用户日程。
         schedule_registry = await ScheduleRegistry.load(
             workspace_path / "schedules",
             active_names=active_schedules,

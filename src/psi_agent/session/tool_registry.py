@@ -32,6 +32,7 @@ from typing import Any
 import anyio
 from loguru import logger
 
+from psi_agent.session.content_roots import ContentRoot, content_roots_from_env
 from psi_agent.session.tool_layers import Layer, executing_tool_file, layers_open
 
 # ── tools-dir import scope ───────────────────────────────────────────────────
@@ -165,6 +166,13 @@ def _belongs_to_dir(name: str, origin: Path, tools_dir: Path) -> bool:
 # different same-directory ``_priv_helper``), and a hash-only key would hand the
 # second dir the first dir's module — including its helper bindings.
 #
+# Which identifier decides how much reuse is reachable.  A per-*mount* id (the
+# resolved tools-dir path, what this used to be) makes one shipped layer look
+# like N layers when N workspaces mount it, so the shared content is compiled N
+# times.  A declared **content root** name is per-*content*, so those N mounts
+# hit one entry — while two differently-named roots stay as separate as two paths
+# were.  See ``content_roots``.
+#
 # Entries are keyed by content hash and never evicted, so editing a tool file
 # leaves the old module behind.  That matches what ``sys.modules`` already does
 # with these per-hash module names; a bounded cache would be a separate change.
@@ -172,13 +180,44 @@ _module_cache: dict[tuple[str, str], types.ModuleType] = {}
 _module_cache_lock = threading.Lock()
 
 
-def _layer_id(tools_dir: Path) -> str:
-    """Cache-key component isolating one tools dir from another.
+def _cache_key(layer_id: str, file_hash: str) -> tuple[str, str]:
+    """The one place the reuse key is formed.
 
-    Content layering is not in place yet, so the resolved tools-dir path stands
-    in for the layer.  Once layers land this becomes the layer id, and files
-    shared by a layer stop being re-compiled per workspace.
+    A named function rather than a tuple literal at each of the three touch
+    points, because the key *is* the isolation boundary: dropping ``layer_id``
+    from it would hand one layer another layer's module, and that has to be one
+    reviewable line instead of a shape repeated where it can drift apart.
     """
+    return (layer_id, file_hash)
+
+
+def _layer_id(tools_dir: Path, roots: Sequence[ContentRoot] | None = None) -> str:
+    """Cache-key component identifying the layer *tools_dir* belongs to.
+
+    A **declared content root** owning this dir supplies the id, so the same
+    shipped content mounted into several workspaces is one layer and compiles
+    once (see ``content_roots``).  *roots* defaults to whatever the deployment
+    declared in ``PSI_CONTENT_ROOTS``.
+
+    With no root claiming the dir the resolved path stands in, which is the
+    single-root behaviour: one dir, one layer, and the path is the only identity
+    available.  Falling back to the path rather than to a shared constant keeps
+    the isolation the key exists for — two unclaimed dirs stay distinct, so a
+    byte-identical file in each still gets its own module and its own
+    ``_priv_helper`` bindings.
+    """
+    declared = content_roots_from_env() if roots is None else roots
+    if declared:
+        try:
+            resolved = tools_dir.resolve()
+        except OSError:
+            resolved = tools_dir
+        for root in declared:
+            try:
+                if root.tools_dir.resolve() == resolved:
+                    return root.layer_id
+            except OSError:
+                continue
     try:
         return str(tools_dir.resolve())
     except OSError:
@@ -523,9 +562,33 @@ class ToolRegistry:
 
     @classmethod
     async def load(cls, tools_dir: Path, session_id: str = "") -> ToolRegistry:
-        """Full initial load — scan *tools_dir* and import everything."""
+        """Full initial load — scan *tools_dir* and import everything.
+
+        The layer id comes from whichever declared content root owns *tools_dir*,
+        so a root mounted into many workspaces is compiled once; with none
+        declared it is the dir's own path (see ``_layer_id``).
+        """
         files = await cls._load_from_dir(tools_dir, session_id)
         return cls(files=files, work_dir=tools_dir, session_id=session_id)
+
+    @classmethod
+    async def load_content_roots(cls, roots: Sequence[ContentRoot], session_id: str = "") -> ToolRegistry:
+        """Full initial load across declared content roots.
+
+        The layering entry point callers reach for: each root carries its own
+        identity and rank, so this is ``load_layers`` over ``root.as_layer()``.
+        Roots whose ``tools_dir`` is absent are skipped — a deployment declares
+        the mount layout once and not every root has tools (the enterprise tier
+        ships skills only), so a missing dir is a normal shape rather than a
+        misconfiguration to refuse on.
+        """
+        present: list[Layer] = []
+        for root in roots:
+            if await anyio.Path(str(root.tools_dir)).is_dir():
+                present.append(root.as_layer())
+            else:
+                logger.debug(f"Content root {root.name!r} has no tools dir at {root.tools_dir}")
+        return await cls.load_layers(present, session_id)
 
     @classmethod
     async def load_layers(cls, layers: Sequence[Layer], session_id: str = "") -> ToolRegistry:
@@ -630,9 +693,10 @@ class ToolRegistry:
         process cwd or which file happens to be scanned first.
 
         *layer_id* names the content layer this dir belongs to, for the import
-        hook installed by ``load_layers``.  Defaults to the dir's own
-        ``_layer_id()``, which is what the single-dir path wants: it is then the
-        sole layer, and asking on its behalf resolves to itself.
+        hook installed by ``load_layers`` and for the compiled-module cache key.
+        Defaults to ``_layer_id()``, which asks the declared content roots first
+        and falls back to the dir's own path — what the single-dir path wants: it
+        is then the sole layer, and asking on its behalf resolves to itself.
         """
         files: dict[str, FileEntry] = {}
         registered_modules: list[str] = []
@@ -706,7 +770,7 @@ class ToolRegistry:
                         continue
 
                     with _module_cache_lock:
-                        cached = _module_cache.get((layer_id, file_hash))
+                        cached = _module_cache.get(_cache_key(layer_id, file_hash))
 
                     if cached is not None:
                         # Same bytes, same layer: reuse the module that was already
@@ -738,7 +802,7 @@ class ToolRegistry:
                             exec(compiled, module.__dict__)
 
                         with _module_cache_lock:
-                            _module_cache.setdefault((layer_id, file_hash), module)
+                            _module_cache.setdefault(_cache_key(layer_id, file_hash), module)
 
                     attr_names = sorted(name for name in dir(module) if not name.startswith("_"))
                     tools: dict[str, ToolFunction] = {}
