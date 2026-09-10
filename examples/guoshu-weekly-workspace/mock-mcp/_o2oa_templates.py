@@ -19,6 +19,8 @@ statement order (psycopg 3 style).  Builders raise:
 
 from __future__ import annotations
 
+import datetime as dt
+
 import _admission as adm
 
 
@@ -858,13 +860,63 @@ def freshness_overall(
         where.append("t.status IN (0, 1)")
     sql = f"""
 SELECT {adm.normalize_ts_sql("MAX(t.latest_progress_time)")} AS newest_progress,
-       date_part('day', %s::date - MAX({ts}))::int           AS days_behind,
+       (%s::date - MAX({ts})::date)::int                     AS days_behind,
        count(*)                                              AS task_total
 FROM task t
 {board_join}
 WHERE {"\n  AND ".join(where)}
 """
     return sql, (as_of, *params)
+
+
+def freshness_lag_bands(
+    as_of: str,
+    group_history_granted: bool = True,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """每看板的陈旧度分档:0-7 / 8-14 / 15-30 / 超过 30 / 无正式进展。
+
+    固定档位(30/90/180)表达不了这套边界:技术组 17/56/9 与集团组 14/28/4 都落在
+    原来的"30 天内"和"31-90 天"两档里,答出来的表是给不出边界的。
+
+    **两个看板的正式进展存在不同表**:技术组在 ``task_progress``(取 ``progress_date``),
+    集团组在 ``task_group_progress_history``(取 ``report_time``)。用
+    ``task.latest_progress_time`` 一把抓会把集团组算空,也会把技术组未发布的进展算进来。
+    """
+    _check_as_of(as_of)
+    if not group_history_granted:
+        hint = adm.require_optional_table("task_group_progress_history", False)
+        raise PermissionError(hint)
+    pdate = adm.parse_ts_sql("p.progress_date")
+    htime = adm.parse_ts_sql("h.report_time")
+    sql = f"""
+WITH per_task AS (
+    SELECT t.id, t.board_id,
+           CASE WHEN b.code = 'group'
+                THEN (%s::date - max(CASE WHEN h.is_published = 1 THEN {htime} END)::date)::int
+                ELSE (%s::date - max(CASE WHEN p.is_published = 1 THEN {pdate} END)::date)::int
+           END AS d
+    FROM task t
+    JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
+    LEFT JOIN task_progress p ON p.task_id = t.id
+    LEFT JOIN task_group_progress_history h ON h.task_id = t.id
+    WHERE {adm.sql_task_admission("pg", "t")}
+    GROUP BY t.id, t.board_id, b.code
+)
+SELECT b.name AS board_name,
+       CASE WHEN x.d IS NULL    THEN '5 无正式进展'
+            WHEN x.d <= 7       THEN '1 0-7 天'
+            WHEN x.d <= 14      THEN '2 8-14 天'
+            WHEN x.d <= 30      THEN '3 15-30 天'
+            ELSE '4 超过 30 天' END AS lag_band,
+       count(*) AS task_count
+FROM per_task x
+JOIN task_board b ON b.id = x.board_id
+GROUP BY b.id, b.name, b.sort_order, lag_band
+ORDER BY b.sort_order, lag_band
+LIMIT %s
+"""
+    return sql, (as_of, as_of, int(limit))
 
 
 def freshness_within(
@@ -875,13 +927,15 @@ def freshness_within(
     """在快照日前 ``within_days`` 天内报过进展的任务数(任意窗口,例如 7 天)。
 
     固定档位表达不了任意窗口(题面里就有问 7 天的),所以单独给出这一条。
+    与参考实现同形:一行三列 —— 任务数、最新进展时间、距基准日天数;只给计数时
+    调用方答不出"最新那条是哪天",而这两个数本来就是同一个问题的两半。
     """
     _check_as_of(as_of)
     board, hint = adm.check_board_code(board_code) if board_code else (None, None)
     if hint:
         raise ValueError(hint)
     ts = adm.parse_ts_sql("t.latest_progress_time")
-    where = [adm.sql_task_admission("pg", "t"), "t.latest_progress_time IS NOT NULL"]
+    where = [adm.sql_task_admission("pg", "t")]
     params: list[object] = []
     board_join = ""
     if board:
@@ -889,13 +943,51 @@ def freshness_within(
         where.append("b.code = %s")
         params.append(board)
     sql = f"""
-SELECT count(*) AS reported_within
+SELECT count(*) AS task_count,
+       {adm.normalize_ts_sql("max(t.latest_progress_time)")} AS newest_progress,
+       (%s::date - max({ts})::date)::int                     AS days_behind
 FROM task t
 {board_join}
 WHERE {"\n  AND ".join(where)}
   AND {ts} >= %s::date - make_interval(days => %s)
 """
-    return sql, (as_of, int(within_days), *params)
+    return sql, (as_of, as_of, int(within_days), *params)
+
+
+def recent_reporters(
+    as_of: str,
+    recent_days: int,
+    board_code: str | None = None,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """近 ``recent_days`` 天内报过进展的任务清单(与 ``stale_tasks`` 相反的一端)。
+
+    **不加 status 闸门**:问的是"有没有报进展",不是"任务在不在办"。
+    """
+    _check_as_of(as_of)
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    ts = adm.parse_ts_sql("t.latest_progress_time")
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    board_join = ""
+    if board:
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    sql = f"""
+SELECT t.id, t.task_name, t.status,
+       {adm.normalize_ts_sql("t.latest_progress_time")} AS latest_progress_time,
+       (%s::date - {ts}::date)::int                      AS days_since
+FROM task t
+{board_join}
+WHERE {"\n  AND ".join(where)}
+  AND {ts} >= %s::date - make_interval(days => %s)
+ORDER BY t.latest_progress_time DESC, t.id
+LIMIT %s
+"""
+    return sql, (as_of, as_of, int(recent_days), *params, int(limit))
 
 
 def stale_tasks(
@@ -903,12 +995,19 @@ def stale_tasks(
     stale_days: int,
     board_code: str | None = None,
     in_flight_only: bool = True,
+    reported_only: bool = False,
     limit: int = 200,
 ) -> tuple[str, tuple]:
     """滞后任务清单:最新进展早于窗口的;从未报过的**也算滞后并排在最前**。
 
     默认只看在办任务 —— "哪些在办任务拖着没更新"才是要问的问题,已完成任务长期
-    不更新属于正常。``NULLS FIRST`` 让从未报过的排最前。
+    不更新属于正常。排序照抄参考实现:``latest_progress_time IS NOT NULL`` 先把
+    从未报过的排到最前(PG 的 ``NULLS FIRST`` 在 ASC 下语义相同,但写成布尔键后
+    "从未报过"这层意思在 SQL 里是显式的),然后按时间、按 id。
+
+    ``reported_only``:问"最久没上报的前 N 条"时,从未报过的任务没有天数可比
+    (``days_since`` 为空),会把前 N 名整段占满 —— 那是另一问
+    (用默认档或 ``weekly_progress_coverage scope=never_reported``)。
     """
     _check_as_of(as_of)
     board, hint = adm.check_board_code(board_code) if board_code else (None, None)
@@ -924,17 +1023,19 @@ def stale_tasks(
         params.append(board)
     if in_flight_only:
         where.append("t.status IN (0, 1)")
+    if reported_only:
+        where.append("t.latest_progress_time IS NOT NULL")
     sql = f"""
-SELECT t.id, t.task_no, t.task_name, t.status, t.project_owner_name,
-       {adm.normalize_ts_sql("t.latest_progress_time")}     AS latest_progress_time,
+SELECT t.id, t.task_name, t.status,
+       {adm.normalize_ts_sql("t.latest_progress_time")} AS latest_progress_time,
        CASE WHEN t.latest_progress_time IS NULL THEN NULL
-            ELSE date_part('day', %s::date - {ts})::int END AS days_behind
+            ELSE (%s::date - {ts}::date)::int END       AS days_since
 FROM task t
 {board_join}
 WHERE {"\n  AND ".join(where)}
   AND (t.latest_progress_time IS NULL
        OR {ts} < %s::date - make_interval(days => %s))
-ORDER BY t.latest_progress_time NULLS FIRST, t.id
+ORDER BY t.latest_progress_time IS NOT NULL, t.latest_progress_time, t.id
 LIMIT %s
 """
     return sql, (as_of, as_of, int(stale_days), *params, int(limit))
@@ -960,9 +1061,9 @@ def latest_progress_drift(
         where.append("b.code = %s")
         params.append(board)
     sql = f"""
-SELECT t.id, t.task_no, t.task_name,
-       {adm.normalize_ts_sql("t.latest_progress_time")} AS denormalized_time,
-       {adm.normalize_ts_sql("m.newest")}               AS real_newest_progress
+SELECT t.id AS task_id, t.task_name,
+       {adm.normalize_ts_sql("t.latest_progress_time")} AS latest_progress_time,
+       {adm.normalize_ts_sql("m.newest")}               AS actual_latest_report
 FROM task t
 {board_join}
 JOIN LATERAL (
@@ -974,10 +1075,164 @@ WHERE {"\n  AND ".join(where)}
   AND m.newest IS NOT NULL
   AND (t.latest_progress_time IS NULL
        OR {adm.parse_ts_sql("t.latest_progress_time")} <> {adm.parse_ts_sql("m.newest")})
-ORDER BY t.sort_order, t.id
+ORDER BY t.id
 LIMIT %s
 """
     params.append(int(limit))
+    return sql, tuple(params)
+
+
+def _stale_predicate(as_of: str, days: int) -> tuple[str, list[object]]:
+    """滞后判据(一次写好,配合 CTE 只出现一次)。"""
+    ts = adm.parse_ts_sql("t.latest_progress_time")
+    return (
+        f"(t.latest_progress_time IS NULL OR {ts} < %s::date - make_interval(days => %s))",
+        [as_of, int(days)],
+    )
+
+
+# 滞后/活跃分组的两根轴(照抄参考实现):看板轴要 JOIN 回 task_board 才有名字 ——
+# **不等调用方给看板过滤**,轴自己就需要这个 JOIN;专项组就在 task 上,空值归入
+# 「(未填)」而不是整组丢掉。
+STALE_AXES: dict[str, str] = {
+    "board": "b.name",
+    "project_group": "coalesce(nullif(btrim(t.project_group), ''), '(未填)')",
+}
+
+
+def _stale_axis(axis: str, board_code: str | None) -> tuple[str, str, str, list[object]]:
+    """→ (分组表达式, 额外 JOIN, 看板过滤片段, 参数)。看板轴与看板过滤共用同一个 JOIN。"""
+    expression = STALE_AXES.get(axis)
+    if expression is None:
+        raise ValueError(f"不支持的分组轴:{axis};支持 {', '.join(sorted(STALE_AXES))}")
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    needs_board_join = axis == "board" or bool(board)
+    board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+    join = board_join if needs_board_join else ""
+    clause = "b.code = %s" if board else ""
+    return expression, join, clause, ([board] if board else [])
+
+
+def stale_grouped(
+    as_of: str,
+    days: int,
+    axis: str,
+    recent_end: bool,
+    board_code: str | None = None,
+    in_flight_only: bool = False,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """按分组轴给出滞后/活跃的**条数与占比**(分母同排返回)。
+
+    只给 stale_count 答不了"哪个组滞后占比最高":标准安全组 5 条最多,但它有 19 个
+    任务、占比 26.3%,低于国家工程办的 4/15 = 26.7%。占比必须服务端算、分母必须
+    与服务端同一个 —— 让调用方拿别处的任务数手工相除,一错就全错。
+
+    排序跟着问句走:问滞后按 ``stale_pct`` 倒序,问活跃(``recent_end``)按
+    ``active_pct`` 倒序 —— 排错端等于把末位当第一。
+
+    判据只出现一次(CTE 里算好 ``is_stale``):同一条 SQL 里重复四遍谓词,参数
+    个数就得跟着重复四遍,改一处忘三处是必然的。
+    """
+    _check_as_of(as_of)
+    expression, extra_join, board_clause, params = _stale_axis(axis, board_code)
+    stale, stale_params = _stale_predicate(as_of, days)
+    where = [adm.sql_task_admission("pg", "t")]
+    if board_clause:
+        where.append(board_clause)
+    if in_flight_only:
+        where.append("t.status IN (0, 1)")
+    order_col = "active_pct" if recent_end else "stale_pct"
+    sql = f"""
+WITH per_task AS (
+    SELECT {expression} AS bucket, {stale} AS is_stale
+    FROM task t
+    {extra_join}
+    WHERE {"\n  AND ".join(where)}
+)
+SELECT bucket,
+       count(*)                                             AS total,
+       count(*) FILTER (WHERE is_stale)                     AS stale_count,
+       round(count(*) FILTER (WHERE is_stale)::numeric / count(*) * 100, 1)     AS stale_pct,
+       count(*) FILTER (WHERE NOT is_stale)                 AS active_count,
+       round(count(*) FILTER (WHERE NOT is_stale)::numeric / count(*) * 100, 1) AS active_pct
+FROM per_task
+GROUP BY bucket
+ORDER BY {order_col} DESC, bucket
+LIMIT %s
+"""
+    return sql, (*stale_params, *params, int(limit))
+
+
+def stale_group_totals(
+    as_of: str,
+    days: int,
+    axis: str,
+    board_code: str | None = None,
+    in_flight_only: bool = False,
+) -> tuple[str, tuple]:
+    """分组档的合计一行:各列合计由服务端给,别让调用方自己把十来行加一遍。
+
+    (C3-04 的表格逐行都对,结论里的合计却写错 —— 与服务端算率同一个理由。)
+    """
+    _check_as_of(as_of)
+    expression, extra_join, board_clause, params = _stale_axis(axis, board_code)
+    stale, stale_params = _stale_predicate(as_of, days)
+    where = [adm.sql_task_admission("pg", "t")]
+    if board_clause:
+        where.append(board_clause)
+    if in_flight_only:
+        where.append("t.status IN (0, 1)")
+    sql = f"""
+WITH per_task AS (
+    SELECT {expression} AS bucket, {stale} AS is_stale
+    FROM task t
+    {extra_join}
+    WHERE {"\n  AND ".join(where)}
+)
+SELECT count(*)                              AS task_total,
+       count(*) FILTER (WHERE is_stale)      AS stale_total,
+       count(*) FILTER (WHERE NOT is_stale)  AS active_total,
+       count(DISTINCT bucket)                AS group_total
+FROM per_task
+"""
+    return sql, (*stale_params, *params)
+
+
+def stale_totals(
+    as_of: str,
+    days: int,
+    board_code: str | None = None,
+    in_flight_only: bool = True,
+) -> tuple[str, tuple]:
+    """滞后清单的两个自检数:符合口径的任务总数、其中从未报过的条数。
+
+    ``reported_only`` 把从未报过的排除,让"最久没报"的天数可比;那两个数必须
+    同时给,调用方才知道自己排除了多少条。
+    """
+    _check_as_of(as_of)
+    stale, stale_params = _stale_predicate(as_of, days)
+    where = [adm.sql_task_admission("pg", "t"), stale]
+    board_join = ""
+    if board_code:
+        _code, hint = adm.check_board_code(board_code)
+        if hint:
+            raise ValueError(hint)
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+    if in_flight_only:
+        where.append("t.status IN (0, 1)")
+    # 参数顺序 = 占位符顺序:滞后判据在 SELECT 里,看板码在 WHERE 里
+    params: list[object] = [*stale_params, *([board_code] if board_join else [])]
+    sql = f"""
+SELECT count(*) AS total_count,
+       count(*) FILTER (WHERE t.latest_progress_time IS NULL) AS never_reported_count
+FROM task t
+{board_join}
+WHERE {"\n  AND ".join(where)}
+"""
     return sql, tuple(params)
 
 
@@ -2342,7 +2597,20 @@ FROM (
 
 # ---- batch 11: 集团板历史 / 集团板多值负责人 / 附件统计细化 -------------------
 
-GROUP_HISTORY_SCOPES = ("rows", "by_task", "by_reporter", "lag", "linkage")
+GROUP_HISTORY_SCOPES = ("rows", "year", "month", "quarter", "task", "reporter", "lag", "linkage")
+
+# 分组轴 -> (表达式, ORDER BY)。口径照抄参考实现:分档按 bucket,名次题按
+# progress_count DESC 后接定序键,滞报榜按 lag_days。
+GROUP_HISTORY_GROUPINGS: dict[str, tuple[str, str]] = {
+    "year": ("extract(year from {ts})::int::text", "bucket"),
+    "month": ("to_char({ts}, 'YYYY-MM')", "bucket"),
+    "quarter": ("extract(year from {ts})::int::text || 'Q' || extract(quarter from {ts})::int::text", "bucket"),
+    # 名次题的定序键一律 task id,不按任务名:同名次的两个集合不同
+    "task": ("t.task_name", "progress_count DESC, t.id"),
+    "reporter": ("h.reporter_id", "progress_count DESC, bucket"),
+    "lag": ("t.id", "lag_days DESC, task_id"),
+    "linkage": ("t.id", "bucket"),
+}
 
 
 def _multivalue_array(column: str) -> str:
@@ -2355,28 +2623,80 @@ def _multivalue_array(column: str) -> str:
     return f"string_to_array(replace(replace(coalesce({column}, ''), ',', '、'), ' ', ''), '、')"
 
 
-def group_history(
-    scope: str = "rows",
+def _group_history_window(
+    as_of: str,
+    date_from: str,
+    date_to: str,
+    last_days: int,
+    last_months: int,
+) -> tuple[list[str], list[object], list[str]]:
+    """集团历史的日期窗(按 ``report_time`` 的**日期部分**比)。
+
+    ``report_time`` 是时间戳而窗口端点是日期,直接 ``<=`` 会把最后一天切在 00:00,
+    当天 18:40 报的那条就丢了。``last_months`` 按自然月回溯,不是 N*30 天
+    (最近三个月 = 05-15,90 天 = 05-17,差的正是那三条五月的行)。
+    """
+    if last_days and last_months:
+        raise ValueError("last_days 与 last_months 只能给一个:两者边界不同,同时给会得出第三个窗口")
+    where: list[str] = []
+    params: list[object] = []
+    notes: list[str] = []
+    lo = date_from.strip()
+    hi = date_to.strip()
+    if last_months:
+        lo = lo or _month_back(as_of, last_months)
+        hi = hi or as_of
+        notes.append(f"最近 {last_months} 个月按自然月回溯(非 {last_months * 30} 天),基准日 {as_of}")
+    elif last_days:
+        lo = lo or _days_back(as_of, last_days)
+        hi = hi or as_of
+        notes.append(f"窗口以数据基准日 {as_of} 为基准(非系统当前时间)")
+    if lo:
+        where.append("({ts})::date >= %s")
+        params.append(lo)
+    if hi:
+        where.append("({ts})::date <= %s")
+        params.append(hi)
+    if lo or hi:
+        notes.append(f"上报时间介于 {lo or '不限'} 与 {hi or '不限'} 之间(含端点)")
+    return where, params, notes
+
+
+def _days_back(as_of: str, days: int) -> str:
+    return (dt.date.fromisoformat(as_of) - dt.timedelta(days=int(days))).isoformat()
+
+
+def _month_back(as_of: str, months: int) -> str:
+    """自然月回溯:月份减 N,日号保留(跨月越界时取该月最后一天)。"""
+    base = dt.date.fromisoformat(as_of)
+    total = base.year * 12 + (base.month - 1) - int(months)
+    year, month = divmod(total, 12)
+    month += 1
+    last_day = (dt.date(year + (month == 12), month % 12 + 1, 1) - dt.timedelta(days=1)).day
+    return dt.date(year, month, min(base.day, last_day)).isoformat()
+
+
+def _group_history_gate(
+    *,
     task_id: int | None = None,
     version_no: int | None = None,
     latest_only: bool = False,
+    date_from: str = "",
+    date_to: str = "",
+    last_days: int = 0,
+    last_months: int = 0,
+    as_of: str = "",
     granted: bool = True,
-    limit: int = 200,
 ) -> tuple[str, tuple]:
-    """集团板进展历史(``task_group_progress_history``,可选表)。
+    """集团历史的公共闸门(**明细 / 总数 / 滞报分母共用同一份条件**)。
 
-    集团板的进展写在这张表里,**``task_progress`` 一行都没有** —— 所以
-    ``weekly_progress_history`` / ``weekly_progress_range`` 对集团任务返回空,
-    这里是它们的入口。
-
-    两道闸门必须同时成立:任务正式(R-01)**且**行 ``is_published = 1``;
-    少任何一道就会把 42 条未审草稿算进来(演示数据:全表 404 行、已发布 362 行、草稿 42 行)。
+    共用是必须的:三处各写一遍,任何一处漏掉 ``is_published = 1`` 或日期窗,
+    明细与它自己的总数就对不上,而两边看上去都"正常"。
     """
-    if scope not in GROUP_HISTORY_SCOPES:
-        raise ValueError(f"未知 scope:{scope};可选 {', '.join(GROUP_HISTORY_SCOPES)}")
     hint = adm.require_optional_table("task_group_progress_history", granted)
     if hint:
         raise PermissionError(hint)
+    ts = adm.parse_ts_sql("h.report_time")
     where = [adm.sql_task_admission("pg", "t"), "h.is_published = 1"]
     params: list[object] = []
     if task_id is not None:
@@ -2390,69 +2710,171 @@ def group_history(
             "h.version_no = (SELECT max(h2.version_no) FROM task_group_progress_history h2 "
             "WHERE h2.task_id = h.task_id AND h2.is_published = 1)"
         )
-    where_sql = "\n  AND ".join(where)
+    window_where, window_params, _notes = _group_history_window(
+        as_of or dt.date.today().isoformat(), date_from, date_to, last_days, last_months
+    )
+    for fragment, value in zip(window_where, window_params, strict=True):
+        where.append(fragment.format(ts=ts))
+        params.append(value)
+    return "\n  AND ".join(where), tuple(params)
 
-    if scope == "by_task":
+
+def group_history_window_note(
+    as_of: str,
+    date_from: str = "",
+    date_to: str = "",
+    last_days: int = 0,
+    last_months: int = 0,
+) -> str:
+    """日期窗的口径文案(没给窗口时返回空串)。"""
+    _where, _params, notes = _group_history_window(as_of, date_from, date_to, last_days, last_months)
+    return "\uff1b".join(notes)  # 全角分号按转义写:RUF001 不接受字面量
+
+
+def group_history(
+    scope: str = "rows",
+    as_of: str = "",
+    task_id: int | None = None,
+    version_no: int | None = None,
+    latest_only: bool = False,
+    date_from: str = "",
+    date_to: str = "",
+    last_days: int = 0,
+    last_months: int = 0,
+    granted: bool = True,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """集团板进展历史(``task_group_progress_history``,可选表)。
+
+    集团板的进展写在这张表里,**``task_progress`` 一行都没有** —— 所以
+    ``weekly_progress_history`` / ``weekly_progress_range`` 对集团任务返回空,
+    这里是它们的入口。
+
+    两道闸门必须同时成立:任务正式(R-01)**且**行 ``is_published = 1``;
+    少任何一道就会把 42 条未审草稿算进来(演示数据:全表 404 行、已发布 362 行、草稿 42 行)。
+
+    唯一**故意不过第二道闸门**的是 ``linkage``:它问的是"有多少行挂上了提交单",
+    分母该是表内全部 404 行,用过闸的 362 行会把 42 条草稿的挂接状况一起丢掉。
+    """
+    if scope not in GROUP_HISTORY_SCOPES:
+        raise ValueError(f"未知 scope:{scope};可选 {', '.join(GROUP_HISTORY_SCOPES)}")
+    ts = adm.parse_ts_sql("h.report_time")
+    where_sql, params = _group_history_gate(
+        task_id=task_id,
+        version_no=version_no,
+        latest_only=latest_only,
+        date_from=date_from,
+        date_to=date_to,
+        last_days=last_days,
+        last_months=last_months,
+        as_of=as_of,
+        granted=granted,
+    )
+    params = list(params)
+
+    if scope in ("year", "month", "quarter", "task", "reporter"):
+        axis, order = GROUP_HISTORY_GROUPINGS[scope]
+        expression = axis.format(ts=ts) if "{ts}" in axis else axis
+        # task 档把 task_id 一并选出并纳入 GROUP BY:并列要按 id 定序,只回任务名
+        # 调用方手上没有定序键(按名排与按 id 排是两个不同的前 5 条)。
+        if scope == "task":
+            select = f"t.id AS task_id, {expression} AS bucket, count(*) AS progress_count"
+            group_sql = "t.id, bucket"
+        else:
+            select = f"{expression} AS bucket, count(*) AS progress_count, count(DISTINCT h.task_id) AS task_count"
+            group_sql = "bucket"
         sql = f"""
-SELECT h.task_id, t.task_no, t.task_name, count(*) AS rounds, max(h.version_no) AS max_version
+SELECT {select}
 FROM task_group_progress_history h
 JOIN task t ON t.id = h.task_id
 WHERE {where_sql}
-GROUP BY h.task_id, t.task_no, t.task_name
-ORDER BY rounds DESC, h.task_id
-LIMIT %s
-"""
-        return sql, (*params, int(limit))
-
-    if scope == "by_reporter":
-        sql = f"""
-SELECT h.reporter_id, count(*) AS rounds, count(DISTINCT h.task_id) AS tasks
-FROM task_group_progress_history h
-JOIN task t ON t.id = h.task_id
-WHERE {where_sql}
-GROUP BY h.reporter_id
-ORDER BY rounds DESC, h.reporter_id
+GROUP BY {group_sql}
+ORDER BY {order}
 LIMIT %s
 """
         return sql, (*params, int(limit))
 
     if scope == "linkage":
+        # 唯一**故意不过** is_published 闸门的一档:问的是挂接率,分母是表内全部
+        # 404 行;只用过闸的 362 行会把 42 条草稿的挂接状况一起丢掉。
+        bare = "\n  AND ".join(f for f in where_sql.split("\n  AND ") if "h.is_published" not in f)
         sql = f"""
-SELECT count(*)                                                          AS rows_total,
-       count(*) FILTER (WHERE h.workflow_submission_id IS NOT NULL)       AS with_submission,
-       count(*) FILTER (WHERE h.workflow_submission_id IS NULL)           AS without_submission
+SELECT count(*)                                                          AS total_rows,
+       count(*) FILTER (WHERE h.workflow_submission_id IS NOT NULL)       AS linked_rows,
+       count(*) FILTER (WHERE h.workflow_submission_id IS NULL)           AS unlinked_rows,
+       count(*) FILTER (WHERE h.is_published = 1)                         AS published_rows
 FROM task_group_progress_history h
 JOIN task t ON t.id = h.task_id
-WHERE {where_sql}
+WHERE {bare}
 """
         return sql, tuple(params)
 
     if scope == "lag":
+        # 滞报天数取 MAX(report_time) 与**基准日**之差,不是 MIN,更不是 now():
+        # 问的是"最后一次报到现在多久",用最早一期会把老任务全排到榜首,
+        # 用系统当前时间则整榜都错(演示数据的基准日是 2026-08-15)。
         sql = f"""
-SELECT h.task_id, t.task_no, t.task_name, max(h.report_time) AS last_report,
-       {adm.normalize_ts_sql("max(h.report_time)")} AS last_report_text,
-       date_part('day', now() - max({adm.parse_ts_sql("h.report_time")}))::int AS days_since
+SELECT t.id AS task_id, t.task_name,
+       (%s::date - max({ts})::date)::int AS lag_days,
+       count(*)                          AS rounds,
+       {adm.normalize_ts_sql("max(h.report_time)")} AS last_report_time
 FROM task_group_progress_history h
 JOIN task t ON t.id = h.task_id
 WHERE {where_sql}
-GROUP BY h.task_id, t.task_no, t.task_name
-ORDER BY days_since DESC NULLS LAST, h.task_id
+GROUP BY t.id, t.task_name
+ORDER BY lag_days DESC, t.id
 LIMIT %s
 """
-        return sql, (*params, int(limit))
+        return sql, (as_of or dt.date.today().isoformat(), *params, int(limit))
 
+    # 明细:列集合照抄参考实现(不再多给 id / task_no / is_published 等自身列),
+    # 总数与涉及任务数由调用方作为顶层键给出,问"一共多少行"时才不必再查一次。
     sql = f"""
-SELECT h.id, h.task_id, t.task_no, t.task_name, h.version_no,
-       h.progress_effect, h.completion_time, h.reporter_id,
-       {adm.normalize_ts_sql("h.report_time")} AS report_time,
-       h.is_published, h.workflow_submission_id
+SELECT h.task_id, t.task_name, h.version_no, h.progress_effect, h.completion_time,
+       h.reporter_id, {adm.normalize_ts_sql("h.report_time")} AS report_time
 FROM task_group_progress_history h
 JOIN task t ON t.id = h.task_id
 WHERE {where_sql}
-ORDER BY h.task_id, h.version_no DESC
+ORDER BY h.task_id, h.version_no DESC, h.id DESC
 LIMIT %s
 """
     return sql, (*params, int(limit))
+
+
+def group_history_totals(
+    task_id: int | None = None,
+    version_no: int | None = None,
+    latest_only: bool = False,
+    date_from: str = "",
+    date_to: str = "",
+    last_days: int = 0,
+    last_months: int = 0,
+    as_of: str = "",
+    granted: bool = True,
+) -> tuple[str, tuple]:
+    """与明细同一口径的**总数**与涉及任务数(与参考实现同法单独查一次)。
+
+    200 行封顶之后调用方还原不出真值:已发布 362 行会被报成"200 行且还有更多"。
+    滞报榜取其中的 ``total_tasks`` 作分母 —— 本表只有报过的任务,从未报过的不在榜上。
+    """
+    where_sql, params = _group_history_gate(
+        task_id=task_id,
+        version_no=version_no,
+        latest_only=latest_only,
+        date_from=date_from,
+        date_to=date_to,
+        last_days=last_days,
+        last_months=last_months,
+        as_of=as_of,
+        granted=granted,
+    )
+    sql = f"""
+SELECT count(*) AS total_rows, count(DISTINCT h.task_id) AS total_tasks
+FROM task_group_progress_history h
+JOIN task t ON t.id = h.task_id
+WHERE {where_sql}
+"""
+    return sql, params
 
 
 def group_owner(

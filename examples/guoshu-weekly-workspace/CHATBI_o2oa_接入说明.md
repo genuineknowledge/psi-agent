@@ -146,7 +146,7 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 |---|---|---|
 | `weekly_task_query` | ✅ 已接线 | 关键词 / 分类 / 负责人 / 状态 / 项目组 / 看板;不指定看板也可用 |
 | `weekly_progress_coverage` | ✅ 已接线 | 8 个具名 scope + `scope=text_check` 的三条文本规则(含 `task=` 按 id 或名字过滤) |
-| `weekly_freshness_distribution` | ✅ 已接线 | 分档 + 总览**合并进同一个信封**(rows = 分档,另给最新进展/滞后天数/任务总数/分档合计) |
+| `weekly_freshness_distribution` | ✅ 已接线(全部分支) | 分档 + 总览(同一信封)、任意窗口 `within_days`、滞后清单 `stale_days`(带 `reported_only`)、活跃清单 `recent_days`、按 `by=board/project_group` 的滞后/活跃占比(带服务端合计行)、`lag_bands` 每看板陈旧度分档、`drift` 漂移清单;`task=` 单任务档未迁移 |
 | `weekly_year_goal_query` | ✅ 已接线 | 年度目标**行**清单(year=0 表示所有年度);集团板 109 行 / 46 任务、全看板 313 行 / 128 任务 |
 | `weekly_milestone_query` | ✅ 已接线 | 支持按任务收窄(不带 `task=` 会答成整个看板第一页);任务 19 → 2 行 |
 | `weekly_attachment_query` | ✅ 已接线 | 仅元数据(无 `storage_path`);集团板 52 条 / 28 任务;可选表未授权时报 `table_not_granted` |
@@ -159,7 +159,7 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 | `weekly_rank` | ✅ 已接线 | 三种并列语义 × 六种子表度量:**cut 前 3 名 = 3 行**、**keep_ties 前 3 名 = 12 行**(第 3 名并列)、per_group 每组一行;附件第一名任务 73(20 个);未授权表(附件/集团历史)报 `table_not_granted` |
 | `weekly_person_stats` | ✅ 已接线(9/14 scope) | 牵头人任务量首位 吴晓东 **14** 个且 **tied_at_top=3**;workload_top 保留三名并列;汇总 128 任务 / 16 人 / 全局均值 8.0;只带 1 个任务 4 人;标准安全组 **9 位牵头人 / 19 条任务**;跨组 12 人;双重角色 6 人;工号写法 69/50/9;填报首位 10515(63 轮 / 4 任务)。未迁移的 4 个 scope 仍走演示路径 |
 | `weekly_attachment_stats` | ✅ 已接线(summary/by_ext) | 存活附件 **454 条 / 106 任务**;总字节 **1,954,375,767**(原样报出) / 1863.8 MB / 均 4203.9 KB;上传人 46;挂载点 315/58/81;扩展名 pptx130/xlsx116/pdf107/docx101 |
-| `weekly_group_history` | ✅ 已接线(5 个 scope) | 集团板进展**只在本表**:已发布 **362** 行 / 46 任务;草稿 **42** 行(两道闸门缺一即被算进来);明细/按任务/按填报人/滞后/联动 |
+| `weekly_group_history` | ✅ 已接线(8 个 scope) | 明细 / `year` / `month` / `quarter` / `task` / `reporter` / `lag` / `linkage` + 日期窗(`date_from/to`、`last_days`、`last_months`)与 `latest_only`;已发布 **362** 行 / 46 任务、草稿 **42** 行;**`linkage` 分母是表内全部 404 行**(挂接率题);`lag` 按基准日算天数 |
 | `weekly_group_owner_query` | ✅ 已接线 | 多值负责人**元素级精确**匹配:吴晓东 → 4 个集团任务(按 id `u3124` 同样 4 个);role=project 列出 46 行 |
 | `weekly_task_ranking` | ✅ 已接线 | 按子表条数排名(附件/进展/里程碑/提交单):**INNER JOIN 语义**(零条目的任务不参赛),列名照抄参考查询 `id / task_name / cnt`,并回显 `metric` / `metric_label`;附件榜首任务 73(20 个,`tied_at_top=1`);进展榜首任务 4(18 期,`tied_at_top=12`)。未迁移的 metric 回落,附件未授权报 `table_not_granted` |
 | `weekly_progress_range` | ✅ 已接线 | 时间轴出口:列集合 `task_id / task_name / version_no / progress_date / report_time / lag_days`;窗口两端闭区间,相对窗口锚在基准日(非系统时间);`total_count` / `total_tasks` **活过截断**;短窗口 0 行时附「按月上报」提示;`by=` / `peak=` / `date_field=report_time` 回落 |
@@ -173,10 +173,11 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 4. **四张可选表默认视为未授权**(说明里必开的是 8 张):`_formal.optional_granted()` 读 `TASK_BOARD_GRANTED_OPTIONAL_TABLES`,未授权时返回 `table_not_granted` 错误,**不回落演示路径**(回落会去连演示源,把"没权限"变成"另一个数据源的答案");
 5. `snapshot_note` 换成正式口径(「国数正式只读源…非演示数据」),`snapshot_date` 用基准日(`GUOSHU_AS_OF` 可固定,便于与演示快照日对齐)。
 
-**端到端验证**(真 PG + 正式源模式,130 项断言全通过):信封 9 字段齐全、`source_tables` 指向正式表、
+**端到端验证**(真 PG + 正式源模式,159 项断言全通过):信封 9 字段齐全、`source_tables` 指向正式表、
 publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 103 的 V8 冲突(来自集团历史表)、
 新鲜度分档 63/44/8/9/4 且合计 = 任务总数、在办「从未报进展」8、漂移 73、排名的并列自检、
-时间轴的 366 行/70 任务与短窗口提示,未迁移参数全部回落。
+时间轴的 366 行/70 任务与短窗口提示、新鲜度各分支(23 / 18 / 8 / 21-82=25.6% / lag_bands 17-56-9)、
+集团历史 8 个 scope 与自然月回溯,未迁移参数全部回落。
 
 ### 3.0.3 排名与时间轴两个出口(2026-09-10 真库核对)
 
@@ -233,6 +234,68 @@ publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 1
 > 口径提醒:多张子表同时 JOIN 时,**每个子表计数都必须 `COUNT(DISTINCT 主键)`** ——
 > 不去重时技术组里程碑会从 294 变成 1363。自校验:各组里程碑相加应等于全库总数(474)。
 > 另:比值列在 PG 侧是 numeric,会保留两位(`11.50`),MySQL 侧渲染成 `11.5`,数值相同、按数值比较。
+
+### 3.0.4 新鲜度与集团历史:列集合逐列对齐参考查询(2026-09-10 真库核对)
+
+这一批不是"多接了几个工具",而是把**已接线工具的列集合与分支逐条对齐参考实现**。
+起因:数字对得上、列名对不上 —— 模型读的是列名,列名一换,同一个问题的答法就跟着换。
+
+**新立一条纪律(已进第 6 节硬约束):每个已接线出口的 `columns` 必须与参考查询逐列同名。**
+按这条查出并修掉的(数字都没错,错的是列名与分支):
+
+| 出口 | 之前 | 参考查询的列 |
+|---|---|---|
+| `drift=True` | `id / task_no / task_name / denormalized_time / real_newest_progress` | `task_id / task_name / latest_progress_time / actual_latest_report` |
+| `stale_days` 清单 | `id / task_no / task_name / status / project_owner_name / latest_progress_time / days_behind` | `id / task_name / status / latest_progress_time / days_since` |
+| `within_days` | 单列 `reported_within` | `task_count / newest_progress / days_behind`(一行三列) |
+| 集团历史明细 | 多给了 `id / task_no / is_published / workflow_submission_id` | `task_id / task_name / version_no / progress_effect / completion_time / reporter_id / report_time` |
+| `by=lag` | 用 `now()` 算天数、列名 `days_since` | `task_id / task_name / lag_days / rounds / last_report_time`,天数按**基准日**算 |
+| `by=linkage` | `rows_total / with_submission / without_submission`,分母 **362**(过了发布闸门) | `total_rows / linked_rows / unlinked_rows / published_rows`,分母 **404**(挂接率题的刻意例外) |
+
+两个真错(不是命名问题,是算错):
+
+1. **`by=lag` 用了 `now()`** —— 违反"相对时间一律锚数据基准日"的硬规则。演示数据基准日是
+   2026-08-15,用系统当前时间会让整张滞报榜偏移;现已改为 `基准日 - MAX(report_time)`。
+2. **`by=linkage` 的分母过了一道不该过的闸门** —— 挂接率问的是"表里有多少行挂上了提交单",
+   分母该是全部 404 行;只用已发布 362 行会把 42 条草稿的挂接状况整体丢掉
+   (两个数现在同排返回:404/0/404/362)。
+
+**日期相减必须两端都按日期**(`(a)::date - (b)::date`),不能写成 `date - timestamp`:
+后者返回 interval,`date_part('day', ...)` 会把 `2026-08-15` 减 `2026-07-31 20:10` 算成 **14** 天,
+而 DATEDIFF 语义是 **15** 天 —— 差一天,榜单边界就挪一条。
+
+新接线的分支与真库核对结果:
+
+| 分支 | 真值 |
+|---|---|
+| `recent_days=7` | **23** 行(docstring 的 23);不加 status 闸门(问有无上报,不是是否在办) |
+| `within_days=7` | 23 个任务 / 最新 2026-08-14 / 滞后 1 天(与 `recent_days` 同一份事实,两条出口不许打架) |
+| `stale_days=90` | 总数 **18**,其中从未报过 **8**(在办闸门;docstring 的 8 与 C3-04 的合计 18) |
+| `stale_days=90 + reported_only` | 排除 8 条无天数可比的;首行 days_since = **250** |
+| `stale_days=90 by=board` | 技术组 **21/82 = 25.6%**、集团组 0/46 = 0%;合计行 **128 / 21 / 107 / 2** |
+| `recent_days=90 by=project_group` | 11 个组,按 `active_pct` 倒序(算力网络组 92.9% 居首) |
+| `lag_bands=True` | 技术组 **17/56/9**(=15-30 天 / 超过 30 天 / 无正式进展)和 **82** 相符;集团组 17/28/1 和 **46** 相符 |
+| `in_flight=True` 分档 | 在办 **92** 条,"从未报进展" 8 条 |
+| 集团历史 `last_months=3` vs `last_days=90` | **103 vs 100** 行 —— 自然月回溯落在 05-15,90 天落在 05-17,差的正是三条五月的行 |
+| 集团历史 `by=year` | 2025 = 137 行 / 39 任务,2026 = 225 行 / 46 任务,相加 = 362 |
+
+> 口径提醒:**只给 `by=` 而不给天数要明确报错并指路**。参考实现为此专门写了一段提示:
+> 分组档回的是各组滞后/活跃的条数与占比,必须先有天数才有口径。此前实现会静默回落到
+> 全量分档(分组轴连同问题一起丢掉),现在返回 `invalid_argument` 并说明该传 `stale_days=90`
+> 还是 `recent_days=90`。
+
+> 口径提醒:**分类题的排序端要跟着问句走**。问"哪个组滞后占比最高"按 `stale_pct` 倒序,
+> 问"各组近 N 天活跃度"按 `active_pct` 倒序 —— 排错端等于把末位当第一。两者互补(相加 100),
+> 分母 `total` 与服务端算出的占比同排返回,调用方不需要(也不应该)拿别处的任务数手工相除。
+
+> **发现的文档/数据不一致(按数据走)**:mock 注释写「集团组 14/28/4」,真库实测是 **17/28/1**
+> (合计都是 46,只差 3 条在 0-7 与 15-30 两档之间搬家)。技术组的 17/56/9 与注释逐字一致,
+> 说明分档逻辑本身没错;三种口径变体(只算已发布行 / 不算发布闸门 / 按 `board_id = 2` 判看板)
+> 都试过,没有一种能得出 14/28/4。结论:那行注释是旧数据留下的,断言按真库写。
+
+> 测量纪律:**放大数据会污染口径验收**。`bench_pg.py` 会往 `task_progress` 插 99 倍历史版本,
+> 之后 `publish_split` 会从 1066 变成 106600、行数断言全部失真(而报告本身看不出原因)。
+> 现在 bench 结束会自己删掉 `id >= 1000000` 的合成行并 ANALYZE;`reset_pg.py` 用于事后恢复。
 
 > 口径提醒:**动作数 ≠ 单数**。审批流水里 `rejected` 有 13 条,那是**动作**条数;
 > 「驳回率」的分子必须用提交单自己的 `status = 'rejected'`(技术组 9、集团组 4)。
@@ -322,7 +385,16 @@ publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 1
    且用 `task_group_detail`;
 5. 年度目标必带显式 `year`;
 6. 软删过滤;空长文本答“未填写”;时间输出经 `normalize_ts_sql`(先 `::timestamp`
-   再 `to_char`,文本列与时间戳列同一写法),日期窗口比较经 `parse_ts_sql`。
+   再 `to_char`,文本列与时间戳列同一写法),日期窗口比较经 `parse_ts_sql`;
+7. **相对时间一律锚数据基准日**(`_formal.as_of()` / `GUOSHU_AS_OF`),任何 SQL 里
+   不得出现 `now()`/`current_date` —— 滞报天数、滞后清单、相对窗口都按基准日算;
+8. **天数 = 两个日期相减**(`(a)::date - (b)::date`),不能写成 `date - timestamp`
+   (后者是 interval,`date_part('day')` 会少一天,与 DATEDIFF 语义不符);
+9. **每个出口的 `columns` 必须与参考实现逐列同名**(含分支里的列):模型的读法建立在
+   列名上,数字对而列名不同,等于换了一张表;总数、并列数这类自检数放**顶层键**,
+   不放行内列(演示源也是这么放的);
+10. **分组/占比一律服务端算**:分母与占比与条数同排返回,并给出合计行;排序端要跟着
+    问句走(滞后按 `stale_pct`、活跃按 `active_pct`),排错端等于把末位当第一。
 
 ## 7. 校验方式(改模板后必跑)
 
@@ -347,8 +419,10 @@ python <核对目录>/load_and_verify_pg.py <weekly_mock.sqlite> <mock-mcp 目�
 python <核对目录>/verify_numbers_v2.py
 # 4) 端到端验收:以 TASK_BOARD_DATA_SOURCE=o2oa 加载 mock 服务,逐个调用已接线工具(130 项断言)
 python <核对目录>/verify_end_to_end.py
-# 5) 索引、执行计划与规模计时(放大到十万行,验证无 N+1)
+# 5) 索引、执行计划与规模计时(放大到十万行,验证无 N+1;结束时会自己清理合成行)
 python <核对目录>/bench_pg.py
+# 6) 若上一步被中断,用这个把实例恢复成演示库基线(口径验收依赖 1068 / 404 这两个基线)
+python <核对目录>/reset_pg.py
 ```
 
 > 注意:仓库要求 Python ≥ 3.14;3.13 的解析器不接受本仓既有的 `except A, B:` 写法,

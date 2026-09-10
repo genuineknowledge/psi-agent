@@ -214,9 +214,9 @@ def _coverage(args: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _freshness(args: dict[str, Any]) -> dict[str, Any] | None:
-    """weekly_freshness_distribution:分档 / 任意窗口 / 滞后清单 / 漂移检查。
+    """weekly_freshness_distribution:分档 / 任意窗口 / 滞后与活跃清单 / 分组占比 / 漂移。
 
-    演示工具把「分档」与「总览」合并在一个信封里返回,这里同样把两次查询合成一个信封
+    演示工具把"分档"与"总览"合并在一个信封里返回,这里同样把两次查询合成一个信封
     (rows = 分档,另给最新进展 / 滞后天数 / 任务总数),调用方无感。
     """
     limit = int(args.get("limit") or MAX_ROWS)
@@ -224,10 +224,12 @@ def _freshness(args: dict[str, Any]) -> dict[str, Any] | None:
     in_flight = bool(args.get("in_flight"))
     within_days = int(args.get("within_days") or 0)
     stale_days = int(args.get("stale_days") or 0)
-    if args.get("by") or args.get("lag_bands") or args.get("reported_only") or args.get("recent_days"):
-        return None
+    recent_days = int(args.get("recent_days") or 0)
+    reported_only = bool(args.get("reported_only"))
+    by = (args.get("by") or "").strip().lower()
+    lag_bands = bool(args.get("lag_bands"))
     if args.get("task"):
-        return None
+        return None  # 单任务档(含任务名解析)交给演示路径
 
     if args.get("drift"):
         sql, params = tpl.latest_progress_drift(board_code=board, limit=limit)
@@ -236,29 +238,134 @@ def _freshness(args: dict[str, Any]) -> dict[str, Any] | None:
             params=params,
             caliber=(
                 "漂移检查:task.latest_progress_time 是发布时同步的冗余列,可能与真实最新已发布进展不一致;"
-                "不一致时不得用该冗余列回答新鲜度"
+                "不一致时不得用该冗余列回答新鲜度。两个方向都算:冗余列偏早(进展比它新)与偏晚都在内,"
+                "所以这是漂移清单而不是漏报清单"
             ),
             limit=limit,
             cap_last_param=True,
         )
+
+    if lag_bands:
+        # 分档必须在服务端算:把清单交给模型自己数天数分桶,边界那几条必错
+        sql, params = tpl.freshness_lag_bands(
+            as_of(), group_history_granted=optional_granted("task_group_progress_history"), limit=limit
+        )
+        return envelope(
+            sql=sql,
+            params=params,
+            caliber=(
+                f"基准日 {as_of()};分档为 0-7 / 8-14 / 15-30 / 超过 30 / 无正式进展,"
+                "各看板内相加等于该看板正式任务数;按看板各自的正式进展表算:技术组取 "
+                "task_progress.progress_date、集团组取 task_group_progress_history.report_time,"
+                "都只算 is_published = 1。问某个看板'周报有多陈旧'就报该看板的这几档,"
+                "不要只报一个最新时间点"
+            ),
+            limit=MAX_ROWS,
+            cap_last_param=True,
+        )
+
+    if by and by not in tpl.STALE_AXES:
+        return None  # 未知分组轴交给演示路径报错
+
+    if stale_days or recent_days or by:
+        if stale_days and recent_days:
+            return None  # 两端同时给:交给演示路径(它按 stale_days 优先)
+        if by and not (stale_days or recent_days):
+            # 只给 by 会被静默当成"全量分档",分组轴连同问题一起丢掉 —— 明确说该带哪个参数
+            return {
+                "ok": False,
+                "error": {
+                    "code": "invalid_argument",
+                    "message": (
+                        f"by={by} 需要与 stale_days 或 recent_days 同用:分组档回的是各组滞后/活跃的条数与占比,"
+                        "必须先有天数才有口径。问「哪个组滞后占比最高」传 stale_days=90,"
+                        "问「各组近 N 天活跃度」传 recent_days=90;只要分档桶(30/90/180/从未)请不要传 by。"
+                    ),
+                },
+            }
+        days = int(stale_days or recent_days)
+        if days <= 0:
+            return None
+        if recent_days and not by:
+            # 不加 status 闸门:问的是"有没有报进展",不是"任务在不在办"
+            sql, params = tpl.recent_reporters(as_of(), days, board_code=board, limit=limit)
+            return envelope(
+                sql=sql,
+                params=params,
+                caliber=(
+                    f"仅 latest_progress_time 落在基准日 {as_of()} 前 {days} 天内的任务;"
+                    "不加 status 过滤(问的是有无上报,不是是否在办);按上报时间倒序;"
+                    "days_since = 基准日 - latest_progress_time(按日期相减)"
+                ),
+                limit=limit,
+                cap_last_param=True,
+            )
+        if by:
+            recent_end = bool(recent_days)
+            sql, params = tpl.stale_grouped(
+                as_of(), days, by, recent_end, board_code=board, in_flight_only=in_flight, limit=limit
+            )
+            result = envelope(
+                sql=sql,
+                params=params,
+                caliber=(
+                    "在办即 status IN (0, 1)(0 未开始同样在办);"
+                    + (
+                        f"活跃 = latest_progress_time 落在近 {days} 天内,其余(含从未上报)算滞后"
+                        if recent_end
+                        else f"滞后超过 {days} 天,含从未上报(latest_progress_time 为 NULL)"
+                    )
+                    + ";total 是该组分母,stale_pct = stale_count / total,"
+                    "active_count / active_pct 是同一分母下报过进展的那一侧(两者互补,相加为 100);"
+                    "占比由服务端算,不要拿滞后条数跟别处的任务数手工相除;"
+                    + (
+                        f"本次按 recent_days={days} 问的是活跃那一端,已按 active_pct 倒序,首行即活跃占比最高的组"
+                        if recent_end
+                        else "问「占比最高的组」按 stale_pct 排序的首行答,条数最多的那组未必占比最高"
+                    )
+                ),
+                limit=limit,
+                cap_last_param=True,
+            )
+            tsql, tparams = tpl.stale_group_totals(as_of(), days, by, board_code=board, in_flight_only=in_flight)
+            totals = envelope(sql=tsql, params=tparams, caliber="分组合计", limit=1)
+            result["totals"] = (totals.get("rows") or [{}])[0]
+            return result
+        sql, params = tpl.stale_tasks(
+            as_of(), days, board_code=board, in_flight_only=True, reported_only=reported_only, limit=limit
+        )
+        result = envelope(
+            sql=sql,
+            params=params,
+            caliber=(
+                f"滞后超过 {days} 天,含从未上报(latest_progress_time 为 NULL);"
+                "在办即 status IN (0, 1);从未报过的排在最前,其 days_since 为空"
+                + (
+                    ";已排除从未上报的任务(它们没有天数可比),行首即最久未上报的那条"
+                    if reported_only
+                    else ";问「最久没上报的前 N 条」时应加 reported_only=true 把无天数可比的排除"
+                )
+            ),
+            limit=limit,
+            cap_last_param=True,
+        )
+        tsql, tparams = tpl.stale_totals(as_of(), days, board_code=board, in_flight_only=True)
+        totals = envelope(sql=tsql, params=tparams, caliber="滞后总数自检", limit=1)
+        first = (totals.get("rows") or [{}])[0]
+        result["total_count"] = first.get("total_count")
+        result["never_reported_count"] = first.get("never_reported_count")
+        return result
+
     if within_days > 0:
         sql, params = tpl.freshness_within(as_of(), within_days, board_code=board)
         return envelope(
             sql=sql,
             params=params,
             caliber=(
-                f"基准日 {as_of()} 前 {within_days} 天窗内报过进展的任务数(相对窗口以基准日为准,不用系统当前时间)"
+                f"基准日 {as_of()} 前 {within_days} 天窗内报过进展的任务数"
+                "(相对窗口以基准日为准,不用系统当前时间);days_behind = 基准日 - 最新进展日"
             ),
-            limit=limit,
-        )
-    if stale_days > 0:
-        sql, params = tpl.stale_tasks(as_of(), stale_days, board_code=board, in_flight_only=in_flight, limit=limit)
-        return envelope(
-            sql=sql,
-            params=params,
-            caliber=(f"最新进展早于基准日 {as_of()} 前 {stale_days} 天的任务;从未报过的也算滞后并排在最前"),
-            limit=limit,
-            cap_last_param=True,
+            limit=1,
         )
 
     sql, params = tpl.freshness_distribution(as_of(), board_code=board, in_flight_only=in_flight)
@@ -650,39 +757,78 @@ def _attachment_stats(args: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _group_history(args: dict[str, Any]) -> dict[str, Any] | None:
-    """weekly_group_history:集团板进展历史(可选表)。"""
-    scope = "rows"
+    """weekly_group_history:集团板进展历史(可选表,8 个 scope)。"""
     by = (args.get("by") or "").strip().lower()
-    if by in ("task", "reporter", "lag", "linkage"):
-        scope = {"task": "by_task", "reporter": "by_reporter", "lag": "lag", "linkage": "linkage"}[by]
-    elif by:
-        return None  # year/month/quarter 等分档交给演示路径
-    for key in ("date_from", "date_to"):
-        if (args.get(key) or "").strip():
-            return None
-    if int(args.get("last_days") or 0) or int(args.get("last_months") or 0):
-        return None
+    if by and by not in tpl.GROUP_HISTORY_SCOPES[1:]:
+        return None  # 未知分组名交给演示路径报错
+    scope = by or "rows"
     task_id, _task_name = _resolve_task(args.get("task") or "")
     limit = int(args.get("limit") or MAX_ROWS)
+    granted = optional_granted("task_group_progress_history")
+    window: dict[str, Any] = {
+        "date_from": (args.get("date_from") or "").strip(),
+        "date_to": (args.get("date_to") or "").strip(),
+        "last_days": int(args.get("last_days") or 0),
+        "last_months": int(args.get("last_months") or 0),
+        "as_of": as_of(),
+        "granted": granted,
+    }
+    task_id_arg: dict[str, Any] = {
+        "task_id": task_id,
+        "version_no": int(args.get("version_no") or 0) or None,
+    }
+    latest_only = bool(args.get("latest_only"))
     sql, params = tpl.group_history(
         scope,
-        task_id=task_id,
-        version_no=int(args.get("version_no") or 0) or None,
-        latest_only=bool(args.get("latest_only")),
-        granted=optional_granted("task_group_progress_history"),
+        task_id=task_id_arg["task_id"],
+        version_no=task_id_arg["version_no"],
+        latest_only=latest_only,
         limit=limit,
+        **window,
     )
-    return envelope(
+    caliber = (
+        "集团板的进展在本表里,task_progress 一行都没有(所以进展类工具对集团任务返回空,入口在这里);"
+        "两道闸门必须同时成立:任务正式(workflow_status = 'published')且行 is_published = 1 ——"
+        "少任何一道都会把 42 条未审草稿算进来(演示数据 404 行 = 已发布 362 + 草稿 42)"
+    )
+    if scope == "linkage":
+        caliber += (
+            ";本档**故意不过**行闸门:问的是挂接率,分母是表内全部 404 行,"
+            "linked_rows 按 workflow_submission_id 非空判定(0 即这张表不挂提交单,不是查不到)"
+        )
+    if scope == "lag":
+        caliber += (
+            f";lag_days = 基准日 {as_of()} 减最后一次上报日(MAX(report_time),不是最早一期),"
+            "只含报过进展的任务,从未报过的不在榜上"
+        )
+    note = tpl.group_history_window_note(
+        as_of(), window["date_from"], window["date_to"], window["last_days"], window["last_months"]
+    )
+    if note:
+        caliber += ";" + note
+    if latest_only:
+        caliber += ";仅各任务最新一期已发布版本"
+    result = envelope(
         sql=sql,
         params=params,
-        caliber=(
-            "集团板的进展在本表里,task_progress 一行都没有(所以进展类工具对集团任务返回空,入口在这里);"
-            "两道闸门必须同时成立:任务正式(workflow_status = 'published')且行 is_published = 1 ——"
-            "少任何一道都会把 42 条未审草稿算进来(演示数据 404 行 = 已发布 362 + 草稿 42)"
-        ),
+        caliber=caliber,
         limit=limit,
         cap_last_param=scope != "linkage",
     )
+    if scope in ("rows", "lag"):
+        # 计数题必须活过 200 行封顶:已发布 362 行会被报成"200 行且还有更多"。
+        # task=/version_no 必须一起传:总数与明细同一口径是这条自检的全部意义
+        totals_sql, totals_params = tpl.group_history_totals(
+            task_id=task_id_arg["task_id"],
+            version_no=task_id_arg["version_no"],
+            latest_only=latest_only,
+            **window,
+        )
+        totals = envelope(sql=totals_sql, params=totals_params, caliber="总数自检", limit=1)
+        first = (totals.get("rows") or [{}])[0]
+        result["total_count"] = first.get("total_rows")
+        result["total_tasks"] = first.get("total_tasks")
+    return result
 
 
 def _group_owner(args: dict[str, Any]) -> dict[str, Any] | None:
@@ -821,7 +967,8 @@ def _short_window_hint() -> str:
     rows = first.get("published_rows") or 0
     fsql, fparams = tpl.freshness_within(as_of(), 7)
     fresh = envelope(sql=fsql, params=fparams, caliber="近 7 天更新自检", limit=1)
-    recent = ((fresh.get("rows") or [{}])[0]).get("reported_within") or 0
+    # 列名跟参考实现走:就近 7 天这一档叫 task_count(freshness_within 已改造)
+    recent = ((fresh.get("rows") or [{}])[0]).get("task_count") or 0
     gap = "半月上下"
     if latest != "未知":
         gap = f"{(dt.date.fromisoformat(as_of()) - dt.date.fromisoformat(latest)).days} 天"

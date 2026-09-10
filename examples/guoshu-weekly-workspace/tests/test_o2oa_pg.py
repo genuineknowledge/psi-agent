@@ -284,8 +284,54 @@ class TestBatch2Templates:
     def test_stale_tasks_put_never_reported_first(self):
         sql, params = o2.stale_tasks("2026-08-15", 30)
         assert "t.latest_progress_time IS NULL" in sql  # 从未报过的也算滞后
-        assert "NULLS FIRST" in sql
+        # 排最前的判据照抄参考实现:布尔键排在时间键之前,NULL 因此排最前
+        assert "ORDER BY t.latest_progress_time IS NOT NULL, t.latest_progress_time, t.id" in sql
+        assert "AS days_since" in sql and "::date)::int" in sql  # 按日期相减,不是 date - timestamp
         assert params[0] == "2026-08-15" and params[-1] == 200
+
+    def test_stale_tasks_reported_only_drops_the_no_day_rows(self):
+        sql, _params = o2.stale_tasks("2026-08-15", 30, reported_only=True)
+        assert "t.latest_progress_time IS NOT NULL" in sql
+        assert "t.latest_progress_time IS NULL\n" in sql  # 滞后判据仍在(含从未报过那半支)
+
+    def test_stale_listing_columns_match_the_reference_query(self):
+        sql, _params = o2.stale_tasks("2026-08-15", 30)
+        assert "t.id, t.task_name, t.status," in sql
+        assert "t.task_no" not in sql and "project_owner_name" not in sql
+
+    def test_recent_reporters_has_no_status_gate(self):
+        # 问的是"有没有报进展",不是"任务在不在办"
+        sql, params = o2.recent_reporters("2026-08-15", 7)
+        assert "t.status IN (0, 1)" not in sql
+        assert "ORDER BY t.latest_progress_time DESC, t.id" in sql
+        assert params == ("2026-08-15", "2026-08-15", 7, 200)
+
+    def test_freshness_within_reports_all_three_numbers(self):
+        sql, params = o2.freshness_within("2026-08-15", 7)
+        assert "AS task_count" in sql and "newest_progress" in sql and "days_behind" in sql
+        assert params == ("2026-08-15", "2026-08-15", 7)
+
+    def test_lag_bands_read_each_board_from_its_own_table(self):
+        sql, _params = o2.freshness_lag_bands("2026-08-15")
+        assert "task_group_progress_history" in sql and "task_progress" in sql
+        assert "'1 0-7 天'" in sql and "'5 无正式进展'" in sql
+        assert "b.code = 'group'" in sql  # 看板用 code 判,不用 id(两库 id 不同)
+
+    def test_lag_bands_need_the_group_history_grant(self):
+        with pytest.raises(PermissionError):
+            o2.freshness_lag_bands("2026-08-15", group_history_granted=False)
+
+    def test_stale_axis_board_joins_the_board_even_without_a_filter(self):
+        # 轴自己就要 JOIN:等调用方给看板过滤才 JOIN,board 轴会直接报缺表
+        sql, params = o2.stale_grouped("2026-08-15", 90, "board", recent_end=False)
+        assert "JOIN task_board b ON b.id = t.board_id" in sql
+        assert "ORDER BY stale_pct DESC, bucket" in sql
+        assert params[-1] == 200
+
+    def test_stale_grouped_sorts_the_end_the_question_asks_about(self):
+        sql, _params = o2.stale_grouped("2026-08-15", 90, "project_group", recent_end=True)
+        assert "ORDER BY active_pct DESC, bucket" in sql
+        assert "'(未填)'" in sql
 
     def test_drift_check_compares_denormalized_column_with_real_rows(self):
         sql, _params = o2.latest_progress_drift()
@@ -484,10 +530,12 @@ class TestFormalBackend:
     def test_unmigrated_arguments_fall_back_instead_of_narrowing(self, monkeypatch):
         """未迁移的参数组合必须回落演示路径,绝不能返回一个范围更小的答案。"""
         monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
-        assert _formal.dispatch("weekly_freshness_distribution", by="board") is None
-        assert _formal.dispatch("weekly_freshness_distribution", lag_bands=True) is None
-        assert _formal.dispatch("weekly_freshness_distribution", reported_only=True) is None
-        assert _formal.dispatch("weekly_freshness_distribution", recent_days=7) is None
+        # by= 只给分组轴而没有天数:参考实现是**明确报错并指路**,不是静默回退
+        by_only = _formal.dispatch("weekly_freshness_distribution", by="board")
+        assert by_only is not None and by_only["ok"] is False
+        assert by_only["error"]["code"] == "invalid_argument"
+        assert "stale_days 或 recent_days" in by_only["error"]["message"]
+        assert _formal.dispatch("weekly_freshness_distribution", by="不存在") is None
         assert _formal.dispatch("weekly_freshness_distribution", task="1") is None
         assert _formal.dispatch("weekly_progress_coverage", scope="latest_status") is None
         assert _formal.dispatch("weekly_task_query", status="9") is None  # 非法状态交给演示路径报错
@@ -652,3 +700,61 @@ class TestProgressRangeTemplates:
         assert "latest_progress_date" in sql and "published_rows" in sql
         assert "is_published = 1" in sql
         assert params == ()
+
+
+class TestFreshnessRouting:
+    """新鲜度各分支的**路由**用假信封测:真连库的部分由端到端 harness 覆盖。"""
+
+    @staticmethod
+    def _capture(monkeypatch) -> list[dict]:
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            row = {"x": 1, "total_count": 1, "never_reported_count": 1, "task_total": 1}
+            return {"ok": True, "columns": ["x"], "rows": [row], "row_count": 1}
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        return seen
+
+    def test_recent_days_lists_without_a_status_gate(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        got = _formal._freshness({"recent_days": 7, "limit": 200})
+        assert got is not None and got["ok"] is True
+        assert "ORDER BY t.latest_progress_time DESC, t.id" in seen[0]["sql"]
+        assert "t.status IN (0, 1)" not in seen[0]["sql"]
+
+    def test_stale_listing_comes_with_its_two_self_checks(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        got = _formal._freshness({"stale_days": 30})
+        assert len(seen) == 2  # 明细 + 自检总数
+        assert got is not None and got["total_count"] == 1 and got["never_reported_count"] == 1
+        assert "ORDER BY t.latest_progress_time IS NOT NULL" in seen[0]["sql"]
+
+    def test_grouped_axis_returns_the_totals_row(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        got = _formal._freshness({"stale_days": 90, "by": "board"})
+        assert len(seen) == 2
+        assert got is not None and got["totals"]["total_count"] == 1  # 合计行原样挂在 totals 下
+        assert "ORDER BY stale_pct DESC, bucket" in seen[0]["sql"]
+
+    def test_within_days_returns_the_three_number_row(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        got = _formal._freshness({"within_days": 7})
+        assert got is not None and seen[0]["limit"] == 1
+        assert "AS days_behind" in seen[0]["sql"]
+
+    def test_lag_bands_need_the_group_history_grant(self, monkeypatch):
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.delenv("TASK_BOARD_GRANTED_OPTIONAL_TABLES", raising=False)
+        got = _formal.dispatch("weekly_freshness_distribution", lag_bands=True)
+        assert got is not None and got["ok"] is False
+        assert got["error"]["code"] == "table_not_granted"
+
+    def test_by_without_days_is_a_guided_error(self, monkeypatch):
+        self._capture(monkeypatch)
+        got = _formal._freshness({"by": "board"})
+        assert got is not None and got["ok"] is False
+        assert got["error"]["code"] == "invalid_argument"
+        assert "stale_days=90" in got["error"]["message"]
