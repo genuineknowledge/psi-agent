@@ -307,12 +307,30 @@ LIMIT %s
     return sql, (code, date_from, date_to, int(limit))
 
 
-COVERAGE_SCOPES = ("publish_split", "import_split", "unpublished", "never_reported")
+COVERAGE_SCOPES = (
+    "summary",
+    "publish_split",
+    "import_split",
+    "unpublished",
+    "unpublished_by_task",
+    "pending_review",
+    "never_reported",
+    "version_gaps",
+)
 
 # 相对时间窗的基准日必须由调用方显式给出,绝不使用 now()。
 # 演示包的数据停在 2026-08-01、快照日是 2026-08-15;用真实时钟算"最近 30 天"会把窗口
 # 滑出数据、给出偏小的数(mock 把这个陷阱记作 now_instead_of_as_of,396 题里有专项)。
 AS_OF_TRAP_NOTE = "相对时间窗以数据快照日为准,不用系统当前时间"
+
+# 「最新一期已发布进展」的定序:期号大者为新,同期再按 id 兜底。
+# 原工具强调两级都要 —— 只按 version_no 或只按 id 都会取错行(补报的老期号可能日期更晚,
+# 所以也不能按 progress_date 取最新)。
+LATEST_ROUND_CTE = """(
+    SELECT p.*, row_number() OVER (PARTITION BY p.task_id ORDER BY p.version_no DESC, p.id DESC) AS rn
+    FROM task_progress p
+    WHERE p.is_published = 1
+)"""
 
 
 def _check_as_of(as_of: str | None) -> None:
@@ -324,21 +342,28 @@ def _check_as_of(as_of: str | None) -> None:
 def coverage_stats(
     scope: str,
     board_code: str | None = None,
+    project_group: str | None = None,
     in_flight_only: bool = False,
     limit: int = 200,
 ) -> tuple[str, tuple]:
     """进展覆盖率与分发口径,对齐 mock 的 ``weekly_progress_coverage`` 各 scope。
 
-    口径要点(每条都在 mock 的 docstring 里被反复强调,直接决定数字对不对):
+    口径要点(每条都在 mock 的 docstring / 实现注释里被强调,直接决定数字对不对):
 
     * ``publish_split`` 数的是 **task_progress 行**而不是任务:带正式任务门是
       943 / 123 / 1066,不带门是 945 / 1068 —— 手工相加时最容易丢掉任务门;
-    * ``import_split`` 只用 ``import_id IS NULL`` 区分手工录入与批量导入;
-    * ``unpublished`` 按进展**自己的** status 码值分档(0 草稿 / 1 待审核 /
-      2 驳回 / 3 通过),与任务的 ``workflow_status`` 是两套词表,因此同时给
-      行数与去重任务数(演示数据里驳回 = 39 行 / 33 任务);
+    * ``import_split`` 只用 ``import_id IS NULL`` 区分手工录入与批量导入(943 / 943 / 0);
+    * ``unpublished`` 按进展**自己的** status 码值分档(0 草稿 / 1 待审核 / 2 驳回 /
+      3 通过),与任务的 ``workflow_status`` 是两套词表,因此同时给行数与去重任务数
+      (演示数据里待审核 58 行 / 47 任务,驳回 39 行 / 33 任务);
     * ``never_reported`` 必须用 ``NOT EXISTS`` 判"有没有已发布进展行",不能用
-      ``latest_progress_time IS NULL`` —— 后者只能找出 55 条里的 9 条。
+      ``latest_progress_time IS NULL`` —— 后者只能找出 55 条里的 9 条;
+    * ``unpublished_by_task`` 只加 ``t.is_deleted = 0``(**不加** workflow_status 门):
+      "提交单已发布、进展还挂着未发布"是它的筛选条件,不是任务的发布闸门;
+      期数按 ``version_no`` 去重,数的是"几期"不是"几行";
+    * ``pending_review`` 两个条件各判一次(``is_published = 0`` 且 ``status = 1``),
+      并把对外可见的 ``public_version`` 一并带出 —— "对外还是上一期"这半句要靠它;
+    * ``version_gaps`` 的缺号 = ``max(version_no) - count(*)``,判据是聚合结果故用 HAVING。
     """
     if scope not in COVERAGE_SCOPES:
         raise ValueError(f"未知 scope:{scope};可选 {', '.join(COVERAGE_SCOPES)}")
@@ -354,6 +379,9 @@ def coverage_stats(
         board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
         where.append("b.code = %s")
         params.append(board)
+    if project_group:
+        where.append("trim(t.project_group) = %s")
+        params.append(project_group.strip())
     where_sql = "\n  AND ".join(where)
 
     if scope == "publish_split":
@@ -396,6 +424,87 @@ ORDER BY p.status
 """
         return sql, tuple(params)
 
+    if scope == "summary":
+        date_from = adm.normalize_date_sql("min(p.progress_date)")
+        date_to = adm.normalize_date_sql("max(p.progress_date)")
+        sql = f"""
+SELECT count(*)                                        AS progress_rows,
+       count(DISTINCT p.task_id)                       AS tasks_covered,
+       round(count(*)::numeric / NULLIF(count(DISTINCT p.task_id), 0), 2) AS avg_rounds_per_task,
+       {date_from}                                     AS earliest_progress,
+       {date_to}                                       AS latest_progress,
+       max(p.version_no)                               AS max_version_no
+FROM task_progress p
+JOIN task t ON t.id = p.task_id
+{board_join}
+WHERE {where_sql}
+  AND p.is_published = 1
+"""
+        return sql, tuple(params)
+
+    if scope == "unpublished_by_task":
+        # 注意:这里只有 t.is_deleted = 0,没有 workflow_status 门
+        group_join = ""
+        group_where = ["t.is_deleted = 0"]
+        group_params: list[object] = []
+        if board:
+            group_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+            group_where.append("b.code = %s")
+            group_params.append(board)
+        if project_group:
+            group_where.append("trim(t.project_group) = %s")
+            group_params.append(project_group.strip())
+        sql = f"""
+SELECT t.id AS task_id, t.task_name,
+       count(DISTINCT p.version_no) AS unpublished_rounds
+FROM task t
+{group_join}
+JOIN task_workflow_submission s ON s.task_id = t.id AND s.status = 'published'
+JOIN task_progress p ON p.task_id = t.id AND p.is_published = 0
+WHERE {"\n  AND ".join(group_where)}
+GROUP BY t.id, t.task_name
+ORDER BY unpublished_rounds DESC, t.id
+LIMIT %s
+"""
+        return sql, (*group_params, int(limit))
+
+    if scope == "pending_review":
+        report_time = adm.normalize_ts_sql("p.report_time")
+        sql = f"""
+SELECT t.id AS task_id, t.task_name,
+       p.version_no                AS pending_version,
+       {report_time}               AS report_time,
+       (SELECT max(q.version_no) FROM task_progress q
+         WHERE q.task_id = t.id AND q.is_published = 1) AS public_version
+FROM task_progress p
+JOIN task t ON t.id = p.task_id
+{board_join}
+WHERE {where_sql}
+  AND p.is_published = 0
+  AND p.status = 1
+ORDER BY p.report_time DESC, t.id
+LIMIT %s
+"""
+        return sql, (*params, int(limit))
+
+    if scope == "version_gaps":
+        sql = f"""
+SELECT t.id AS task_id, t.task_name,
+       count(*)                        AS rounds,
+       max(p.version_no)               AS max_version,
+       max(p.version_no) - count(*)    AS missing_count
+FROM task_progress p
+JOIN task t ON t.id = p.task_id
+{board_join}
+WHERE {where_sql}
+  AND p.is_published = 1
+GROUP BY t.id, t.task_name
+HAVING max(p.version_no) - count(*) <> 0
+ORDER BY missing_count DESC, t.id
+LIMIT %s
+"""
+        return sql, (*params, int(limit))
+
     # never_reported:存在性判定,不是 NULL 判定
     if in_flight_only:
         where.append("t.status IN (0, 1)")
@@ -411,7 +520,106 @@ WHERE {where_sql}
 ORDER BY t.sort_order, t.id
 LIMIT %s
 """
-    params.append(int(limit))
+    return sql, (*params, int(limit))
+
+
+def formal_coverage(group_history_granted: bool) -> tuple[str, tuple]:
+    """正式周报覆盖率:两张正式进展表的**并集**(技术组 + 集团组)。
+
+    原工具记的数是:正式任务 128、有正式进展 119、覆盖率 93.0%;只看
+    ``task_progress`` 会得到 73(summary 的 tasks_covered 只含技术组),
+    集团组那 46 条成效写在 ``task_group_progress_history`` 里。
+
+    ``task_group_progress_history`` 属四张可选表之一:未授权时退化为"仅技术组"口径,
+    SQL 里显式去掉那半支,并在注释里说明差别 —— 宁可少答一半也不能把并集算错。
+    """
+    gate = adm.sql_task_admission("pg", "t")
+    group_branch = (
+        "OR EXISTS (SELECT 1 FROM task_group_progress_history h WHERE h.task_id = t.id AND h.is_published = 1)"
+        if group_history_granted
+        else ""
+    )
+    sql = f"""
+SELECT (SELECT count(*) FROM task t WHERE {gate})      AS formal_task_count,
+       (SELECT count(*) FROM task t
+         WHERE {gate}
+           AND (EXISTS (SELECT 1 FROM task_progress p
+                         WHERE p.task_id = t.id AND p.is_published = 1)
+                {group_branch}))                        AS tasks_with_progress,
+       (SELECT round(count(*)::numeric * 100 / NULLIF((SELECT count(*) FROM task t2
+                WHERE t2.is_deleted = 0 AND t2.workflow_status = 'published'), 0), 1)
+          FROM task t
+         WHERE {gate}
+           AND (EXISTS (SELECT 1 FROM task_progress p
+                         WHERE p.task_id = t.id AND p.is_published = 1)
+                {group_branch}))                        AS coverage_pct
+"""
+    return sql, ()
+
+
+def latest_round(
+    board_code: str | None = None,
+    project_group: str | None = None,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """每任务的**最新一期**已发布进展(含正文与下一步),一任务一行。
+
+    用于"下一步打算做什么"这类问法:绝不能返回全部历史 —— 一个任务有 19 期,
+    全history 会给 19 行,而且最老的那条"计划"会被读成现在的计划。
+    同时只列 ``next_work`` 非空的任务(空的那批由 ``missing_next`` 单独计数)。
+    """
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_task_admission("pg", "t"), "p.next_work IS NOT NULL", "p.next_work <> ''"]
+    params: list[object] = []
+    board_join = ""
+    if board:
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    if project_group:
+        where.append("trim(t.project_group) = %s")
+        params.append(project_group.strip())
+    sql = f"""
+SELECT t.id AS task_id, t.task_name, t.project_group,
+       p.version_no, p.latest_progress, p.next_work,
+       {adm.normalize_date_sql("p.progress_date")} AS progress_date
+FROM task t
+{board_join}
+JOIN {LATEST_ROUND_CTE} p ON p.task_id = t.id AND p.rn = 1
+WHERE {"\n  AND ".join(where)}
+ORDER BY t.id
+LIMIT %s
+"""
+    return sql, (*params, int(limit))
+
+
+def missing_next(
+    board_code: str | None = None,
+    project_group: str | None = None,
+) -> tuple[str, tuple]:
+    """最新一期把"下一步"留空的任务数(只看最新一期;中间某期空着不算)。"""
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_task_admission("pg", "t"), "(p.next_work IS NULL OR p.next_work = '')"]
+    params: list[object] = []
+    board_join = ""
+    if board:
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    if project_group:
+        where.append("trim(t.project_group) = %s")
+        params.append(project_group.strip())
+    sql = f"""
+SELECT count(*) AS tasks_missing_next
+FROM task t
+{board_join}
+JOIN {LATEST_ROUND_CTE} p ON p.task_id = t.id AND p.rn = 1
+WHERE {"\n  AND ".join(where)}
+"""
     return sql, tuple(params)
 
 

@@ -290,3 +290,66 @@ class TestBatch2Templates:
         sql, _params = o2.latest_progress_drift()
         assert "JOIN LATERAL" in sql and "max(p.report_time)" in sql
         assert "<>" in sql  # 不一致才算漂移
+
+
+class TestCoverageScopes:
+    """覆盖率其余 scope:summary / version_gaps / pending_review / unpublished_by_task / formal_coverage。"""
+
+    def test_summary_scope_shape(self):
+        sql, params = o2.coverage_stats("summary")
+        assert "count(DISTINCT p.task_id)" in sql
+        assert "avg_rounds_per_task" in sql and "NULLIF" in sql  # 分母为 0 时不能炸
+        assert "is_published = 1" in sql
+        assert params == ()
+
+    def test_version_gaps_judged_on_the_aggregate(self):
+        """缺号 = 最大期号 - 实际期数,判据是聚合结果,所以必须用 HAVING。"""
+        sql, params = o2.coverage_stats("version_gaps")
+        assert "HAVING max(p.version_no) - count(*) <> 0" in sql
+        assert params == (200,)
+
+    def test_pending_review_carries_public_version(self):
+        sql, params = o2.coverage_stats("pending_review")
+        assert "p.is_published = 0" in sql and "p.status = 1" in sql
+        assert "AS public_version" in sql  # "对外还是上一期"这半句要靠它
+        assert "(SELECT max(q.version_no)" in sql
+        assert params == (200,)
+
+    def test_unpublished_by_task_does_not_apply_the_publish_gate(self):
+        """它的筛选条件是"提交单已发布",不是"任务已发布"——两者不能混。"""
+        sql, params = o2.coverage_stats("unpublished_by_task")
+        assert "s.status = 'published'" in sql
+        assert "workflow_status" not in sql
+        assert "count(DISTINCT p.version_no)" in sql  # 期数,不是行数
+        assert params == (200,)
+
+    def test_formal_coverage_is_the_union_of_both_progress_tables(self):
+        sql, params = o2.formal_coverage(group_history_granted=True)
+        assert "FROM task_progress p" in sql and "FROM task_group_progress_history h" in sql
+        assert "coverage_pct" in sql
+        assert params == ()
+
+    def test_formal_coverage_degrades_when_group_table_not_granted(self):
+        sql, _params = o2.formal_coverage(group_history_granted=False)
+        assert "task_group_progress_history" not in sql  # 宁可少答一半也不把并集算错
+        assert "FROM task_progress p" in sql
+
+    def test_latest_round_is_one_row_per_task_not_full_history(self):
+        sql, params = o2.latest_round()
+        assert "row_number() OVER (PARTITION BY p.task_id" in sql
+        assert "ORDER BY p.version_no DESC, p.id DESC) AS rn" in sql
+        assert "p.rn = 1" in sql
+        assert "p.next_work IS NOT NULL" in sql and "p.next_work <> ''" in sql
+        assert "MAX(" not in sql
+        assert params == (200,)
+
+    def test_latest_round_supports_project_group(self):
+        sql, params = o2.latest_round(project_group="算力网络组")
+        assert "trim(t.project_group) = %s" in sql
+        assert params == ("算力网络组", 200)
+
+    def test_missing_next_only_looks_at_the_latest_round(self):
+        sql, params = o2.missing_next()
+        assert "p.rn = 1" in sql
+        assert "(p.next_work IS NULL OR p.next_work = '')" in sql
+        assert params == ()

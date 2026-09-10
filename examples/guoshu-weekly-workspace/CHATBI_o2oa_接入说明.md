@@ -49,6 +49,13 @@
 | 对照:`latest_progress_time IS NULL` | 只有 9 条 | ✅ 一致(故不能用 NULL 判据) |
 | 新鲜度「从未报进展」 | 全量 9 / 在办 8 | ✅ 一致(多的那条是任务 88,已完成) |
 | 各分档之和 | = 任务总数(可自校验) | ✅ 128 = 128 |
+| `summary` | 943 行 / 73 任务 / 平均 12.92 期 | ✅ 一致(分母是"报过进展的 73 条",不是 128) |
+| `formal_coverage`(两表并集) | 128 / 119 / 93.0% | ✅ 一致(只看技术组只有 73,集团组 46 条写在历史表) |
+| `latest_round` | 一任务一行,共 73 行 | ✅ 一致(绝不返回全部历史:19 期任务的旧计划会被读成现在的计划) |
+| `missing_next` | 0(73/73 都写了下一步) | ✅ 一致 |
+| `pending_review` | 58 行 / 47 任务,任务 48 的 public_version 为空 | ✅ 一致 |
+| `unpublished_by_task` | 72 条任务(按 version_no 去重) | ✅ 与直接查询一致 |
+| `version_gaps` | 5 条任务缺号,缺号 = 最大期号 − 实际期数 | ✅ 逐行自洽 |
 
 三条由此固化的铁律:
 
@@ -58,9 +65,11 @@
    不给就 `ValueError`。
 2. **"从未报进展"必须用 `NOT EXISTS` 判**(有没有已发布进展行),不能用
    `latest_progress_time IS NULL` —— 后者只找得到 55 条里的 9 条。
-3. **冗余列会漂移**:`task.latest_progress_time` 与真实最新已发布进展不一致的任务,在演示
+3. **`unpublished_by_task` 不带发布门**:它的筛选条件是"提交单已发布、进展未发布",不是"任务已发布";而 `pending_review` 的 `is_published = 0` 与 `status = 1` 必须各判一次(两套码值)。
+4. **冗余列会漂移**:`task.latest_progress_time` 与真实最新已发布进展不一致的任务,在演示
    数据里有 **73/128 条**。只按冗余列回答新鲜度,错误答案与正确答案从外观上无法区分,
    因此必须提供 `latest_progress_drift` 这条检查。
+5. **`latest_round` 按 `version_no DESC, id DESC` 取最新一期**,不按 `progress_date`:补报的老期号可能有更晚的日期。
 
 ### 3.1 第一批迭代要点(2026-09-10)
 
