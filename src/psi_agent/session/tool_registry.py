@@ -607,7 +607,10 @@ class ToolRegistry:
         # failed to load because they did not), and the first file to import a
         # dotted private helper binds the submodule as an attribute the later
         # ones read instead of resolving.  Sorting by name makes those relative
-        # positions the same everywhere.  Sort key is the plain file name, so
+        # positions the same everywhere.  Measured on both platforms by
+        # ``scripts/check_tool_glob_order.py``: NTFS misplaces 16 of feishu's
+        # 134 names, ext4 misplaces all 134 (4370 inverted pairs) because it
+        # returns htree hash order.  Sort key is the plain file name, so
         # this is the in-layer order once each content layer globs its own dir —
         # layer precedence orders the layers, this orders the files within one.
         try:
