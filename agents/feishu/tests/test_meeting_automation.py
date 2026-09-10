@@ -115,6 +115,16 @@ def test_meeting_schedule_files_cover_every_job_and_retry() -> None:
     assert '"meeting_code":"57152787045"' in retry
 
 
+def test_meeting_schedule_task_declares_review_and_followups() -> None:
+    """会议 schedule 的 TASK.md 必须声明「本场评价 + 后续建议」这一产出。
+
+    生成器 (``_task_body``) 与静态 TASK.md 由本 PR 一并提供, 投影一致性判据另行
+    钉死; 这里只锁文案, 防止有人把这两项产出从任务描述里删掉。
+    """
+    for name, body in meeting_schedule_files().items():
+        assert "产出本场评价与后续建议" in body, f"{name}/TASK.md 未声明评价与后续建议产出"
+
+
 def test_committed_meeting_schedule_files_match_projection() -> None:
     """``agents/feishu/schedules`` 下的静态 TASK.md 必须与 ``MEETING_JOBS`` 投影一致。
 
