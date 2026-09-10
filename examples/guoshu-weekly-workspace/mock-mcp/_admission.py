@@ -33,7 +33,13 @@ WORKFLOW_STATUS_DOMAIN = {
     "pending_leader",
     "rejected",
 }
+# Values seen in the mock dataset that mirrors oa-weekly but that the note's
+# domain table omits.  They are *non-published* states, so admission still only
+# ever matches PUBLISHED; the extra values exist so distribution/reporting tools
+# can name them instead of silently dropping those rows.
+OBSERVED_EXTRA_WORKFLOW_STATUS = {"cancelled"}
 PROGRESS_STATUS_DOMAIN = {0, 1, 2, 3}  # 0草稿 1待审核 2已驳回 3已通过
+PROGRESS_APPROVED = 3  # rule 2 exception: 历史版本问答只认已通过版本
 SUBMISSION_STATUS_DOMAIN = {
     "pending_fill",
     "signing",
@@ -46,6 +52,20 @@ SUBMISSION_STATUS_DOMAIN = {
 SUBMISSION_KIND_DOMAIN = {"initial", "progress"}
 BOARD_CODE_DOMAIN = {"tech", "group"}
 
+# rule 6 / note 2: ``task.status`` varies between oa-weekly versions and is a
+# business hint only -- never the publish switch.  Tools quote this line in
+# ``caliber`` so the model cannot present the business status as freshness.
+BUSINESS_STATUS_NOTE = "task.status 仅业务参考(版本间取值有差异),发布判定一律以 workflow_status='published' 为准"
+
+# Tables that the note lists as optional: queries touching them must first prove
+# the grant exists, otherwise the answer degrades instead of erroring.
+OPTIONAL_TABLES = (
+    "task_group_progress_history",
+    "task_workflow_action",
+    "task_attachment",
+    "task_progress_import",
+)
+
 
 def _pick(domain: set[str], value: str, label: str) -> tuple[str | None, str | None]:
     """Validate ``value`` against a domain; returns (ok_value, error_hint)."""
@@ -56,7 +76,8 @@ def _pick(domain: set[str], value: str, label: str) -> tuple[str | None, str | N
 
 
 def check_workflow_status(value: str | None) -> tuple[str | None, str | None]:
-    return _pick(WORKFLOW_STATUS_DOMAIN, value or PUBLISHED, "workflow_status")
+    known = WORKFLOW_STATUS_DOMAIN | OBSERVED_EXTRA_WORKFLOW_STATUS
+    return _pick(known, value or PUBLISHED, "workflow_status")
 
 
 def check_submission_status(value: str | None) -> tuple[str | None, str | None]:
@@ -80,6 +101,22 @@ def check_year(value: int | str | None) -> tuple[int | None, str | None]:
     return year, None
 
 
+def require_optional_table(name: str, granted: bool) -> str | None:
+    """Return a degradation hint when an optional table is not granted.
+
+    The note grants eight tables; the four optional ones (``OPTIONAL_TABLES``)
+    answer 审批意见 / 集团板历史 / 附件元数据 / 导入来源.  Callers pass what the
+    live source actually exposes; the template layer raises ``PermissionError``
+    carrying this text and the tool answers with it, so a missing grant degrades
+    the answer instead of failing the whole turn.
+    """
+    if name not in OPTIONAL_TABLES:
+        return None
+    if granted:
+        return None
+    return f"{name} 未在本次只读授权范围内,相关问题无法回答(如需请联系数据侧补开 SELECT 授权)"
+
+
 # ---- dialect fragments -----------------------------------------------------
 
 
@@ -98,6 +135,14 @@ def sql_published_progress(dialect: str, alias: str = "p") -> str:
     return f"{alias}.is_published = 1"
 
 
+def sql_historical_progress(dialect: str, alias: str = "p") -> str:
+    """Rule 2 exception: historical versions must be approved (``status = 3``)."""
+    clause = f"{alias}.status = {PROGRESS_APPROVED}"
+    if dialect == "pg":
+        return clause
+    return clause
+
+
 def sql_submission_published(dialect: str, alias: str = "s") -> str:
     """Rule 3: only the published submission round carries formal data."""
     if dialect == "pg":
@@ -105,15 +150,35 @@ def sql_submission_published(dialect: str, alias: str = "s") -> str:
     return f"{alias}.status = 'published'"
 
 
-def normalize_ts_sql(column: str, dialect: str = "pg") -> str:
-    """Return an expression that renders ``column`` as text.
+def sql_soft_delete(alias: str) -> str:
+    """Rule 6: every table that has ``is_deleted`` filters on it."""
+    return f"{alias}.is_deleted = 0"
 
-    The O2OA data-center note says timestamps may be stored as text
-    (``YYYY-MM-DD HH:mm:ss``) or as a native timestamp depending on the
-    environment, so outputs always go through ``to_char``; comparisons should
-    parse first.  The exact storage type is confirmed during联调 and this
-    helper is the single place to adjust it.
+
+def normalize_ts_sql(column: str, dialect: str = "pg") -> str:
+    """Return an expression that renders ``column`` as ``YYYY-MM-DD HH:MM:SS``.
+
+    The O2OA data-center note says time fields are stored either as text
+    (``YYYY-MM-DD HH:mm:ss``) or as a native timestamp, depending on the
+    environment.  ``to_char()`` only accepts a temporal type, so a text column
+    would make the whole query fail with ``function to_char(text, unknown) does
+    not exist``; casting first makes one expression work for both shapes (the
+    cast is a no-op for a timestamp column, and parses the documented text
+    format).  The confirmed storage type is re-checked during联调; this helper
+    is the single place to adjust it.
     """
     if dialect == "pg":
-        return f"to_char({column}, 'YYYY-MM-DD HH24:MI:SS')"
-    return f"DATE_FORMAT({column}, '%Y-%m-%d %H:%i:%s')"
+        return f"to_char(({column})::timestamp, 'YYYY-MM-DD HH24:MI:SS')"
+    return f"DATE_FORMAT(({column}), '%Y-%m-%d %H:%i:%s')"
+
+
+def parse_ts_sql(column: str, dialect: str = "pg") -> str:
+    """Return ``column`` as a comparable temporal value (for range filters).
+
+    Comparing the raw column would compare text lexically when the environment
+    stores text; use this in ``WHERE``/``ORDER BY`` whenever a date window is
+    involved (PDF 六-3).
+    """
+    if dialect == "pg":
+        return f"({column})::timestamp"
+    return f"STR_TO_DATE(({column}), '%Y-%m-%d %H:%i:%s')"
