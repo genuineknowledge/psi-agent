@@ -139,7 +139,9 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 | `weekly_owner_roles` | ✅ 已接线 | 角色拆分(主责/项目负责人/牵头领导/去重并集);孙立群 → 0/2/12/14,u3118 → 2/2/12/14 |
 | `weekly_group_detail_query` | ✅ 已接线 | 集团板扩展表(目标成果/落实举措/完成时间/进度成效/多值负责人);46 行;`status=0 + non_empty=progress_effect` → 6 行矛盾;`completion_time` **按文本**匹配 2026 → 31 行 |
 | `weekly_health` | ✅ 已接线 | 逐表精确行数(可选表不存在时返回 NULL 而非报错);12 张表 / 5,369 行 |
-| 其余 22 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
+| `weekly_submission_query` | ✅ 已接线 | 9 个聚合 scope:提交单 462 张、外部标识 460/460/60(缺 402 行 = 87.0%)、驳回率 技术组 9/293 = 3.07% > 集团组 4/169 = 2.37%、按类型 progress 312 / initial 150、在途带进程号 59;带明细筛选的请求不迁移(回落演示路径) |
+| `weekly_workflow_query` | ✅ 已接线 | 审批动作流水(可选表):分布 955/460/150/**13**、日志 **1,578** 行 / 150 任务 / 10.52、node×action **6 档**、`scope=recent` 按动作时间倒序;**`opinion` 按权限才出列** |
+| 其余 20 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
 
 三条硬规则:
 
@@ -152,6 +154,10 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 **端到端验证**(真 PG + 正式源模式,20 项断言全通过):信封 9 字段齐全、`source_tables` 指向正式表、
 publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 103 的 V8 冲突(来自集团历史表)、
 新鲜度分档 63/44/8/9/4 且合计 = 任务总数、在办「从未报进展」8、漂移 73,未迁移参数全部回落。
+
+> 口径提醒:**动作数 ≠ 单数**。审批流水里 `rejected` 有 13 条,那是**动作**条数;
+> 「驳回率」的分子必须用提交单自己的 `status = 'rejected'`(技术组 9、集团组 4)。
+> 审批流水的正确闸门是 `t.is_deleted = 0`(1,578 行);再加任务发布门会掉到 1,519。
 
 > 依赖提醒:本工作区的 mock 服务用 **mcp 1.x 的 FastMCP API**;PyPI 上 mcp 2.x 已把它改名为 `MCPServer`,
 > 未钉版本的新环境会直接导入失败。仓库已声明 `mcp>=1.28.1,<2.0.0`(mock 服务运行时沿用同一环境),

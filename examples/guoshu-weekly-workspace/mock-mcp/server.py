@@ -1142,6 +1142,19 @@ def weekly_workflow_query(
     """
     may_read = _caller_may_read_sensitive(ctx)
 
+    formal = _formal.dispatch(
+        "weekly_workflow_query",
+        task=task,
+        action=action,
+        board=board,
+        by_task=by_task,
+        scope=scope,
+        limit=limit,
+        can_read_sensitive=_caller_may_read_sensitive(ctx),
+    )
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         bounded_flow = max(1, min(store.MAX_ROWS, int(limit)))
         scope_key = (scope or "").strip().lower()
@@ -1824,6 +1837,20 @@ def weekly_submission_query(
             an external process id. Empty returns the ordinary listing.
         limit: Max rows, capped at 200.
     """
+
+    formal = _formal.dispatch(
+        "weekly_submission_query",
+        task=task,
+        reporter=reporter,
+        status=status,
+        exclude_status=exclude_status,
+        status_mismatch=status_mismatch,
+        scope=scope,
+        board=board,
+        limit=limit,
+    )
+    if formal is not None:
+        return _dump(formal)
 
     def work() -> dict[str, Any]:
         scope_key = (scope or "").strip().lower()

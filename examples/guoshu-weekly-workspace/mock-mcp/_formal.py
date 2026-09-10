@@ -450,6 +450,75 @@ _NEW_HANDLERS_6 = {
     "weekly_health": _health,
 }
 
+
+def _submission(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_submission_query:提交单聚合各 scope。
+
+    只迁移**纯聚合**请求:带 task / reporter / status / exclude_status / status_mismatch
+    的是明细筛选,语义与聚合不同,交给演示路径处理(返回 None),不猜。
+    """
+    scope = (args.get("scope") or "").strip().lower()
+    if scope not in tpl.SUBMISSION_SCOPES:
+        return None
+    for key in ("task", "reporter", "status", "exclude_status"):
+        if (args.get(key) or "").strip():
+            return None
+    if args.get("status_mismatch"):
+        return None
+    limit = int(args.get("limit") or MAX_ROWS)
+    board = (args.get("board") or "").strip() or None
+    sql, params = tpl.submission_stats(scope, board_code=board, limit=limit)
+    listing = scope in ("pending_review", "unpublished_by_task")
+    return envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            f"scope={scope};提交单域只加 t.is_deleted = 0(462 = 470 - 8 个软删任务下的单),"
+            "不带任务发布门;看板在 task 上,按看板提问从任务侧下推;"
+            "动作流水里的 rejected 是动作条数,不能当驳回率的分子"
+        ),
+        limit=limit,
+        cap_last_param=listing,
+    )
+
+
+def _workflow(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_workflow_query:审批动作流水(可选表)。意见列按权限返回。"""
+    scope = (args.get("scope") or "").strip().lower()
+    if scope not in tpl.WORKFLOW_SCOPES:
+        # 默认清单按 task id 排序、by_task 是逐任务聚合:都不迁移,交给演示路径
+        return None
+    limit = int(args.get("limit") or MAX_ROWS)
+    board = (args.get("board") or "").strip() or None
+    task_id, _task_name = _resolve_task(args.get("task") or "")
+    raw_action = (args.get("action") or "").strip() or None
+    sql, params = tpl.workflow_actions(
+        scope,
+        board_code=board,
+        task_id=task_id,
+        action=raw_action,
+        include_opinion=bool(args.get("can_read_sensitive")),
+        granted=optional_granted("task_workflow_action"),
+        limit=limit,
+    )
+    return envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            "流水带 t.is_deleted = 0 是正确闸门(1,578 行);再加任务发布门会掉到 1,519;"
+            "opinion(审批意见)按权限返回,无权限时不在返回列内(R-04/R-14);"
+            "scope=recent 按动作自身时间倒序(默认清单按 task id 排序,答不了「最近谁被驳回」)"
+        ),
+        limit=limit,
+        cap_last_param=scope == "recent",
+    )
+
+
+_NEW_HANDLERS_7 = {
+    "weekly_submission_query": _submission,
+    "weekly_workflow_query": _workflow,
+}
+
 _HANDLERS = {
     "weekly_task_query": _task_query,
     "weekly_progress_coverage": _coverage,
@@ -460,6 +529,8 @@ _HANDLERS = {
     "weekly_owner_roles": _owner_roles,
     "weekly_group_detail_query": _group_detail,
     "weekly_health": _health,
+    "weekly_submission_query": _submission,
+    "weekly_workflow_query": _workflow,
 }
 
 # _NEW_HANDLERS 只是构建期的清单,避免手工漏接线

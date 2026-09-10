@@ -1007,7 +1007,10 @@ ORDER BY forms DESC, s.status
 SELECT count(*)                                                  AS total,
        count(*) FILTER (WHERE s.o2_process_id IS NOT NULL)        AS has_process_id,
        count(*) FILTER (WHERE s.o2_work_id    IS NOT NULL)        AS has_work_id,
-       count(*) FILTER (WHERE s.o2_task_id    IS NOT NULL)        AS has_task_id
+       count(*) FILTER (WHERE s.o2_task_id    IS NOT NULL)        AS has_task_id,
+       count(*) FILTER (WHERE s.o2_task_id    IS NULL)            AS missing_task_id,
+       round(count(*) FILTER (WHERE s.o2_task_id IS NULL) * 100.0
+             / NULLIF(count(*), 0), 1)                            AS missing_task_id_pct
 FROM task_workflow_submission s
 JOIN task t ON t.id = s.task_id
 {board_join}
@@ -1069,7 +1072,8 @@ WHERE {where_sql}
     if scope == "rejected_by_board":
         sql = f"""
 SELECT b.code                                                   AS board_code,
-       count(*)                                                 AS forms,
+       b.name                                                   AS board_name,
+       count(*)                                                 AS submissions,
        count(*) FILTER (WHERE s.status = 'rejected')             AS rejected,
        round(count(*) FILTER (WHERE s.status = 'rejected') * 100.0
              / NULLIF(count(*), 0), 2)                           AS rejected_pct
@@ -1077,8 +1081,8 @@ FROM task_workflow_submission s
 JOIN task t ON t.id = s.task_id
 JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
 WHERE {SUBMISSION_GATE}
-GROUP BY b.code
-ORDER BY b.code
+GROUP BY b.code, b.name
+ORDER BY rejected_pct DESC, b.code
 """
         return sql, ()
 
@@ -1558,3 +1562,109 @@ def table_row_counts() -> tuple[str, tuple]:
         )
     sql = "\nUNION ALL\n".join(parts) + "\nORDER BY table_name"
     return sql, ()
+
+
+# ---- batch 7: 审批动作流水(可选表)/ 提交单域列名对齐 ------------------------
+
+
+WORKFLOW_SCOPES = ("by_node_action", "actions_per_task", "by_action", "recent")
+
+
+def workflow_actions(
+    scope: str,
+    board_code: str | None = None,
+    task_id: int | None = None,
+    action: str | None = None,
+    include_opinion: bool = False,
+    granted: bool = True,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """审批动作流水 ``task_workflow_action``(可选表)。
+
+    演示库里该表 1,613 行,带 ``t.is_deleted = 0`` 后 **1,578 行** —— 与清单封顶 200 行
+    差一个量级,所以"多少个"这类问题必须走服务端聚合,不能翻明细数。
+
+    口径要点:
+
+    * ``opinion``(审批意见)**按权限返回**(R-04/R-14):默认不出现在返回列里,
+      ``include_opinion=True`` 才带上 —— 一刀切脱敏与一刀切放开都不满足要求;
+    * 动作数 ≠ 单数:流水里 ``rejected`` 有 13 条,那是**动作**条数,
+      "驳回率"的分子要用提交单自己的 ``status = 'rejected'``(技术组 9、集团组 4);
+    * 带 ``t.is_deleted = 0`` 是正确闸门(1,578);再加任务发布门会掉到 1,519,
+      而审批流水只关心任务是否被软删。
+    """
+    if scope not in WORKFLOW_SCOPES:
+        raise ValueError(f"未知 scope:{scope};可选 {', '.join(WORKFLOW_SCOPES)}")
+    hint = adm.require_optional_table("task_workflow_action", granted)
+    if hint:
+        raise PermissionError(hint)
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_soft_delete("t")]
+    params: list[object] = []
+    joins = ""
+    if board:
+        joins = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    if task_id is not None:
+        where.append("a.task_id = %s")
+        params.append(int(task_id))
+    if action:
+        where.append("a.action = %s")
+        params.append(action)
+    where_sql = "\n  AND ".join(where)
+    opinion_col = ", a.opinion" if include_opinion else ""
+
+    if scope == "by_node_action":
+        sql = f"""
+SELECT a.node_type, a.action, count(*) AS actions
+FROM task_workflow_action a
+JOIN task t ON t.id = a.task_id
+{joins}
+WHERE {where_sql}
+GROUP BY a.node_type, a.action
+ORDER BY a.node_type, a.action
+"""
+        return sql, tuple(params)
+
+    if scope == "actions_per_task":
+        sql = f"""
+SELECT count(*)                  AS actions,
+       count(DISTINCT a.task_id) AS tasks,
+       round(count(*)::numeric / NULLIF(count(DISTINCT a.task_id), 0), 2) AS actions_per_task
+FROM task_workflow_action a
+JOIN task t ON t.id = a.task_id
+{joins}
+WHERE {where_sql}
+"""
+        return sql, tuple(params)
+
+    if scope == "by_action":
+        sql = f"""
+SELECT a.action, count(*) AS actions
+FROM task_workflow_action a
+JOIN task t ON t.id = a.task_id
+{joins}
+WHERE {where_sql}
+GROUP BY a.action
+ORDER BY actions DESC, a.action
+"""
+        return sql, tuple(params)
+
+    # recent / 默认:按动作自身时间倒序(默认清单按 task id 排序,答不了"最近谁被驳回")
+    sql = f"""
+SELECT a.id, a.task_id, t.task_no, t.task_name,
+       a.submission_id, a.node_type, a.action,
+       a.operator_id, a.operator_name{opinion_col},
+       {adm.normalize_ts_sql("a.created_at")} AS action_time
+FROM task_workflow_action a
+JOIN task t ON t.id = a.task_id
+{joins}
+WHERE {where_sql}
+ORDER BY a.created_at DESC, a.id DESC
+LIMIT %s
+"""
+    params.append(int(limit))
+    return sql, tuple(params)
