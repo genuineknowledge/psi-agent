@@ -1068,3 +1068,150 @@ async def test_cache_does_not_share_identical_files_across_dirs(tmp_path: Path) 
     assert func_a is not None and func_b is not None
     assert await func_a() == "ws-a"
     assert await func_b() == "ws-b", "second dir got the first dir's cached module"
+
+
+# ── deterministic load order ─────────────────────────────────────────────────
+#
+# The scan used to iterate ``glob("*.py")`` raw, so load order was whatever the
+# filesystem returned.  That made order a hidden input to other behaviour: 59
+# tool files once failed to load because glob order put a file that carries its
+# own ``sys.path`` preamble *after* the files depending on it, and one A1 probe
+# criterion was structurally unable to fail because the first of three
+# same-layer importers bound the submodule as an attribute on the parent for
+# the other two.
+#
+# "Load twice, compare" cannot judge this: one filesystem returns one order, so
+# such a test is green whether or not the code sorts.  The criteria below drive
+# the load through a glob whose order is deliberately *not* the target order and
+# assert on the exec order actually observed, which is the layer the fix is in.
+# Reading the ``tools`` dict instead would prove nothing — it is a dict, and
+# these files contribute the same entries in any order.
+
+
+@contextmanager
+def _shuffled_glob(order: str) -> Iterator[None]:
+    """Make ``anyio.Path.glob`` yield in *order* — the opposite of the target.
+
+    ``"reverse"`` yields reverse-sorted, ``"rotate"`` moves the last name to the
+    front.  Both differ from sorted order for the inputs used here, so a raw
+    scan visibly inherits this order and a sorting scan visibly does not.
+    """
+    real_glob = anyio.Path.glob
+
+    def fake_glob(self: anyio.Path, pattern: str) -> Any:
+        async def gen() -> Any:
+            found = [p async for p in real_glob(self, pattern)]
+            found.sort(key=lambda p: p.name, reverse=True)
+            if order == "rotate":
+                found = found[-1:] + found[:-1]
+            for item in found:
+                yield item
+
+        return gen()
+
+    anyio.Path.glob = fake_glob  # ty: ignore
+    try:
+        yield
+    finally:
+        anyio.Path.glob = real_glob
+
+
+@contextmanager
+def _record_exec_order() -> Iterator[list[str]]:
+    """Record the tool-file basenames reaching ``compile()``, in exec order.
+
+    ``compile()`` is the narrowest observation point for *load* order: it is
+    called once per file actually exec'd, before that file's body runs.  Its
+    ``filename`` argument is the tool path the scan passed in.
+    """
+    seen: list[str] = []
+    real_compile = builtins.compile
+
+    def recording_compile(source: Any, filename: Any, mode: str, *args: Any, **kwargs: Any) -> Any:
+        name = Path(str(filename)).name
+        if name.endswith(".py"):
+            seen.append(name)
+        return real_compile(source, filename, mode, *args, **kwargs)
+
+    builtins.compile = recording_compile  # ty: ignore
+    try:
+        yield seen
+    finally:
+        builtins.compile = real_compile
+
+
+async def _write_numbered_tools(tools_dir: Path, stems: tuple[str, ...]) -> None:
+    """One trivially-loadable tool per stem, each contributing a distinct name."""
+    await anyio.Path(tools_dir).mkdir(parents=True)
+    for stem in stems:
+        await anyio.Path(tools_dir / f"{stem}.py").write_text(
+            f"async def tool_{stem}() -> str:\n    return {stem!r}\n", encoding="utf-8"
+        )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("glob_order", ["reverse", "rotate"])
+async def test_files_exec_in_sorted_order_not_glob_order(tmp_path: Path, glob_order: str) -> None:
+    """Files exec in sorted-by-name order even when glob yields another order.
+
+    Uses a unique session id so the process-wide module cache cannot serve
+    these files and skip the ``compile()`` this criterion observes.
+    """
+    stems = ("alpha", "bravo", "charlie", "delta")
+    tools_dir = tmp_path / "tools"
+    await _write_numbered_tools(tools_dir, stems)
+
+    with _shuffled_glob(glob_order), _record_exec_order() as order:
+        tr = await ToolRegistry.load(tools_dir, f"order-{glob_order}-{tmp_path.name}")
+
+    loaded = [name for name in order if Path(name).stem in stems]
+    assert loaded == [f"{stem}.py" for stem in stems], (
+        f"files exec'd in {loaded}, not sorted order — load order is inheriting glob order"
+    )
+    assert set(tr.tools) == {f"tool_{stem}" for stem in stems}
+
+
+@pytest.mark.anyio
+async def test_registry_file_keys_follow_sorted_order(tmp_path: Path) -> None:
+    """``_files`` is keyed in sorted order, so ``get()``'s last-wins is defined.
+
+    ``get()`` resolves duplicate names by walking ``_files`` in reverse
+    insertion order.  That rule only names one winner if insertion order is
+    itself fixed; under a raw glob the "last" file is whatever the filesystem
+    happened to return last.
+    """
+    stems = ("alpha", "bravo", "charlie", "delta")
+    tools_dir = tmp_path / "tools"
+    await _write_numbered_tools(tools_dir, stems)
+
+    with _shuffled_glob("reverse"):
+        tr = await ToolRegistry.load(tools_dir, f"keys-{tmp_path.name}")
+
+    keys = [Path(path).name for path in tr._files]
+    assert keys == [f"{stem}.py" for stem in stems], f"_files keyed in {keys}, not sorted order"
+
+
+@pytest.mark.anyio
+async def test_duplicate_name_winner_is_the_last_in_sorted_order(tmp_path: Path) -> None:
+    """A name in two files resolves to the sorted-last file, whatever glob says.
+
+    This is the consequence users see: with glob order deciding, the same two
+    files could resolve either way on a different filesystem.  Both files
+    define ``pick``, so the winner is observable by calling it.
+    """
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir(parents=True)
+    for stem in ("a_early", "z_late"):
+        await anyio.Path(tools_dir / f"{stem}.py").write_text(
+            f'async def pick() -> str:\n    """From {stem}."""\n    return {stem!r}\n', encoding="utf-8"
+        )
+
+    with _shuffled_glob("reverse"):
+        tr = await ToolRegistry.load(tools_dir, f"dupe-{tmp_path.name}")
+
+    winner = tr.get("pick")
+    assert winner is not None
+    assert await winner() == "z_late", "duplicate-name winner followed glob order, not sorted order"
+    # Metadata and callable have to name the same file, so the description is
+    # checked too — a distinct docstring per file makes the source observable.
+    assert tr.tools["pick"].description == "From z_late."

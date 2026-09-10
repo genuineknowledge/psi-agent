@@ -600,8 +600,20 @@ class ToolRegistry:
 
         layer_id = _layer_id(tools_dir)
 
+        # ``glob`` yields in filesystem order, which differs across platforms and
+        # filesystems and is not stable under renames.  Load order is a hidden
+        # input to more than aesthetics: files that carry their own ``sys.path``
+        # preamble have to precede the files relying on it (59 tool files once
+        # failed to load because they did not), and the first file to import a
+        # dotted private helper binds the submodule as an attribute the later
+        # ones read instead of resolving.  Sorting by name makes those relative
+        # positions the same everywhere.  Sort key is the plain file name, so
+        # this is the in-layer order once each content layer globs its own dir —
+        # layer precedence orders the layers, this orders the files within one.
         try:
-            async for py_file in tools_anyio.glob("*.py"):
+            py_files = sorted([path async for path in tools_anyio.glob("*.py")], key=lambda path: path.name)
+
+            for py_file in py_files:
                 if py_file.name.startswith("_"):
                     continue
 
