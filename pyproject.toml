@@ -63,6 +63,9 @@ dependencies = [
     # Windows Python 3.14 不带 IANA 时区库, stdlib zoneinfo 需要 tzdata 才有
     # Asia/Shanghai 等条目 (正负面清单写表/日程/系统 prompt 时间戳都会用到)。
     "tzdata>=2024.1; platform_system == 'Windows'",
+    # guoshu-weekly demo 的 mock 取数服务连 MySQL;CI 的 ty check 覆盖 examples/,
+    # 不声明就是三条 unresolved-import。
+    "pymysql>=1.1.1",
 ]
 
 [dependency-groups]
