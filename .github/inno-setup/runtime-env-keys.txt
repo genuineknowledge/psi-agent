@@ -1,0 +1,34 @@
+# 装机版 .env 的注入清单 —— Windows (pyinstaller.yml 的 pwsh 步) 和 macOS (同文件的
+# bash 步) 都读这一份, 所以"两处清单一致"是结构保证, 不需要人去核对两段脚本。
+#
+# 每行一个环境变量名, 对应一个同名 GitHub Secret。空行和 `#` 注释行忽略。
+# CI 按行取 secret: 有值就写进 .env, 缺席就跳过该行 —— PR 分支没有 secret 时生成
+# 空 .env, 打包照常成功 (这个行为约定不变)。
+#
+# 到达运行时的路径: CI 写 agents/desktop/.env -> 随 workspace 装到安装目录 ->
+# launcher (haitun.c 的 load_env_file / launcher.sh 的 load_env_file) 把它灌进
+# psi-agent 子进程的环境。两个 launcher 都没有 key 白名单, 所以新增变量不用改
+# launcher。**Fusion Memory 自己不读 .env** (agents/desktop/tools/_fusion_memory/
+# embedding.py:90 只读 os.environ), 它完全依赖 launcher 这一步。
+
+# 联网搜索 (search.py)。原先这里只有这一个 key。
+SERPER_API_KEY
+
+# Fusion Memory 的 embedding 与 rerank 共用这一个 key
+# (embedding.py:92 和 :99)。缺了这一个, 两条都废。
+DASHSCOPE_API_KEY
+
+# Fusion Memory 抽取记忆项用的 LLM。embedding.py:118 的判据是 `all(dedicated)`:
+# **四个必须全非空**, 少一个就整组落空。
+#
+# 用这组专用变量而不是 PSI_AI_* 那组: PSI_AI_* 同时是内核 AI 层的配置来源
+# (src/psi_agent/ai/__init__.py:139-142), 注入它会连带改主对话模型的兜底配置。
+# 两组都能满足 embedding.py, 专用组的作用面窄, 所以选它。
+#
+# FUSION_MEMORY_MODEL_PROVIDER 的取值必须落在
+# {openai, openai-compatible, deepseek, dashscope} 之内 (embedding.py:126),
+# 否则 llm 被置 None 而**不报错** —— 又一条静默失败。下面的注入步会校验拼写。
+FUSION_MEMORY_MODEL_PROVIDER
+FUSION_MEMORY_MODEL_NAME
+FUSION_MEMORY_MODEL_API_KEY
+FUSION_MEMORY_MODEL_BASE_URL
