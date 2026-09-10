@@ -6259,6 +6259,10 @@ def weekly_group_stats(scope: str = "owners", top: int = 8, min_rounds: int = 0)
             published rounds. Inclusive -- "at least 5" means ``>= 5``.
     """
 
+    formal = _formal.dispatch("weekly_group_stats", scope=scope, top=top, min_rounds=min_rounds)
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         key = (scope or "owners").strip().lower()
         if key not in _GROUP_STATS_SCOPES:

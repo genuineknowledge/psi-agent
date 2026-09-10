@@ -526,8 +526,10 @@ class TestFormalBackend:
     def test_unknown_tool_falls_back(self, monkeypatch):
         monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
         assert _formal.enabled() is True
-        # 用真正未接线的工具做断言:已接线的工具会去连库,不能拿来当反例
-        assert _formal.dispatch("weekly_group_stats", scope="owners") is None
+        # 31 个工具已**全部接线**:反例改用「未注册的工具名 + 未迁移的参数组合」,
+        # 不再借某个工具当"还没接线"的样本(那样每接一个就要改一次断言)。
+        assert _formal.dispatch("weekly_not_a_tool") is None
+        assert _formal.dispatch("weekly_group_stats", scope="nope") is None
         assert _formal.dispatch("weekly_aggregate", group_by="nope") is None
         assert _formal.dispatch("weekly_schema", board="技术看板") is None  # 看板名走演示侧解析
 
@@ -1698,3 +1700,155 @@ class TestAggregateRouting:
         seen.clear()
         _formal._aggregate({"group_by": "project_group", "order_by": "finish_rate"})
         assert "ORDER BY finish_rate_pct" in seen[0]["sql"]
+
+
+class TestGroupStatsTemplates:
+    """集团板:完成时间是展示文本(两种写法可归一化)、多值按元素切、零附件任务留住。"""
+
+    def test_literal_percent_is_doubled_in_sql_text(self):
+        r"""psycopg 会对整条 SQL 做占位符解析:字面 % 必须写两遍,否则报 only '%s' ... allowed。
+
+        这条铁律本轮已经是第三次出现(前两次:`可用性(\d+)%` 与 `LIKE '(N期)'` 那种写法 ——
+        后者的 `%` 后面跟的是多字节汉字,报出来是 utf-8 解码错,看着像编码问题)。
+        """
+        sql, _params = o2.group_stats_owners()
+        assert "LIKE '%%,%%'" in sql and "NOT LIKE '%%,%%'" in sql
+        sql, _params = o2.group_stats_separators()
+        assert "LIKE '%%、%%'" in sql and "LIKE '%%,%%'" in sql
+        for sql, _params in (o2.group_stats_completion_time_formats(),
+                             o2.group_stats_completion_time()):
+            assert "'%" not in sql.replace("%%", "")
+
+    def test_completion_time_is_text_not_a_date(self):
+        """R-12:只有标准日期与 YYYYQn 能归一化,其余一律 NULL —— 不猜成 12-31。"""
+        sql, params = o2.group_stats_completion_time()
+        assert "~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'" in sql
+        assert "free_text" in sql and params == ()
+        # 归一化的 CASE **没有 ELSE**:自由文本落成 NULL,而不是被猜成某个日子
+        assert "ELSE" not in o2._COMPLETION_DEADLINE
+        assert "ARRAY['03-31','06-30','09-30','12-31']" in o2._COMPLETION_DEADLINE  # 季度取季末日
+        sql, _params = o2.group_stats_overdue_unparsable()
+        assert "IS NULL" in sql
+        sql, params = o2.group_stats_overdue("2026-08-15")
+        assert params == ("2026-08-15", "2026-08-15", 8)
+
+    def test_completion_time_format_priority_order(self):
+        """'2026年6月底' 同时命中「含底」与「中文年月」,判别顺序即优先级,不能重排。"""
+        sql, _params = o2.group_stats_completion_time_formats()
+        assert sql.index("'%%底%%'") < sql.index("'%%年%%月%%日%%'") < sql.index("'%%年%%月%%'")
+
+    def test_multivalue_is_split_by_element_not_liked(self):
+        """LIKE '%名字%' 会在不同人之间碰撞(短名是长名的子串)。"""
+        sql, _params = o2.group_stats_distinct_leads()
+        assert "unnest(string_to_array(" in sql and "coalesce(d.lead_owner_ids, '')" in sql
+        assert "LIKE" not in sql
+        sql, _params = o2.group_stats_owner_widths()
+        assert "cardinality(string_to_array(" in sql
+
+    def test_attachments_keep_tasks_with_zero(self):
+        """46 条里 18 条没有附件,那通常正是问句要数的 —— INNER JOIN 会把它们抹掉。"""
+        sql, _params = o2.group_stats_attachments()
+        assert "LEFT JOIN task_attachment a ON a.task_id = t.id AND a.is_deleted = 0" in sql
+        assert "ORDER BY attachments ASC, t.id" in sql
+        sql, _params = o2.group_stats_attachment_distribution()
+        assert "LEFT JOIN task_attachment a" in sql
+
+    def test_history_rounds_needs_both_gates(self):
+        """404 行过闸 362 行:丢掉行侧那道会把 42 条未审草稿折进来。"""
+        sql, _params = o2.group_stats_history_rounds()
+        assert "h.is_published = 1" in sql and "workflow_status = 'published'" in sql
+        assert "LEFT JOIN task_group_progress_history" in sql  # 零期任务留住
+        sql, params = o2.group_stats_history_rounds_at_least(10)
+        assert "h.is_published = 1" in sql and "HAVING count(*) >= %s" in sql
+        assert params == (10,)
+
+    def test_effect_consistency_returns_1_or_0(self):
+        """列的形状跟参考查询走:口径句里写的就是「same = 1 一致、0 不一致」。"""
+        sql, params = o2.group_stats_effect_consistency()
+        assert "(d.progress_effect = x.progress_effect)::int AS same" in sql
+        assert "ORDER BY same, d.task_id" in sql  # 不一致(0)排最前
+        assert params == (8,)
+
+    def test_project_group_raw_has_no_task_gate(self):
+        """裸表口径:本档的答案是 rows_,formal_rows 只作对照。"""
+        sql, params = o2.group_stats_project_group_raw(limit=8)
+        assert "LEFT JOIN task t ON t.id = d.task_id" in sql
+        assert "rows_" in sql and "formal_rows" in sql
+        assert params == (8,)
+
+    def test_status_effect_conflict_is_same_row(self):
+        sql, _params = o2.group_stats_status_effect_conflict()
+        assert "t.status = 0" in sql and "d.progress_effect IS NOT NULL" in sql
+
+    def test_unknown_scope_rejected_by_routing(self, monkeypatch):
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _formal.dispatch("weekly_group_stats", scope="nope") is None
+        # 14 个 scope 一个都不能少(漏一个就是一条只在特定问句上才回落的缺口)
+        assert set(o2.GROUP_STATS_SCOPES) == {
+            "owners", "project_group_raw", "completion_time", "completion_time_values",
+            "completion_time_formats", "overdue", "field_lengths", "attachments",
+            "attachment_distribution", "history_rounds", "separators", "owner_widths",
+            "effect_consistency", "status_effect_conflict",
+        }
+
+
+class TestGroupStatsRouting:
+    @staticmethod
+    def _capture(monkeypatch) -> list[dict]:
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            row = {"tasks": 46, "no_attachment": 18, "distinct_leads": 23, "total_count": 28,
+                   "unparsable_count": 34, "raw_table": 55, "formal_task_gate": 46,
+                   "task_id": 1, "attachments": 0, "rounds": 3, "same": 0}
+            result = {"ok": True, "columns": ["c"], "rows": [row], "row_count": 1, "caliber": "口径"}
+            result.update(kwargs.get("extra") or {})
+            return result
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        return seen
+
+    def test_attachments_hints_at_the_distribution_scope_when_paged(self, monkeypatch):
+        """清单档天生只能给一页:不指路,模型会拿 8 行手数分布(21/4/4 vs 真值 17/3/5)。"""
+        self._capture(monkeypatch)
+        got = _formal._group_stats({"scope": "attachments", "top": 8})
+        assert got is not None
+        assert "attachment_distribution" in got["caliber"] and "不要照这几行去数" in got["caliber"]
+        assert got["no_attachment_summary"]["no_attachment"] == 18
+
+    def test_full_listing_drops_the_hint(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+
+        def fake_full(**kwargs):
+            seen.append(kwargs)
+            return {"ok": True, "columns": ["c"], "rows": [{"tasks": 46}], "row_count": 46,
+                    "caliber": "口径", **(kwargs.get("extra") or {})}
+
+        monkeypatch.setattr(_formal, "envelope", fake_full)
+        got = _formal._group_stats({"scope": "attachments", "top": 46})
+        assert got is not None and "不要照这几行去数" not in got["caliber"]
+
+    def test_history_rounds_hoists_the_threshold_count(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        got = _formal._group_stats({"scope": "history_rounds", "top": 50, "min_rounds": 10})
+        assert got is not None and len(seen) == 2
+        assert got["tasks_at_least"] == {"min_rounds": 10, "tasks": 46}
+        assert "边界取等" in got["caliber"]
+
+    def test_overdue_always_reports_the_unparsable_count(self, monkeypatch):
+        """34 条判不了的必须一并说明 —— 否则"无法判断"会被读成"都没超期"。"""
+        seen = self._capture(monkeypatch)
+        monkeypatch.setenv("GUOSHU_AS_OF", "2026-08-15")
+        got = _formal._group_stats({"scope": "overdue"})
+        assert got is not None and len(seen) == 2
+        assert got["unparsable_count"] == 34
+        assert "不是「没超期」" in got["caliber"]
+        assert seen[0]["params"][-1] == 8 and "2026-08-15" in seen[0]["params"]
+
+    def test_project_group_raw_carries_both_denominators(self, monkeypatch):
+        self._capture(monkeypatch)
+        got = _formal._group_stats({"scope": "project_group_raw"})
+        assert got is not None and got["caliber_tiers"] == {"raw_table": 55, "formal_task_gate": 46}
+        assert "裸表 55 行、过闸 46 行" in got["caliber"]

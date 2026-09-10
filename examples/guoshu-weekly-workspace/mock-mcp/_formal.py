@@ -2049,6 +2049,237 @@ def _aggregate(args: dict[str, Any]) -> dict[str, Any] | None:
     return result
 
 
+def _group_stats(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_group_stats:集团板专表的统计(14 个 scope)。
+
+    三条口径在模板层钉住:完成时间是展示文本(只有两种写法能归一化,分档判别有优先级)、
+    多值负责人按元素切(不用 LIKE,会在不同人之间碰撞)、零附件任务必须留住。
+    """
+    scope = (args.get("scope") or "owners").strip().lower()
+    if scope not in tpl.GROUP_STATS_SCOPES:
+        return None  # 演示路径会报 unsupported_scope
+    top = max(1, min(MAX_ROWS, int(args.get("top") or 8)))
+    base = "is_deleted = 0 AND workflow_status = 'published';集团看板"
+
+    if scope == "owners":
+        sql, params = tpl.group_stats_owners()
+        result = envelope(sql=sql, params=params, caliber=f"{base};牵头人多值按逗号判定", limit=1)
+        dsql, dparams = tpl.group_stats_distinct_leads()
+        distinct = envelope(sql=dsql, params=dparams, caliber="逐元素拆分后去重", limit=1)
+        result["distinct_leads"] = (distinct.get("rows") or [{}])[0].get("distinct_leads")
+        return result
+
+    if scope == "project_group_raw":
+        sql, params = tpl.group_stats_project_group_raw(limit=top)
+        result = envelope(
+            sql=sql,
+            params=params,
+            caliber=(
+                "集团明细表(task_group_detail)**裸表口径**,不加任务闸门,本档的答案是 rows_ 那一列;"
+                "formal_rows 是同一分组下过正式任务闸门的行数,仅供口径对照,不要拿它当本档答案;"
+                "target_filled / measure_filled 同为裸表口径的填写行数;"
+                "问「各专项组有多少任务」不要用本档 —— 那是任务口径,请用 weekly_aggregate group_by=project_group"
+            ),
+            limit=top,
+            cap_last_param=True,
+        )
+        tsql, tparams = tpl.group_stats_raw_tiers()
+        tiers = envelope(sql=tsql, params=tparams, caliber="两个分母对照", limit=1)
+        row = (tiers.get("rows") or [{}])[0]
+        result["caliber_tiers"] = {
+            "raw_table": row.get("raw_table"),
+            "formal_task_gate": row.get("formal_task_gate"),
+        }
+        result["caliber"] += (
+            f";两个分母:裸表 {row.get('raw_table')} 行、过闸 {row.get('formal_task_gate')} 行"
+            "(差的那些挂在已软删或未发布的任务上)"
+        )
+        return result
+
+    if scope == "separators":
+        sql, params = tpl.group_stats_separators(limit=top)
+        return envelope(
+            sql=sql, params=params,
+            caliber=(
+                f"{base};按 project_owner_names 里出现的分隔符分档;"
+                "「单人无分隔符」是独立一档不是缺失;仅统计该栏非空的任务"
+            ),
+            limit=top, cap_last_param=True,
+        )
+
+    if scope == "owner_widths":
+        sql, params = tpl.group_stats_owner_widths(limit=top)
+        return envelope(
+            sql=sql, params=params,
+            caliber=(
+                f"{base};owner_count = 分隔符个数 + 1,顿号与逗号都计入(只扣一种会少算);"
+                "按人数倒序,最多的一条即首行"
+            ),
+            limit=top, cap_last_param=True,
+        )
+
+    if scope == "completion_time":
+        sql, params = tpl.group_stats_completion_time()
+        return envelope(
+            sql=sql, params=params,
+            caliber=f"{base};completion_time 为展示文本,只做格式判别不做日期运算(R-12)",
+            limit=1,
+        )
+
+    if scope == "completion_time_values":
+        sql, params = tpl.group_stats_completion_time_values(limit=top)
+        result = envelope(
+            sql=sql, params=params,
+            caliber=(
+                f"{base};去重后的 completion_time **原样取值**,按文本升序;"
+                "这是库里真实存在的写法,不要归纳成自己的类别名"
+            ),
+            limit=top, cap_last_param=True,
+        )
+        tsql, tparams = tpl.group_stats_completion_time_values_total()
+        total = envelope(sql=tsql, params=tparams, caliber="去重取值总数", limit=1)
+        result["total_count"] = (total.get("rows") or [{}])[0].get("total_count")
+        result["caliber"] += f";共 {result['total_count']} 种,top 决定返回前几种"
+        return result
+
+    if scope == "completion_time_formats":
+        sql, params = tpl.group_stats_completion_time_formats(limit=top)
+        result = envelope(
+            sql=sql, params=params,
+            caliber=(
+                f"{base};按写法归档(标准日期 / 季度 / 含「底」的模糊表述 / 中文年月日 / 中文年月 / 其他),"
+                "一条只进一档;档数是**写法种类数**,不是去重取值数(去重取值另有 completion_time_values);"
+                "'2026年6月底' 归入含「底」一档而非中文年月,判别按此优先级固定;"
+                "仅统计该栏非空的任务,空值不进任何一档"
+            ),
+            limit=top, cap_last_param=True,
+        )
+        tsql, tparams = tpl.group_stats_completion_time_formats_total()
+        total = envelope(sql=tsql, params=tparams, caliber="非空完成时间总数", limit=1)
+        result["total_count"] = (total.get("rows") or [{}])[0].get("total_count")
+        result["caliber"] += ";各档相加等于 total_count"
+        return result
+
+    if scope == "overdue":
+        sql, params = tpl.group_stats_overdue(as_of(), limit=top)
+        result = envelope(
+            sql=sql, params=params,
+            caliber=(
+                f"{base};超期 = 归一化截止日早于快照日且 status <> 2(未完成);"
+                f"相对时间窗以数据快照日 {as_of()} 为基准(非当前系统时间);"
+                "completion_time 是展示文本,**只有**标准日期与 YYYYQn 两种写法能归一化(季度取季末日);"
+                "只按标准日期写法看会一条都查不到,季度那几条归一化后才露出来;"
+                "本档行数即可判定的超期任务数,为 0 才是「可判定的那些都没超期」"
+            ),
+            limit=top, cap_last_param=True,
+        )
+        usql, uparams = tpl.group_stats_overdue_unparsable()
+        unp = envelope(sql=usql, params=uparams, caliber="判不了的条数", limit=1)
+        unparsable = (unp.get("rows") or [{}])[0].get("unparsable_count")
+        result["unparsable_count"] = unparsable
+        result["caliber"] += (
+            f";其余 {unparsable} 条判不了、不在本档 —— 它们是「无法判断」而不是「没超期」,"
+            "报结论时要把这个数一并说明"
+        )
+        return result
+
+    if scope == "field_lengths":
+        sql, params = tpl.group_stats_field_lengths()
+        return envelope(
+            sql=sql, params=params,
+            caliber=f"{base};仅统计 target_result 非空的任务;length 按字符非字节",
+            limit=1,
+        )
+
+    if scope == "status_effect_conflict":
+        sql, params = tpl.group_stats_status_effect_conflict(limit=top)
+        return envelope(
+            sql=sql, params=params,
+            caliber=(
+                f"{base};矛盾判据是**同一行内部**:status = 0(未开始)却填了非空 progress_effect;"
+                "effect_head 是前 50 字,完整文本用 weekly_group_detail_query 取;"
+                "这与 scope=effect_consistency 不是一回事 —— 那档比的是明细表与历史表两处文本是否一致,"
+                "两处写着同一句话也算一致,答不了「状态与成效自相矛盾」"
+            ),
+            limit=top, cap_last_param=True,
+        )
+
+    if scope == "effect_consistency":
+        sql, params = tpl.group_stats_effect_consistency(limit=top)
+        return envelope(
+            sql=sql, params=params,
+            caliber=(
+                f"{base};明细表 progress_effect 与历史表**最新一期**(is_published = 1)逐字比对;"
+                "same = 1 一致、0 不一致;不一致的排在最前,"
+                "先看 same = 0 有几行再下「全部一致」的结论"
+            ),
+            limit=top, cap_last_param=True,
+        )
+
+    if scope == "attachments":
+        sql, params = tpl.group_stats_attachments(limit=top)
+        result = envelope(
+            sql=sql, params=params,
+            caliber=f"{base};附件按 is_deleted = 0 计有效;LEFT JOIN 保留零附件任务(R-08);按条数升序",
+            limit=top, cap_last_param=True,
+        )
+        ssql, sparams = tpl.group_stats_attachments_summary()
+        summary = envelope(sql=ssql, params=sparams, caliber="附件总览", limit=1)
+        srow = (summary.get("rows") or [{}])[0]
+        result["no_attachment_summary"] = srow
+        total = int(srow.get("tasks") or 0)
+        if result.get("row_count") and int(result["row_count"]) < total:
+            # 46 条任务而 top 默认 8:模型拿到 8 行就去手数"几个任务有 1 个附件",
+            # 数出的是 21/4/4 而真值是 17/3/5 —— 清单档天生只能给一页。
+            result["caliber"] += (
+                f"\uff1b本次只返回 {result['row_count']} 行(top 决定,共 {total} 条任务),"
+                "不要照这几行去数「有几个任务是 1 个附件」——"
+                "要各档任务数请用 scope=attachment_distribution(服务端算完再回),"
+                f"要完整清单请把 top 提到 {total}"
+            )
+        return result
+
+    if scope == "attachment_distribution":
+        sql, params = tpl.group_stats_attachment_distribution(limit=top)
+        return envelope(
+            sql=sql, params=params,
+            caliber=(
+                f"{base};按附件条数分档统计任务数,附件按 is_deleted = 0 计有效;"
+                "零附件档由 LEFT JOIN 保住(占了近四成,丢了分布就变形);各档 tasks 相加等于集团板任务数;"
+                "档位不连续是正常的(库里没有 5 个附件的任务,所以 4 之后直接是 6);"
+                "这一档是**分布**,清单在 scope=attachments,不要拿清单的一页去数分布;"
+                "反过来也不成立:问「每个任务各有几个附件」要的是一任务一行的清单,"
+                "请改用 scope=attachments 并把 top 提到集团板任务数 —— "
+                "本档一行是一个档位而不是一个任务,拿它作答等于把明细压成几行分布,答的是另一个问题"
+            ),
+            limit=top, cap_last_param=True,
+        )
+
+    # history_rounds
+    min_rounds = max(0, int(args.get("min_rounds") or 0))
+    sql, params = tpl.group_stats_history_rounds(limit=top)
+    result = envelope(
+        sql=sql, params=params,
+        caliber=(
+            "任务侧 is_deleted = 0 AND workflow_status = 'published',且历史行自身 is_published = 1"
+            "(两道闸门缺一不可);集团看板;LEFT JOIN 保留零期任务(R-08);按期数降序、并列按 task id 升序"
+        ),
+        limit=top, cap_last_param=True,
+    )
+    if min_rounds:
+        asql, aparams = tpl.group_stats_history_rounds_at_least(min_rounds)
+        cleared = envelope(sql=asql, params=aparams, caliber="过门槛的任务数", limit=1)
+        result["tasks_at_least"] = {
+            "min_rounds": min_rounds,
+            "tasks": (cleared.get("rows") or [{}])[0].get("tasks"),
+        }
+        result["caliber"] += (
+            f"\uff1b至少 {min_rounds} 期(含 {min_rounds},边界取等);"
+            "tasks_at_least.tasks 是服务端算出的过门槛任务数,不要照清单前几行自己数"
+        )
+    return result
+
+
 def _task_lifecycle(args: dict[str, Any]) -> dict[str, Any] | None:
     """weekly_task_lifecycle:任务建立与发布的**另一个钟**(不是"报进展"那个)。"""
     grouping = (args.get("by") or "").strip().lower()
@@ -2113,6 +2344,7 @@ _HANDLERS = {
     "weekly_task_detail": _task_detail,
     "weekly_approval_turnaround": _approval_turnaround,
     "weekly_aggregate": _aggregate,
+    "weekly_group_stats": _group_stats,
 }
 
 # _NEW_HANDLERS 只是构建期的清单,避免手工漏接线

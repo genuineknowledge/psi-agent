@@ -4589,3 +4589,426 @@ def aggregate_total_groups(sql: str, params: tuple) -> tuple[str, tuple]:
     模型看到 5 行就答 5 行,不会因为"还有并列的"而自己补列成 9 行。
     """
     return f"SELECT count(*) AS total_groups FROM (\n{sql}\n) all_groups", params
+
+
+# ---- batch 20: 集团板统计(group_stats 的 14 个 scope)--------------------------
+#
+# 集团板这一档全部落在两张专表上:``task_group_detail``(1:1 扩展行)与
+# ``task_group_progress_history``(历次成效)。三条口径:
+#
+#   * **完成时间是展示文本**(R-12):能算日期的只有"标准日期"与"YYYYQn"两种写法,
+#     季度取季末日;其余自由文本归一化后为 **NULL** —— 不能猜成 12-31,那是替业务下判断。
+#     分档的**判别顺序即优先级**,不能重排:'2026年6月底' 同时命中「含底」与「中文年月」,
+#     先判到哪档就算哪档,调换后两档会把 11 拆成 6+5;
+#   * **多值负责人按元素切,不用 LIKE**:两种分隔符(顿号与逗号)混用,只按顿号切会把
+#     逗号串当成一个人;而 ``LIKE '%名字%'`` 会在不同人之间碰撞(短名是长名的子串);
+#   * **零附件的任务要留住**(LEFT JOIN,46 条里 18 条没有附件,那通常正是问句要数的)。
+
+GROUP_STATS_SCOPES = (
+    "owners",
+    "project_group_raw",
+    "completion_time",
+    "completion_time_values",
+    "completion_time_formats",
+    "overdue",
+    "field_lengths",
+    "attachments",
+    "attachment_distribution",
+    "history_rounds",
+    "separators",
+    "owner_widths",
+    "effect_consistency",
+    "status_effect_conflict",
+)
+
+GROUP_BOARD_JOIN = (
+    "JOIN task_board gb ON gb.id = t.board_id AND gb.is_deleted = 0 AND gb.code = 'group'"
+)
+
+# 完成时间的截止日归一化:只有两种写法能算出日子,其余为 NULL。
+_COMPLETION_DEADLINE = (
+    "CASE "
+    "WHEN d.completion_time ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' "
+    "THEN (d.completion_time)::date "
+    "WHEN d.completion_time ~ '^[0-9]{4}Q[1-4]$' THEN "
+    "(substr(d.completion_time, 1, 4) || '-' || "
+    "(ARRAY['03-31','06-30','09-30','12-31'])[substr(d.completion_time, 6, 1)::int])::date "
+    "END"
+)
+
+# 完成时间的「写法」分档。判别顺序即优先级,不能重排(见上)。
+_COMPLETION_TIME_FORMAT_CASE = (
+    "CASE "
+    "WHEN d.completion_time ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN '标准日期 YYYY-MM-DD' "
+    "WHEN d.completion_time ~ '^[0-9]{4}Q[1-4]$' THEN '季度 YYYYQn' "
+    "WHEN d.completion_time LIKE '%%底%%' THEN '模糊表述(含\u201c底\u201d)' "
+    "WHEN d.completion_time LIKE '%%年%%月%%日%%' THEN '中文年月日' "
+    "WHEN d.completion_time LIKE '%%年%%月%%' THEN '中文年月' "
+    "ELSE '其他' END"
+)
+
+
+def _group_scope() -> str:
+    """集团板任务的准入口径(只看集团看板)。"""
+    return f"{adm.sql_task_admission('pg', 't')}\n  AND gb.id IS NOT NULL"
+
+
+def group_stats_owners() -> tuple[str, tuple]:
+    """牵头人:多值 / 单人 / 未填 三档 + 去重人数。
+
+    ``LIKE '%%,%%'`` 里的 ``%%`` 不是笔误:SQL 文本里的字面 ``%`` 必须写两遍,
+    否则 psycopg 会把它当占位符(报 ``only '%s', '%b', '%t' are allowed``)。
+    """
+    sql = f"""
+SELECT count(*) AS tasks,
+       count(*) FILTER (WHERE d.lead_owner_ids LIKE '%%,%%')              AS multi_lead,
+       count(*) FILTER (WHERE d.lead_owner_ids NOT LIKE '%%,%%'
+                          AND coalesce(d.lead_owner_ids, '') <> '')       AS single_lead,
+       count(*) FILTER (WHERE coalesce(d.lead_owner_ids, '') = '')        AS no_lead
+FROM task_group_detail d
+JOIN task t ON t.id = d.task_id
+{GROUP_BOARD_JOIN}
+WHERE {_group_scope()}
+"""
+    return sql, ()
+
+
+def group_stats_distinct_leads() -> tuple[str, tuple]:
+    """牵头人逐元素拆分后去重计数(两种分隔符都要切)。"""
+    sql = f"""
+SELECT count(DISTINCT uid) AS distinct_leads
+FROM (
+    SELECT unnest({_multivalue_array("d.lead_owner_ids")}) AS uid
+    FROM task_group_detail d
+    JOIN task t ON t.id = d.task_id
+    {GROUP_BOARD_JOIN}
+    WHERE {_group_scope()}
+      AND coalesce(d.lead_owner_ids, '') <> ''
+) x
+WHERE uid <> ''
+"""
+    return sql, ()
+
+
+def group_stats_project_group_raw(limit: int = 8) -> tuple[str, tuple]:
+    """集团明细按专项组分(裸表口径,不加任务闸门)。
+
+    与 ``aggregate group_by=project_group`` 的**任务口径**是两回事:这里一行是明细表的行,
+    那里一行是任务。裸表 55 行 / 过闸 46 行,差的 9 行挂在已软删或未发布的任务上。
+    """
+    sql = f"""
+SELECT d.project_group AS grp, count(*) AS rows_,
+       count(*) FILTER (WHERE {adm.sql_task_admission("pg", "t")}) AS formal_rows,
+       count(*) FILTER (WHERE d.target_result IS NOT NULL AND d.target_result <> '') AS target_filled,
+       count(*) FILTER (WHERE d.implementation_measure IS NOT NULL
+                          AND d.implementation_measure <> '') AS measure_filled
+FROM task_group_detail d
+LEFT JOIN task t ON t.id = d.task_id
+GROUP BY d.project_group
+ORDER BY rows_ DESC, grp
+LIMIT %s
+"""
+    return sql, (max(1, int(limit)),)
+
+
+def group_stats_raw_tiers() -> tuple[str, tuple]:
+    """裸表 / 过闸两个分母(口径对照用)。"""
+    sql = f"""
+SELECT (SELECT count(*) FROM task_group_detail) AS raw_table,
+       (SELECT count(*) FROM task_group_detail d
+        JOIN task t ON t.id = d.task_id WHERE {adm.sql_task_admission("pg", "t")}) AS formal_task_gate
+"""
+    return sql, ()
+
+
+def group_stats_separators(limit: int = 8) -> tuple[str, tuple]:
+    """多值负责人栏的分隔符分档(混着填的:顿号 / 逗号 / 两种并存 / 单人无分隔符)。"""
+    sql = f"""
+SELECT CASE
+         WHEN d.project_owner_names LIKE '%%、%%' AND d.project_owner_names LIKE '%%,%%'
+              THEN '两种并存'
+         WHEN d.project_owner_names LIKE '%%、%%' THEN '全角顿号'
+         WHEN d.project_owner_names LIKE '%%,%%' THEN '半角逗号'
+         ELSE '单人无分隔符' END AS separator_kind,
+       count(*) AS n
+FROM task_group_detail d
+JOIN task t ON t.id = d.task_id
+{GROUP_BOARD_JOIN}
+WHERE {_group_scope()}
+  AND d.project_owner_names IS NOT NULL AND d.project_owner_names <> ''
+GROUP BY separator_kind
+ORDER BY n DESC, separator_kind
+LIMIT %s
+"""
+    return sql, (max(1, int(limit)),)
+
+
+def group_stats_owner_widths(limit: int = 8) -> tuple[str, tuple]:
+    """每个任务的负责人个数 = 分隔符个数 + 1(顿号与逗号都计入)。"""
+    sql = f"""
+SELECT t.task_name, d.project_owner_names,
+       cardinality({_multivalue_array("d.project_owner_names")}) AS owner_count
+FROM task_group_detail d
+JOIN task t ON t.id = d.task_id
+{GROUP_BOARD_JOIN}
+WHERE {_group_scope()}
+  AND d.project_owner_names IS NOT NULL AND d.project_owner_names <> ''
+ORDER BY owner_count DESC, t.id
+LIMIT %s
+"""
+    return sql, (max(1, int(limit)),)
+
+
+def group_stats_completion_time() -> tuple[str, tuple]:
+    """完成时间的格式三档:标准日期 / 自由文本 / 空(R-12:只做格式判别)。"""
+    sql = f"""
+SELECT count(*) AS tasks,
+       count(*) FILTER (WHERE d.completion_time ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$') AS iso_date,
+       count(*) FILTER (WHERE d.completion_time IS NOT NULL AND d.completion_time <> ''
+                          AND d.completion_time !~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$') AS free_text,
+       count(*) FILTER (WHERE d.completion_time IS NULL OR d.completion_time = '') AS blank
+FROM task_group_detail d
+JOIN task t ON t.id = d.task_id
+{GROUP_BOARD_JOIN}
+WHERE {_group_scope()}
+"""
+    return sql, ()
+
+
+def group_stats_completion_time_values(limit: int = 8) -> tuple[str, tuple]:
+    """去重后的 completion_time **原样取值**(不是归纳出来的类别名)。"""
+    sql = f"""
+SELECT DISTINCT d.completion_time
+FROM task_group_detail d
+JOIN task t ON t.id = d.task_id
+{GROUP_BOARD_JOIN}
+WHERE {_group_scope()}
+  AND d.completion_time IS NOT NULL AND d.completion_time <> ''
+ORDER BY d.completion_time
+LIMIT %s
+"""
+    return sql, (max(1, int(limit)),)
+
+
+def group_stats_completion_time_values_total() -> tuple[str, tuple]:
+    sql = f"""
+SELECT count(DISTINCT d.completion_time) AS total_count
+FROM task_group_detail d
+JOIN task t ON t.id = d.task_id
+{GROUP_BOARD_JOIN}
+WHERE {_group_scope()}
+  AND d.completion_time IS NOT NULL AND d.completion_time <> ''
+"""
+    return sql, ()
+
+
+def group_stats_completion_time_formats(limit: int = 8) -> tuple[str, tuple]:
+    """按**写法**归档(档数是写法种类数,不是去重取值数)。"""
+    sql = f"""
+SELECT {_COMPLETION_TIME_FORMAT_CASE} AS fmt, count(*) AS cnt
+FROM task_group_detail d
+JOIN task t ON t.id = d.task_id
+{GROUP_BOARD_JOIN}
+WHERE {_group_scope()}
+  AND d.completion_time IS NOT NULL AND d.completion_time <> ''
+GROUP BY fmt
+ORDER BY cnt DESC, fmt
+LIMIT %s
+"""
+    return sql, (max(1, int(limit)),)
+
+
+def group_stats_completion_time_formats_total() -> tuple[str, tuple]:
+    sql = f"""
+SELECT count(*) AS total_count
+FROM task_group_detail d
+JOIN task t ON t.id = d.task_id
+{GROUP_BOARD_JOIN}
+WHERE {_group_scope()}
+  AND d.completion_time IS NOT NULL AND d.completion_time <> ''
+"""
+    return sql, ()
+
+
+def group_stats_overdue(as_of: str, limit: int = 8) -> tuple[str, tuple]:
+    """超期:归一化截止日早于快照日且 ``status <> 2``(未完成)。
+
+    只认标准日期与 ``YYYYQn`` 两种写法(季度取季末日),其余为"判不了"而不是"没超期"。
+    """
+    _check_as_of(as_of)
+    sql = f"""
+SELECT t.id AS task_id, t.task_name, t.status, d.completion_time,
+       {adm.normalize_date_sql(_COMPLETION_DEADLINE)} AS deadline,
+       (%s::date - ({_COMPLETION_DEADLINE}))::int AS days_overdue
+FROM task_group_detail d
+JOIN task t ON t.id = d.task_id
+{GROUP_BOARD_JOIN}
+WHERE {_group_scope()}
+  AND ({_COMPLETION_DEADLINE}) < %s::date
+  AND t.status <> 2
+ORDER BY deadline, t.id
+LIMIT %s
+"""
+    return sql, (as_of, as_of, max(1, int(limit)))
+
+
+def group_stats_overdue_unparsable() -> tuple[str, tuple]:
+    """判不了的条数:完成时间非空但两种写法都对不上。
+
+    它们**不是"没超期"**,是判不了 —— 混起来会把"无法判断"说成"都没超期"。
+    """
+    sql = f"""
+SELECT count(*) AS unparsable_count
+FROM task_group_detail d
+JOIN task t ON t.id = d.task_id
+{GROUP_BOARD_JOIN}
+WHERE {_group_scope()}
+  AND d.completion_time IS NOT NULL AND d.completion_time <> ''
+  AND ({_COMPLETION_DEADLINE}) IS NULL
+"""
+    return sql, ()
+
+
+def group_stats_field_lengths() -> tuple[str, tuple]:
+    """``target_result`` 的字符数统计(``length`` 按字符,不是字节)。"""
+    sql = f"""
+SELECT count(*) AS tasks,
+       round(avg(length(d.target_result))::numeric, 1) AS avg_chars,
+       max(length(d.target_result)) AS max_chars,
+       min(length(d.target_result)) AS min_chars
+FROM task_group_detail d
+JOIN task t ON t.id = d.task_id
+{GROUP_BOARD_JOIN}
+WHERE {_group_scope()}
+  AND d.target_result IS NOT NULL AND d.target_result <> ''
+"""
+    return sql, ()
+
+
+def group_stats_status_effect_conflict(limit: int = 8) -> tuple[str, tuple]:
+    """状态与当期成效自相矛盾:``status = 0``(未开始)却填了非空 ``progress_effect``。"""
+    sql = f"""
+SELECT t.id AS task_id, t.task_name, t.status,
+       left(d.progress_effect, 50) AS effect_head
+FROM task_group_detail d
+JOIN task t ON t.id = d.task_id
+{GROUP_BOARD_JOIN}
+WHERE {_group_scope()}
+  AND t.status = 0
+  AND d.progress_effect IS NOT NULL AND d.progress_effect <> ''
+ORDER BY t.id
+LIMIT %s
+"""
+    return sql, (max(1, int(limit)),)
+
+
+def group_stats_effect_consistency(limit: int = 8) -> tuple[str, tuple]:
+    """明细表的当前成效 vs 历史表**最新一期**(``is_published = 1``)的成效,逐字比对。
+
+    ``same`` 按参考实现给 **1 / 0**(不是布尔):口径句里写的就是 "same = 1 一致、0 不一致",
+    列的形状跟参考查询走。不一致的排最前(``ORDER BY same``):先看 ``same = 0`` 有几行,
+    再下"全部一致"的结论 —— 两段长文本靠模型眼看,46 行里会把不一致的说成一致。
+    """
+    sql = f"""
+SELECT d.task_id, t.task_name, x.version_no,
+       (d.progress_effect = x.progress_effect)::int AS same
+FROM task_group_detail d
+JOIN task t ON t.id = d.task_id
+{GROUP_BOARD_JOIN}
+JOIN (
+    SELECT h.task_id, h.progress_effect, h.version_no,
+           row_number() OVER (PARTITION BY h.task_id ORDER BY h.version_no DESC, h.id DESC) AS rn
+    FROM task_group_progress_history h
+    WHERE h.is_published = 1
+) x ON x.task_id = d.task_id AND x.rn = 1
+WHERE {_group_scope()}
+ORDER BY same, d.task_id
+LIMIT %s
+"""
+    return sql, (max(1, int(limit)),)
+
+
+def group_stats_attachments(limit: int = 8) -> tuple[str, tuple]:
+    """逐任务的附件条数(LEFT JOIN 保留零附件任务,按条数升序)。"""
+    sql = f"""
+SELECT t.id AS task_id, t.task_name, count(a.id) AS attachments
+FROM task t
+{GROUP_BOARD_JOIN}
+LEFT JOIN task_attachment a ON a.task_id = t.id AND {adm.sql_soft_delete("a")}
+WHERE {_group_scope()}
+GROUP BY t.id, t.task_name
+ORDER BY attachments ASC, t.id
+LIMIT %s
+"""
+    return sql, (max(1, int(limit)),)
+
+
+def group_stats_attachments_summary() -> tuple[str, tuple]:
+    """集团板任务数 + 零附件任务数(自检,与清单同一口径)。"""
+    sql = f"""
+SELECT count(*) AS tasks,
+       count(*) FILTER (WHERE NOT EXISTS (
+           SELECT 1 FROM task_attachment a
+           WHERE a.task_id = t.id AND {adm.sql_soft_delete("a")}
+       )) AS no_attachment
+FROM task t
+{GROUP_BOARD_JOIN}
+WHERE {_group_scope()}
+"""
+    return sql, ()
+
+
+def group_stats_attachment_distribution(limit: int = 8) -> tuple[str, tuple]:
+    """附件条数的**分布**(每档多少任务),零附件档由 LEFT JOIN 保住。"""
+    sql = f"""
+SELECT c.attachments, count(*) AS tasks
+FROM (
+    SELECT t.id, count(a.id) AS attachments
+    FROM task t
+    {GROUP_BOARD_JOIN}
+    LEFT JOIN task_attachment a ON a.task_id = t.id AND {adm.sql_soft_delete("a")}
+    WHERE {_group_scope()}
+    GROUP BY t.id
+) c
+GROUP BY c.attachments
+ORDER BY c.attachments
+LIMIT %s
+"""
+    return sql, (max(1, int(limit)),)
+
+
+def group_stats_history_rounds(limit: int = 8) -> tuple[str, tuple]:
+    """逐任务的历史期数(LEFT JOIN 保留零期任务;``is_published = 1`` 是行侧闸门)。"""
+    sql = f"""
+SELECT t.id AS task_id, t.task_name, count(h.id) AS rounds
+FROM task t
+{GROUP_BOARD_JOIN}
+LEFT JOIN task_group_progress_history h ON h.task_id = t.id AND h.is_published = 1
+WHERE {_group_scope()}
+GROUP BY t.id, t.task_name
+ORDER BY rounds DESC, t.id
+LIMIT %s
+"""
+    return sql, (max(1, int(limit)),)
+
+
+def group_stats_history_rounds_at_least(min_rounds: int) -> tuple[str, tuple]:
+    """至少 ``min_rounds`` 期的任务数(边界取等)。
+
+    这里的闸门是**两道**:任务侧已发布(``_group_scope``)且历史行自身
+    ``is_published = 1`` —— 404 行过闸 362 行,丢掉行侧那道会把 42 条未审草稿折进来。
+    """
+    sql = f"""
+SELECT count(*) AS tasks
+FROM (
+    SELECT h.task_id
+    FROM task_group_progress_history h
+    JOIN task t ON t.id = h.task_id
+    {GROUP_BOARD_JOIN}
+    WHERE {_group_scope()}
+      AND h.is_published = 1
+    GROUP BY h.task_id
+    HAVING count(*) >= %s
+) x
+"""
+    return sql, (max(1, int(min_rounds)),)
