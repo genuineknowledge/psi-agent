@@ -29,9 +29,49 @@
 | 文件 | 内容 |
 |---|---|
 | `mock-mcp/_pg.py` | PG 只读连接(psycopg 3 延迟导入;read-only 会话 + 固定 schema) |
-| `mock-mcp/_admission.py` | 硬约束与值域:发布准入、进展正式版、submission published 轮、枚举校验、year 显式、时间归一化片段 |
-| `mock-mcp/_o2oa_templates.py` | 首批 PG 查询模板:①已发布任务清单(5.1)②最新正式进展(5.2)③任务详情+年度目标+里程碑+集团扩展(5.3) |
-| `tests/test_o2oa_pg.py` | 上述规则的纯单元测试(不连库) |
+| `mock-mcp/_admission.py` | 硬约束与值域:发布准入、进展正式版、历史版本(status=3)、submission published 轮、枚举校验、year 显式、时间归一化与比较片段、可选表降级文案 |
+| `mock-mcp/_o2oa_templates.py` | PG 查询模板:①已发布任务清单(5.1)②最新正式进展(5.2,`DISTINCT ON` 单次扫描)③任务详情+年度目标+里程碑+集团扩展(5.3)④历史版本进展(rule 2 例外)⑤分类路径(`WITH RECURSIVE`)⑥附件元数据(仅元数据,未授权时降级) |
+| `tests/test_o2oa_pg.py` | 22 项纯单元测试(不连库):规则、域值、模板形状、参数与占位符一致、每个模板必带准入守卫 |
+
+### 3.1 本轮迭代要点(2026-09-10)
+
+- **时间字段**:`to_char(文本列)` 在 PG 上直接报错(`function to_char(text, unknown) does not exist`),
+  而国数方说明第六条明确时间字段"可能是文本也可能是时间戳"。`normalize_ts_sql` 因此改为
+  先 `::timestamp` 再 `to_char`,一条表达式同时适配两种形态;新增 `parse_ts_sql` 供日期窗口比较,
+  避免文本列被当成字符串比较。
+- **取数提速**:最新进展由"每行一个 `MAX(version_no)` 相关子查询"改为 `DISTINCT ON (t.id)`
+  单次扫描加排序 —— 任务数与版本数增长时,前者是成倍的额外往返开销。
+- **补齐规则**:历史版本进展(`status = 3`)、递归分类路径(`task_category.parent_id`)、
+  附件元数据边界(只出文件名/大小/上传时间,**不出现 `storage_path`**)。
+- **域值表**:国数方说明的 `task.workflow_status` 域值表未列 `cancelled`,但真实数据里存在。
+  文档域值集合保持原样,另设 `OBSERVED_EXTRA_WORKFLOW_STATUS` 让分布类问答能列出该值
+  (准入仍只匹配 `published`)。
+
+### 3.2 字段对齐结论(2026-09-10 静态对账)
+
+以国数方说明为基准,对 12 张表族逐列核对演示库(weekly_mock)结构:
+
+- **11 张表与说明逐列完全一致**(含 8 张必开表):`task_board` / `task_category` / `task` /
+  `task_progress` / `task_milestone` / `task_workflow_submission` / `task_group_detail` 等;
+- 唯一差异:`task_year_goal` 在演示库缺 `created_at` / `updated_at`(不影响问答);
+- 说明未给出 4 张可选表的字段清单,代码里凡用到这些表的地方都在注释中标明"列名沿用演示库结构,
+  联调时按真实库核对"。
+
+## 3.3 数据权限现状(2026-09-10 实测)
+
+只读账号已能登录、会话只读有效(写操作实测全部被拒),但**目标库缺 `CONNECT` 授权**,
+因此真库数据尚未引入:
+
+| 项 | 实测 |
+|---|---|
+| 账号 | `task_board_readonly`,隶属 `read_only_all`(`pg_read_all_data`),PG 15.5 |
+| 可与不可 | `he3mysql` / `postgres` 可连(仅扩展视图,0 张业务表);**`o2oa` / `oa_biz` / `oa_agent` 拒 CONNECT** |
+| 报错 | `FATAL: permission denied for database "o2oa"`(`User does not have CONNECT privilege`) |
+| 需要 | `GRANT CONNECT ON DATABASE o2oa TO read_only_all;`(纯只读用途) |
+
+授权一生效,即可用仓库外的核对脚本一次性产出:表/列/注释/行数、枚举真实分布、
+时间字段真实形态、最小抽样,并与本说明的字段字典逐列 diff。
+
 
 ## 4. 31 工具迁移批次(未完成部分)
 
@@ -66,4 +106,18 @@
 4. 分类用 `task_category.parent_id` 拼路径;集团板只在 `board.code='group'`
    且用 `task_group_detail`;
 5. 年度目标必带显式 `year`;
-6. 软删过滤;空长文本答“未填写”;时间输出经 `normalize_ts_sql` 归一化。
+6. 软删过滤;空长文本答“未填写”;时间输出经 `normalize_ts_sql`(先 `::timestamp`
+   再 `to_char`,文本列与时间戳列同一写法),日期窗口比较经 `parse_ts_sql`。
+
+## 7. 校验方式(改模板后必跑)
+
+```bash
+# 规则与模板单测(不连库)
+uv run pytest examples/guoshu-weekly-workspace/tests/test_o2oa_pg.py -o addopts='' -q
+# 静态检查
+uv run ruff check examples/guoshu-weekly-workspace
+uv run ty check examples/guoshu-weekly-workspace
+# PG 语法校验(pglast,离线确认生成的 SQL 是合法 PostgreSQL,且参数与占位符一一对应)
+uv run --no-project --with pglast python <核对目录>/check_pg_syntax.py
+```
+
