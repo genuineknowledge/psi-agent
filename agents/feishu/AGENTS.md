@@ -296,7 +296,7 @@ service tools:
 - `proposal-writing-standard` — **按《方案撰写执行跟进与验收 SOP》v2.0** 撰写/检查/补救 + 通过后建跟进定时。权威骨架是 **预备/实验/实施/跟进验收** 四期（不是旧《技术方案撰写 SOP》的 RFC+11 章；旧壳检查判结构违规并帮写改成四期）。**特化·资料与友商对照**(海豚帮写必做): 每次先检索资料与友商/替代做法, 自动追问「为什么这么写 / 为什么有价值」, 对照复用 vs 自建后写入预备期; 硬闸门含**对照**。另含动机/诚实/决策/证据/**执行性**（里程碑须绝对 DDL + 验收门）。里程碑业务三类 **无交付物 / 交付物 / 场景闭环** ↔ 枚举 `无需` / `文档` / `POC`；到点文案与材料分流按类走。检查不通过只改稿；通过或落盘通过稿 → 按 `proposal_id` **顶替** `prop-<id>-*` 定时组，`-pre`/`-ddl` 一律 `fire=tool` + **`feishu_proposal_nudge`**。入口提醒见 `proposal-need-remind`；评审见 `proposal-review-standard`。`productivity`。
 - `proposal-review-standard` — **评审建议档位**（四档；非 binding 立项），检查口径同 v2.0；**可进入深评 → 同步跟进定时**；旧 11 章未改写不得给通过档。`knowledge-base`。
 - `proposal-intake` / `proposal-followup` — **已并入 writing-standard 的跳转壳**（不再要求「人确认定稿再跟进」；跟进不单列）。材料到达后的对照仍走 `proposal-acceptance-poc` / `proposal-acceptance-doc`。
-- `proposal-acceptance-poc` — **POC 检测文档到达后的验收建议(非 binding)**：对照方案场景/样本/及格线；三者不全则不假装客观通过。重跑验真 → `poc-l2-reproduce`。`productivity`。
+- `proposal-acceptance-poc` — **POC 检测文档到达后的验收建议(非 binding)**：对照方案场景/样本/及格线；三者不全则不假装客观通过。**特化·海豚功能 POC**: 优先 `haitun-feature-uat`/`poc_feature_uat`(A→B 干净 Session, 禁止对本会话同步 chat), 并追问及格线为何/证据价值; 接线复现声称另走 `poc-l2-reproduce`。`productivity`。
 - `proposal-acceptance-doc` — **交付/验收文档到达后的对照建议(非 binding)**：对照书面标准减读；与 POC 材料分流。`productivity`。
 - `proposal-acceptance-suggest` — **验收建议通用入口**：门类型不明时用；能判断则分流到 poc/doc。禁止「组织验收通过」；勾选不自动触发。`productivity`。
 - `poc-l2-reproduce` — **POC L2 可操作则复现（接线/静态断言）**：触发「实验方法 / 数据来源 / 复现 / L2 自测」等；`poc_l2_probe` 跑 assert_* playbook。对话式功能验收 → `haitun-feature-uat`。`productivity`。

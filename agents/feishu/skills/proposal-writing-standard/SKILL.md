@@ -327,7 +327,8 @@ schedule_manage(
 | **-ddl** | **交付物** | 「【方案跟进】「\<节点\>」到点. 请交交付物(文档/链接)并对照: \<标准指针\>. 勾选≠验收.」 |
 | **-ddl** | **场景闭环** | 「【方案跟进】「\<节点\>」到点. 请交场景闭环材料(评测/检测报告; 须含场景·样本·结果对及格线). 勾选≠验收.」 |
 
-材料贴来后: 交付物 → `proposal-acceptance-doc`; 场景闭环 → `proposal-acceptance-poc`;
+材料贴来后: 交付物 → `proposal-acceptance-doc`; 场景闭环 → `proposal-acceptance-poc`
+(海豚功能 POC 会再分流 `haitun-feature-uat`);
 无交付物 → 只更新进度语义, **不要**假装跑验收对照.
 
 ## Boundaries
