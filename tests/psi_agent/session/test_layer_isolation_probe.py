@@ -28,13 +28,14 @@ from pathlib import Path
 import pytest
 
 from psi_agent.session import tool_registry
+from psi_agent.session.tool_layers import Layer, executing_tool_file, layers_open
 from psi_agent.session.tool_registry import _tools_dir_on_sys_path
 
 # ── the two-layer loading shell ───────────────────────────────────────────────
 
 
 def _exec_layers_together(layer_dirs: list[Path]) -> dict[str, types.ModuleType]:
-    """Open every layer's import scope at once, then exec layer by layer.
+    """Open every layer at once through the kernel, then exec layer by layer.
 
     This is the shape content layering forces: while the personal layer's
     files are exec'd, the official layer is still in scope (that is what
@@ -42,20 +43,25 @@ def _exec_layers_together(layer_dirs: list[Path]) -> dict[str, types.ModuleType]
     one dir, closing its scope, then loading the next — the sequential case
     already covered by ``test_two_workspaces_bind_their_own_private_helper``.
 
-    The shell does nothing else: no per-layer ``sys.path`` re-prioritising,
-    no ``sys.modules`` bookkeeping.  Anything that would isolate the layers
-    belongs in ``tool_registry``, not here.  Probes that care about
-    collisions run this in both layer orders, so a result cannot be an
-    artefact of which dir happened to land at the front of ``sys.path``.
+    The shell holds no isolation logic of its own: it calls the kernel's
+    ``layers_open`` and ``executing_tool_file`` and nothing else, so what these
+    probes judge is ``tool_layers``' behaviour rather than a local reimplementation
+    of it.  Priority follows the given order (ascending), which is only about
+    ``tools`` last-wins; private-helper resolution ignores it in favour of the
+    asking layer, and that is what the criteria here check.  Probes that care
+    about collisions run in both layer orders, so a result cannot be an artefact
+    of which dir happened to land at the front of ``sys.path``.
 
     Returns ``{"<layer>/<file stem>": module}`` for every exec'd tool file.
     """
+    layers = [Layer(str(d.resolve()), d, priority) for priority, d in enumerate(layer_dirs)]
     modules: dict[str, types.ModuleType] = {}
     with ExitStack() as stack:
-        for layer_dir in layer_dirs:
-            stack.enter_context(_tools_dir_on_sys_path(layer_dir))
-        for layer_dir in layer_dirs:
-            modules.update(_exec_layer_files(layer_dir))
+        for layer in layers:
+            stack.enter_context(_tools_dir_on_sys_path(layer.tools_dir))
+        stack.enter_context(layers_open(layers))
+        for layer in layers:
+            modules.update(_exec_layer_files(layer))
     return modules
 
 
@@ -67,19 +73,25 @@ def _ordered(official: Path, personal: Path, order: str) -> list[Path]:
 BOTH_ORDERS = pytest.mark.parametrize("order", ["official-first", "personal-first"])
 
 
-def _exec_layer_files(tools_dir: Path) -> dict[str, types.ModuleType]:
-    """Compile + exec one layer's public tool files; caller owns the scope."""
+def _exec_layer_files(layer: Layer) -> dict[str, types.ModuleType]:
+    """Compile + exec one layer's public tool files; caller owns the scope.
+
+    Each file runs inside ``executing_tool_file``, which is what the kernel's
+    own loader does per file — that is where the asking layer is pinned and the
+    file's transient plain-name aliases are released.
+    """
     out: dict[str, types.ModuleType] = {}
-    layer = tools_dir.parent.name
-    for py_file in sorted(tools_dir.glob("*.py")):
+    name = layer.tools_dir.parent.name
+    for py_file in sorted(layer.tools_dir.glob("*.py")):
         if py_file.name.startswith("_"):
             continue
-        module_name = f"psi_probe_{layer}_{py_file.stem}"
+        module_name = f"psi_probe_{name}_{py_file.stem}"
         module = types.ModuleType(module_name)
         module.__file__ = str(py_file)
         sys.modules[module_name] = module
-        exec(compile(py_file.read_text(encoding="utf-8"), str(py_file), "exec"), module.__dict__)
-        out[f"{layer}/{py_file.stem}"] = module
+        with executing_tool_file(layer.layer_id):
+            exec(compile(py_file.read_text(encoding="utf-8"), str(py_file), "exec"), module.__dict__)
+        out[f"{name}/{py_file.stem}"] = module
     return out
 
 
@@ -147,21 +159,17 @@ def _isolate_import_state() -> Iterator[None]:
 
 
 @BOTH_ORDERS
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "must fail on current code: both layers are in scope at once, so the "
-        "bare-name helper resolves to whichever dir sits earlier on sys.path "
-        "and the stash/restore pair never runs between layers. When layering "
-        "is fixed this becomes XPASS, strict=True turns that red, and the "
-        "xfail marker should then be deleted."
-    ),
-)
 def test_p1_bare_name_helper_resolves_per_layer(tmp_path: Path, order: str) -> None:
     """P1: each layer's tool must bind its *own* bare-name private helper.
 
-    Run in both layer orders: one layer always wins both lookups, so
-    whichever order runs, one of the two assertions fails.
+    Run in both layer orders: whichever dir sits earlier on ``sys.path`` must
+    not decide the outcome, so a result that is an artefact of open order fails
+    in one of the two orders.
+
+    This was ``xfail(strict=True)`` while the shell below was the whole story:
+    one ``sys.modules['_layer_helper']`` slot, so one layer answered both
+    lookups.  It passes now because the shell opens the layers through
+    ``layers_open``, and the kernel's hook gives each layer its own scoped name.
     """
     official = tmp_path / "official" / "tools"
     personal = tmp_path / "personal" / "tools"
@@ -179,19 +187,15 @@ def test_p1_bare_name_helper_resolves_per_layer(tmp_path: Path, order: str) -> N
 
 
 @BOTH_ORDERS
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "must fail on current code, same collision as P1 plus a second "
-        "defect: tool_registry.py:106 skips every module name containing a "
-        "dot, so dotted private packages (agents/feishu/tools/_feishu/, 15 "
-        "modules) are never stashed and leak across dirs even sequentially. "
-        "When layering is fixed this becomes XPASS, strict=True turns that "
-        "red, and the xfail marker should then be deleted."
-    ),
-)
 def test_p2_dotted_helper_resolves_per_layer(tmp_path: Path, order: str) -> None:
-    """P2: same as P1 but the private helper is a dotted package (``_pkg.sub``)."""
+    """P2: same as P1 but the private helper is a dotted package (``_pkg.sub``).
+
+    Was ``xfail(strict=True)`` for two reasons at once: P1's collision, plus
+    ``_stash_private_modules`` skipping every name containing a dot, which left
+    dotted submodules in ``sys.modules`` even on the sequential path.  Both are
+    fixed — the hook scopes the package per layer and the stash now keys dotted
+    names by their package dir.
+    """
     official = tmp_path / "official" / "tools"
     personal = tmp_path / "personal" / "tools"
     _write_dotted_layer(official, "LAYER-OFFICIAL")
@@ -280,17 +284,13 @@ def test_layered_load_restores_sys_path_and_clears_bare_modules(tmp_path: Path) 
     assert leaked == [], f"bare-name private modules left in sys.modules: {leaked}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "must fail on current code: tool_registry.py:106 skips names "
-        "containing a dot, so _layer_pkg.sub is never stashed and stays in "
-        "sys.modules after every scope closes — this is the residue that "
-        "makes P2 leak. Becomes XPASS once dotted names are stashed too."
-    ),
-)
 def test_layered_load_clears_dotted_modules(tmp_path: Path) -> None:
-    """Dotted private submodules must not survive the layered load either."""
+    """Dotted private submodules must not survive the layered load either.
+
+    Was ``xfail(strict=True)``: ``_stash_private_modules`` skipped every name
+    containing a dot, so ``_layer_pkg.sub`` stayed in ``sys.modules`` after
+    every scope closed — the residue that made P2 leak.
+    """
     official = tmp_path / "official" / "tools"
     personal = tmp_path / "personal" / "tools"
     _write_dotted_layer(official, "LAYER-OFFICIAL")
