@@ -526,10 +526,19 @@ class TestFormalBackend:
     def test_unknown_tool_falls_back(self, monkeypatch):
         monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
         assert _formal.enabled() is True
-        assert _formal.dispatch("weekly_schema", board="tech") is None
         # 用真正未接线的工具做断言:已接线的工具会去连库,不能拿来当反例
+        # (weekly_schema 接线后这条断言从"已接线"挪到了下面几个仍未迁移的工具上)
+        assert _formal.dispatch("weekly_task_detail", task="1") is None
         assert _formal.dispatch("weekly_aggregate", by="board") is None
         assert _formal.dispatch("weekly_task_lifecycle") is None
+        assert _formal.dispatch("weekly_group_stats") is None
+
+    def test_wired_schema_routes_to_the_formal_source(self, monkeypatch):
+        """weekly_schema 已接线:路由判定不连库(靠 board= 的取值域判定)。"""
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _formal.dispatch("weekly_schema", board="技术看板") is None  # 看板名交给演示侧解析
+        assert _formal.dispatch("weekly_schema", board="nope") is None
+        assert "weekly_schema" in _formal._HANDLERS
 
     def test_unmigrated_arguments_fall_back_instead_of_narrowing(self, monkeypatch):
         """未迁移的参数组合必须回落演示路径,绝不能返回一个范围更小的答案。"""
@@ -1011,3 +1020,105 @@ class TestYearGoalStatsRouting:
         _formal._year_goal_stats({"scope": "coverage", "year": 2026, "include_informal": True})
         assert "workflow_status = 'published'" in seen[1]["sql"]
         assert "include_informal 对它无效" in seen[1]["caliber"]
+
+
+class TestSchemaTemplates:
+    """字段字典只列契约内 12 张表、剔除禁止外泄列;分类树带软删与看板收窄。"""
+
+    def test_columns_query_excludes_blocked_fields_and_stray_tables(self):
+        sql, params = o2.schema_columns()
+        assert "information_schema.columns" in sql
+        assert "pg_description" in sql  # PG 没有 COLUMN_COMMENT,注释要经 pg_class 的 oid 取
+        assert "objsubid = c.ordinal_position" in sql
+        assert "c.table_name = ANY(%s)" in sql
+        schema, tables, blocked = params
+        assert schema == "public"
+        assert list(tables) == list(o2.CHATBI_TABLES) and len(tables) == 12
+        assert list(blocked) == ["storage_path", "payload"]
+
+    def test_categories_carry_soft_delete_and_optional_board(self):
+        sql, params = o2.schema_categories()
+        assert "c.is_deleted = 0" in sql and params == (200,)
+        sql, params = o2.schema_categories("group")
+        assert "code = %s" in sql and params == ("group", 200)
+        with pytest.raises(ValueError, match=r"board\.code"):
+            o2.schema_categories("nope")
+
+    def test_boards_query(self):
+        sql, params = o2.schema_boards()
+        assert "is_deleted = 0" in sql and params == ()
+
+
+class TestFreshnessSnapshotTemplates:
+    """数据快照日期:两个口径(含未发布 vs 只看正式)+ 导入批次。"""
+
+    def test_board_rows_keep_boards_without_tasks(self):
+        sql, params = o2.freshness_board_latest("2026-08-15")
+        assert "LEFT JOIN task" in sql
+        assert "days_behind" in sql and params == ("2026-08-15",)
+
+    def test_days_behind_is_two_dates_subtracted(self):
+        """天数必须按日期相减:date - timestamp 会得到 interval,date_part 会少一天。"""
+        sql, _params = o2.freshness_board_latest("2026-08-15")
+        assert "::date - max(" in sql
+        assert "date_part" not in sql and "extract(" not in sql
+
+    def test_published_split_uses_board_code_not_id(self):
+        """分流条件是 b.code,不是演示实现里写死的 b.id = 2(正式库 id 不保证一致)。"""
+        sql, params = o2.freshness_published_per_board("2026-08-15", group_history_granted=True)
+        assert "b.code = 'group'" in sql and "b.id = 2" not in sql
+        assert "task_group_progress_history" in sql and "task_progress p" in sql
+        assert params == ("2026-08-15",)
+        with pytest.raises(PermissionError, match="未在本次只读授权范围内"):
+            o2.freshness_published_per_board("2026-08-15", group_history_granted=False)
+
+    def test_import_batches_only_count_finished(self):
+        sql, params = o2.freshness_import_batches()
+        assert "status = 1 THEN" in sql and "status <> 1 THEN" in sql
+        assert params == ()
+
+
+class TestFreshnessSnapshotRouting:
+    """未授权可选表时的降级:键要保留,值给 null(删掉键就分不清两种"查不到")。"""
+
+    @staticmethod
+    def _capture(monkeypatch) -> list[dict]:
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            row = {"newest": "2026-08-09 00:00:00", "days_behind": 6, "newest_finished_batch": "2026-07-31"}
+            return {"ok": True, "columns": ["c"], "rows": [row], "row_count": 1, "caliber": "口径"}
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        return seen
+
+    def test_all_four_parts_present_when_granted(self, monkeypatch):
+        self._capture(monkeypatch)
+        monkeypatch.setenv("GUOSHU_AS_OF", "2026-08-15")
+        monkeypatch.setenv(
+            "TASK_BOARD_GRANTED_OPTIONAL_TABLES",
+            "task_group_progress_history,task_progress_import",
+        )
+        got = _formal.dispatch("weekly_freshness")
+        assert got is not None and len(got) >= 4
+        assert got["as_of"] == "2026-08-15"
+        assert isinstance(got["overall"], dict) and got["overall"]["days_behind"] == 6
+        assert got["published_progress"] and isinstance(got["published_progress"], list)
+        assert isinstance(got["tech_import"], dict)
+
+    def test_ungranted_optional_tables_degrade_with_keys_kept(self, monkeypatch):
+        self._capture(monkeypatch)
+        monkeypatch.delenv("TASK_BOARD_GRANTED_OPTIONAL_TABLES", raising=False)
+        got = _formal.dispatch("weekly_freshness")
+        assert got is not None
+        assert got["published_progress"] == []
+        assert set(got["tech_import"]) == {
+            "newest_finished_batch",
+            "newest_batch_any_status",
+            "newest_unfinished_batch",
+        }
+        assert all(value is None for value in got["tech_import"].values())
+        assert "task_progress_import 未在本次只读授权范围内" in got["caliber"]
+        assert "task_group_progress_history 未在本次只读授权范围内" in got["caliber"]

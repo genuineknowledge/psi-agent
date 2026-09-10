@@ -1822,6 +1822,28 @@ SELECT {select}
 
 # ---- batch 6: 责任人角色 / 集团板明细 / 行数体检 ------------------------------
 
+# ChatBI 契约覆盖的 12 张表:体检与字段字典都只认这一组。
+# 不按 ``public`` 全 schema 列举 —— 正式库的 public 下还有别的表,列进来就是噪音,
+# 而且会把字段字典顶到行数上限之外。
+CHATBI_TABLES = (
+    "task_board",
+    "task_category",
+    "task",
+    "task_year_goal",
+    "task_progress",
+    "task_milestone",
+    "task_workflow_submission",
+    "task_group_detail",
+    "task_group_progress_history",
+    "task_workflow_action",
+    "task_attachment",
+    "task_progress_import",
+)
+
+# 禁止外泄的字段(与 ``_store.BLOCKED_FIELDS`` 同义):字段字典里也不出现,
+# 这样"这个清单就是可对外引用的全部字段"这句话才成立。
+BLOCKED_COLUMNS = ("storage_path", "payload")
+
 
 def owner_roles(person: str) -> tuple[str, tuple]:
     """某人在正式任务里的角色拆分:主责 / 项目负责人 / 牵头领导 / 去重并集。
@@ -1953,22 +1975,8 @@ def table_row_counts() -> tuple[str, tuple]:
     正式源没有 ``information_schema`` 式的行数估算可靠值,所以逐表 ``count(*)``;
     四张可选表用 ``to_regclass`` 判断存在性,未授权/不存在时返回 NULL 而不是报错。
     """
-    tables = (
-        "task_board",
-        "task_category",
-        "task",
-        "task_year_goal",
-        "task_progress",
-        "task_milestone",
-        "task_workflow_submission",
-        "task_group_detail",
-        "task_group_progress_history",
-        "task_workflow_action",
-        "task_attachment",
-        "task_progress_import",
-    )
     parts = []
-    for table in tables:
+    for table in CHATBI_TABLES:
         parts.append(
             f"SELECT '{table}' AS table_name, "
             f"CASE WHEN to_regclass('public.{table}') IS NULL THEN NULL "
@@ -3570,3 +3578,153 @@ FROM (
 ) x
 """
     return sql, gate_params
+
+
+# ---- batch 14: 看板/分类/字段字典(schema)与数据快照日期(freshness)---------
+#
+# 这两个工具的返回值都**没有 columns** —— 它们是复合信封(dict of lists /
+# dict of dicts),不是一张表。所以:
+#
+#   * 字段字典**只列举 ChatBI 契约覆盖的 12 张表**,不按 ``public`` 全 schema 列。
+#     正式库的 public 下还有别的表,列进来是噪音,还会把结果顶到行数上限之外;
+#   * 字段字典**剔除禁止外泄的列**(storage_path / payload):它们在数据里不出现,
+#     在 schema 里也不该出现,否则"这个清单就是可对外引用的全部字段"这句话不成立。
+
+
+def schema_boards() -> tuple[str, tuple]:
+    """看板清单(``is_deleted = 0``,按 sort_order 定序)。"""
+    sql = """
+SELECT id, name, code, sort_order
+FROM task_board
+WHERE is_deleted = 0
+ORDER BY sort_order, id
+"""
+    return sql, ()
+
+
+def schema_categories(board_code: str | None = None) -> tuple[str, tuple]:
+    """分类树;``parent_id`` 为空即一级分类(rule 4:路径靠自关联拼,不臆造)。"""
+    code, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_soft_delete("c")]
+    params: list[object] = []
+    if code:
+        where.append("c.board_id = (SELECT id FROM task_board WHERE code = %s AND is_deleted = 0)")
+        params.append(code)
+    sql = f"""
+SELECT c.id, c.board_id, c.parent_id, c.name, c.sort_order
+FROM task_category c
+WHERE {"\n  AND ".join(where)}
+ORDER BY c.board_id, c.parent_id, c.sort_order
+LIMIT %s
+"""
+    return sql, (*params, 200)
+
+
+def schema_columns() -> tuple[str, tuple]:
+    """字段字典:表名 + 列名 + 类型 + 列注释(PG 的注释在 ``pg_description`` 里)。
+
+    演示源读 MySQL 的 ``information_schema.COLUMNS.COLUMN_COMMENT``;PG 的
+    ``information_schema.columns`` **没有**这一列,注释要经 ``pg_class`` 的 oid
+    去 ``pg_description`` 取(``objsubid`` 就是 ordinal_position)。
+    """
+    sql = """
+SELECT c.table_name, c.column_name, c.data_type,
+       coalesce(d.description, '') AS comment
+FROM information_schema.columns c
+JOIN pg_catalog.pg_class     cls ON cls.relname = c.table_name
+JOIN pg_catalog.pg_namespace ns  ON ns.oid = cls.relnamespace AND ns.nspname = c.table_schema
+LEFT JOIN pg_catalog.pg_description d
+       ON d.objoid = cls.oid AND d.objsubid = c.ordinal_position
+WHERE c.table_schema = %s
+  AND c.table_name = ANY(%s)
+  AND c.column_name <> ALL(%s)
+ORDER BY c.table_name, c.ordinal_position
+"""
+    return sql, ("public", list(CHATBI_TABLES), list(BLOCKED_COLUMNS))
+
+
+def freshness_board_latest(as_of: str) -> tuple[str, tuple]:
+    """每个看板:最新进展时间(``task.latest_progress_time``,含未发布行)与落后天数。
+
+    LEFT JOIN 保留没有正式任务的看板 —— 用 INNER JOIN 会让那个看板整行消失,
+    读起来像"这个看板不存在"。
+    """
+    _check_as_of(as_of)
+    sql = f"""
+SELECT b.name AS board_name,
+       {adm.normalize_ts_sql("max((t.latest_progress_time)::timestamp)")} AS latest_progress,
+       (%s::date - max((t.latest_progress_time)::timestamp)::date)::int AS days_behind,
+       count(t.id) AS formal_task_count
+FROM task_board b
+LEFT JOIN task t ON t.board_id = b.id AND {adm.sql_task_admission("pg", "t")}
+WHERE {adm.sql_soft_delete("b")}
+GROUP BY b.id, b.name, b.sort_order
+ORDER BY b.sort_order
+"""
+    return sql, (as_of,)
+
+
+def freshness_snapshot_overall(as_of: str) -> tuple[str, tuple]:
+    """全库那一对(最新时间点 + 落后天数):分看板行答不了"整个数据更新到什么时候"。"""
+    _check_as_of(as_of)
+    sql = f"""
+SELECT {adm.normalize_ts_sql("max((t.latest_progress_time)::timestamp)")} AS newest,
+       (%s::date - max((t.latest_progress_time)::timestamp)::date)::int AS days_behind,
+       count(*) AS formal_task_count
+FROM task t
+WHERE {adm.sql_task_admission("pg", "t")}
+"""
+    return sql, (as_of,)
+
+
+def freshness_published_per_board(as_of: str, group_history_granted: bool) -> tuple[str, tuple]:
+    """每个看板的**正式**最新进展:按看板各取自己的表,不看 ``latest_progress_time``。
+
+    两件事都是踩过的坑:
+
+    * ``task.latest_progress_time`` **含未发布行**,所以它比正式口径新(技术组
+      08-09 vs 07-31)。问"技术组数据更新到什么时候"要答正式口径那一列;
+    * 两个看板的正式进展不在同一张表:技术组 ``task_progress``、集团组
+      ``task_group_progress_history``。只 JOIN ``task_progress`` 会把集团组算成 NULL,
+      等于把"集团组数据更新到什么时候"答成"没有数据"。分流条件是 **``b.code``**
+      而不是演示实现里写死的 ``b.id = 2`` —— 正式库的看板 id 不保证与演示库一致。
+    """
+    _check_as_of(as_of)
+    hint = adm.require_optional_table("task_group_progress_history", group_history_granted)
+    if hint:
+        raise PermissionError(hint)
+    group_expr = "max(CASE WHEN h.is_published = 1 THEN (h.report_time)::timestamp END)"
+    tech_expr = "max(CASE WHEN p.is_published = 1 THEN (p.report_time)::timestamp END)"
+    pick = f"CASE WHEN b.code = 'group' THEN {group_expr} ELSE {tech_expr} END"
+    sql = f"""
+SELECT b.name AS board_name,
+       {adm.normalize_ts_sql(pick)} AS newest_published_progress,
+       (%s::date - ({pick})::date)::int AS published_days_behind
+FROM task_board b
+LEFT JOIN task t ON t.board_id = b.id AND {adm.sql_task_admission("pg", "t")}
+LEFT JOIN task_progress p ON p.task_id = t.id
+LEFT JOIN task_group_progress_history h ON h.task_id = t.id
+WHERE {adm.sql_soft_delete("b")}
+GROUP BY b.id, b.name, b.code, b.sort_order
+ORDER BY b.sort_order
+"""
+    return sql, (as_of,)
+
+
+def freshness_import_batches() -> tuple[str, tuple]:
+    """导入批次日期:只有 ``status = 1`` 才算跑完。
+
+    "技术组的正式数据卡在导入批次上":最后一个跑完的批次才是"数据更新到"的日期,
+    还在处理中的那批没过发布门,不能当答案。
+    """
+    sql = f"""
+SELECT {adm.normalize_date_sql("max(CASE WHEN status = 1 THEN (data_date)::timestamp END)")}
+           AS newest_finished_batch,
+       {adm.normalize_date_sql("max((data_date)::timestamp)")} AS newest_batch_any_status,
+       {adm.normalize_date_sql("max(CASE WHEN status <> 1 THEN (data_date)::timestamp END)")}
+           AS newest_unfinished_batch
+FROM task_progress_import
+"""
+    return sql, ()

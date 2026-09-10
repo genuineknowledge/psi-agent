@@ -173,6 +173,10 @@ def weekly_schema(board: str = "") -> str:
         board: Optional board code (tech/group) or name to scope the category tree.
     """
 
+    formal = _formal.dispatch("weekly_schema", board=board)
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         boards = store.fetch(
             "SELECT id, name, code, sort_order FROM task_board WHERE is_deleted = 0 ORDER BY sort_order, id",
@@ -6541,6 +6545,10 @@ def weekly_group_stats(scope: str = "owners", top: int = 8, min_rounds: int = 0)
 @mcp.tool()
 def weekly_freshness() -> str:
     """Report data snapshot dates so the agent anchors relative time to data, not wall clock."""
+
+    formal = _formal.dispatch("weekly_freshness")
+    if formal is not None:
+        return _dump(formal)
 
     def work() -> dict[str, Any]:
         rows = store.fetch(

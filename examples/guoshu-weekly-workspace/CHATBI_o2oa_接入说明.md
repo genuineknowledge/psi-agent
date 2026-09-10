@@ -1,12 +1,12 @@
 # ChatBI 正式数据接入说明(o2oa / O2OA PostgreSQL)
 
-> **进度快照(2026-09-10,第 27 轮)**
+> **进度快照(2026-09-10,第 28 轮)**
 >
-> - **工具接线:21 / 31**。余下 10 个调用时回落演示路径;接线优先级见第 4 节。
+> - **工具接线:23 / 31**。余下 8 个调用时回落演示路径;接线优先级见第 4 节。
 > - **三套真库验收(同构 PG 实例 + 演示库数据)**:
->   - 端到端 `verify_end_to_end.py`:**247 / 247** 断言通过;
+>   - 端到端 `verify_end_to_end.py`:**268 / 268** 断言通过;
 >   - 口径验收 `verify_numbers_v2.py`:**38 / 38** 通过(mock docstring 里写死的契约数字逐条复现);
->   - 列集合对照 `column_parity.py`:**75 / 75** 一致(原先剩的 3 处已查清:全是**对照器侧**的
+>   - 列集合对照 `column_parity.py`:**78 / 78** 一致(原先剩的 3 处已查清:全是**对照器侧**的
 >     解析与桩问题,不是正式源的列对不上 —— 详见 3.0.6)。
 > - **交付形式**:服务 / Docker(`Dockerfile`,streamable-http,默认 18900);不含前端,由主 Agent 经 MCP 调用。
 > - **唯一外部卡点**:`o2oa` 库缺 `CONNECT` 授权,直连尚未打通 ——
@@ -199,7 +199,9 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 | `weekly_progress_range` | ✅ 已接线 | 时间轴出口:列集合 `task_id / task_name / version_no / progress_date / report_time / lag_days`;窗口两端闭区间,相对窗口锚在基准日(非系统时间);`total_count` / `total_tasks` **活过截断**;短窗口 0 行时附「按月上报」提示;`by=` / `peak=` / `date_field=report_time` 回落 |
 | `weekly_milestone_stats` | ✅ 已接线(6 scope × 10 维度) | summary 474 / 已完成 242 / 51.1%;`deleted` **全表口径** 566/36/602(不套任务闸门);`fully_deleted` 用 NOT EXISTS 得 **3** 条(「有软删行」是 23 条,差一个量级);`per_task` LEFT JOIN 保留零里程碑任务并把 `top_tie_count`(**23**)提到顶层,总览挂 `summary` 键;`mismatch` 两个 kind 是反向量词(6 ↔ 限 2026 只剩 3;8 ↔ 限 2026 涨到 22) |
 | `weekly_year_goal_stats` | ✅ 已接线(6 scope) | `by_year` 2025/2026/2027 = 128/117/68(**合计 313**),`include_informal=True` 放开闸门得 **387**(差 74 条挂在非正式任务上);`coverage` 用 **EXISTS** 不是 JOIN,分母恒为全部 128 项(2026 → 117 有 / 11 缺 = 91.4%);`missing` 提到顶层 `total_count`(11;加 `in_progress_only` → 10);`missing_by_group` 各档之和 = 11;`span` 均值 **2.45** 由服务端算(分母只含设过目标的任务);`multi_year` 2026×2025 = **117**(技术组 77);缺 `year` / `board=` 给看板名 / `span` 带 `year` 一律回落 |
-| 其余 10 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
+| `weekly_schema` | ✅ 已接线 | 复合信封(boards / categories / table_columns / field_notes,**没有 `columns`**):看板 2 条、分类树 47 条(`board=group` → 19 条);字段字典覆盖契约内 **12 张表**(task 表 22 列,含 `is_deleted`)+ 剔除禁止外泄列;`board=` 给看板名回落 |
+| `weekly_freshness` | ✅ 已接线 | **数据快照日**,不是新鲜度分布:各看板行(技术组 latest 08-09 / 落后 6 天、集团组 08-14 / 1 天)+ `overall`(全库 08-14 / 1 天 / 128 项)+ `published_progress`(技术组 **07-31** / 15 天 —— 与 08-09 差 9 天即发布滞后;集团组取自集团历史表)+ `tech_import`(跑完批次 **07-31**,最新批次 08-15 仍在处理中);两张可选表未授权时**保留键、值给 null** 并在口径里说明 |
+| 其余 8 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
 
 三条硬规则:
 
@@ -541,6 +543,40 @@ publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 1
    不转文本会报 `function string_agg(integer, unknown) does not exist`。
 6. **`board=` 只认 `tech` / `group` 两个码**:演示实现的 `resolve_board` 还接受看板**名字**
    (「集团看板」)。名字的解析交给演示路径,正式源不猜 —— 猜错会答成另一个看板。
+
+### 3.0.9 schema 与 freshness:两个"没有 columns"的复合信封(2026-09-10 第 28 轮)
+
+`weekly_schema`(能力发现)与 `weekly_freshness`(**数据快照日**)接线完成。这两个工具
+的返回值都**不是一张表**:前者回 boards / categories / table_columns / field_notes 四块,
+后者回 看板行 + `overall` + `published_progress` + `tech_import`。三条如实记录:
+
+1. **两者都没有 `columns`**,所以 `_formal.envelope` 那条路用不上 —— 各子查询跑一次再拼。
+   对照器也随之补了一条规则:**演示实现返回的信封里没有 `columns` 时按顶层载荷键比对**
+   (正式源必须照样给出演示源那几个键,多给允许)。区分"复合信封"与"有一张表的出口"是必要的:
+   复合出口的演示实现**也会**发 SQL(`weekly_schema` 的 boards 查询),SQL 别名会解析出
+   一组看着像输出列的候选,不区分就会报成假的不一致。
+2. **`weekly_freshness` 与 `weekly_freshness_distribution` 是两件事**:前者答"数据更新到
+   什么时候了",后者答"各任务多久没报进展了"。E6-01 就是问前者却拿到了后者。真库实测四组数:
+   - 各看板 `latest_progress`(= `task.latest_progress_time`,**含未发布行**):技术组 08-09 / 落后 6 天,集团组 08-14 / 1 天;
+   - `overall`(全库那一对):08-14 / 1 天 / 128 项正式任务;
+   - `published_progress`(**正式口径**):技术组 **07-31** / 15 天 —— 与 08-09 差 9 天,这个差就是发布滞后;集团组取自 `task_group_progress_history` 得 08-14;
+   - `tech_import`:跑完(`status = 1`)的批次是 **07-31**,而最新批次是 08-15(**仍在处理中**)——技术组的正式数据其实卡在导入批次上。
+
+   两个实现细节:分流条件是 **`b.code = 'group'`** 而不是演示实现里写死的 `b.id = 2`
+   (正式库的看板 id 不保证与演示库一致);天数按 **两个日期相减** 得出,不用 `date_part`
+   (`date - timestamp` 是 interval,会少一天)。
+3. **可选表未授权时保留键、值给 null**。`tech_import` 的三个日期在未授权时是 `null`,
+   键**不删** —— 删掉这个键,调用方就分不清"本来没有批次表"与"批次日期查不到"。
+   这与 `weekly_health` 用 NULL 表示"表不在授权内"是同一条口径(打码而不是删列)。
+4. **字段字典只列契约内的 12 张表**,不按 `public` 全 schema 列举(正式库 public 下还有别的表,
+   列进来是噪音,还会把结果顶到行数上限之外);并**剔除 `storage_path` / `payload`**,
+   这样"这个清单即可对外引用的全部字段"那句话才成立。PG 没有 `COLUMN_COMMENT`,
+   列注释要经 `pg_class` 的 oid 去 `pg_description` 取(`objsubid` 就是 `ordinal_position`)。
+
+> 对照器本轮还修了一个桩的错:`fake_fetch` 此前返回**空行** `[{}]`,于是手工拼信封的演示
+> 实现(`weekly_schema` 的 `by_table` 循环读 `row["table_name"]`)抛 `KeyError`、被 `_guard`
+> 包成 `internal_error`,对照器只看到"取不到演示列"。现在按解析出的列名给键 ——
+> 桩造出来的行就该像真行。
 
 ## 5. 能力边界(未授权表时)
 - `task_attachment` 只读元数据:问答只能答“存在附件《文件名》”,文件体在

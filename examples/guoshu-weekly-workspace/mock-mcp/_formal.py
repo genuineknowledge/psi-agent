@@ -1285,10 +1285,156 @@ def _year_goal_stats(args: dict[str, Any]) -> dict[str, Any] | None:
         )
     return result
 
+
+def _schema(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_schema:看板 / 分类树 / 字段字典。
+
+    这个工具的返回值**没有 columns** —— 它是复合信封(boards / categories /
+    table_columns / field_notes),不是一张表。所以 ``envelope`` 那条路用不上,
+    三张子表各自跑一次再拼起来(与演示源同形)。
+    """
+    raw_board = (args.get("board") or "").strip()
+    if raw_board and raw_board not in adm.BOARD_CODE_DOMAIN:
+        return None  # 看板名字的解析交给演示侧的 resolve_board
+    board_code = raw_board or None
+
+    bsql, bparams = tpl.schema_boards()
+    boards = envelope(sql=bsql, params=bparams, caliber="is_deleted = 0", limit=MAX_ROWS)
+    csql, cparams = tpl.schema_categories(board_code)
+    categories = envelope(
+        sql=csql,
+        params=cparams,
+        caliber="is_deleted = 0;parent_id 为空是一级分类",
+        limit=MAX_ROWS,
+        cap_last_param=True,
+    )
+    cols_sql, cols_params = tpl.schema_columns()
+    columns = envelope(
+        sql=cols_sql,
+        params=cols_params,
+        caliber=f"仅 ChatBI 契约覆盖的 12 张表;已排除禁止外泄字段:{', '.join(tpl.BLOCKED_COLUMNS)}",
+        limit=MAX_ROWS,
+    )
+    by_table: dict[str, list[str]] = {}
+    for row in columns["rows"]:
+        by_table.setdefault(str(row["table_name"]), []).append(str(row["column_name"]))
+    return {
+        "ok": True,
+        "boards": boards["rows"],
+        "categories": categories["rows"],
+        "table_columns": by_table,
+        "field_notes": {
+            "formal_task": "is_deleted = 0 AND workflow_status = 'published'",
+            "status": "0未开始 / 1进行中 / 2已完成 / 3已停用",
+            "completion_time": "展示文本,不可做日期运算(R-12)",
+            "owner_multi_value": "分管领导等为多值分隔文本,须去空格后匹配(R-13)",
+            "blocked_fields": list(tpl.BLOCKED_COLUMNS),
+            "sensitive_fields": ["review_comment", "opinion"],
+            "table_columns_note": "已剔除禁止外泄字段,故此清单即可对外引用的全部字段;"
+            "只列 ChatBI 契约覆盖的 12 张表,正式库 public 下的其他表不在契约内",
+        },
+        "caliber": (
+            "看板与分类树均带 is_deleted = 0;"
+            "字段字典取自 information_schema.columns(列注释经 pg_description),"
+            f"已剔除禁止外泄字段 {', '.join(tpl.BLOCKED_COLUMNS)}"
+        ),
+        "snapshot_note": FORMAL_SNAPSHOT_NOTE,
+        "snapshot_date": as_of(),
+    }
+
+
+def _freshness_snapshot(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_freshness:**数据快照日期**(不是新鲜度分布)。
+
+    与 ``weekly_freshness_distribution`` 是两件事:这个工具答"数据更新到什么时候了",
+    那个答"各任务多久没报进展了"。E6-01 就是问前者却拿到了后者。
+
+    四个部分:各看板行(含未发布口径)、全库那一对、各看板的**正式**口径、
+    导入批次日期。最后一项依赖可选表 ``task_progress_import``:未授权时**保留键**
+    但值为 null 并在口径里说明 —— 删掉这个键会让调用方分不清"没有批次表"与
+    "批次日期查不到"。
+    """
+    anchor = as_of()
+    sql, params = tpl.freshness_board_latest(anchor)
+    result = envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            "is_deleted = 0 AND workflow_status = 'published';相对时间须以此快照锚定;"
+            "days_behind 是快照日减该看板最新进展时间,由服务端算好;"
+            "问「数据更新到什么时候了」两个数都要报:最新时间点,以及它距快照日几天"
+            "(overall 里给的是全库那一对,各看板另有自己的一对)"
+        ),
+        limit=MAX_ROWS,
+        extra={"as_of": anchor},
+    )
+    osql, oparams = tpl.freshness_snapshot_overall(anchor)
+    overall = envelope(sql=osql, params=oparams, caliber="全库那一对", limit=1)
+    # 总览是一行(不是行数组),与演示源同形:调用方读 result["overall"]["newest"]。
+    result["overall"] = (overall.get("rows") or [{}])[0]
+    result["as_of"] = anchor
+
+    if optional_granted("task_group_progress_history"):
+        psql, pparams = tpl.freshness_published_per_board(anchor, group_history_granted=True)
+        published = envelope(
+            sql=psql,
+            params=pparams,
+            caliber=(
+                "newest_published_progress 只算 is_published = 1 的正式进展行,"
+                "并按看板各取自己的表:技术组 task_progress、集团组 task_group_progress_history;"
+                "上面各看板行的 latest_progress 是 task.latest_progress_time,它含未发布行,"
+                "两者不等就是发布滞后(技术组 08-09 vs 07-31);"
+                "问「(某看板)数据更新到什么时候」答正式口径这一列,不要答 latest_progress"
+            ),
+            limit=MAX_ROWS,
+        )
+        result["published_progress"] = published["rows"]
+        result["caliber"] += (
+            ";newest_published_progress 只算 is_published = 1 的正式进展行,"
+            "并按看板各取自己的表:技术组 task_progress、集团组 task_group_progress_history;"
+            "上面各看板行的 latest_progress 是 task.latest_progress_time,它含未发布行,"
+            "两者不等就是发布滞后(技术组 08-09 vs 07-31);"
+            "问「(某看板)数据更新到什么时候」答正式口径这一列,不要答 latest_progress"
+        )
+    else:
+        result["published_progress"] = []
+        result["caliber"] += (
+            ";task_group_progress_history 未在本次只读授权范围内,"
+            "published_progress 为空 —— 集团看板的正式进展时间不可答,"
+            "不要用 latest_progress 顶替"
+        )
+
+    if optional_granted("task_progress_import"):
+        isql, iparams = tpl.freshness_import_batches()
+        batches = envelope(
+            sql=isql,
+            params=iparams,
+            caliber=(
+                "导入批次只有 status = 1 才算跑完;newest_unfinished_batch 那批还没过发布门,"
+                "不能当作「数据已更新到」的日期(08-15 批次仍在处理中,正式口径停在 07-31)"
+            ),
+            limit=1,
+        )
+        result["tech_import"] = (batches.get("rows") or [{}])[0]
+    else:
+        result["tech_import"] = {
+            "newest_finished_batch": None,
+            "newest_batch_any_status": None,
+            "newest_unfinished_batch": None,
+        }
+        result["caliber"] += (
+            ";task_progress_import 未在本次只读授权范围内,tech_import 三个日期为 null"
+            "(键保留:删掉就分不清「没有批次表」与「批次日期查不到」)"
+        )
+    return result
+
+
+# 工具名 -> 处理函数。放在最后:新加的函数要先 def 出来再进这张表。
 _HANDLERS = {
     "weekly_task_query": _task_query,
     "weekly_progress_coverage": _coverage,
     "weekly_freshness_distribution": _freshness,
+    "weekly_freshness": _freshness_snapshot,
     "weekly_attachment_query": _attachment,
     "weekly_year_goal_query": _year_goal,
     "weekly_milestone_query": _milestone,
@@ -1307,6 +1453,7 @@ _HANDLERS = {
     "weekly_progress_range": _progress_range,
     "weekly_milestone_stats": _milestone_stats,
     "weekly_year_goal_stats": _year_goal_stats,
+    "weekly_schema": _schema,
 }
 
 # _NEW_HANDLERS 只是构建期的清单,避免手工漏接线
