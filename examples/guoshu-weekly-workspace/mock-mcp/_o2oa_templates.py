@@ -278,6 +278,7 @@ def task_search(
         params.extend([f"%{person}%", f"%{person}%", person])
     sql = f"""
 SELECT t.id, t.task_no, t.task_name,
+       t.board_id, t.category_id, t.status,
        c.name            AS category,
        t.project_owner_name, t.lead_owner_name, t.project_group,
        {adm.normalize_ts_sql("t.latest_progress_time")} AS latest_progress_time,
@@ -428,6 +429,7 @@ def coverage_stats(
     board_code: str | None = None,
     project_group: str | None = None,
     in_flight_only: bool = False,
+    group_history_granted: bool = True,
     limit: int = 200,
 ) -> tuple[str, tuple]:
     """进展覆盖率与分发口径,对齐 mock 的 ``weekly_progress_coverage`` 各 scope。
@@ -469,10 +471,13 @@ def coverage_stats(
     where_sql = "\n  AND ".join(where)
 
     if scope == "publish_split":
+        # 列名照抄参考查询:published / unpublished / total / tasks
+        # tasks 是**该口径覆盖的任务数**(","是几行"与"涉及几条任务"是两个问题)
         sql = f"""
 SELECT count(*) FILTER (WHERE p.is_published = 1) AS published,
        count(*) FILTER (WHERE p.is_published = 0) AS unpublished,
-       count(*)                                   AS total
+       count(*)                                   AS total,
+       count(DISTINCT p.task_id)                  AS tasks
 FROM task_progress p
 JOIN task t ON t.id = p.task_id
 {board_join}
@@ -481,10 +486,15 @@ WHERE {where_sql}
         return sql, tuple(params)
 
     if scope == "import_split":
+        # 列名照抄参考查询:total / from_import / manual / manual_unpublished / batches
+        # 「手工填的有多少」有两种闸门下的答案,必须给全:发布口径 943 全来自导入、手工 0;
+        # 去掉发布闸门则是 1066 行里 948 导入、118 手工(那 118 条全是未发布草稿)
         sql = f"""
-SELECT count(*) FILTER (WHERE p.import_id IS NOT NULL) AS imported,
-       count(*) FILTER (WHERE p.import_id IS NULL)     AS manual,
-       count(*)                                        AS total
+SELECT count(*)                                              AS total,
+       count(*) FILTER (WHERE p.import_id IS NOT NULL)       AS from_import,
+       count(*) FILTER (WHERE p.import_id IS NULL)           AS manual,
+       count(*) FILTER (WHERE p.is_published = 0 AND p.import_id IS NULL) AS manual_unpublished,
+       count(DISTINCT p.import_id)                           AS batches
 FROM task_progress p
 JOIN task t ON t.id = p.task_id
 {board_join}
@@ -494,10 +504,15 @@ WHERE {where_sql}
         return sql, tuple(params)
 
     if scope == "unpublished":
+        # 列名照抄参考查询:status / status_label / cnt / task_count
+        # cnt 是进展行数,task_count 是该档去重后的任务数(驳回 39 行落在 33 条任务上,
+        # 拿行数当任务数就是错的);status 是进展行自己的审批码值,不是任务状态
         sql = f"""
 SELECT p.status,
-       count(*)                  AS progress_rows,
-       count(DISTINCT p.task_id) AS tasks
+       CASE p.status WHEN 0 THEN '草稿' WHEN 1 THEN '待审核'
+                     WHEN 2 THEN '驳回' WHEN 3 THEN '通过' ELSE '未知' END AS status_label,
+       count(*)                  AS cnt,
+       count(DISTINCT p.task_id) AS task_count
 FROM task_progress p
 JOIN task t ON t.id = p.task_id
 {board_join}
@@ -515,9 +530,9 @@ ORDER BY p.status
 SELECT count(*)                                        AS progress_rows,
        count(DISTINCT p.task_id)                       AS tasks_covered,
        round(count(*)::numeric / NULLIF(count(DISTINCT p.task_id), 0), 2) AS avg_rounds_per_task,
-       {date_from}                                     AS earliest_progress,
-       {date_to}                                       AS latest_progress,
-       max(p.version_no)                               AS max_version_no
+       {date_from}                                     AS earliest,
+       {date_to}                                       AS latest,
+       max(p.version_no)                               AS max_version
 FROM task_progress p
 JOIN task t ON t.id = p.task_id
 {board_join}
@@ -589,22 +604,68 @@ LIMIT %s
 """
         return sql, (*params, int(limit))
 
-    # never_reported:存在性判定,不是 NULL 判定
+    # never_reported:存在性判定,不是 NULL 判定。列集合照抄参考实现:
+    # task_id / task_name / board_name / project_group / has_group_history ——
+    # has_group_history 说明"这条根本没往 task_progress 报过"里有多少是集团板的
+    # (它们的成效写在另一张表),不点明就会被读成"漏报"。
     if in_flight_only:
         where.append("t.status IN (0, 1)")
+    columns = ["t.id AS task_id", "t.task_name", "b.name AS board_name", "t.project_group"]
+    if group_history_granted:
+        columns.append(
+            "EXISTS (SELECT 1 FROM task_group_progress_history h "
+            "WHERE h.task_id = t.id AND h.is_published = 1) AS has_group_history"
+        )
     sql = f"""
-SELECT t.id, t.task_no, t.task_name, t.status, t.project_owner_name
+SELECT {",\n       ".join(columns)}
 FROM task t
-{board_join}
+LEFT JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
 WHERE {where_sql}
   AND NOT EXISTS (
       SELECT 1 FROM task_progress p
       WHERE p.task_id = t.id AND p.is_published = 1
   )
-ORDER BY t.sort_order, t.id
+ORDER BY t.id
 LIMIT %s
 """
     return sql, (*params, int(limit))
+
+
+def never_reported_totals(
+    board_code: str | None = None,
+    project_group: str | None = None,
+) -> tuple[str, tuple]:
+    """`never_reported` 的两个都成立的口径(55 与 9),必须一起给。
+
+    55 = ``task_progress`` 里没有已发布行(含集团板全部 46 条,它们的成效不写这张表);
+    9 = 两张表都没报过(等价于 ``latest_progress_time IS NULL``)。
+    只给一个数,另一类问题就会被前一个数答掉(过火的否定句式牵连了 8 道题)。
+    """
+    board = None
+    if board_code:
+        board, hint = adm.check_board_code(board_code)
+        if hint:
+            raise ValueError(hint)
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    board_join = ""
+    if board:
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    if project_group:
+        where.append("trim(t.project_group) = %s")
+        params.append(project_group.strip())
+    where_sql = "\n  AND ".join(where)
+    sql = f"""
+SELECT (SELECT count(*) FROM task t {board_join}
+         WHERE {where_sql}
+           AND NOT EXISTS (SELECT 1 FROM task_progress p
+                           WHERE p.task_id = t.id AND p.is_published = 1))       AS total,
+       (SELECT count(*) FROM task t {board_join}
+         WHERE {where_sql} AND t.latest_progress_time IS NULL)                    AS both_empty
+"""
+    return sql, (*params, *params)
 
 
 def formal_coverage(group_history_granted: bool) -> tuple[str, tuple]:
@@ -716,6 +777,10 @@ def year_goal_list(
 
     用 LEFT JOIN 保留"已发布但当年目标未填写"的任务 —— 这类要如实答"未填写",
     不能因为 INNER JOIN 把它们从清单里悄悄抹掉。
+
+    列集合照抄参考查询(``task_id / task_name / year / current_year_goal /
+    milestone_summary``):``task_no`` 与 ``goal_filled`` 是自造列,已去掉 ——
+    "填没填"看 ``current_year_goal`` 是否为空即可,多一列反而让人以为有两种判据。
     """
     y, hint = adm.check_year(year)
     if hint:
@@ -724,9 +789,8 @@ def year_goal_list(
     if hint:
         raise ValueError(hint)
     sql = f"""
-SELECT t.id, t.task_no, t.task_name, c.name AS category,
-       y.year, y.current_year_goal, y.milestone_summary,
-       (y.task_id IS NOT NULL) AS goal_filled
+SELECT t.id AS task_id, t.task_name,
+       y.year, y.current_year_goal, y.milestone_summary
 FROM task t
 JOIN task_board    b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
 JOIN task_category c ON c.id = t.category_id AND {adm.sql_soft_delete("c")}
@@ -1299,26 +1363,28 @@ def submission_stats(
     inflight_list = ", ".join(f"'{s}'" for s in SUBMISSION_INFLIGHT)
 
     if scope == "by_kind":
+        # 列名照抄参考查询:submission_count(不是 forms);排序也跟着它走
         sql = f"""
-SELECT s.submission_kind, count(*) AS forms
+SELECT s.submission_kind, count(*) AS submission_count
 FROM task_workflow_submission s
 JOIN task t ON t.id = s.task_id
 {board_join}
 WHERE {where_sql}
 GROUP BY s.submission_kind
-ORDER BY forms DESC, s.submission_kind
+ORDER BY submission_count DESC, s.submission_kind
 """
         return sql, tuple(params)
 
     if scope == "by_status":
+        # 列名照抄参考查询:cnt(不是 forms)
         sql = f"""
-SELECT s.status, count(*) AS forms, count(DISTINCT s.task_id) AS tasks
+SELECT s.status, count(*) AS cnt, count(DISTINCT s.task_id) AS tasks
 FROM task_workflow_submission s
 JOIN task t ON t.id = s.task_id
 {board_join}
 WHERE {where_sql}
 GROUP BY s.status
-ORDER BY forms DESC, s.status
+ORDER BY cnt DESC, s.status
 """
         return sql, tuple(params)
 
@@ -1339,8 +1405,9 @@ WHERE {where_sql}
         return sql, tuple(params)
 
     if scope == "inflight_count":
+        # 列名照抄参考查询:inflight_submissions(不是 inflight_forms)
         sql = f"""
-SELECT count(*)                    AS inflight_forms,
+SELECT count(*)                    AS inflight_submissions,
        count(DISTINCT s.task_id)   AS tasks
 FROM task_workflow_submission s
 JOIN task t ON t.id = s.task_id
@@ -1351,21 +1418,22 @@ WHERE {where_sql}
         return sql, tuple(params)
 
     if scope == "inflight_by_board":
+        # 列名照抄参考查询:submission_count;rejected 也是在途的一档,漏掉它各看板都少算
         sql = f"""
-SELECT b.code AS board_code, s.status, count(*) AS forms
+SELECT b.code AS board_code, s.status, count(*) AS submission_count
 FROM task_workflow_submission s
 JOIN task t ON t.id = s.task_id
 JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
 WHERE {SUBMISSION_GATE}
   AND s.status IN ({inflight_list})
 GROUP BY b.code, s.status
-ORDER BY b.code, forms DESC, s.status
+ORDER BY b.code, submission_count DESC, s.status
 """
         return sql, ()
 
     if scope == "inflight_by_kind":
         sql = f"""
-SELECT s.status, s.submission_kind, count(*) AS forms
+SELECT s.status, s.submission_kind, count(*) AS submission_count
 FROM task_workflow_submission s
 JOIN task t ON t.id = s.task_id
 {board_join}
@@ -1406,11 +1474,13 @@ ORDER BY rejected_pct DESC, b.code
 """
         return sql, ()
 
-    # rounds_per_task:分子分母都给,避免模型自己拿别的分母去除
+    # rounds_per_task:一行三列(均值 / 分子 / 分母),列名与参考查询一致:
+    # avg_rounds / total_submissions / tasks —— 462 / 150 = 3.08 一次给全,
+    # 调用方不必拿别处的任务数去除(除错了整条结论都错)
     sql = f"""
-SELECT count(DISTINCT s.task_id) AS tasks,
-       count(*)                  AS forms,
-       round(count(*)::numeric / NULLIF(count(DISTINCT s.task_id), 0), 2) AS rounds_per_task
+SELECT round(count(*)::numeric / NULLIF(count(DISTINCT s.task_id), 0), 2) AS avg_rounds,
+       count(*)                  AS total_submissions,
+       count(DISTINCT s.task_id) AS tasks
 FROM task_workflow_submission s
 JOIN task t ON t.id = s.task_id
 {board_join}
@@ -1627,10 +1697,8 @@ def year_goal_rows(
         where.append("t.id = %s")
         params.append(int(task_id))
     sql = f"""
-SELECT t.id AS task_id, t.task_no, t.task_name, g.year,
-       g.current_year_goal, g.milestone_summary,
-       (g.current_year_goal IS NOT NULL AND g.current_year_goal <> '') OR
-       (g.milestone_summary IS NOT NULL AND g.milestone_summary <> '') AS goal_filled
+SELECT t.id AS task_id, t.task_name, g.year,
+       g.current_year_goal, g.milestone_summary
 FROM task_year_goal g
 JOIN task t ON t.id = g.task_id
 {board_join}
@@ -1902,7 +1970,6 @@ def workflow_actions(
     board_code: str | None = None,
     task_id: int | None = None,
     action: str | None = None,
-    include_opinion: bool = False,
     granted: bool = True,
     limit: int = 200,
 ) -> tuple[str, tuple]:
@@ -1913,8 +1980,9 @@ def workflow_actions(
 
     口径要点:
 
-    * ``opinion``(审批意见)**按权限返回**(R-04/R-14):默认不出现在返回列里,
-      ``include_opinion=True`` 才带上 —— 一刀切脱敏与一刀切放开都不满足要求;
+    * ``opinion``(审批意见)**按权限展示**(R-04/R-14):列**始终在**,
+      无权限时由调用方把值打码成「[按权限不展示]」—— 与参考实现同一套
+      ``_scrub`` 语义:列藏掉了,调用方就分不清"这条没有意见"与"我没权限看";
     * 动作数 ≠ 单数:流水里 ``rejected`` 有 13 条,那是**动作**条数,
       "驳回率"的分子要用提交单自己的 ``status = 'rejected'``(技术组 9、集团组 4);
     * 带 ``t.is_deleted = 0`` 是正确闸门(1,578);再加任务发布门会掉到 1,519,
@@ -1942,11 +2010,11 @@ def workflow_actions(
         where.append("a.action = %s")
         params.append(action)
     where_sql = "\n  AND ".join(where)
-    opinion_col = ", a.opinion" if include_opinion else ""
 
     if scope == "by_node_action":
+        # 列名照抄参考查询:action_count(不是 actions)
         sql = f"""
-SELECT a.node_type, a.action, count(*) AS actions
+SELECT a.node_type, a.action, count(*) AS action_count
 FROM task_workflow_action a
 JOIN task t ON t.id = a.task_id
 {joins}
@@ -1957,10 +2025,11 @@ ORDER BY a.node_type, a.action
         return sql, tuple(params)
 
     if scope == "actions_per_task":
+        # 一行三列:avg_actions / total_actions / tasks(1,578 / 150 = 10.52)
         sql = f"""
-SELECT count(*)                  AS actions,
-       count(DISTINCT a.task_id) AS tasks,
-       round(count(*)::numeric / NULLIF(count(DISTINCT a.task_id), 0), 2) AS actions_per_task
+SELECT round(count(*)::numeric / NULLIF(count(DISTINCT a.task_id), 0), 2) AS avg_actions,
+       count(*)                  AS total_actions,
+       count(DISTINCT a.task_id) AS tasks
 FROM task_workflow_action a
 JOIN task t ON t.id = a.task_id
 {joins}
@@ -1969,28 +2038,34 @@ WHERE {where_sql}
         return sql, tuple(params)
 
     if scope == "by_action":
+        # 参考实现没有这一档(它的分面是 node x action);这是本移植**新增**的一档,
+        # 答"各动作各有多少条",列名与 node x action 那档保持一致:action_count
         sql = f"""
-SELECT a.action, count(*) AS actions
+SELECT a.action, count(*) AS action_count
 FROM task_workflow_action a
 JOIN task t ON t.id = a.task_id
 {joins}
 WHERE {where_sql}
 GROUP BY a.action
-ORDER BY actions DESC, a.action
+ORDER BY action_count DESC, a.action
 """
         return sql, tuple(params)
 
     # recent / 默认:按动作自身时间倒序(默认清单按 task id 排序,答不了"最近谁被驳回")
+    # 列名与 JOIN 都照抄参考实现:带任务名 + 该单填报人(INNER JOIN 提交单),
+    # opinion 夹在操作人与时间之间、**始终在列里**(无权限时由调用方打码成
+    # 「[按权限不展示]」,而不是把列藏掉 —— 列没了,调用方分不清"没有意见"
+    # 与"没权限看意见"),时间列叫 acted_at。
     sql = f"""
-SELECT a.id, a.task_id, t.task_no, t.task_name,
-       a.submission_id, a.node_type, a.action,
-       a.operator_id, a.operator_name{opinion_col},
-       {adm.normalize_ts_sql("a.created_at")} AS action_time
+SELECT a.id, a.task_id, t.task_name, s.round_no, s.reporter_name, s.status,
+       a.node_type, a.action, a.operator_name, a.opinion,
+       {adm.normalize_ts_sql("a.created_at")} AS acted_at
 FROM task_workflow_action a
 JOIN task t ON t.id = a.task_id
+JOIN task_workflow_submission s ON s.id = a.submission_id
 {joins}
 WHERE {where_sql}
-ORDER BY a.created_at DESC, a.id DESC
+ORDER BY a.created_at DESC, t.id
 LIMIT %s
 """
     params.append(int(limit))
@@ -2467,13 +2542,25 @@ ORDER BY person
         return sql, (*params, *inner_params)
 
     if scope == "workload_summary":
+        # 列集合照抄参考查询:除均值外还要 max_tasks / min_tasks —— 只有均值时分不清
+        # "人人 8 条"与"有人 30 条有人 1 条"。
+        # 一次聚合搞定:先按人算条数,再对这张小表求和/计数,谓词只出现一次
+        # (参考实现为了让 MySQL 命名参数可重复,写了同一段谓词两遍;位置参数下
+        # 重复一遍就要重复一遍参数,容易错位)。
         sql = f"""
-SELECT count(*)                                                AS tasks,
-       count(DISTINCT t.{column})                              AS people,
-       round(count(*)::numeric / NULLIF(count(DISTINCT t.{column}), 0), 2) AS avg_tasks_per_person
-FROM task t
-{joins}
-WHERE {named}
+WITH per_person AS (
+    SELECT t.{column} AS person, count(*) AS task_count
+    FROM task t
+    {joins}
+    WHERE {named}
+    GROUP BY t.{column}
+)
+SELECT sum(task_count)                                          AS tasks,
+       count(*)                                                 AS people,
+       round(sum(task_count)::numeric / NULLIF(count(*), 0), 2) AS avg_tasks_per_person,
+       max(task_count)                                          AS max_tasks,
+       min(task_count)                                          AS min_tasks
+FROM per_person
 """
         return sql, tuple(params)
 
@@ -2906,16 +2993,22 @@ def group_owner(
             f"(%s = ANY({_multivalue_array('g.' + id_column)}) OR %s = ANY({_multivalue_array('g.' + name_column)}))"
         )
         params.extend([token, token])
+    # 列名照抄参考查询:**按角色给各自的原名**(lead_owner_names / project_owner_names),
+    # 不统一改叫 owner_names —— 两个角色是两列,同名会让人以为可以互换;
+    # owner_count 数的是**这行的负责人个数**(按 id 列里的分隔符个数 + 1),
+    # 排序也跟着它走(并列按 task_id 升序)。演示实现数的是半角逗号,
+    # 这里按同一套多值分隔符(顿号与逗号都算)数,否则顿号写的行会被算成 1 个。
+    owner_count = "cardinality(" + _multivalue_array("g." + id_column) + ")"
     sql = f"""
-SELECT g.task_id, t.task_no, t.task_name,
-       g.{id_column}   AS owner_ids,
-       g.{name_column} AS owner_names,
-       g.project_group
+SELECT g.task_id, t.task_name,
+       g.{name_column},
+       g.{id_column},
+       {owner_count} AS owner_count
 FROM task_group_detail g
 JOIN task t ON t.id = g.task_id
 JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
 WHERE {"\n  AND ".join(where)}
-ORDER BY t.sort_order, t.id
+ORDER BY owner_count DESC, g.task_id
 LIMIT %s
 """
     params.append(int(limit))

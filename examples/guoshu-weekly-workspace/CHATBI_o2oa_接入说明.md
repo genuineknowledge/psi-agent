@@ -365,8 +365,57 @@ publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 1
 每批交付:PG SQL 模板 + 参数/口径 + caliber 文案 + 契约测试期望值(正式真值)。
 联调账号与样例就绪前,以模板+单测+文档先行,真库验收后回填期望值。
 
-## 5. 能力边界(未授权表时)
+### 3.0.5 列集合对照器:把"列名对不对"变成可批量复核的一件事(2026-09-10)
 
+第 3.0.4 节那条纪律靠人读代码去核,一次只能核几个出口。本批把它做成脚本
+(`column_parity.py`,放在核对目录):
+
+1. **演示路径**:把 `_store` 里碰 MySQL 的几个函数换成桩,调用工具,取它**返回信封里的
+   columns**(演示实现里有几个 scope 是手工拼信封的,只解析 SQL 会把它们误判);
+2. **正式路径**:`TASK_BOARD_DATA_SOURCE=o2oa` 调同一个工具,取信封的 `columns`;
+3. **判定**:正式源的列集合必须与演示路径**某一个**候选逐字相同(演示源常有"分档 + 总览"
+   两次查询,正式源把它们合进一个信封)。
+
+首轮 62 个用例暴露 17 处不一致,修完两批后剩 6 处待办。判定口径说明:参考查询的列必须
+**全部在场且同名**;正式源**额外多给**的列是允许的(加信息不加歧义),但要在口径里写明它是什么。
+
+本批按这条修掉的(`_o2oa_templates.py`):
+
+| 出口 | 之前 | 参考查询的列 |
+|---|---|---|
+| `weekly_task_query` | 少了 `board_id / category_id / status` | 那三列在场(`category` 名称是本移植多给的) |
+| coverage `summary` | `earliest_progress / latest_progress / max_version_no` | `earliest / latest / max_version` |
+| coverage `publish_split` | 少 `tasks` | `published / unpublished / total / tasks`(tasks = 1066 行涉及 81 条任务) |
+| coverage `import_split` | `imported / manual / total` | `total / from_import / manual / manual_unpublished / batches` |
+| coverage `unpublished` | `status / progress_rows / tasks` | `status / status_label / cnt / task_count` |
+| coverage `never_reported` | `id / task_no / task_name / status / project_owner_name` | `task_id / task_name / board_name / project_group / has_group_history`,并补 `total`(55)与 `both_empty`(9)两个口径 |
+| submission `by_kind` | `forms` | `submission_count` |
+| submission `by_status` | `forms` | `cnt` |
+| submission `inflight_count` | `inflight_forms` | `inflight_submissions`(**61**,docstring 的 61;59 是「在途且带进程号」那档) |
+| submission `inflight_by_board` / `inflight_by_kind` | `forms` | `submission_count` |
+| submission `rounds_per_task` | 逐任务行 `tasks / forms / rounds_per_task` | 一行三列 `avg_rounds / total_submissions / tasks`(462 / 150 = 3.08) |
+| workflow `by_node_action` | `actions` | `action_count` |
+| workflow `actions_per_task` | `actions / tasks / actions_per_task` | `avg_actions / total_actions / tasks`(1,578 / 150 = 10.52) |
+| workflow `recent` | 少了提交单侧字段,时间列叫 `action_time` | `id / task_id / task_name / round_no / reporter_name / status / node_type / action / operator_name / opinion / acted_at`(**INNER JOIN 提交单**) |
+| person `workload_summary` | 只有三列 | 补 `max_tasks / min_tasks`(14 / 1 —— 只有均值时分不清"人人 8 条"与"有人 14 有人 1") |
+| year_goal(行清单与任务清单) | 自造 `task_no` / `goal_filled` | `task_id / task_name / year / current_year_goal / milestone_summary` |
+| group_owner | `owner_ids / owner_names`(两角色同名) | **按角色给原名**:`lead_owner_names / lead_owner_ids` 或 `project_owner_names / project_owner_ids`,并加 `owner_count`(这行的负责人个数) |
+
+> 口径提醒:**敏感字段是打码而不是删列**。参考实现的 `_scrub` 对 `opinion` 的处理是
+> 保留列、值写成「[按权限不展示]」;此前正式源在无权限时**整列不出现**,调用方就分不清
+> "这条没有意见"与"我没权限看意见"。现已改为同语义的按值打码。
+
+> 口径提醒:**"新增一档"要标明是新增**。`weekly_workflow_query scope=by_action` 不在参考
+> 实现的口径表里(它的分面是 node x action),是本移植为"各动作各有多少条"新增的;
+> 列名与 node x action 那档保持一致(`action_count`),并在模板注释里写明它是扩展。
+
+**剩余 6 处待办**(下一批):`attachment_stats summary/by_ext`(by_ext 是结构性差异:
+参考实现按扩展名**每档一行** `ext / n / total_bytes / total_mb`,正式源目前给的是
+单行汇总 + 各扩展名列)、`attachment_query`(缺 `progress_id / workflow_submission_id`
+两个挂载点列)、`formal_coverage`、以及两个演示路径取不到列的用例
+(`text_check` 与 `health` —— 演示实现走的是别的手工分支,对照器需要再补桩)。
+
+## 5. 能力边界(未授权表时)
 - `task_attachment` 只读元数据:问答只能答“存在附件《文件名》”,文件体在
   O2OA/对象存储,SQL 读不到;
 - 4 张可选表(`task_workflow_action` / `task_group_progress_history` /
@@ -423,6 +472,8 @@ python <核对目录>/verify_end_to_end.py
 python <核对目录>/bench_pg.py
 # 6) 若上一步被中断,用这个把实例恢复成演示库基线(口径验收依赖 1068 / 404 这两个基线)
 python <核对目录>/reset_pg.py
+# 7) 列集合对照:演示路径 vs 正式源,逐个出口比对 columns(改任何出口后必跑)
+python <核对目录>/column_parity.py
 ```
 
 > 注意:仓库要求 Python ≥ 3.14;3.13 的解析器不接受本仓既有的 `except A, B:` 写法,

@@ -201,16 +201,35 @@ def _coverage(args: dict[str, Any]) -> dict[str, Any] | None:
         scope,
         board_code=board,
         project_group=(args.get("project_group") or "").strip() or None,
+        group_history_granted=optional_granted("task_group_progress_history"),
         limit=limit,
     )
     listing = scope in ("never_reported", "unpublished_by_task", "pending_review", "version_gaps")
-    return envelope(
+    result = envelope(
         sql=sql,
         params=params,
         caliber=f"scope={scope};正式任务门 = is_deleted = 0 AND workflow_status = 'published'",
         limit=limit,
         cap_last_param=listing,
     )
+    if scope == "never_reported":
+        # 两个都成立的口径一起给:55 = task_progress 里没有已发布行(含集团板全部 46 条),
+        # 9 = 两张表都没报过。只给一个数,另一类问题会被它答掉
+        tsql, tparams = tpl.never_reported_totals(
+            board_code=board, project_group=(args.get("project_group") or "").strip() or None
+        )
+        totals = envelope(sql=tsql, params=tparams, caliber="never_reported 两个口径", limit=1)
+        first = (totals.get("rows") or [{}])[0]
+        result["total"] = first.get("total")
+        result["both_empty"] = first.get("both_empty")
+        result["caliber"] += (
+            ";total = task_progress 里没有已发布进展行的任务数(含集团板 46 条,它们的成效写在"
+            "task_group_progress_history);both_empty = 两张表都没报过的('谁真的没报过'),"
+            "两个数各自回答不同的问题,问哪个报哪个"
+        )
+        if not optional_granted("task_group_progress_history"):
+            result["caliber"] += ";集团历史表未授权,has_group_history 列不出现"
+    return result
 
 
 def _freshness(args: dict[str, Any]) -> dict[str, Any] | None:
@@ -606,21 +625,27 @@ def _workflow(args: dict[str, Any]) -> dict[str, Any] | None:
         board_code=board,
         task_id=task_id,
         action=raw_action,
-        include_opinion=bool(args.get("can_read_sensitive")),
         granted=optional_granted("task_workflow_action"),
         limit=limit,
     )
-    return envelope(
+    result = envelope(
         sql=sql,
         params=params,
         caliber=(
             "流水带 t.is_deleted = 0 是正确闸门(1,578 行);再加任务发布门会掉到 1,519;"
-            "opinion(审批意见)按权限返回,无权限时不在返回列内(R-04/R-14);"
+            "opinion(审批意见)始终在列里,无权限时值打码成「[按权限不展示]」"
+            "(与参考实现的 _scrub 同一语义:藏列会让调用方分不清「没有意见」与「没权限看」);"
             "scope=recent 按动作自身时间倒序(默认清单按 task id 排序,答不了「最近谁被驳回」)"
         ),
         limit=limit,
         cap_last_param=scope == "recent",
     )
+    if not bool(args.get("can_read_sensitive")):
+        # 敏感字段打码而不是删列,列集合在两种权限下保持一致
+        for row in result["rows"]:
+            if "opinion" in row:
+                row["opinion"] = "[按权限不展示]"
+    return result
 
 
 _NEW_HANDLERS_7 = {

@@ -240,7 +240,9 @@ class TestBatch2Templates:
         """LEFT JOIN 必须保留"已发布但当年目标未填写"的任务(答"未填写"而非消失)。"""
         sql, params = o2.year_goal_list("tech", 2026)
         assert "LEFT JOIN task_year_goal" in sql
-        assert "(y.task_id IS NOT NULL) AS goal_filled" in sql
+        # 列集合照抄参考查询:填没填看 current_year_goal 是否为空,不再自造 goal_filled
+        assert "y.year, y.current_year_goal, y.milestone_summary" in sql
+        assert "AS task_id" in sql and "goal_filled" not in sql
         assert params == (2026, "tech", 200)
         with pytest.raises(ValueError):
             o2.year_goal_list("tech", None)
@@ -440,8 +442,10 @@ class TestSubmissionScopes:
 
     def test_rounds_per_task_returns_both_sides(self):
         sql, _params = o2.submission_stats("rounds_per_task")
+        # 列名照抄参考查询:avg_rounds / total_submissions / tasks(462 / 150 = 3.08)
+        assert "AS avg_rounds" in sql and "AS total_submissions" in sql and "AS tasks" in sql
         assert "count(DISTINCT s.task_id)" in sql and "count(*)" in sql
-        assert "rounds_per_task" in sql
+        assert "LIMIT" not in sql  # 单行答案,不受行数封顶影响
 
     def test_inflight_by_kind_is_the_status_times_kind_axis(self):
         sql, _params = o2.submission_stats("inflight_by_kind")
