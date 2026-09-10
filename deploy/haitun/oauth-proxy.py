@@ -62,6 +62,7 @@ ALLOWED_PATHS = frozenset(
         "/feishu/sessions",
         "/feishu/summaries",
         "/feishu/titles",
+        "/feishu/jsapi/config",
     }
 )
 
