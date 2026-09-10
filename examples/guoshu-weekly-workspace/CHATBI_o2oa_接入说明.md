@@ -136,7 +136,10 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 | `weekly_year_goal_query` | ✅ 已接线 | 年度目标**行**清单(year=0 表示所有年度);集团板 109 行 / 46 任务、全看板 313 行 / 128 任务 |
 | `weekly_milestone_query` | ✅ 已接线 | 支持按任务收窄(不带 `task=` 会答成整个看板第一页);任务 19 → 2 行 |
 | `weekly_attachment_query` | ✅ 已接线 | 仅元数据(无 `storage_path`);集团板 52 条 / 28 任务;可选表未授权时报 `table_not_granted` |
-| 其余 25 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
+| `weekly_owner_roles` | ✅ 已接线 | 角色拆分(主责/项目负责人/牵头领导/去重并集);孙立群 → 0/2/12/14,u3118 → 2/2/12/14 |
+| `weekly_group_detail_query` | ✅ 已接线 | 集团板扩展表(目标成果/落实举措/完成时间/进度成效/多值负责人);46 行;`status=0 + non_empty=progress_effect` → 6 行矛盾;`completion_time` **按文本**匹配 2026 → 31 行 |
+| `weekly_health` | ✅ 已接线 | 逐表精确行数(可选表不存在时返回 NULL 而非报错);12 张表 / 5,369 行 |
+| 其余 22 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
 
 三条硬规则:
 

@@ -374,6 +374,82 @@ _NEW_HANDLERS = {
     "weekly_milestone_query": _milestone,
 }
 
+
+def _owner_roles(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_owner_roles:某人的主责 / 项目负责人 / 牵头领导 / 去重并集。"""
+    person = (args.get("person") or "").strip()
+    if not person:
+        return None  # 演示路径会给出 invalid_argument
+    sql, params = tpl.owner_roles(person)
+    return envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            "正式任务门 = is_deleted = 0 AND workflow_status = 'published';"
+            "多值列去空格后精确匹配(R-13),id 与姓名都接受;any_role 是三角色去重并集"
+        ),
+        limit=1,
+    )
+
+
+def _group_detail(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_group_detail_query:集团板扩展表明细。"""
+    limit = int(args.get("limit") or MAX_ROWS)
+    task_id, _task_name = _resolve_task(args.get("task") or "")
+    raw_status = (args.get("status") or "").strip()
+    if raw_status and raw_status not in ("0", "1", "2", "3"):
+        return None
+    non_empty = tuple(column.strip() for column in (args.get("non_empty") or "").split(",") if column.strip())
+    contains = (args.get("contains") or "").strip() or None
+    contains_field = (args.get("field") or "").strip() or None
+    fields = tuple(name.strip() for name in (args.get("fields") or "").split(",") if name.strip())
+    sql, params = tpl.group_detail_list(
+        board_code="group" if not args.get("board") else (args.get("board") or "").strip(),
+        task_id=task_id,
+        status=int(raw_status) if raw_status else None,
+        non_empty=non_empty,
+        contains=contains,
+        contains_field=contains_field,
+        fields=fields,
+        limit=limit,
+    )
+    return envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            "task_group_detail 与 task 是 1:1,只有集团看板任务有行;"
+            "completion_time 是展示文本,按文本匹配、不做日期运算(R-12);"
+            "status 在 task 上,「状态与成效矛盾」必须两边一起判"
+        ),
+        limit=limit,
+        cap_last_param=True,
+    )
+
+
+def _health(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_health:逐表精确行数(正式源版本)。"""
+    sql, params = tpl.table_row_counts()
+    result = envelope(
+        sql=sql,
+        params=params,
+        caliber="逐表 count(*);未授权或不存在的表返回 NULL(四张可选表可能在授权范围外)",
+        limit=200,
+    )
+    rows = result["rows"]
+    present = [r for r in rows if r["row_count"] is not None]
+    result["store"] = _pg.dsn() if _pg is not None else "unknown"
+    result["table_count"] = len(present)
+    result["total_rows"] = sum(int(r["row_count"]) for r in present)
+    result["row_counts"] = {r["table_name"]: r["row_count"] for r in rows}
+    return result
+
+
+_NEW_HANDLERS_6 = {
+    "weekly_owner_roles": _owner_roles,
+    "weekly_group_detail_query": _group_detail,
+    "weekly_health": _health,
+}
+
 _HANDLERS = {
     "weekly_task_query": _task_query,
     "weekly_progress_coverage": _coverage,
@@ -381,6 +457,9 @@ _HANDLERS = {
     "weekly_attachment_query": _attachment,
     "weekly_year_goal_query": _year_goal,
     "weekly_milestone_query": _milestone,
+    "weekly_owner_roles": _owner_roles,
+    "weekly_group_detail_query": _group_detail,
+    "weekly_health": _health,
 }
 
 # _NEW_HANDLERS 只是构建期的清单,避免手工漏接线

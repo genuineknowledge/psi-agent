@@ -2309,6 +2309,10 @@ def weekly_owner_roles(person: str) -> str:
         person: User id or name.
     """
 
+    formal = _formal.dispatch("weekly_owner_roles", person=person)
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         token = (person or "").strip().replace(" ", "")
         if not token:
@@ -5575,6 +5579,20 @@ def weekly_group_detail_query(
         limit: Max rows, capped at 200.
     """
 
+    formal = _formal.dispatch(
+        "weekly_group_detail_query",
+        task=task,
+        fields=fields,
+        contains=contains,
+        field=field,
+        status=status,
+        non_empty=non_empty,
+        order_by=order_by,
+        limit=limit,
+    )
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         requested = [f.strip() for f in (fields or "").split(",") if f.strip()]
         unknown = [f for f in requested if f not in _GROUP_DETAIL_FIELDS]
@@ -6490,6 +6508,10 @@ def weekly_freshness() -> str:
 @mcp.tool()
 def weekly_health() -> str:
     """Verify the mock store is reachable and report its table row counts."""
+
+    formal = _formal.dispatch("weekly_health")
+    if formal is not None:
+        return _dump(formal)
 
     def work() -> dict[str, Any]:
         conn = store.connect()

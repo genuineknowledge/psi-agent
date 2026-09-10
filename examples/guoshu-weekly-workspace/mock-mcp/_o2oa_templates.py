@@ -1400,3 +1400,161 @@ SELECT (SELECT count(*) FROM files)                                  AS attachme
        (SELECT count(*) FROM files WHERE ext = 'docx')               AS ext_docx
 """
     return sql, tuple(params)
+
+
+# ---- batch 6: 责任人角色 / 集团板明细 / 行数体检 ------------------------------
+
+
+def owner_roles(person: str) -> tuple[str, tuple]:
+    """某人在正式任务里的角色拆分:主责 / 项目负责人 / 牵头领导 / 去重并集。
+
+    ``weekly_task_query`` 的 owner 过滤把三列 OR 在一起,答不了"作为项目负责人几个、
+    作为牵头领导几个";这条把三个角色分开计,再给一个去重的 any_role。
+
+    匹配规则(与原工具一致):**先去空格再精确匹配**,id 与姓名都可以;姓名列是多值
+    (以「、」连接),这里按整串匹配,不做子串。
+    """
+    token = (person or "").strip().replace(" ", "")
+    if not token:
+        raise ValueError("person 不能为空")
+    strip = lambda col: f"replace(coalesce({col}, ''), ' ', '')"  # noqa: E731
+    sql = f"""
+SELECT count(*) FILTER (WHERE {strip("t.owner_user_id")} = %s)                        AS as_owner,
+       count(*) FILTER (WHERE {strip("t.project_owner_id")} = %s
+                           OR {strip("t.project_owner_name")} = %s)                    AS as_project_owner,
+       count(*) FILTER (WHERE {strip("t.lead_owner_id")} = %s
+                           OR {strip("t.lead_owner_name")} = %s)                       AS as_lead_owner,
+       count(*) FILTER (WHERE {strip("t.owner_user_id")} = %s
+                           OR {strip("t.project_owner_id")} = %s
+                           OR {strip("t.project_owner_name")} = %s
+                           OR {strip("t.lead_owner_id")} = %s
+                           OR {strip("t.lead_owner_name")} = %s)                       AS any_role
+FROM task t
+WHERE {adm.sql_task_admission("pg", "t")}
+"""
+    return sql, (token,) * 10
+
+
+GROUP_DETAIL_FIELDS = (
+    "task_id",
+    "target_result",
+    "implementation_measure",
+    "completion_time",
+    "lead_owner_names",
+    "lead_owner_ids",
+    "project_owner_names",
+    "project_owner_ids",
+    "project_group",
+    "progress_effect",
+)
+
+
+def group_detail_list(
+    board_code: str | None = None,
+    task_id: int | None = None,
+    status: int | None = None,
+    non_empty: tuple[str, ...] = (),
+    contains: str | None = None,
+    contains_field: str | None = None,
+    fields: tuple[str, ...] = (),
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """集团板专属扩展表 ``task_group_detail``(1:1)明细。
+
+    这些列(目标成果 / 落实举措 / 完成时间 / 进度成效 / 多值负责人)只有这张表有,
+    ``weekly_task_query`` 返回的是共享的 task 列,根本没有它们。
+
+    口径要点:
+
+    * ``completion_time`` 是**展示文本**(如「2026 年 12 月,后续持续推进」),按文本匹配,
+      **绝不做日期运算**(原工具把这条记作 R-12);
+    * ``status``(业务状态 0/1/2/3)在 ``task`` 上,成效描述在本表 —— "状态与成效矛盾"
+      (未开始却写了成效)必须两边一起判,单看任何一张表都表达不了;
+    * ``non_empty`` 给"必须非空"的列:漏掉它,未开始且成效为空的任务也会跟着进来、
+      把矛盾数撑大。
+    """
+    if contains and not contains_field:
+        raise ValueError("contains 必须与 field 一起使用")
+    if contains_field and contains_field not in GROUP_DETAIL_FIELDS:
+        raise ValueError(f"不支持的 field:{contains_field};可选 {', '.join(GROUP_DETAIL_FIELDS)}")
+    for column in non_empty:
+        if column not in GROUP_DETAIL_FIELDS:
+            raise ValueError(f"不支持的 non_empty 列:{column};可选 {', '.join(GROUP_DETAIL_FIELDS)}")
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    board_join = ""
+    if board:
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    if task_id is not None:
+        where.append("t.id = %s")
+        params.append(int(task_id))
+    if status is not None:
+        if int(status) not in (0, 1, 2, 3):
+            raise ValueError("status 只能是 0/1/2/3")
+        where.append("t.status = %s")
+        params.append(int(status))
+    for column in non_empty:
+        where.append(f"coalesce(g.{column}, '') <> ''")
+    if contains and contains_field:
+        where.append(f"g.{contains_field} LIKE %s")
+        params.append(f"%{contains}%")
+    # task_id / project_group 取自 task 侧(避免同名列出现两次);
+    # 其余列只有 task_group_detail 有。fields 可选:给定则只返回这些列。
+    detail_fields = [name for name in GROUP_DETAIL_FIELDS if name not in ("task_id", "project_group")]
+    if fields:
+        unknown = [name for name in fields if name not in GROUP_DETAIL_FIELDS]
+        if unknown:
+            raise ValueError(f"不支持的列:{', '.join(unknown)};可选 {', '.join(GROUP_DETAIL_FIELDS)}")
+        rank = {name: index for index, name in enumerate(GROUP_DETAIL_FIELDS)}
+        detail_fields = sorted(
+            (name for name in fields if name not in ("task_id", "project_group")), key=lambda name: rank[name]
+        )
+    selected = ", ".join(f"g.{name}" for name in detail_fields)
+    selected_sql = f",\n       {selected}" if selected else ""
+    sql = f"""
+SELECT t.id AS task_id, t.task_no, t.task_name, t.status, t.project_group{selected_sql}
+FROM task_group_detail g
+JOIN task t ON t.id = g.task_id
+{board_join}
+WHERE {"\n  AND ".join(where)}
+ORDER BY t.sort_order, t.id
+LIMIT %s
+"""
+    params.append(int(limit))
+    return sql, tuple(params)
+
+
+def table_row_counts() -> tuple[str, tuple]:
+    """逐表精确行数(体检用)。
+
+    正式源没有 ``information_schema`` 式的行数估算可靠值,所以逐表 ``count(*)``;
+    四张可选表用 ``to_regclass`` 判断存在性,未授权/不存在时返回 NULL 而不是报错。
+    """
+    tables = (
+        "task_board",
+        "task_category",
+        "task",
+        "task_year_goal",
+        "task_progress",
+        "task_milestone",
+        "task_workflow_submission",
+        "task_group_detail",
+        "task_group_progress_history",
+        "task_workflow_action",
+        "task_attachment",
+        "task_progress_import",
+    )
+    parts = []
+    for table in tables:
+        parts.append(
+            f"SELECT '{table}' AS table_name, "
+            f"CASE WHEN to_regclass('public.{table}') IS NULL THEN NULL "
+            f"ELSE (SELECT count(*) FROM {table}) END AS row_count"
+        )
+    sql = "\nUNION ALL\n".join(parts) + "\nORDER BY table_name"
+    return sql, ()
