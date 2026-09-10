@@ -36,6 +36,7 @@ from psi_agent.channel._file_bytes import OutboundFileError, fetch_file_bytes
 from psi_agent.channel._types import FileChunk, InputChunk, ReasoningChunk, TextChunk
 from psi_agent.channel.feishu._agent_events import register_feishu_agent_events
 from psi_agent.protocol import REASONING_KIND_TOOL_CALL, REASONING_KIND_TOOL_RESULT
+from psi_agent.session import VisibleMarkerFilter, strip_transfer_markers
 
 from ._card_action import CardActionBatcher, handle_card_action
 from ._tool_status import ToolStatusTracker
@@ -593,6 +594,9 @@ async def _stream_reply(
         tools = ToolStatusTracker()
         body = ""
         status_shown = False
+        # Per-reply filter: handles may be split across streamed chunks, so the
+        # carry must live for the whole turn (see VisibleMarkerFilter).
+        marker_filter = VisibleMarkerFilter()
 
         async def render_status(line: str | None) -> None:
             """Rewrite the status line in place; ``None`` erases it.
@@ -633,12 +637,23 @@ async def _stream_reply(
             logger.debug(f"status line: {line!r}")
 
         async def append_body(text: str) -> None:
-            """Append body text, erasing the status line first if one is showing."""
+            """Append body text, erasing the status line first if one is showing.
+
+            Internal markers (elision handles, ``[SEND:]/[RECV:]``) are dropped
+            here — the model is documented to echo handles it read in the prompt,
+            and this is the user-visible half of the same discipline the Gateway
+            history projection applies. The request keeps its handles; only this
+            outbound copy loses them.
+            """
             nonlocal body
             await render_status(None)
-            body += text
-            await stream.append(text)
-            logger.debug(f"stream.append ({len(text)} chars)")
+            visible = marker_filter.feed(text)
+            if not visible:
+                logger.debug(f"outbound text withheld by marker filter ({len(text)} chars)")
+                return
+            body += visible
+            await stream.append(visible)
+            logger.debug(f"stream.append ({len(visible)} chars)")
 
         async def flush_silent_candidate() -> None:
             nonlocal silent_candidate
@@ -646,9 +661,11 @@ async def _stream_reply(
                 return
             candidate = silent_candidate
             silent_candidate = ""
-            normalized = candidate.strip()
+            # Decide on the *visible* text: a reply that is nothing but an echoed
+            # elision handle must be suppressed, not sent as "content".
+            normalized = strip_transfer_markers(candidate)
             if not normalized:
-                logger.debug("suppressed whitespace-only Feishu card action reply")
+                logger.debug("suppressed marker-only Feishu reply")
             elif normalized == _SILENT_REPLY_TOKEN:
                 logger.debug("suppressed standalone NO_REPLY from Feishu card action")
             else:
@@ -700,6 +717,10 @@ async def _stream_reply(
             await flush_silent_candidate()
             raise
         await flush_silent_candidate()
+        dropped = marker_filter.flush()
+        if dropped:
+            # By construction a marker prefix, never user text; log for triage.
+            logger.debug(f"dropped dangling marker fragment ({len(dropped)} chars): {dropped!r}")
 
     options = {"reply_to": reply_to} if reply_to else {}
     await channel.stream(chat_id, {"markdown": _produce}, options)

@@ -211,6 +211,19 @@ Other rules:
 """
 
 # ---------------------------------------------------------------------------
+# Internal markers never reach the user on their own
+# ---------------------------------------------------------------------------
+
+INTERNAL_MARKERS_SECTION = """\
+## Internal markers never reach the user on their own
+Some text you can see is addressed to a machine, not to the reader. Never copy it into your reply:
+- `[已省略 N 字符, 句柄 X]` — an **elision handle**: earlier turns were compressed to fit the context window. If you genuinely need the dropped content, fetch it with the `history_recall` tool (by that handle) and restate it in your own words. Never paste the handle, never mention that text was omitted, and never treat the handle as if it were the user's words.
+- `[SEND:…]` / `[RECV:…]` — file transport markers. Use `[SEND:]` only as described in the Files section (own line, absolute path); never quote a `[RECV:]` marker back at the user and never explain the marker syntax to them.
+- Tool-call JSON, `tool_call_id`s, internal field names (`open_id`, `case_id`, `source_key`, …) and internal rule IDs/versions (`msop.*`, `pn-*`, `…-shadow`) are internal bookkeeping: say what they mean in user language instead of printing them.
+Outbound replies are stripped of these markers, and pasting one only makes your answer look broken.\
+"""
+
+# ---------------------------------------------------------------------------
 # Deliverables as files (decide the artifact type, don't dump into chat)
 # ---------------------------------------------------------------------------
 

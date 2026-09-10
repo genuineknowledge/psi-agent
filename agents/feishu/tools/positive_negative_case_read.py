@@ -69,6 +69,10 @@ async def positive_negative_case_read(
       open_id(ou_/user_ 等前缀) 或 特殊值 我/本人/me(=当前会话发起人, 自动填其 open_id);
       中文姓名会报错 — 需要按姓名查时先经 feishu_contact_find 解析成 open_id 再传,
       或省略过滤做全量读取后自行筛选。
+    - 人员字段在飞书里是**多选**(一条记录可挂多人), 本工具按 ``contains`` 语义过滤 ——
+      查甲会命中 [甲, 乙] 这类多人行。不要自己改用 ``is``: 历史事故里 ``is`` 只匹配
+      "恰好只有这一人"的行, 多人行被静默跳过且接口返回 0 条, 会被误读成"没有记录"。
+      返回 0 条时如实说"按该条件没有查到", 不要推断为"该人没有记录"。
 
     Args:
         query_json: JSON object containing optional filters and pagination fields.

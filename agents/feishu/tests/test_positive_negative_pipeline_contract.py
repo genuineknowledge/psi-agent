@@ -133,6 +133,70 @@ def test_public_source_reader_requests_only_columns_known_to_the_table(monkeypat
     assert requested == ["员工姓名", "填写人", "正负面归属", "记录日期", "事件描述"]
 
 
+def test_person_filters_use_contains_because_person_fields_are_multi_select() -> None:
+    """生产事故 (2026-09-10): 飞书「人员」字段是多选, 用 ``is`` 查「员工姓名 is [高博]」
+    只匹配"恰好只有高博"的行 —— 含两人的行 (092 = [董修奇, 高博]) 被静默跳过, 接口返回
+    "0 条"而不是报错, 于是把"查不到"当成"没有"。涉事人/报告人必须用 ``contains``;
+    单选字段 (行为性质/分类) 仍用 ``is``。"""
+    reader = importlib.import_module("_positive_negative_list.reader")
+    payload = json.loads(
+        reader.build_filter(
+            LedgerQuery(subject_user_key="ou_gaobo", reporter_user_key="ou_reporter", nature="negative")
+        )
+    )
+    operators = {item["field_name"]: item["operator"] for item in payload["conditions"]}
+    assert operators["涉事人"] == "contains"
+    assert operators["报告人"] == "contains"
+    assert operators["涉事人"] != "is", "回退成 is 就会静默漏掉多人行"
+    assert operators["行为性质"] == "is"
+
+
+def test_multi_person_row_is_found_when_querying_one_of_its_people(monkeypatch) -> None:
+    """同一条记录挂多人时, 按其中一人查询必须能查到 (contains 语义)。"""
+    reader = importlib.import_module("_positive_negative_list.reader")
+    row: dict[str, Any] = {
+        "record_id": "rec_share",
+        "fields": {
+            "事件描述": [{"text": "方案未按优先级排", "type": "text"}],
+            "正负面归属": "负面清单",
+            "员工姓名": [{"id": "ou_dongxiuqi", "name": "董修奇"}, {"id": "ou_gaobo", "name": "高博"}],
+            "记录日期": 1786896000000,
+            "填写人": [{"id": "ou_gaobo", "name": "高博"}],
+        },
+    }
+
+    async def fake_search(**kwargs):
+        conditions = json.loads(kwargs.get("filter_json") or "{}").get("conditions", [])
+        people = [item["id"] for item in row["fields"]["员工姓名"]]
+        for condition in conditions:
+            if condition["field_name"] != "员工姓名":
+                continue
+            target = condition["value"][0]
+            matched = target in people if condition["operator"] == "contains" else people == [target]
+            if not matched:
+                return {"ok": True, "records": [], "has_more": False, "page_token": ""}
+        return {"ok": True, "records": [row], "has_more": False, "page_token": ""}
+
+    monkeypatch.setattr(reader._f, "search_bitable_records_impl", fake_search)
+    client = reader.FeishuLedgerClient(
+        "app",
+        "table",
+        {
+            "nature": "正负面归属",
+            "subject_user_key": "员工姓名",
+            "reporter_user_key": "填写人",
+            "occurred_at": "记录日期",
+            "fact_summary": "事件描述",
+        },
+        strict_field_names=True,
+    )
+    result = asyncio.run(reader.read_records(client, LedgerQuery(subject_user_key="ou_gaobo"), "ou_reader"))
+
+    assert result["ok"] is True
+    assert len(result["records"]) == 1
+    assert "ou_gaobo" in result["records"][0]["subject_user_key"]
+
+
 def test_feishu_rich_text_is_normalized_for_analysis() -> None:
     record = LedgerRecord.from_mapping(
         {

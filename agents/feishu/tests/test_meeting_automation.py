@@ -115,6 +115,16 @@ def test_meeting_schedule_files_cover_every_job_and_retry() -> None:
     assert '"meeting_code":"57152787045"' in retry
 
 
+def test_meeting_schedule_task_declares_review_and_followups() -> None:
+    """会议 schedule 的 TASK.md 必须声明「本场评价 + 后续建议」这一产出。
+
+    生成器 (``_task_body``) 与静态 TASK.md 由本 PR 一并提供, 投影一致性判据另行
+    钉死; 这里只锁文案, 防止有人把这两项产出从任务描述里删掉。
+    """
+    for name, body in meeting_schedule_files().items():
+        assert "产出本场评价与后续建议" in body, f"{name}/TASK.md 未声明评价与后续建议产出"
+
+
 def test_committed_meeting_schedule_files_match_projection() -> None:
     """``agents/feishu/schedules`` 下的静态 TASK.md 必须与 ``MEETING_JOBS`` 投影一致。
 
@@ -1616,6 +1626,21 @@ async def test_prepare_call_rpc_error_fails_explicitly(monkeypatch: pytest.Monke
     with pytest.raises(RuntimeError, match="RPC error"):
         await transcript_prepare._call("get_records_list", {})
     assert len(attempts) == 2
+
+
+def test_meeting_sop_skill_requires_review_and_followups() -> None:
+    """会议 SOP 引擎必须固定要求「本场会议评价 + 后续建议」三段产出。
+
+    纪要卡片首屏取自 ``meeting_summary``: 判定 / 评价 / 建议 三段都要在摘要里,
+    建议含 行动项(做什么+负责人+截止, 未定写"待指定")、改进建议、下次会议关注点
+    (对应 msop.core.04 闭环锚点), 否则收件人只看到判定、看不到该怎么跟进。
+    """
+    skill = Path(__file__).resolve().parents[1] / "skills" / "meeting-sop" / "weekday-alignment" / "SKILL.md"
+    text = skill.read_text(encoding="utf-8")
+    assert "会议评价与后续建议" in text
+    assert "本场会议评价" in text
+    assert "行动项" in text and "改进建议" in text and "下次会议关注点" in text
+    assert "待指定" in text and "msop.core.04" in text
 
 
 def test_atomic_write_text_replaces_whole_file(tmp_path: Path) -> None:
