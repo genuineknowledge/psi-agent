@@ -23,7 +23,7 @@ import sys
 import threading
 import types
 import typing
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +33,7 @@ import anyio
 from loguru import logger
 
 from psi_agent.session.content_roots import ContentRoot, content_roots_from_env
+from psi_agent.session.tool_exposure import read_manifest
 from psi_agent.session.tool_layers import Layer, executing_tool_file, layers_open
 
 # ── tools-dir import scope ───────────────────────────────────────────────────
@@ -502,12 +503,19 @@ class FileEntry:
     ``fresh`` is ``True`` when the file was actually imported during
     this refresh round; ``False`` when the entry was copied from a
     previous state (hash matched, file skipped).
+
+    ``layer_id`` records which content layer the file was loaded under. Kept per
+    file rather than recomputed from the path because the id is a declared name
+    under content roots, not something a path can be read back into
+    (``content_roots``), and because exposure decisions are per layer
+    (``tool_exposure``) — a tool that cannot say whose it is cannot be ranked.
     """
 
     file_hash: str
     tools: dict[str, ToolFunction]
     funcs: dict[str, Callable[..., Any]]
     fresh: bool = False
+    layer_id: str = ""
 
 
 # ── ToolRegistry — loading, state, incremental refresh ───────────────────────
@@ -527,10 +535,12 @@ class ToolRegistry:
         files: dict[str, FileEntry] | None = None,
         work_dir: Path | None = None,
         session_id: str = "",
+        manifests: Mapping[str, frozenset[str] | None] | None = None,
     ) -> None:
         self._files: dict[str, FileEntry] = dict(files or {})
         self._work_dir = work_dir
         self._session_id = session_id
+        self._manifests: dict[str, frozenset[str] | None] = dict(manifests or {})
 
     @property
     def tools(self) -> dict[str, ToolFunction]:
@@ -538,6 +548,31 @@ class ToolRegistry:
         result: dict[str, ToolFunction] = {}
         for entry in self._files.values():
             result.update(entry.tools)
+        return result
+
+    @property
+    def exposure_manifests(self) -> dict[str, frozenset[str] | None]:
+        """Per-layer declared exposure: ``layer_id`` → names, or ``None`` if undeclared.
+
+        Read once per load rather than per turn: the manifest is content shipped
+        with the layer, and re-reading it every turn would let the ``tools`` array
+        move mid-Session, which is the drift ``ToolDefsCache`` exists to stop.
+        """
+        return dict(self._manifests)
+
+    @property
+    def layer_of_tool(self) -> dict[str, str]:
+        """Tool name → the ``layer_id`` whose file currently owns that name.
+
+        Follows the same last-wins direction as ``tools``: when two layers ship
+        one name, the answer is the layer ``tools`` and ``get()`` both resolve to,
+        so an exposure decision cannot be made against a definition the model
+        will never be handed.
+        """
+        result: dict[str, str] = {}
+        for entry in self._files.values():
+            for name in entry.tools:
+                result[name] = entry.layer_id
         return result
 
     def get(self, name: str) -> Callable[..., Any] | None:
@@ -569,7 +604,13 @@ class ToolRegistry:
         declared it is the dir's own path (see ``_layer_id``).
         """
         files = await cls._load_from_dir(tools_dir, session_id)
-        return cls(files=files, work_dir=tools_dir, session_id=session_id)
+        layer_id = _layer_id(tools_dir)
+        return cls(
+            files=files,
+            work_dir=tools_dir,
+            session_id=session_id,
+            manifests={layer_id: await read_manifest(tools_dir)},
+        )
 
     @classmethod
     async def load_content_roots(cls, roots: Sequence[ContentRoot], session_id: str = "") -> ToolRegistry:
@@ -614,8 +655,12 @@ class ToolRegistry:
         with layers_open(ordered):
             for layer in ordered:
                 files.update(await cls._load_from_dir(layer.tools_dir, session_id, layer_id=layer.layer_id))
+        # Read outside the hook: a manifest is a text file, so nothing here
+        # imports, and holding the hook open longer than the loads need it only
+        # widens the window in which ``sys.meta_path`` carries this load's finder.
+        manifests = {layer.layer_id: await read_manifest(layer.tools_dir) for layer in ordered}
         top = ordered[-1].tools_dir if ordered else None
-        return cls(files=files, work_dir=top, session_id=session_id)
+        return cls(files=files, work_dir=top, session_id=session_id, manifests=manifests)
 
     async def refresh(self) -> dict[str, str]:
         """Incremental reload — adds, updates, removes tools.
@@ -765,7 +810,11 @@ class ToolRegistry:
                         logger.debug(f"Skipping unchanged file: {py_file!r}")
                         old = old_files[str_path]
                         files[str_path] = FileEntry(
-                            file_hash=old.file_hash, tools=old.tools, funcs=old.funcs, fresh=False
+                            file_hash=old.file_hash,
+                            tools=old.tools,
+                            funcs=old.funcs,
+                            fresh=False,
+                            layer_id=layer_id,
                         )
                         continue
 
@@ -831,6 +880,7 @@ class ToolRegistry:
                         tools=tools,
                         funcs=funcs,
                         fresh=True,
+                        layer_id=layer_id,
                     )
                 except Exception as e:
                     # Only unregister a module this iteration created.  A reused
