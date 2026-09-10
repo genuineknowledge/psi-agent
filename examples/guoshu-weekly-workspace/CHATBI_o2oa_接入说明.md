@@ -147,7 +147,9 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 | `weekly_attachment_stats` | ✅ 已接线(summary/by_ext) | 存活附件 **454 条 / 106 任务**;总字节 **1,954,375,767**(原样报出) / 1863.8 MB / 均 4203.9 KB;上传人 46;挂载点 315/58/81;扩展名 pptx130/xlsx116/pdf107/docx101 |
 | `weekly_group_history` | ✅ 已接线(5 个 scope) | 集团板进展**只在本表**:已发布 **362** 行 / 46 任务;草稿 **42** 行(两道闸门缺一即被算进来);明细/按任务/按填报人/滞后/联动 |
 | `weekly_group_owner_query` | ✅ 已接线 | 多值负责人**元素级精确**匹配:吴晓东 → 4 个集团任务(按 id `u3124` 同样 4 个);role=project 列出 46 行 |
-| 其余 14 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
+| `weekly_task_ranking` | ✅ 已接线 | 按子表条数排名(附件/进展/里程碑/提交单):**INNER JOIN 语义**(零条目的任务不参赛),列名照抄参考查询 `id / task_name / cnt`,并回显 `metric` / `metric_label`;附件榜首任务 73(20 个,`tied_at_top=1`);进展榜首任务 4(18 期,`tied_at_top=12`)。未迁移的 metric 回落,附件未授权报 `table_not_granted` |
+| `weekly_progress_range` | ✅ 已接线 | 时间轴出口:列集合 `task_id / task_name / version_no / progress_date / report_time / lag_days`;窗口两端闭区间,相对窗口锚在基准日(非系统时间);`total_count` / `total_tasks` **活过截断**;短窗口 0 行时附「按月上报」提示;`by=` / `peak=` / `date_field=report_time` 回落 |
+| 其余 12 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
 
 三条硬规则:
 
@@ -157,9 +159,51 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 4. **四张可选表默认视为未授权**(说明里必开的是 8 张):`_formal.optional_granted()` 读 `TASK_BOARD_GRANTED_OPTIONAL_TABLES`,未授权时返回 `table_not_granted` 错误,**不回落演示路径**(回落会去连演示源,把"没权限"变成"另一个数据源的答案");
 5. `snapshot_note` 换成正式口径(「国数正式只读源…非演示数据」),`snapshot_date` 用基准日(`GUOSHU_AS_OF` 可固定,便于与演示快照日对齐)。
 
-**端到端验证**(真 PG + 正式源模式,20 项断言全通过):信封 9 字段齐全、`source_tables` 指向正式表、
+**端到端验证**(真 PG + 正式源模式,130 项断言全通过):信封 9 字段齐全、`source_tables` 指向正式表、
 publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 103 的 V8 冲突(来自集团历史表)、
-新鲜度分档 63/44/8/9/4 且合计 = 任务总数、在办「从未报进展」8、漂移 73,未迁移参数全部回落。
+新鲜度分档 63/44/8/9/4 且合计 = 任务总数、在办「从未报进展」8、漂移 73、排名的并列自检、
+时间轴的 366 行/70 任务与短窗口提示,未迁移参数全部回落。
+
+### 3.0.3 排名与时间轴两个出口(2026-09-10 真库核对)
+
+本批接线 `weekly_task_ranking` 与 `weekly_progress_range`。两个工具各自有**一份参考查询**,
+形状不同就不能共用一条模板 —— 这是本批的主要发现:
+
+| 项 | `weekly_rank`(形状 `rank`) | `weekly_task_ranking`(形状 `count`) |
+|---|---|---|
+| 子表 JOIN | `LEFT JOIN`,**零值任务保留**("最少"那一端的答案) | `INNER JOIN`,零条目的任务**不参赛** |
+| 列名 | `task_id / task_name / metric_value` | `id / task_name / cnt`(照抄参考查询) |
+| cut 档自检 | 顶层 `total_count` = 符合口径的任务总数(128) | 无(参考查询也没有),只有 `metric` / `metric_label` |
+
+三个真库核对出来的结论(都已写成断言):
+
+1. **硬切在并列值上的取舍是任意的,必须把并列数交出去**。`tied_at_top` = 与首行同值的任务数:
+   进展期数榜首 18 期上有 **12 条并列**(所以 keep_ties 前 3 名是 12 行,cut 只给 3 行);
+   附件的 20 个上只有 1 条(任务 73 是**唯一**冠军)。少了这个数,"谁最多"会被答成唯一第一名。
+2. **`project_team_size`(项目团队人数)在正式数据里没有区分度**:`task.project_owner_name`
+   128 条**全部没有分隔符**(空负责人 0 条),取值集合 = {1}。此时 cut 的前三名由 task id 决定
+   (1/3/4),`tied_at_top=128` 才是这个问题的真答案 —— 多值负责人落在另一列
+   `task_group_detail.project_owner_names`(只覆盖集团板 46 条),两列不可互换。
+   同时补上参考查询那道过滤:空/ NULL 负责人**不算 1 人团队**,直接排除。
+3. **时间轴上的 0 行有两种原因,必须区分**。`task_progress` 按月上报:全库正式进展 943 行、
+   最大 `progress_date` 是 **2026-07-31**(距基准日 15 天),所以任何短于半月的窗口**必然为空**。
+   短窗口取回 0 行时口径里追加提示(数字现查,不写死):改用
+   `weekly_freshness_distribution recent_days=7`(得 23 条),也别退而报「最新一批」的期数。
+
+对齐参考查询的另一半是**参数校验收紧**:`last_days < 0`、非 `YYYY-MM-DD` 的日期、起点晚于终点,
+一律 `invalid_argument`。不校验就会把 `2026/07/01` 直接喂给 PG(报出来的是驱动层语法错),
+或让负天数反算出空窗口 —— 那不是「窗口内没有进展」,是窗口本身不成立。
+
+> 口径提醒:**自检数放顶层,不要塞进行内**。`total_count` / `tied_at_top` 说的是"这个名次站了几个人",
+> 不是分页信息;行内多一列会被当成分页字段读。演示源的 cut 档也把 `total_count` 放在顶层
+> (不是列),两边的键位必须一致 —— 模型只会读它在演示源下学会的那个键。
+
+> 口径提醒:**两个排名工具不能互相代答**。`weekly_task_ranking` 的 metric 名(attachments /
+> progress / milestones / submissions)与 `weekly_rank` 的 metric 名(progress_rounds /
+> milestones_done / group_rounds / project_team_size …)是**两套**,同一个数在两边的中文标签也不同
+> (进展在 ranking 里叫「正式进展版本数」、在 rank 里叫「已发布进展期数」)。映射表写在
+> `_formal._RANKING_METRICS`,标签照抄各自工具侧的地图。
+
 
 > 口径提醒:**多值列的匹配要按元素、且两种分隔符都要处理**:演示数据里多值负责人文本
 > 既用顿号(`任建华、潘启明`)也用半角逗号(`胡建国,方永康`)。只按顿号切会把逗号串当成一个人;
@@ -220,11 +264,17 @@ publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 1
 | 报错 | `FATAL: permission denied for database "o2oa"`(`User does not have CONNECT privilege`) |
 | 需要 | `GRANT CONNECT ON DATABASE o2oa TO read_only_all;`(纯只读用途) |
 
+**每轮复核**:2026-09-10 再测一次,矩阵仍是 `he3mysql` ✅ / `postgres` ✅ / `o2oa` ❌ / `oa_agent` ❌ / `oa_biz` ❌,
+授权尚未生效。等待期间的口径核对走「一台可写 PG + 演示库数据」的同构实例(见 3.0.1 与第 7 节),
+所有契约数字都在那上面复现过;真库一开,同一批模板直接跑 `dump_real_schema.py` 做逐列 diff 即可。
+
 授权一生效,即可用仓库外的核对脚本一次性产出:表/列/注释/行数、枚举真实分布、
 时间字段真实形态、最小抽样,并与本说明的字段字典逐列 diff。
 
 
 ## 4. 31 工具迁移批次(未完成部分)
+
+**当前进度:19 / 31 已接线**(见 3.0.2 的表);余下 12 个工具调用时仍走演示路径。
 
 - **批 1(已提交)**:查询类高频工具的三条核心 SQL 模板 + 规则基础设施;
 - **批 2**:`weekly_schema / task_query / task_detail / progress_history /
@@ -279,9 +329,11 @@ uv run --no-project --with pglast python <核对目录>/check_pg_syntax.py
 bash <核对目录>/start_pg_on_h100.sh
 # 2) 载入演示库数据 + 语义断言(准入 / 反例注入 / 最新版本 / 历史版本 / 分类路径 / 附件边界)
 python <核对目录>/load_and_verify_pg.py <weekly_mock.sqlite> <mock-mcp 目录>
-# 3) 批次 2 口径验收:复现上面那批契约数字(12 项断言)
+# 3) 批次 2 口径验收:复现上面那批契约数字(37 项断言)
 python <核对目录>/verify_numbers_v2.py
-# 4) 索引、执行计划与规模计时(放大到十万行,验证无 N+1)
+# 4) 端到端验收:以 TASK_BOARD_DATA_SOURCE=o2oa 加载 mock 服务,逐个调用已接线工具(130 项断言)
+python <核对目录>/verify_end_to_end.py
+# 5) 索引、执行计划与规模计时(放大到十万行,验证无 N+1)
 python <核对目录>/bench_pg.py
 ```
 

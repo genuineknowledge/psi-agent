@@ -505,3 +505,150 @@ class TestFormalBackend:
     def test_formal_snapshot_note_is_not_the_demo_one(self):
         assert "正式只读源" in _formal.FORMAL_SNAPSHOT_NOTE
         assert "演示" in _formal.FORMAL_SNAPSHOT_NOTE  # 明确写出"非演示数据"
+
+
+class TestRankShapes:
+    """两个排名工具各有一份参考查询,集合与列名都不同,不能共用一种形状。"""
+
+    def test_weekly_rank_shape_keeps_zero_rows(self):
+        # weekly_rank 问得到"最少",零值任务必须在场(inner_join_drops_zero)
+        sql, _params = o2.rank_tasks(metric="progress_rounds", mode="cut", top=3)
+        assert "LEFT JOIN task_progress x" in sql
+        assert "AS metric_value" in sql
+        assert "AS cnt" not in sql
+
+    def test_ranking_shape_is_inner_join_with_reference_column_names(self):
+        # weekly_task_ranking 的参考查询是 JOIN + COUNT(*) AS cnt + ORDER BY cnt DESC, t.id
+        sql, _params = o2.rank_tasks(
+            metric="attachments", mode="cut", top=3, shape="count", granted_optional=("task_attachment",)
+        )
+        assert "JOIN task_attachment x" in sql and "LEFT JOIN task_attachment" not in sql
+        assert "AS id" in sql and "AS cnt" in sql
+        assert "ORDER BY cnt DESC, id" in sql
+        assert "total_count" not in sql
+        assert "AS metric_value" not in sql
+
+    def test_ranking_shape_caps_with_the_last_param(self):
+        # 行数上限必须是最后一个参数,信封靠 limit+1 判 has_more
+        _sql, params = o2.rank_tasks(metric="milestones", mode="cut", top=7, shape="count")
+        assert params[-1] == 7
+
+    def test_ranking_shape_rejects_tie_and_ascending_modes(self):
+        with pytest.raises(ValueError):
+            o2.rank_tasks(metric="milestones", mode="keep_ties", shape="count")
+        with pytest.raises(ValueError):
+            o2.rank_tasks(metric="milestones", mode="cut", ascending=True, shape="count")
+
+    def test_ranking_shape_needs_a_child_table(self):
+        with pytest.raises(ValueError):
+            o2.rank_tasks(metric="project_team_size", mode="cut", shape="count")
+
+    def test_unknown_shape_rejected(self):
+        with pytest.raises(ValueError):
+            o2.rank_tasks(metric="milestones", mode="cut", shape="count_all")
+
+    def test_cut_carries_both_window_counts(self):
+        # 先按任务算度量再开窗:PARTITION BY count(x.id) 是聚合套窗口,PG 会直接报错
+        sql, _params = o2.rank_tasks(metric="progress_rounds", mode="cut", top=3)
+        assert "count(*) OVER () AS total_count" in sql
+        assert "count(*) OVER (PARTITION BY metric_value) AS tie_count" in sql
+        assert "WITH per_task AS" in sql and "), ranked AS (" in sql
+
+    def test_ranking_shape_carries_ties(self):
+        sql, _params = o2.rank_tasks(metric="milestones", mode="cut", top=3, shape="count")
+        assert "count(*) OVER (PARTITION BY cnt) AS tie_count" in sql
+
+    def test_cut_hoists_total_count_and_ties_to_the_top_level(self, monkeypatch):
+        """两个自检数都提成顶层键:行内多一列会被当成分页信息读。"""
+
+        def fake_envelope(**_kwargs):
+            return {
+                "ok": True,
+                "columns": ["task_id", "task_name", "metric_value", "total_count", "tie_count"],
+                "rows": [{"task_id": 4, "task_name": "x", "metric_value": 18, "total_count": 128, "tie_count": 12}],
+                "row_count": 1,
+            }
+
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        got = _formal._rank({"metric": "progress_rounds", "mode": "cut", "top": 3})
+        assert (got["total_count"], got["tied_at_top"]) == (128, 12)
+        assert got["columns"] == ["task_id", "task_name", "metric_value"]
+
+    def test_ranking_hoists_ties_to_the_top_level(self, monkeypatch):
+        def fake_envelope(**kwargs):
+            return {
+                "ok": True,
+                "columns": ["id", "task_name", "cnt", "tie_count"],
+                "rows": [{"id": 73, "task_name": "x", "cnt": 20, "tie_count": 2}],
+                "row_count": 1,
+                **kwargs.get("extra", {}),
+            }
+
+        monkeypatch.setenv("TASK_BOARD_GRANTED_OPTIONAL_TABLES", "task_attachment")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        got = _formal._task_ranking({"metric": "attachments", "top": 3})
+        assert got["tied_at_top"] == 2 and got["columns"] == ["id", "task_name", "cnt"]
+        assert got["metric_label"] == "附件数"
+
+    def test_team_size_metric_excludes_empty_owners(self):
+        # 空负责人不是"1 人团队"而是没有团队可比:少了这一条,答案尾巴会混进假 1 人
+        sql, _params = o2.rank_tasks(metric="project_team_size", mode="cut", top=3)
+        assert "t.project_owner_name IS NOT NULL AND t.project_owner_name <> ''" in sql
+        assert "coalesce(t.project_owner_name, '')" in sql  # 表达式自己仍要兜 NULL
+
+    def test_ranking_metrics_map_to_the_tool_labels(self):
+        # 标签照抄该工具的参考地图(progress 在这里叫「正式进展版本数」)
+        assert _formal._RANKING_METRICS["progress"] == ("progress_rounds", "正式进展版本数")
+        assert set(_formal._RANKING_METRICS) == {"attachments", "progress", "milestones", "submissions"}
+
+    def test_ranking_unknown_metric_falls_back(self, monkeypatch):
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _formal.dispatch("weekly_task_ranking", metric="keyword_hits") is None
+
+    def test_progress_range_unmigrated_arguments_fall_back(self, monkeypatch):
+        """缺一端、要给分档/峰值、或换成填报时间轴,都交给演示路径(不连库即可判定)。"""
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _formal.dispatch("weekly_progress_range", date_from="2026-08-01") is None
+        assert _formal.dispatch("weekly_progress_range", by="month") is None
+        assert _formal.dispatch("weekly_progress_range", peak=True) is None
+        assert _formal.dispatch("weekly_progress_range", date_field="report_time") is None
+
+    def test_progress_range_rejects_impossible_windows(self, monkeypatch):
+        """不成立的窗口要报口径错,不能静默返回 0 行 —— 0 行的意思是「这段里没有进展」。"""
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        for kwargs in (
+            {"last_days": -3},
+            {"date_from": "2026/07/01", "date_to": "2026-08-15"},
+            {"date_from": "2026-08-15", "date_to": "2026-07-01"},
+        ):
+            got = _formal.dispatch("weekly_progress_range", **kwargs)
+            assert got is not None and got["ok"] is False, kwargs
+            assert got["error"]["code"] == "invalid_argument", kwargs
+
+
+class TestProgressRangeTemplates:
+    """时间轴出口的列集合、总数与"短窗口 0 行"的解释都要与参考实现同形。"""
+
+    def test_columns_match_the_reference_query(self):
+        sql, params = o2.progress_range(None, "2026-07-01", "2026-08-15", limit=200)
+        assert "AS lag_days" in sql
+        # 进展正文与填报人不在这个出口里:它答的是"哪些任务在窗口内报过"
+        assert "latest_progress" not in sql and "next_work" not in sql and "reporter_id" not in sql
+        assert params == ("2026-07-01", "2026-08-15", 200)
+
+    def test_lag_days_is_report_date_minus_period_date(self):
+        sql, _params = o2.progress_range(None, "2026-07-01", "2026-08-15")
+        assert "AS lag_days" in sql
+        assert sql.count("::date - ") == 1  # 减法只出现一次,别把窗口条件也改成日期相减
+
+    def test_totals_are_a_separate_unpaged_query(self):
+        sql, params = o2.progress_range_totals(None, "2026-01-01", "2026-08-15")
+        assert "total_rows" in sql and "total_tasks" in sql
+        assert "LIMIT" not in sql
+        assert params == ("2026-01-01", "2026-08-15")
+
+    def test_recency_query_reads_the_publish_gate(self):
+        sql, params = o2.published_progress_recency()
+        assert "latest_progress_date" in sql and "published_rows" in sql
+        assert "is_published = 1" in sql
+        assert params == ()

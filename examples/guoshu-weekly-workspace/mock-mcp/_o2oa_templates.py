@@ -292,7 +292,7 @@ LIMIT %s
 
 
 def progress_range(
-    board_code: str,
+    board_code: str | None,
     date_from: str,
     date_to: str,
     limit: int = 200,
@@ -301,27 +301,92 @@ def progress_range(
 
     ``progress_date`` 是 date 类型,窗口参数直接比较;这里的价值在于**窗口过滤发生在
     正式版本上**,而不是拿到历史/草稿版本再筛 —— 后者会把没进公示的进展答给用户。
+
+    列集合照抄参考查询:``task_id / task_name / version_no / progress_date /
+    report_time / lag_days``。进展正文(latest_progress / next_work)与填报人不在
+    这个工具的返回里 —— 它答的是"哪些任务在窗口内报过",列正文只会把 200 行的
+    回包撑成几万字,而正文有专门的逐任务出口。
+    ``lag_days`` = 上报日 - 周期日(补报更早周期时为正)。
     """
-    code, hint = adm.check_board_code(board_code)
+    code, hint = adm.check_board_code(board_code) if board_code else (None, None)
     if hint:
         raise ValueError(hint)
+    board_clause = "AND b.code = %s" if code else ""
+    params: list[object] = [code] if code else []
     sql = f"""
 SELECT t.id AS task_id, t.task_name, p.version_no,
-       p.latest_progress, p.next_work,
-       {adm.normalize_date_sql("p.progress_date")} AS progress_date, p.reporter_id,
-       {adm.normalize_ts_sql("p.report_time")} AS report_time
+       {adm.normalize_date_sql("p.progress_date")} AS progress_date,
+       {adm.normalize_ts_sql("p.report_time")} AS report_time,
+       ({adm.parse_ts_sql("p.report_time")})::date - ({adm.parse_ts_sql("p.progress_date")})::date AS lag_days
 FROM task_progress p
 JOIN task t     ON t.id = p.task_id
 JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
 WHERE {adm.sql_task_admission("pg", "t")}
-  AND b.code = %s
+  {board_clause}
   AND {adm.sql_published_progress("pg", "p")}
   AND {adm.parse_ts_sql("p.progress_date")} >= %s
   AND {adm.parse_ts_sql("p.progress_date")} <= %s
 ORDER BY p.progress_date DESC, t.sort_order
 LIMIT %s
 """
-    return sql, (code, date_from, date_to, int(limit))
+    params.extend([date_from, date_to, int(limit)])
+    return sql, tuple(params)
+
+
+def progress_range_totals(
+    board_code: str | None,
+    date_from: str,
+    date_to: str,
+) -> tuple[str, tuple]:
+    """同一窗口的**总数**:行数与涉及任务数。
+
+    单列出来是因为它们必须活过截断:"今年以来报了多少期"是 366 行,取到 200 行 +
+    ``has_more`` 之后调用方无法还原真值,只能报"至少 200"。与参考查询同法(先查总数,
+    再查明细)。
+    """
+    code, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    board_clause = "AND b.code = %s" if code else ""
+    params: list[object] = [code] if code else []
+    sql = f"""
+SELECT count(*) AS total_rows, count(DISTINCT p.task_id) AS total_tasks
+FROM task_progress p
+JOIN task t     ON t.id = p.task_id
+JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
+WHERE {adm.sql_task_admission("pg", "t")}
+  {board_clause}
+  AND {adm.sql_published_progress("pg", "p")}
+  AND {adm.parse_ts_sql("p.progress_date")} >= %s
+  AND {adm.parse_ts_sql("p.progress_date")} <= %s
+"""
+    params.extend([date_from, date_to])
+    return sql, tuple(params)
+
+
+def published_progress_recency(board_code: str | None = None) -> tuple[str, tuple]:
+    """全场正式进展的**最新周期日**与总行数(短窗口 0 行时用来解释这个 0)。
+
+    短窗口取回 0 行有两个完全不同的原因:"窗口里确实没人报"与"这张表按月上报,
+    短于半月的窗口必然为空"。不区分它们,调用方会把后者答成前者 —— 参考实现为此
+    专门附了一段提示,这里给它同一份事实,但数字取自当前库而不是写死的。
+    """
+    code, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    board_clause = "AND b.code = %s" if code else ""
+    params: list[object] = [code] if code else []
+    sql = f"""
+SELECT {adm.normalize_date_sql("max(p.progress_date)")} AS latest_progress_date,
+       count(*) AS published_rows
+FROM task_progress p
+JOIN task t     ON t.id = p.task_id
+JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
+WHERE {adm.sql_task_admission("pg", "t")}
+  {board_clause}
+  AND {adm.sql_published_progress("pg", "p")}
+"""
+    return sql, tuple(params)
 
 
 COVERAGE_SCOPES = (
@@ -1784,6 +1849,7 @@ ORDER BY {order}
 
 RANK_MODES = ("cut", "keep_ties", "per_group")
 RANK_GROUPINGS = ("project_group", "board", "primary_category", "status")
+RANK_SHAPES = ("rank", "count")
 
 # 度量 = (子表, 子表闸门, 计数表达式, 中文标签, 是否可选表)
 # 全部走 LEFT JOIN,零值任务才不会被 INNER JOIN 静默丢掉(inner_join_drops_zero)。
@@ -1842,6 +1908,7 @@ def rank_tasks(
     group_by: str | None = None,
     board_code: str | None = None,
     granted_optional: tuple[str, ...] = (),
+    shape: str = "rank",
 ) -> tuple[str, tuple]:
     """任务排名:并列规则由服务端定(cut / keep_ties / per_group)。
 
@@ -1853,6 +1920,19 @@ def rank_tasks(
       演示数据里"进展期数前 3 名"是 **12 行**(第 3 名有 12 条并列),而 cut 只给 3 行;
     * ``per_group``:每组第一名,一组一行,``top`` 在这一档无意义。
 
+    ``shape`` 是两个**工具**各自的参考查询形状,语义不同不能互相顶替:
+
+    * ``rank``(``weekly_rank``):LEFT JOIN 保留零值任务(升序问"最少"时它们是答案),
+      列名 ``task_id / task_name / metric_value``,cut 档另给 ``total_count``;
+    * ``count``(``weekly_task_ranking``):INNER JOIN,只让**有该子表记录**的任务参赛,
+      列名 ``id / task_name / cnt``,没有 ``total_count``(refer 查询也没有),
+      只支持 cut 且固定降序 —— 参考查询就是这么写的。
+
+    两档都多给一列 ``tie_count`` = **并列在同一度量值上的任务数**(调用方把它提成
+    顶层的 ``tied_at_top``)。硬切在并列值上的取舍是任意的:少了这个数,"进展期数最多的
+    任务"会被念成唯一的第一名,而真实情况可能是十几条并列;碰上"整列同值"的度量
+    (项目团队人数在演示数据里 128 条全是 1 人),不带并列信息就只能答出一个假冠军。
+
     NULL 排序按 MySQL 语义对齐:降序时 NULL 在最后、升序时在最前
     (PG 默认相反,不写 ``NULLS LAST/FIRST`` 会与演示源给出不同的名次)。
     """
@@ -1860,8 +1940,16 @@ def rank_tasks(
         raise ValueError(f"不支持的 metric:{metric};支持 {', '.join(sorted(RANK_METRICS))}")
     if mode not in RANK_MODES:
         raise ValueError(f"不支持的 mode:{mode};支持 {', '.join(RANK_MODES)}")
+    if shape not in RANK_SHAPES:
+        raise ValueError(f"不支持的 shape:{shape};支持 {', '.join(RANK_SHAPES)}")
+    if shape == "count" and mode != "cut":
+        raise ValueError("shape=count 只有 cut 档(参考查询没有并列语义)")
+    if shape == "count" and ascending:
+        raise ValueError("shape=count 固定降序(参考查询 ORDER BY cnt DESC)")
     bound = max(1, min(200, int(top)))
     table, gate, expression, _label, optional = RANK_METRICS[metric]
+    if shape == "count" and not table:
+        raise ValueError(f"shape=count 需要子表度量,{metric} 的值在 task 行上")
     if optional and optional not in granted_optional:
         hint = adm.require_optional_table(optional, False)
         raise PermissionError(hint)
@@ -1878,9 +1966,13 @@ def rank_tasks(
         params.append(board)
     if table:
         expr = expression
-        joins += f"\nLEFT JOIN {table} x ON x.task_id = t.id AND {gate}"
+        join_kind = "JOIN" if shape == "count" else "LEFT JOIN"
+        joins += f"\n{join_kind} {table} x ON x.task_id = t.id AND {gate}"
     else:
         expr = TEAM_SIZE_SQL
+        # 零负责人的任务不算"1 人团队"而是**没有团队可比**,直接排除:
+        # coalesce 兜底会把空串算成 1 人,于是「人数最多」的尾巴里混进一批假 1 人。
+        where.append("t.project_owner_name IS NOT NULL AND t.project_owner_name <> ''")
     where_sql = "\n  AND ".join(where)
     direction = "ASC" if ascending else "DESC"
     # 对齐 MySQL:降序 NULL 最后、升序 NULL 最前
@@ -1892,6 +1984,8 @@ def rank_tasks(
     group_extra = ", t.project_owner_name" if not table else ""
 
     if mode == "keep_ties":
+        # 不额外给 row_count_to_place:它恒等于信封的 row_count,多一个同值列只会
+        # 诱使调用方去比对两个本来就相等的数;演示源的 keep_ties 也只给这 4 列。
         sql = f"""
 WITH ranked AS (
     SELECT t.id AS task_id, t.task_name, {expr} AS metric_value,
@@ -1901,8 +1995,7 @@ WITH ranked AS (
     WHERE {where_sql}
     GROUP BY t.id, t.task_name{group_extra}
 )
-SELECT task_id, task_name, metric_value, rk,
-       count(*) OVER () AS row_count_to_place
+SELECT task_id, task_name, metric_value, rk
 FROM ranked
 WHERE rk <= %s
 ORDER BY rk, task_name
@@ -1955,16 +2048,44 @@ ORDER BY bucket
 """
         return sql, tuple(params)
 
+    if shape == "count":
+        # weekly_task_ranking 的参考查询是 **INNER JOIN** + COUNT(*) + ORDER BY cnt DESC, t.id:
+        # 它问的是"哪条任务最多",零条目的任务不是零分参赛者而是**不参赛**
+        # (LEFT JOIN 会让它们以 0 混进 top=50 的尾巴里,集合与参考查询不同)。
+        # 列名也照抄参考查询(id / task_name / cnt),换数据源不该换字段名。
+        # tie_count 先按任务算完再开窗:PARTITION BY count(x.id) 是聚合套窗口,PG 直接报错。
+        sql = f"""
+WITH per_task AS (
+    SELECT t.id AS id, t.task_name, count(x.id) AS cnt
+    FROM task t
+    {joins}
+    WHERE {where_sql}
+    GROUP BY t.id, t.task_name
+), ranked AS (
+    SELECT id, task_name, cnt, count(*) OVER (PARTITION BY cnt) AS tie_count
+    FROM per_task
+)
+SELECT id, task_name, cnt, tie_count
+FROM ranked
+ORDER BY cnt DESC, id
+LIMIT %s
+"""
+        return sql, (*params, bound)
+
     sql = f"""
-WITH ranked AS (
-    SELECT t.id AS task_id, t.task_name, {expr} AS metric_value,
-           count(*) OVER () AS total_count
+WITH per_task AS (
+    SELECT t.id AS task_id, t.task_name, {expr} AS metric_value
     FROM task t
     {joins}
     WHERE {where_sql}
     GROUP BY t.id, t.task_name{group_extra}
+), ranked AS (
+    SELECT task_id, task_name, metric_value,
+           count(*) OVER () AS total_count,
+           count(*) OVER (PARTITION BY metric_value) AS tie_count
+    FROM per_task
 )
-SELECT task_id, task_name, metric_value, total_count
+SELECT task_id, task_name, metric_value, total_count, tie_count
 FROM ranked
 ORDER BY metric_value {direction} {nulls}, task_id
 LIMIT %s

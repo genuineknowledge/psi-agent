@@ -38,6 +38,8 @@ FORMAL_SNAPSHOT_NOTE = "国数正式只读源(O2OA PostgreSQL / task-board 应�
 DEFAULT_AS_OF = "2026-08-15"
 
 _TABLE_RE = re.compile(r"\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_]*)", re.IGNORECASE)
+# 与 ``_store._DATE_RE`` 同一形状:调用方给的日期要么是这个格式,要么就是口径错。
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def enabled() -> bool:
@@ -549,27 +551,44 @@ def _rank(args: dict[str, Any]) -> dict[str, Any] | None:
     optional = tuple(tpl.RANK_METRICS.get(metric, ("", "", "", "", None))[4:5])
     optional_table = optional[0] if optional else None
     granted = (optional_table,) if (optional_table and optional_granted(optional_table)) else ()
+    mode = (args.get("mode") or "cut").strip()
+    top = int(args.get("top") or 5)
     sql, params = tpl.rank_tasks(
         metric=metric,
-        mode=(args.get("mode") or "cut").strip(),
-        top=int(args.get("top") or 5),
+        mode=mode,
+        top=top,
         ascending=bool(args.get("ascending")),
         group_by=(args.get("group_by") or "").strip() or None,
         board_code=(args.get("board") or "").strip() or None,
         granted_optional=granted,
     )
-    return envelope(
+    result = envelope(
         sql=sql,
         params=params,
         caliber=(
             "正式任务门 = is_deleted = 0 AND workflow_status = 'published';"
             "cut 硬切前 N 条(并列按 task id),keep_ties 用 RANK() 保留并列(行数通常大于 N),"
             "per_group 每组第一(top 无意义);各度量走 LEFT JOIN,零值任务保留;"
-            "project_team_size 数的是 task 行上 project_owner_name 的三种分隔符(、 , ;)"
+            "project_team_size 数的是 task 行上 project_owner_name 的三种分隔符(、 , ;),"
+            "零负责人(空串或 NULL)的任务不算 1 人团队,已排除;"
+            "cut 档的 total_count 是符合口径的任务总数(不是本次行数),"
+            "tied_at_top 是与首行同值的任务数(升序时即最小值那一侧的并列)——"
+            "硬切在并列上的取舍是任意的,并列数大于 1 时不要把它念成唯一的第一名"
         ),
-        limit=int(args.get("top") or 5) if (args.get("mode") or "cut") == "cut" else MAX_ROWS,
-        cap_last_param=(args.get("mode") or "cut") == "cut",
+        limit=top if mode == "cut" else MAX_ROWS,
+        cap_last_param=mode == "cut",
     )
+    if mode == "cut":
+        # 演示源的 cut 分支把「符合口径的任务总数」放在**顶层**(不是行内列):
+        # 两边键位必须一致,否则同一个问题换数据源就得换字段读,而模型只会读它
+        # 在演示源下学会的那个键。SQL 里仍由 count(*) OVER () 一次算出,不多查一遍。
+        # tie_count 同理提成 tied_at_top(演示源没有这一项,是**加法**,不改键位)。
+        totals = [row.pop("total_count", None) for row in result["rows"]]
+        ties = [row.pop("tie_count", None) for row in result["rows"]]
+        result["columns"] = [c for c in result["columns"] if c not in ("total_count", "tie_count")]
+        result["total_count"] = totals[0] if totals else None
+        result["tied_at_top"] = ties[0] if ties else None
+    return result
 
 
 _NEW_HANDLERS_9 = {"weekly_rank": _rank}
@@ -692,6 +711,135 @@ _NEW_HANDLERS_11 = {
     "weekly_group_history": _group_history,
     "weekly_group_owner_query": _group_owner,
 }
+# weekly_task_ranking 的 metric 名 -> (rank_tasks 的 metric 名, 该工具自己的中文标签)
+# 标签照抄工具侧的地图而不是 RANK_METRICS 的:progress 在 `weekly_rank` 叫
+# 「已发布进展期数」,在这个工具里叫「正式进展版本数」,同一个数在不同工具下
+# 带不同标签是既有契约,统一改会让另一边的回答换词。
+_RANKING_METRICS = {
+    "attachments": ("attachments", "附件数"),
+    "progress": ("progress_rounds", "正式进展版本数"),
+    "milestones": ("milestones", "里程碑数"),
+    "submissions": ("submissions", "审批提交单数"),
+}
+
+
+def _task_ranking(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_task_ranking:按子表条数排名(INNER JOIN,只列有记录的任务)。"""
+    metric = (args.get("metric") or "attachments").strip()
+    chosen = _RANKING_METRICS.get(metric)
+    if chosen is None:
+        return None
+    mapped, label = chosen
+    top = max(1, min(50, int(args.get("top") or 5)))
+    optional = tpl.RANK_METRICS[mapped][4]
+    granted = (optional,) if (optional and optional_granted(optional)) else ()
+    sql, params = tpl.rank_tasks(metric=mapped, mode="cut", top=top, granted_optional=granted, shape="count")
+    result = envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            "正式任务门 = is_deleted = 0 AND workflow_status = 'published';"
+            "本档只列**有该子表记录**的任务(零条目的任务不参赛,与参考查询的 INNER JOIN 一致),"
+            "按条数降序、并列按 task id 升序硬切前 N 条;"
+            "tied_at_top 是与首行条数相同的任务数——并列数大于 1 时,榜首只是并列里的第一条,"
+            "不要念成唯一的第一名(并列全列请用 weekly_rank 的 mode=keep_ties);"
+            "附件度量需要 task_attachment 授权"
+        ),
+        limit=top,
+        cap_last_param=True,
+        extra={"metric": metric, "metric_label": label},
+    )
+    # 并列自检提到顶层:行内多一列会被当成分页信息,而它是"这个名次站了几个人"。
+    ties = [row.pop("tie_count", None) for row in result["rows"]]
+    result["columns"] = [c for c in result["columns"] if c != "tie_count"]
+    result["tied_at_top"] = ties[0] if ties else None
+    return result
+
+
+def _progress_range(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_progress_range:时间轴上的正式进展(全任务或指定看板)。"""
+    if (args.get("by") or "").strip() or args.get("peak"):
+        return None  # 分档/峰值交给演示路径
+    if (args.get("date_field") or "progress_date").strip() != "progress_date":
+        return None
+    date_from = (args.get("date_from") or "").strip()
+    date_to = (args.get("date_to") or "").strip()
+    last_days = int(args.get("last_days") or 0)
+    if last_days < 0:
+        # 演示源的 date_window 对非正数报 invalid_argument;负天数会反算出 lo > hi,
+        # 静默返回 0 行 —— 那不是"窗口内没有进展",是窗口本身不成立。
+        raise ValueError(f"last_days 必须为正数:{last_days}")
+    if last_days:
+        # 相对窗口以数据基准日为准,不用系统时间(与新鲜度同一口径)
+        end = dt.date.fromisoformat(as_of())
+        date_to = date_to or end.isoformat()
+        date_from = (end - dt.timedelta(days=last_days)).isoformat()
+    if not date_from or not date_to:
+        return None
+    for label, value in (("date_from", date_from), ("date_to", date_to)):
+        if not _DATE_RE.match(value):
+            # 不校验就会把 '2026/08/01' 直接喂给 PG,报出来的是驱动层的语法错而不是口径错
+            raise ValueError(f"{label} 需为 YYYY-MM-DD:{value}")
+    if date_from > date_to:
+        raise ValueError(f"窗口起点晚于终点:{date_from} > {date_to}")
+    limit = int(args.get("limit") or MAX_ROWS)
+    sql, params = tpl.progress_range(None, date_from, date_to, limit=limit)
+    result = envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            "只取正式展示版本(is_published = 1)且任务已发布;窗口两端都是闭区间;"
+            f"相对窗口以数据基准日 {as_of()} 为基准,不用系统当前时间(last_days=N 时窗口是 "
+            f"{as_of()} 往前数 N 天到基准日,含两端);"
+            "lag_days = 上报日 - 周期日(补报更早周期时为正);"
+            "集团看板的进展不在这张表里,用 weekly_group_history"
+        ),
+        limit=limit,
+        cap_last_param=True,
+        extra={"date_from": date_from, "date_to": date_to},
+    )
+    # 总数单独查一次(与参考实现同法):明细被 200 行截断后,调用方还原不出真值
+    tsql, tparams = tpl.progress_range_totals(None, date_from, date_to)
+    totals = envelope(sql=tsql, params=tparams, caliber="窗口总数", limit=1)
+    first = (totals.get("rows") or [{}])[0]
+    result["total_count"] = first.get("total_rows")
+    result["total_tasks"] = first.get("total_tasks")
+    span = (dt.date.fromisoformat(date_to) - dt.date.fromisoformat(date_from)).days
+    if not result["total_count"] and span < 15:
+        # 0 行有两种完全不同的原因。不点明,task_progress 按月上报这件事会让
+        # "最近一周"被答成"没有任务更新进展"——参考实现为此吃了 6 轮返工。
+        result["caliber"] += _short_window_hint()
+    return result
+
+
+def _short_window_hint() -> str:
+    """短窗口 0 行时的口径补充,数字现查(不写死演示数据的那批日期)。"""
+    sql, params = tpl.published_progress_recency(None)
+    recency = envelope(sql=sql, params=params, caliber="短窗口自检", limit=1)
+    first = (recency.get("rows") or [{}])[0]
+    latest = first.get("latest_progress_date") or "未知"
+    rows = first.get("published_rows") or 0
+    fsql, fparams = tpl.freshness_within(as_of(), 7)
+    fresh = envelope(sql=fsql, params=fparams, caliber="近 7 天更新自检", limit=1)
+    recent = ((fresh.get("rows") or [{}])[0]).get("reported_within") or 0
+    gap = "半月上下"
+    if latest != "未知":
+        gap = f"{(dt.date.fromisoformat(as_of()) - dt.date.fromisoformat(latest)).days} 天"
+    return (
+        # 全角分号按转义序列写出:它是拼接语气的一部分(与参考实现的提示同形),
+        # 直接写字面量会触发 RUF001,而换成半角就不是同一段文案了。
+        f"\uff1b本次窗口内 0 行不是「没人报进展」:进展行按月上报,全库正式进展 {rows} 行,"
+        f"最大 progress_date 是 {latest}(距基准日 {gap}),任何短于半月的窗口在这张表上必然为空。"
+        "问「最近一周哪些任务更新了进展」问的是任务上的 latest_progress_time(逐条更新),"
+        f"请改用 weekly_freshness_distribution recent_days=7(得 {recent} 条);"
+        "也不要退而报「最新一批进展」的期数,那是另一个问题"
+    )
+
+
+_NEW_HANDLERS_12 = {
+    "weekly_task_ranking": _task_ranking,
+    "weekly_progress_range": _progress_range,
+}
 
 _HANDLERS = {
     "weekly_task_query": _task_query,
@@ -711,6 +859,8 @@ _HANDLERS = {
     "weekly_attachment_stats": _attachment_stats,
     "weekly_group_history": _group_history,
     "weekly_group_owner_query": _group_owner,
+    "weekly_task_ranking": _task_ranking,
+    "weekly_progress_range": _progress_range,
 }
 
 # _NEW_HANDLERS 只是构建期的清单,避免手工漏接线

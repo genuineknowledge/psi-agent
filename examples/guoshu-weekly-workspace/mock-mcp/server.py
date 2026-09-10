@@ -3449,6 +3449,19 @@ def weekly_progress_range(
     """
     may_read = _caller_may_read_sensitive(ctx)
 
+    formal = _formal.dispatch(
+        "weekly_progress_range",
+        date_from=date_from,
+        date_to=date_to,
+        last_days=last_days,
+        by=by,
+        date_field=date_field,
+        peak=peak,
+        limit=limit,
+    )
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         if date_field not in _PROGRESS_DATE_FIELDS:
             return {
@@ -4078,6 +4091,10 @@ def weekly_task_ranking(metric: str = "attachments", top: int = 5) -> str:
         metric: attachments / progress / milestones / submissions.
         top: How many rows to return, 1..50.
     """
+
+    formal = _formal.dispatch("weekly_task_ranking", metric=metric, top=top)
+    if formal is not None:
+        return _dump(formal)
 
     def work() -> dict[str, Any]:
         joins = {
