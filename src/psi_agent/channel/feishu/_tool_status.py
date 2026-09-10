@@ -91,6 +91,8 @@ TOOL_ALIASES: dict[str, str] = {
     "meeting_session_notify": "正在发送会议结果",
     "meeting_pipeline_run": "正在分析会议",
     "meeting_record_export": "正在打包会议资料",
+    "meeting_records_list": "正在列历史场次",
+    "meeting_pipeline_replay": "正在补跑会议场次",
     # 正负面清单 (2026-09-07 起进入 M2 核心集; 2026-09-10 补别名, 此前判据是红的)
     "positive_negative_rules": "正在查清单规则",
     "positive_negative_case_prepare": "正在整理记录草稿",
