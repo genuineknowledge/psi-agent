@@ -23,7 +23,7 @@ import sys
 import threading
 import types
 import typing
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +31,8 @@ from typing import Any
 
 import anyio
 from loguru import logger
+
+from psi_agent.session.tool_layers import Layer, executing_tool_file, layers_open
 
 # ── tools-dir import scope ───────────────────────────────────────────────────
 
@@ -96,28 +98,57 @@ def _restore_private_modules(entry: str) -> None:
 
 
 def _stash_private_modules(entry: str) -> None:
-    """Move private modules loaded from *entry* out of ``sys.modules``."""
+    """Move private modules loaded from *entry* out of ``sys.modules``.
+
+    Submodules of a private package (``_feishu.auth``) are stashed too, keyed by
+    their own dotted name.  They used to be skipped outright, which left
+    ``agents/feishu/tools/_feishu/``'s 15 modules in ``sys.modules`` after every
+    scope closed — so a second tools dir shipping its own ``_feishu`` bound the
+    first dir's submodules even when the two dirs were loaded *sequentially*,
+    with no layering involved.  A dotted name is matched against the package
+    directory rather than the tools dir, since that is where the file sits.
+    """
     try:
         resolved = Path(entry).resolve()
     except OSError:
         return
     stash: dict[str, types.ModuleType] = {}
     for name in list(sys.modules):
-        if not name.startswith("_") or "." in name:
+        if not name.startswith("_"):
             continue
         mod = sys.modules.get(name)
         origin = getattr(mod, "__file__", None)
         if mod is None or not origin:
             continue
         try:
-            same_dir = Path(origin).resolve().parent == resolved
+            if not _belongs_to_dir(name, Path(origin), resolved):
+                continue
         except OSError:
             continue
-        if same_dir:
-            stash[name] = mod
-            del sys.modules[name]
+        stash[name] = mod
+        del sys.modules[name]
     if stash:
         _private_module_stash[entry] = stash
+
+
+def _belongs_to_dir(name: str, origin: Path, tools_dir: Path) -> bool:
+    """Whether the module *name* loaded from *origin* is *tools_dir*'s own.
+
+    ``_helper`` (bare) must sit directly in the dir.  ``_pkg.sub`` sits one
+    directory down per name segment, and ``_pkg`` itself is a directory with an
+    ``__init__.py``, so the expected parent is rebuilt from the name rather than
+    compared to *tools_dir* directly.  Rebuilding it — instead of just asking
+    whether the file is somewhere under *tools_dir* — keeps a module that merely
+    happens to live in a subdirectory from being claimed under the wrong name.
+    """
+    resolved = origin.resolve()
+    *parents, last = name.split(".")
+    expected = tools_dir
+    for part in parents:
+        expected = expected / part
+    if resolved.name == "__init__.py":
+        return resolved.parent == (expected / last)
+    return resolved.parent == expected
 
 
 # ── process-wide compiled-module cache ───────────────────────────────────────
@@ -496,6 +527,33 @@ class ToolRegistry:
         files = await cls._load_from_dir(tools_dir, session_id)
         return cls(files=files, work_dir=tools_dir, session_id=session_id)
 
+    @classmethod
+    async def load_layers(cls, layers: Sequence[Layer], session_id: str = "") -> ToolRegistry:
+        """Full initial load across several content layers held open together.
+
+        Every layer's tools dir is in scope for the whole load — that is what
+        makes cross-layer derivation possible at all — so bare-name private
+        helpers can no longer be told apart by ``sys.path`` position.  A
+        ``LayerImportHook`` resolves them per layer instead; see ``tool_layers``.
+
+        Layers are exec'd in *ascending* priority so the highest-priority layer
+        is inserted last.  That makes the flat ``tools`` dict's last-wins agree
+        with ``get()``'s reverse search, and both agree with the ladder: a
+        personal tool overrides the official tool of the same name.  Private
+        helper resolution does **not** follow that rule — each layer keeps its
+        own (see ``LayerImportHook._search_order``).
+
+        ``refresh()`` on the result reloads only the highest-priority layer, the
+        one a user can edit; ``work_dir`` is set to its tools dir.
+        """
+        ordered = sorted(layers, key=lambda layer: layer.priority)
+        files: dict[str, FileEntry] = {}
+        with layers_open(ordered):
+            for layer in ordered:
+                files.update(await cls._load_from_dir(layer.tools_dir, session_id, layer_id=layer.layer_id))
+        top = ordered[-1].tools_dir if ordered else None
+        return cls(files=files, work_dir=top, session_id=session_id)
+
     async def refresh(self) -> dict[str, str]:
         """Incremental reload — adds, updates, removes tools.
 
@@ -556,6 +614,8 @@ class ToolRegistry:
         tools_dir: Path,
         session_id: str,
         old_files: dict[str, FileEntry] | None = None,
+        *,
+        layer_id: str | None = None,
     ) -> dict[str, FileEntry]:
         """Scan and import all tool ``.py`` files.
 
@@ -568,6 +628,11 @@ class ToolRegistry:
         *tools_dir* is on ``sys.path`` for the whole scan so every file
         resolves its same-directory private helpers, regardless of the
         process cwd or which file happens to be scanned first.
+
+        *layer_id* names the content layer this dir belongs to, for the import
+        hook installed by ``load_layers``.  Defaults to the dir's own
+        ``_layer_id()``, which is what the single-dir path wants: it is then the
+        sole layer, and asking on its behalf resolves to itself.
         """
         files: dict[str, FileEntry] = {}
         registered_modules: list[str] = []
@@ -584,7 +649,13 @@ class ToolRegistry:
 
         with _tools_dir_on_sys_path(tools_dir):
             return await ToolRegistry._exec_tool_files(
-                tools_anyio, tools_dir, session_id, old_files, files, registered_modules
+                tools_anyio,
+                tools_dir,
+                session_id,
+                old_files,
+                files,
+                registered_modules,
+                layer_id or _layer_id(tools_dir),
             )
 
     @staticmethod
@@ -595,10 +666,9 @@ class ToolRegistry:
         old_files: dict[str, FileEntry] | None,
         files: dict[str, FileEntry],
         registered_modules: list[str],
+        layer_id: str,
     ) -> dict[str, FileEntry]:
         """Compile and exec each tool file; caller owns the ``sys.path`` scope."""
-
-        layer_id = _layer_id(tools_dir)
 
         # ``glob`` yields in filesystem order, which differs across platforms and
         # filesystems and is not stable under renames.  Load order is a hidden
@@ -656,7 +726,13 @@ class ToolRegistry:
                         registered_modules.append(module_name)
                         compiled_here = True
 
-                        exec(compiled, module.__dict__)
+                        # ``executing_tool_file`` pins this layer as the asker for
+                        # the file's imports and releases the plain-name aliases
+                        # they took once it finishes — per file, so the next file
+                        # cannot inherit this one's bindings.  A no-op when no
+                        # layer hook is installed.
+                        with executing_tool_file(layer_id):
+                            exec(compiled, module.__dict__)
 
                         with _module_cache_lock:
                             _module_cache.setdefault((layer_id, file_hash), module)

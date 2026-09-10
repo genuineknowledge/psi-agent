@@ -909,6 +909,78 @@ async def test_two_workspaces_bind_their_own_private_helper(tmp_path: Path) -> N
     assert await func_b() == "ws-b", "second workspace bound the first workspace's helper"
 
 
+async def _write_dotted_helper_workspace(tools_dir: Path, marker: str) -> None:
+    """A tools dir whose public tool imports a private *package* submodule.
+
+    The shape ``agents/feishu/tools/_feishu/`` ships (15 modules), as opposed to
+    ``_priv_helper.py``'s bare name.
+    """
+    package = tools_dir / "_priv_pkg"
+    await anyio.Path(package).mkdir(parents=True)
+    await anyio.Path(package / "__init__.py").write_text("", encoding="utf-8")
+    await anyio.Path(package / "sub.py").write_text(f"MARKER = {marker!r}\n", encoding="utf-8")
+    await anyio.Path(tools_dir / "aaa_first.py").write_text(
+        textwrap.dedent(
+            """
+            from _priv_pkg.sub import MARKER
+
+            async def which_marker() -> str:
+                return MARKER
+            """
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.anyio
+async def test_two_workspaces_bind_their_own_dotted_private_helper(tmp_path: Path) -> None:
+    """Same-named private *packages* in two tools dirs must not cross-contaminate.
+
+    The dotted counterpart of
+    ``test_two_workspaces_bind_their_own_private_helper``, and a defect this
+    fixture caught: ``_stash_private_modules`` used to skip every module name
+    containing a dot, so a private package's submodules were never stashed and
+    stayed in ``sys.modules`` after the scope closed.  The second workspace's
+    ``from _priv_pkg.sub import MARKER`` then read the *first* workspace's file.
+
+    Nothing about layering is involved — the two dirs load one after the other,
+    each with its own scope, which is how production loads two workspaces today.
+    That is why this criterion belongs here rather than with the layered ones:
+    those pass with the defect reinstated, because their import hook resolves
+    private names before ``sys.modules`` is ever consulted.
+    """
+    first = tmp_path / "ws_a" / "tools"
+    second = tmp_path / "ws_b" / "tools"
+    await _write_dotted_helper_workspace(first, "ws-a")
+    await _write_dotted_helper_workspace(second, "ws-b")
+
+    tr_a = await ToolRegistry.load(first, "a")
+    tr_b = await ToolRegistry.load(second, "b")
+
+    func_a, func_b = tr_a.get("which_marker"), tr_b.get("which_marker")
+    assert func_a is not None and func_b is not None
+    assert await func_a() == "ws-a"
+    assert await func_b() == "ws-b", "second workspace bound the first workspace's dotted private helper"
+
+
+@pytest.mark.anyio
+async def test_dotted_private_submodules_do_not_survive_the_scope(tmp_path: Path) -> None:
+    """A private package's submodules leave ``sys.modules`` when the scope closes.
+
+    The residue behind the cross-contamination above, asserted directly: a
+    ``_priv_pkg.sub`` left behind is what the *next* load of an unrelated dir
+    would bind.  Names are checked rather than values because the residue itself
+    is the subject here.
+    """
+    tools_dir = tmp_path / "ws" / "tools"
+    await _write_dotted_helper_workspace(tools_dir, "scoped")
+
+    await ToolRegistry.load(tools_dir, "s1")
+
+    leaked = sorted(name for name in sys.modules if name == "_priv_pkg" or name.startswith("_priv_pkg."))
+    assert leaked == [], f"dotted private modules left in sys.modules: {leaked}"
+
+
 @pytest.mark.anyio
 async def test_refresh_preserves_private_helper_module_state(tmp_path: Path) -> None:
     """Module-level state in a private helper survives a refresh.
