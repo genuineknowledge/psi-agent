@@ -1587,6 +1587,57 @@ def _driving_channel() -> MagicMock:
 
 
 @pytest.mark.anyio
+async def test_stream_reply_never_shows_internal_markers(monkeypatch, tmp_path):
+    """出站净化: 模型照抄的省略句柄 / SEND / RECV 标记不得出现在飞书回复里。
+
+    真实事故(2026-09-10): 回复末尾挂出 ``[已省略1334字符, 句柄 assistant#425952]``
+    —— 句柄只在请求侧保留, 用户可见的那一份必须剥掉; 被流式切开的句柄也不许漏。
+    """
+    appended: list[str] = []
+
+    async def _stream(chat_id: str, payload: dict, options: dict | None = None) -> None:
+        stream = SimpleNamespace(append=AsyncMock(side_effect=lambda t: appended.append(t)))
+        await payload["markdown"](stream)
+
+    channel = _fake_channel()
+    channel.stream = AsyncMock(side_effect=_stream)
+
+    handle = "[已省略 1334 字符, 句柄 assistant#425952]"
+
+    async def _post(chunks):
+        yield TextChunk("已完成两场会议的检查。")
+        yield TextChunk(handle)
+
+    core = cast(ChannelCore, SimpleNamespace(post=_post))
+    await client._stream_reply(channel, core, "oc_1", [], reply_to=None, sender_open_id="ou_1")
+    assert "".join(appended) == "已完成两场会议的检查。"
+    assert "已省略" not in "".join(appended)
+
+    # 被切开也一样: 前半截先扣住, 后半截到达后整段丢弃
+    appended.clear()
+    split, rest = handle[:5], handle[5:]
+
+    async def _split_post(chunks):
+        yield TextChunk("结论。")
+        yield TextChunk(split)
+        yield TextChunk(rest)
+
+    core = cast(ChannelCore, SimpleNamespace(post=_split_post))
+    await client._stream_reply(channel, core, "oc_1", [], reply_to=None, sender_open_id="ou_1")
+    assert "".join(appended) == "结论。"
+
+    # 整条回复只有标记 → 当作空回复抑制, 不弹卡
+    appended.clear()
+
+    async def _marker_only(chunks):
+        yield TextChunk(handle)
+
+    core = cast(ChannelCore, SimpleNamespace(post=_marker_only))
+    await client._stream_reply(channel, core, "oc_1", [], reply_to=None, sender_open_id="ou_1")
+    assert appended == []
+
+
+@pytest.mark.anyio
 async def test_stream_reply_withholds_private_file_from_other_user(monkeypatch, tmp_path):
     """私密区文件不许发给非主人 —— ``_send_file`` 一次都不该被调用。"""
     monkeypatch.setenv("PSI_PRIVATE_OPEN_IDS", "ou_owner")

@@ -478,6 +478,16 @@ def _fold_turn_context(content: Any, turn_context: str) -> Any:
     return content + "\n\n" + turn_context
 
 
+def _remove_markers(text: str) -> str:
+    """Drop internal markers without touching surrounding whitespace.
+
+    ``strip_transfer_markers`` normalises whitespace for display; a streaming
+    sender needs the same removal but must keep byte-for-byte spacing (collapsing
+    ``\\n{3,}`` or trimming per chunk would corrupt the visible body).
+    """
+    return _ELISION_HANDLE_RE.sub("", _TRANSFER_MARKER_RE.sub("", text))
+
+
 def strip_transfer_markers(text: str) -> str:
     """Remove internal-only markers from display text (Gateway projection).
 
@@ -495,9 +505,83 @@ def strip_transfer_markers(text: str) -> str:
     Spacing around a removed handle is handled by the pattern itself rather than
     by collapsing whitespace afterwards — see ``_ELISION_HANDLE_RE``.
     """
-    cleaned = _TRANSFER_MARKER_RE.sub("", text)
-    cleaned = _ELISION_HANDLE_RE.sub("", cleaned)
+    cleaned = _remove_markers(text)
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+#: Literal prefixes of every internal marker. The Channel must recognise a
+#: *partial* one too: a reply stream can split a handle anywhere, including
+#: right before its ``]``, and half a marker survives the finished-marker regex.
+MARKER_PREFIXES: tuple[str, ...] = (ELISION_HANDLE_PREFIX, "[SEND:", "[RECV:")
+
+
+def _pending_marker_len(text: str) -> int:
+    """Length of the trailing suffix that is still an unfinished marker.
+
+    Two shapes, both of which must be held back rather than sent:
+
+    - a **started but unterminated** marker (``[已省略 …`` with no ``]`` yet) —
+      only from the last ``]`` onward, or an already-closed marker earlier in the
+      buffer would pin the whole tail;
+    - a **partial start** (``[``, ``[已``, ``[SE`` …) that a later chunk could
+      complete into one.
+
+    A marker never spans a newline (see ``_ELISION_HANDLE_RE`` and the
+    ``[SEND:…]`` pattern), so a start followed by ``\\n`` is ordinary text and
+    is released immediately.
+    """
+    tail_start = text.rfind("]") + 1
+    for prefix in MARKER_PREFIXES:
+        index = text.find(prefix, tail_start)
+        if index != -1 and "\n" not in text[index:]:
+            return len(text) - index
+    limit = max(len(prefix) for prefix in MARKER_PREFIXES)
+    for index in range(max(0, len(text) - limit), len(text)):
+        tail = text[index:]
+        if any(prefix.startswith(tail) for prefix in MARKER_PREFIXES):
+            return len(text) - index
+    return 0
+
+
+class VisibleMarkerFilter:
+    """Feed streamed reply text; emit only what the user may see.
+
+    The model is documented to echo handles it read in the prompt (production
+    line 5874). Stripping per chunk is not enough — a handle split across two
+    chunks has no closing ``]`` until the second half arrives, so the first half
+    would already be on the card. This filter holds back a trailing partial
+    prefix and flushes it only when the text proves it was not a marker.
+
+    Request side keeps handles untouched: this is the outbound (user-visible)
+    half of the same discipline ``strip_transfer_markers`` implements for the
+    Gateway history projection.
+    """
+
+    def __init__(self) -> None:
+        self._carry = ""
+
+    @property
+    def pending(self) -> str:
+        """The held-back partial prefix (empty unless a marker is mid-flight)."""
+        return self._carry
+
+    def feed(self, text: str) -> str:
+        buffer = self._carry + (text or "")
+        hold = _pending_marker_len(buffer)
+        if hold:
+            body, self._carry = buffer[: len(buffer) - hold], buffer[len(buffer) - hold :]
+        else:
+            body, self._carry = buffer, ""
+        return _remove_markers(body)
+
+    def flush(self) -> str:
+        """End of turn: drop an unterminated marker fragment and return it.
+
+        The carry is by construction a prefix of a marker, never ordinary text,
+        so dropping it cannot lose user content; the caller logs it for triage.
+        """
+        dropped, self._carry = self._carry, ""
+        return dropped
 
 
 def extract_send_paths(text: str) -> list[str]:
