@@ -1,22 +1,19 @@
 # ChatBI 正式数据接入说明(o2oa / O2OA PostgreSQL)
 
-> **进度快照(2026-09-10,第 35 轮)**
+> **进度快照(2026-09-10,第 36 轮)**
 >
-> - **工具接线:31 / 31**,且**四个默认分支已补齐** —— 此前 `weekly_submission_query()`、
->   `weekly_workflow_query()`、`weekly_owner_roles()`、`weekly_aggregate()` 在**空/默认参数**
->   下会回落演示路径(生产上没有那台 MySQL ⇒ `store_unreachable`,错误信息还指向一个与国数
->   无关的库)。现在这四处都走正式源:两个默认**明细清单**档补了模板,缺必填参数的按契约报
->   `invalid_argument`;剩余未迁移的只剩**具名参数组合**(如 `status_mismatch`、`by_task`、
->   `weekly_freshness_distribution task=`、看板**名字**),它们仍回落演示路径。
-> - **回落不再等于 `store_unreachable`**:正式源模式下,未迁移组合的兜底错误码改为
->   `not_migrated` 并附"请改用已迁移的 scope / 参数(见本说明的调用建议)"。
->   演示模式(未开正式源)保持原样 —— 那时连不上演示库就是真的连不上。
-> - **三套真库验收(同构 PG 实例 + 演示库数据)**:
->   - 端到端 `verify_end_to_end.py`:**408 / 408** 断言通过;
->   - 口径验收 `verify_numbers_v2.py`:**38 / 38** 通过(mock docstring 里写死的契约数字逐条复现);
->   - 列集合对照 `column_parity.py`:**127 / 127** 一致(新增 4 个默认清单档用例)。
-> - **真库三套验收(活库 o2oa)**:冒烟 `verify_real_smoke.py` **31 / 31 活着**(此前 27/31);
->   验收 `verify_real_o2oa.py` **14 / 14**;基线交叉核对 `verify_real_baseline.py` **31 / 31**。
+> - **工具接线:31 / 31**,四个默认分支已补齐(第 35 轮),本轮继续把**剩下的具名 scope 与
+>   参数**按价值补迁:**未迁移组合 16 → 2 条**(且那 2 条是语义不清的坏组合,不是缺功能)。
+>   本轮新迁:提交单 `status_mismatch`、审批 `by_task`、新鲜度**单任务档** `task=`、
+>   人员 `id_variants` / `id_longest` / `reviewers` / `self_review`(人员 9→**13/14** scope)、
+>   附件 `largest` / `by_uploader` / `deleted` / `orphan` 与 `task=` / `include_informal`
+>   (附件 2→**6/13** scope);并让 **`board=` 接受看板名字**(问句说的就是名字)。
+> - **回落不再等于 `store_unreachable`**(第 35 轮):正式源模式下未迁移组合报 `not_migrated`
+>   并附调用建议;演示模式保持原样。
+> - **三套真库验收(同构 PG 实例 + 演示库数据)**:端到端 **408 / 408**、口径 **38 / 38**、
+>   列集合对照 **139 / 141**(1 处是**已知的有意差异**、1 处是对照器覆盖不到,见 3.1.7)。
+> - **真库三套验收(活库 o2oa)**:冒烟 **31 / 31**;验收 **25 / 25**;基线交叉核对 **21 → 44 / 44**;
+>   工具级(经 MCP 出口)**28 / 28**。
 > - **交付形式**:服务 / Docker(`Dockerfile`,streamable-http,默认 18900);不含前端,由主 Agent 经 MCP 调用。
 > - **真库已打通(2026-09-10,本条已取代原先"直连尚未打通")**:物理库名是 **`o2oa`**
 >   (字段说明里的 `O2OA-DB` 是业务叫法,集群 `pg_database` 里没有该 database;`oa_biz` 是
@@ -26,11 +23,12 @@
 >   只读账号 `task_board_readonly` 已可连,**12 张 `task_*` 表全部可见**。
 > - **真库首次核对:31 / 31 个出口正常返回**,列集合与参考一致(脚本 `verify_real_o2oa.py`;
 >   连法:本机 → H100 → opl 建 `chain.py forward` 端口转发,用本机 Python 3.14 跑)。
-> - **真库基线交叉核对:31 / 31 通过**(`verify_real_baseline.py`)—— 每个关键数字都拿一条
+> - **真库基线交叉核对:44 / 44 通过**(`verify_real_baseline.py`)—— 每个关键数字都拿一条
 >   **直接 SQL** 去对。这类断言的价值是**不依赖具体数字**:活库每天在变,「工具口径 == 直连口径」
 >   这条关系不变量始终成立。据此补齐的真值:`never_reported` **35**;`task_query` tech **48** /
->   group 40(合计 = 已发布 88);`year_goal(2026)` **54**;审批动作(软删闸门)**91**;
->   提交单(软删闸门)**28**;近 120 天正式进展 **9** 行;近 30 天有更新 **7** 条;
+>   group 40(合计 = 已发布 88);`year_goal(2026)` **54**;审批动作(软删闸门)**91** 挂在 **23** 个任务上;
+>   提交单(软删闸门)**28**;附件(过闸 + 未删)**30** / 全表 **38**(37 活 + 1 软删)/ 孤儿 **0**;
+>   `status_mismatch` **0**(当前不存在不一致);近 120 天正式进展 **9** 行;近 30 天有更新 **7** 条;
 >   `task_ranking(progress)` 榜首仅 **1 期** —— 真库里多数任务只有一期正式进展,
 >   所以"谁进展最多"类问题在真库上几乎全是并列(`rank` 的 `tied_at_top` 达 53)。
 > - 另:`weekly_task_detail` / `weekly_schema` / `weekly_field_completeness` 返回的是**结构化多块
@@ -41,16 +39,25 @@
 > 1. `weekly_submission_query` / `weekly_workflow_query` **不传 `scope` 也能用了**(走默认明细
 >    清单档),要聚合分布再传具名 scope;两者默认档的清单封顶 200 行,先看 `has_more` /
 >    `total_count`(`weekly_submission_query` 另有 `status_breakdown` 与 `status_domain`);
+>    "哪些任务被驳回过/各有几次"用 **`by_task=True`**(次数 ≠ 任务数);
+>    "任务状态与最新一轮审批状态不一致"用 **`status_mismatch=True`**(一任务一行);
 > 2. `weekly_owner_roles` **必须带 `person`**(缺了报 `invalid_argument`,这是契约不是故障);
 > 3. `weekly_aggregate` **必须带 `group_by`**(9 个轴,缺了报 `invalid_argument` 并列出可用轴);
 >    需要"规模 × 分组"的横截面请用 `weekly_scale`,集团专表统计用 `weekly_group_stats`;
-> 4. 报 `not_migrated` = **这组参数还没迁到正式源**(不是数据库故障),照错误信息里的提示换
->    scope / 参数;报 `table_not_granted` = 那张可选表不在本次授权范围内;
-> 5. `weekly_task_detail` / `weekly_schema` / `weekly_field_completeness` **没有 `rows`/`row_count`**,
+> 4. **`board=` 可以给看板名字**(「技术组」「集团看板」都行;真库名字是「技术组重点任务进展」
+>    与「集团重点任务调度」)—— 解析在服务端做,四级匹配(码 / 精确名 / 名字包含 / 特征片段);
+> 5. 问"某个任务多久没报进展"用 **`weekly_freshness_distribution task=`**:它回那一行 +
+>    漂移核对,并区分"库里没有这个任务"(`task_not_found`)与"存在但不过正式门"
+>    (`task_not_formal`)—— 后者的提交单/审批动作仍可查;
+> 6. 报 `not_migrated` = **这组参数还没迁到正式源**(不是数据库故障),照提示换 scope / 参数;
+>    报 `table_not_granted` = 那张可选表不在本次授权范围内;
+> 7. `weekly_task_detail` / `weekly_schema` / `weekly_field_completeness` **没有 `rows`/`row_count`**,
 >    读它们的结构化字段(`task`+`year_goals`+`group_detail`、`table_columns`、`supported_fields`);
-> 6. 相对时间窗锚**数据基准日**(活库即当天),要可复现就显式传 `date_from/date_to`;
-> 7. 真库当前**多数任务只有一期正式进展**,"谁进展最多"类问题请先看 `tied_at_top`,
->    并列数大时如实报"并列",不要报成唯一第一名。
+> 8. 相对时间窗锚**数据基准日**(活库即当天),要可复现就显式传 `date_from/date_to`;
+> 9. 真库当前**多数任务只有一期正式进展**,"谁进展最多"类问题请先看 `tied_at_top`,
+>    并列数大时如实报"并列",不要报成唯一第一名;
+> 10. `weekly_person_stats` 的 `reviewers` / `self_review` / `id_variants` 在真库上**可能是 0 行**
+>     —— 那是**答案**(该口径下没有这类记录),不是"取不到"。
 > - **真值快照(2026-09-10;活库会变,数字带日期,形状与口径才是不变量)**:`task` 105 行 /
 >   已发布 **88**;`task_progress` 197 行 / `is_published=1` 仅 **56**;`task_milestone` 20(状态
 >   全为 0 未完成);`task_attachment` 30;`task_workflow_submission` 29;
@@ -236,19 +243,19 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 |---|---|---|
 | `weekly_task_query` | ✅ 已接线 | 关键词 / 分类 / 负责人 / 状态 / 项目组 / 看板;不指定看板也可用 |
 | `weekly_progress_coverage` | ✅ 已接线 | 8 个具名 scope + `scope=text_check` 的三条文本规则(含 `task=` 按 id 或名字过滤) |
-| `weekly_freshness_distribution` | ✅ 已接线(全部分支) | 分档 + 总览(同一信封)、任意窗口 `within_days`、滞后清单 `stale_days`(带 `reported_only`)、活跃清单 `recent_days`、按 `by=board/project_group` 的滞后/活跃占比(带服务端合计行)、`lag_bands` 每看板陈旧度分档、`drift` 漂移清单;`task=` 单任务档未迁移 |
+| `weekly_freshness_distribution` | ✅ 已接线(全部分支) | 分档 + 总览(同一信封)、任意窗口 `within_days`、滞后清单 `stale_days`(带 `reported_only`)、活跃清单 `recent_days`、按 `by=board/project_group` 的滞后/活跃占比(带服务端合计行)、`lag_bands` 每看板陈旧度分档、`drift` 漂移清单;**`task=` 单任务档**(那一行 + 漂移核对;0 行分 `task_not_found` / `task_not_formal`);`task=` 与 `by` / 天数窗的组合语义不清,仍走演示路径 |
 | `weekly_year_goal_query` | ✅ 已接线 | 年度目标**行**清单(year=0 表示所有年度);集团板 109 行 / 46 任务、全看板 313 行 / 128 任务 |
 | `weekly_milestone_query` | ✅ 已接线 | 支持按任务收窄(不带 `task=` 会答成整个看板第一页);任务 19 → 2 行 |
 | `weekly_attachment_query` | ✅ 已接线 | 仅元数据(无 `storage_path`);集团板 52 条 / 28 任务;可选表未授权时报 `table_not_granted` |
 | `weekly_owner_roles` | ✅ 已接线 | 角色拆分(主责/项目负责人/牵头领导/去重并集);孙立群 → 0/2/12/14,u3118 → 2/2/12/14;**缺 `person` 报 `invalid_argument: person 不能为空`**(与参考实现同一契约,不回落) |
 | `weekly_group_detail_query` | ✅ 已接线 | 集团板扩展表(目标成果/落实举措/完成时间/进度成效/多值负责人);46 行;`status=0 + non_empty=progress_effect` → 6 行矛盾;`completion_time` **按文本**匹配 2026 → 31 行 |
 | `weekly_health` | ✅ 已接线 | 逐表精确行数(可选表不存在时返回 NULL 而非报错);12 张表 / 5,369 行 |
-| `weekly_submission_query` | ✅ 已接线(9 个聚合 scope **+ 默认明细清单**) | 9 个聚合 scope:提交单 462 张、外部标识 460/460/60(缺 402 行 = 87.0%)、驳回率 技术组 9/293 = 3.07% > 集团组 4/169 = 2.37%、按类型 progress 312 / initial 150、在途带进程号 59;**`scope` 为空走默认明细清单**(列集合 `id / task_id / task_name / round_no / status / submission_kind / reporter_id / reporter_name / signer_name / need_sign / submitted_at / completed_at`,一行一张单,附 `total_count` / `status_breakdown` / `status_domain`),`task` / `board` / `reporter` / `status` / `exclude_status` 筛选都在这一档下推;仅 `status_mismatch` 仍回落(一任务一行的口径比对,另一条形状) |
-| `weekly_workflow_query` | ✅ 已接线(**+ 默认明细清单**) | 审批动作流水(可选表):分布 955/460/150/**13**、日志 **1,578** 行 / 150 任务 / 10.52、node×action **6 档**、`scope=recent` 按动作时间倒序;**`scope` 为空走默认明细清单**(列集合 `id / submission_id / task_id / round_no / node_type / action / operator_name / opinion / created_at`,按 `task_id + created_at` 升序 = 某任务的审批轨迹,`LEFT JOIN` 提交单不少行);`by_task` 仍回落;`opinion` **始终在列**,无权限打码不删列 |
+| `weekly_submission_query` | ✅ 已接线(9 个聚合 scope **+ 默认明细清单 + `status_mismatch`**) | 9 个聚合 scope:提交单 462 张、外部标识 460/460/60(缺 402 行 = 87.0%)、驳回率 技术组 9/293 = 3.07% > 集团组 4/169 = 2.37%、按类型 progress 312 / initial 150、在途带进程号 59;**`scope` 为空走默认明细清单**(列集合 `id / task_id / task_name / round_no / status / submission_kind / reporter_id / reporter_name / signer_name / need_sign / submitted_at / completed_at`,一行一张单,附 `total_count` / `status_breakdown` / `status_domain`),`task` / `board` / `reporter` / `status` / `exclude_status` 筛选都在这一档下推;**`status_mismatch=True` 是一任务一行的口径比对**(最新一轮单 vs 任务 `workflow_status`,按字面不等,闸门只有软删) |
+| `weekly_workflow_query` | ✅ 已接线(**+ 默认明细清单 + `by_task`**) | 审批动作流水(可选表):分布 955/460/150/**13**、日志 **1,578** 行 / 150 任务 / 10.52、node×action **6 档**、`scope=recent` 按动作时间倒序;**`scope` 为空走默认明细清单**(列集合 `id / submission_id / task_id / round_no / node_type / action / operator_name / opinion / created_at`,按 `task_id + created_at` 升序 = 某任务的审批轨迹,`LEFT JOIN` 提交单不少行);**`by_task=True` 是一任务一行** `action_count`(次数 ≠ 任务数;带 `board=` 时一并回 `task_name`);`opinion` **始终在列**,无权限打码不删列 |
 | `weekly_scale` | ✅ 已接线 | 三种 mode × 三种分组轴;技术组 totals 82/77/294/402、集团组 46/40/180/52(各组里程碑相加 = 全库 474,自校验未被 JOIN 放大);completeness 82/77/80/73;intensity 82 任务 / 943 行 / 11.5 |
 | `weekly_rank` | ✅ 已接线 | 三种并列语义 × 六种子表度量:**cut 前 3 名 = 3 行**、**keep_ties 前 3 名 = 12 行**(第 3 名并列)、per_group 每组一行;附件第一名任务 73(20 个);未授权表(附件/集团历史)报 `table_not_granted` |
-| `weekly_person_stats` | ✅ 已接线(9/14 scope) | 牵头人任务量首位 吴晓东 **14** 个且 **tied_at_top=3**;workload_top 保留三名并列;汇总 128 任务 / 16 人 / 全局均值 8.0;只带 1 个任务 4 人;标准安全组 **9 位牵头人 / 19 条任务**;跨组 12 人;双重角色 6 人;工号写法 69/50/9;填报首位 10515(63 轮 / 4 任务)。未迁移的 4 个 scope 仍走演示路径 |
-| `weekly_attachment_stats` | ✅ 已接线(summary/by_ext) | 存活附件 **454 条 / 106 任务**;总字节 **1,954,375,767**(原样报出) / 1863.8 MB / 均 4203.9 KB;上传人 46;挂载点 315/58/81;扩展名 pptx130/xlsx116/pdf107/docx101 |
+| `weekly_person_stats` | ✅ 已接线(**13 / 14 scope**) | 牵头人任务量首位 吴晓东 **14** 个且 **tied_at_top=3**;workload_top 保留三名并列;汇总 128 任务 / 16 人 / 全局均值 8.0;只带 1 个任务 4 人;标准安全组 **9 位牵头人 / 19 条任务**;跨组 12 人;双重角色 6 人;工号写法 69/50/9;填报首位 10515(63 轮 / 4 任务);`id_variants` **0 行就是答案**;`id_longest` 一行一个去重标识 + `tied_at_top` / `max_id_length`;`reviewers` / `self_review` **不加** `p.is_published`(审过但没发布的进展同样算审过);仅 `reporter_count` 仍走演示路径 |
+| `weekly_attachment_stats` | ✅ 已接线(**6 / 13 scope** + `task=` / `include_informal`) | 存活附件 **454 条 / 106 任务**;总字节 **1,954,375,767**(原样报出) / 1863.8 MB / 均 4203.9 KB;上传人 46;挂载点 315/58/81;扩展名 pptx130/xlsx116/pdf107/docx101;`largest` 按字节倒序的清单、`by_uploader` 按人分档(各人条数之和 = 附件数);`deleted` / `orphan` **全表口径不加任务闸门**;`task=` / `include_informal` 放开任务门。未迁:`by_link` / `by_progress` / `by_month` / `on_open_submission` / `zero_attachment` / `uploader_count` / `deleted_by_link` |
 | `weekly_group_history` | ✅ 已接线(8 个 scope) | 明细 / `year` / `month` / `quarter` / `task` / `reporter` / `lag` / `linkage` + 日期窗(`date_from/to`、`last_days`、`last_months`)与 `latest_only`;已发布 **362** 行 / 46 任务、草稿 **42** 行;**`linkage` 分母是表内全部 404 行**(挂接率题);`lag` 按基准日算天数 |
 | `weekly_group_owner_query` | ✅ 已接线 | 多值负责人**元素级精确**匹配:吴晓东 → 4 个集团任务(按 id `u3124` 同样 4 个);role=project 列出 46 行 |
 | `weekly_task_ranking` | ✅ 已接线 | 按子表条数排名(附件/进展/里程碑/提交单):**INNER JOIN 语义**(零条目的任务不参赛),列名照抄参考查询 `id / task_name / cnt`,并回显 `metric` / `metric_label`;附件榜首任务 73(20 个,`tied_at_top=1`);进展榜首任务 4(18 期,`tied_at_top=12`)。未迁移的 metric 回落,附件未授权报 `table_not_granted` |
@@ -269,9 +276,11 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 三条硬规则:
 
 1. **信封与演示源逐字段同构**(`ok` / `caliber` / `snapshot_note` / `snapshot_date` / `source_tables` / `columns` / `rows` / `row_count` / `has_more`),agent 侧无需改动;
-2. **未迁移的 scope 或参数一律返回 `None` 回落**,绝不返回一个范围更小的答案(例如新鲜度的 `by=` / `lag_bands=` 里仍未迁的组合、`status_mismatch`、`by_task`、看板**名字**解析)。
+2. **未迁移的 scope 或参数一律返回 `None` 回落**,绝不返回一个范围更小的答案(例如 `weekly_rank` 未迁的 mode、`weekly_attachment_stats` 未迁的 `by_month`/`by_link` 等、`by_task` 与具名 scope 的组合)。
    正式源模式下这条回落**不会**变成 `store_unreachable`:兜底会改报 `not_migrated` 并指路(见 3.1.6);
    演示模式(未开正式源)才按原样报演示库的真实错误;
+   另:**看板名解析**(3.1.7)与**单任务档的两种 0 行**(`task_not_found` / `task_not_formal`)
+   都不是"回落",它们是正式源侧的正式行为;
 3. **截断判定不能靠 SQL 里的 `LIMIT`**:模板把行数上限写在 SQL 里(性能上正确),但这样"刚好取满 200 行"与"被截断"长得一模一样 —— 信封因此按 `limit + 1` 去查再截回 `limit`,约定"清单类模板把行数上限放在最后一个参数"(`cap_last_param`)。实测踩过:313 行的年度目标被报成 200 行且 `has_more=false`;
 4. **四张可选表默认视为未授权**(说明里必开的是 8 张):`_formal.optional_granted()` 读 `TASK_BOARD_GRANTED_OPTIONAL_TABLES`,未授权时返回 `table_not_granted` 错误,**不回落演示路径**(回落会去连演示源,把"没权限"变成"另一个数据源的答案");
 5. `snapshot_note` 换成正式口径(「国数正式只读源…非演示数据」),`snapshot_date` 用基准日(`GUOSHU_AS_OF` 可固定,便于与演示快照日对齐)。
@@ -281,6 +290,7 @@ publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 1
 新鲜度分档 63/44/8/9/4 且合计 = 任务总数、在办「从未报进展」8、漂移 73、排名的并列自检、
 时间轴的 366 行/70 任务与短窗口提示、新鲜度各分支(23 / 18 / 8 / 21-82=25.6% / lag_bands 17-56-9)、
 集团历史 8 个 scope 与自然月回溯,未迁移参数全部回落。
+(第 35–36 轮把这条从"159 项"推到 **408 / 408**,并把回落改成了 `not_migrated`。)
 
 ### 3.0.3 排名与时间轴两个出口(2026-09-10 真库核对)
 
@@ -852,10 +862,66 @@ publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 1
 
 真库实测形状(2026-09-10,活库会变):提交单默认清单 **28** 行(状态分档 14 待填 / 12 已发布 /
 1 待审核 / 1 待领导),`board=group` 25 行,`status=published` 12 行;审批动作默认清单 **91** 行、
-`action=rejected` 10 行;`status_mismatch` 与 `by_task` 仍回落(另一条形状,未迁)。
+`action=rejected` 10 行;第 36 轮又补迁了 `status_mismatch` / `by_task` / 单任务档 / 人员四档 /
+附件四档与看板名解析(见 3.1.7),余下未迁的只有语义不清的组合。
 **冒烟脚本自己也有一个坑**:它早先给 `weekly_aggregate` 传的是**空参数**,于是把
 "`group_by` 是必填参数"误报成了"任何参数都回落" —— 冒烟脚本的参数就是一次真实调用,
 必须与工具的 MCP 签名一致(已修,并在脚本里写明)。
+
+### 3.1.7 第二轮补迁:把"剩下的具名 scope 与参数"按价值收掉(2026-09-10 第 36 轮)
+
+第 35 轮之后真库里仍有 16 组参数落到兜底报错。本轮逐条过了一遍,**收掉 14 组**,
+剩下的 2 组是**语义不清的坏组合**(不是缺功能)。
+
+| 出口 | 本轮补迁 | 关键口径 |
+|---|---|---|
+| `weekly_submission_query` | `status_mismatch=True` | **一任务一行**(最新一轮 `round_no` 最大的那张单),与 `workflow_status` 按**字面不等**判定;两套码值不同源,口径必须写明"不代表一一对应";闸门**只有软删**(已发布但最新单仍在流程中的任务正是本题答案) |
+| `weekly_workflow_query` | `by_task=True` | **一任务一行** `action_count`,**次数 ≠ 任务数**(真库 91 条动作挂 23 个任务,最多的 19 条);带 `board=` 时一并回 `task_name`,不带看板时只回 `task_id`(照抄参考形状) |
+| `weekly_freshness_distribution` | `task=` 单任务档 | 回**那一行** + 漂移核对(`latest_progress_time` vs `actual_latest_report`);`days_behind` 按**日期**相减;**0 行要分两种**:`task_not_found`(库里没有)与 `task_not_formal`(存在但不过门) |
+| `weekly_person_stats` | `id_variants` / `id_longest` / `reviewers` / `self_review`(9→**13/14**) | `id_variants` **0 行就是答案**;`id_longest` 一行一个**去重后的标识**(不是一行一个任务),并列数提到顶层 `tied_at_top` / `max_id_length`;`reviewers` / `self_review` **刻意不加** `p.is_published`(审过但没发布的进展同样是审过的) |
+| `weekly_attachment_stats` | `largest` / `by_uploader` / `deleted` / `orphan` + `task=` / `include_informal`(2→**6/13**) | `deleted` / `orphan` 是**全表口径**(问的是表本身,按任务过滤会少算);`task=` / `include_informal` **放开任务门**(附件挂在外键上,正式集之外的任务照样有附件,带着门问只会静默答 0) |
+| **看板名解析** | `board=` 接受看板**名字** | 真库名字是「技术组重点任务进展」/「集团重点任务调度」,而提问口径叫「技术组」/「集团看板」—— 四级匹配:码 → 精确名 → 名字包含 → **特征片段**(2 字 n-gram 去掉"看板/重点/任务/调度/进展"这些通用词,唯一最高才认) |
+
+四条判断值得留痕:
+
+1. **"0 行"分两种,不能混**。`weekly_freshness_distribution task=` 的 0 行既可能是
+   "库里没有这个 id",也可能是"有这一行但已软删 / 未发布" —— 后者在真库上是常态
+   (104 条软删存活任务里只有 88 条是正式任务)。两种情况给调用方的下一步动作完全不同
+   (换 id vs 换任务),所以 0 行时**再补一次不带闸门的探针查询**,分别报
+   `task_not_found` / `task_not_formal`(`task_not_formal` 的消息里点名"它的提交单与审批
+   动作仍可查" —— 那些走外键,按设计不带 R-01)。
+2. **`board=` 认名字这件事必须在服务端做**,不能推给调用方:问句里说的就是名字,
+   而真库名字与提问口径**不同名**(「集团看板」既不等于也不包含「集团重点任务调度」)。
+   做法是"特征片段唯一最高才认,否则原样交给模板报值域错"——**猜错看板会把整份答案
+   换成另一个看板的**,而值域错误信息里带着真实取值,调用方改一次就好。
+   通用词表(`看板/重点/任务/调度/进展/工作`)是必要的:留着它们两个看板会打平。
+3. **删掉的分支要连"为什么"一起删**。`weekly_attachment_stats` 的 `orphan` 此前正式源写的是
+   `WHERE NOT EXISTS (...)`,而演示源写的是 `a.is_deleted = 0 AND NOT EXISTS (...)` ——
+   对照器一跑就报列名(`orphan_rows` vs `orphan_count`)与口径都对不上。**统一口径时以演示源
+   (参考实现)为准**:已软删的悬空行不算"要修的孤儿"。
+4. **对照器报的"不一致"要先分清是"参照物错"还是"我们错"**。本轮唯一剩下的
+   `weekly_workflow_query(by_task=True)` 差异是**演示源比参考查询多给一列** `task_name`
+   (参考查询只在带看板时才回任务名)。这是**已知的有意差异**:正式源照参考查询来,
+   列集合更省且与真库榜单口径一致。已在 `column_parity` 的用例表里就地点明,
+   不为了让数字好看去改真库那一条(见 3.1.5 与 3.0.6 两次"对照器在撒谎"的教训)。
+
+**验收(本轮实跑)**
+
+| 验收 | 结果 |
+|---|---|
+| 未迁移组合(探针逐条打) | **24 / 26 已接线**,余 2 条是坏组合(`聚合 scope + 明细筛选`、`单任务 × 天数窗`) |
+| 真库冒烟 `verify_real_smoke.py` | **31 / 31 活着** |
+| 真库验收 `verify_real_o2oa.py` | **25 / 25**(14 → 25:新增 13 例列集合 + 单任务两档 0 行 + 看板名解析) |
+| 真库基线交叉核对 `verify_real_baseline.py` | **44 / 44**(31 → 44) |
+| 工具级 `verify_real_mcp_tools.py` | **28 / 28**(12 → 28) |
+| 列集合对照 `column_parity.py` | **139 / 141**(+14 例;1 处已知有意差异 + 1 处对照器覆盖不到) |
+| 单测 `test_o2oa_pg.py` | **252 通过**(241 → 252) |
+| `check_pg_syntax.py` / `ruff` / `ty` | **165 条 ALL OK** / 干净 / 干净 |
+
+顺带修掉一个**会挂死**的隐患:`_pg.connect()` 此前没有建连超时,库里不可达(网络黑洞、
+隧道半死)时工具调用会一直挂着,agent 侧只看到"这一轮没返回"。现在固定
+`connect_timeout`(默认 10s,`GUOSHU_PG_CONNECT_TIMEOUT` 可调)并下发
+`statement_timeout`(默认 30s)。**挂着与报错对调用方不是一回事**:后者可判断、可行动。
 
 ## 5. 能力边界(未授权表时)
 - `task_attachment` 只读元数据:问答只能答“存在附件《文件名》”,文件体在

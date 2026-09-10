@@ -851,6 +851,78 @@ LIMIT %s
     return sql, tuple(params)
 
 
+def freshness_task(
+    as_of: str,
+    task_id: int | None = None,
+    task_name: str | None = None,
+) -> tuple[str, tuple]:
+    """**单个任务**的新鲜度 + 漂移核对(参考实现默认档的 ``task=`` 分支)。
+
+    问"某个任务多久没报进展了"只能落到这一档:分档清单答的是"全库有几个桶",
+    而这一档给的是那一行 —— 顺带把**漂移**一起核了。
+
+    两条口径照抄参考实现:
+
+    * ``days_behind`` = ``as_of`` 与 ``latest_progress_time`` 两个**日期**相减
+      (``(a)::date - (b)::date``);写成 ``date - timestamp`` 会按当前时刻的时分秒截断,
+      少算或多算一天。基准日是数据快照日,不是系统当天(``AS_OF_TRAP_NOTE``);
+    * ``actual_latest_report`` 是**真实的**最新一期已发布进展时间,用来与任务行上那个
+      去规范化列 ``latest_progress_time`` 对照 —— 两列不一致就是漂移。只给汇总列,
+      调用方无法知道它是否可信。
+
+    ``latest_progress_time`` 为 NULL(从未报过进展)时 ``days_behind`` 也是 NULL:
+    那是"没有这个天数",不是 0 天。参考实现的 ``DATEDIFF`` 同样是 NULL,两边一致。
+    """
+    _check_as_of(as_of)
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    if task_id is not None:
+        where.append("t.id = %s")
+        params.append(int(task_id))
+    elif task_name:
+        where.append("t.task_name = %s")
+        params.append(task_name)
+    sql = f"""
+SELECT t.id                                                       AS task_id,
+       t.task_name,
+       {adm.normalize_ts_sql("t.latest_progress_time")}           AS latest_progress_time,
+       {adm.normalize_ts_sql("max((p.report_time)::timestamp)")}  AS actual_latest_report,
+       (%s::date - (t.latest_progress_time)::timestamp::date)::int AS days_behind
+FROM task t
+LEFT JOIN task_progress p ON p.task_id = t.id AND {adm.sql_published_progress("pg", "p")}
+WHERE {"\n  AND ".join(where)}
+GROUP BY t.id, t.task_name, t.latest_progress_time
+"""
+    return sql, (as_of, *params)
+
+
+def freshness_task_probe(task_id: int | None = None, task_name: str | None = None) -> tuple[str, tuple]:
+    """单任务档查不到时,**行本身是否存在**的判定(不带 R-01 闸门)。
+
+    "查不到"有两种,给调用方的下一步动作完全不同:
+
+    * 库里**没有**这一行 ⇒ 换 id / 更正名字;
+    * 有这一行但**不过正式任务门**(已软删 / 未发布)⇒ 换任务,不是换问法 ——
+      这一条尤其容易误读:真库里 ask 一个已软删任务会得到 0 行,和"这个任务不存在"
+      长得一模一样,而它的提交单 / 审批动作其实照常能查。
+    """
+    where = []
+    params: list[object] = []
+    if task_id is not None:
+        where.append("t.id = %s")
+        params.append(int(task_id))
+    else:
+        where.append("t.task_name = %s")
+        params.append(task_name)
+    sql = f"""
+SELECT t.id, t.task_name, t.is_deleted, t.workflow_status
+FROM task t
+WHERE {" AND ".join(where)}
+LIMIT 1
+"""
+    return sql, tuple(params)
+
+
 def freshness_distribution(
     as_of: str,
     board_code: str | None = None,
@@ -1601,6 +1673,39 @@ def submission_scoped_count_sql(where_sql: str, board_join: str) -> str:
     return f"FROM task_workflow_submission s JOIN task t ON t.id = s.task_id {board_join} WHERE {where_sql}"
 
 
+def submission_status_mismatch(limit: int = 200) -> tuple[str, tuple]:
+    """**一任务一行**:任务的 ``workflow_status`` 与它最新一轮提交单 ``status`` 不一致的清单。
+
+    与默认明细清单是**两种形状**,不能互相代答:
+
+    * 明细清单一行是**一张单**(``task_id + round_no`` 唯一),这一档一行是**一个任务**
+      (取 ``round_no`` 最大的那张单),行数即不一致任务数 —— 拿明细去数会把同一任务的
+      多轮重复计入;
+    * 两列是**两套码值**(任务侧 ``published / pending_* / rejected``,提交单侧
+      ``pending_fill / signing / pending_audit / pending_leader / published / rejected /
+      cancelled``),字面相等只是比较方式,不代表语义同一。所以口径里必须写明"按字面
+      不等判定",否则调用方会以为某个码值一定有对应关系。
+
+    **闸门只有 ``t.is_deleted = 0``**:任务侧再加发布门,会把"已发布但最新单还在流程里"
+    这批**恰恰是本题答案**的行滤掉(参考实现写死了这条注释)。
+    """
+    sql = f"""
+SELECT t.id                AS task_id,
+       t.task_name,
+       t.workflow_status,
+       s.round_no,
+       s.status            AS latest_submission_status
+FROM task t
+JOIN task_workflow_submission s ON s.task_id = t.id
+  AND s.round_no = (SELECT max(x.round_no) FROM task_workflow_submission x WHERE x.task_id = t.id)
+WHERE {adm.sql_soft_delete("t")}
+  AND t.workflow_status <> s.status
+ORDER BY t.id
+LIMIT %s
+"""
+    return sql, (int(limit),)
+
+
 # ---- batch 4: 文本规则域(服务端固化正则,模型照抄结果)------------------------
 
 TEXT_RULES = ("number_conflict", "availability", "keyword")
@@ -1873,13 +1978,27 @@ def attachment_stats(
     scope: str = "summary",
     granted: bool = True,
     limit: int = 200,
+    task_id: int | None = None,
+    task_name: str | None = None,
+    include_informal: bool = False,
 ) -> tuple[str, tuple]:
-    """附件汇总(``summary``)或按扩展名分档(``by_ext``)。
+    """附件汇总 / 分档 / 清单 / 软删审计(五种形状,不能互相代答)。
 
     ``file_size`` 是字节,原样报出(不要换算成 KB/MB,也不要写"约")——口径如此规定。
 
-    ``by_ext`` 与 ``summary`` 是**两种形状**,不能互相代答:参考实现按扩展名
-    **每档一行**(``ext / n / total_bytes / total_mb``),汇总行答不了"哪种文件最多"。
+    各档是**不同的形状**,不能互相代答:
+
+    * ``summary`` 一行多列(计数 / 字节 / 均 KB / 大类型 Top4);``by_ext`` 每扩展名一行
+      (汇总行答不了"哪种文件最多",分档也答不了总量);
+    * ``largest`` 是**清单**(一行一个文件,按字节倒序);``by_uploader`` 是**按人分档**
+      (一行一个人,带条数与字节) —— 拿清单去数人会把同一人的多个文件重复计入;
+    * ``deleted`` 问的是**表本身**,故**全表口径、不加任务闸门**:按任务过滤会少算
+      (软删的行本来就挂在不该再被过滤的任务上);``orphan`` 同理,数的是外键悬空的行。
+
+    闸门(默认档):``t`` 过正式任务门 + ``a.is_deleted = 0``。``task_id`` / ``task_name``
+    一旦给了就**刻意放开任务门** —— 附件挂在 ``task_id`` 外键上,正式集之外的任务照样有
+    附件,带着门去问只会静默答 0(参考实现的 docstring 就是这么写的)。
+    ``include_informal`` 是同一件事的显式开关(全表 vs 只算正式任务)。
     """
     hint = adm.require_optional_table("task_attachment", granted)
     if hint:
@@ -1887,8 +2006,81 @@ def attachment_stats(
     board, hint = adm.check_board_code(board_code) if board_code else (None, None)
     if hint:
         raise ValueError(hint)
+
+    if scope == "deleted":
+        # 全表口径:这是关于表的问题(参考实现在这里刻意不加任务闸门)
+        sql = """
+SELECT count(*) FILTER (WHERE a.is_deleted = 0) AS active,
+       count(*) FILTER (WHERE a.is_deleted = 1) AS deleted,
+       count(*)                                 AS total_rows,
+       coalesce(sum(a.file_size) FILTER (WHERE a.is_deleted = 1), 0) AS deleted_bytes,
+       round(coalesce(sum(a.file_size) FILTER (WHERE a.is_deleted = 1), 0)
+             / 1024.0 / 1024.0, 1)              AS deleted_mb
+FROM task_attachment a
+"""
+        return sql, ()
+
+    if scope == "orphan":
+        # 外键悬空的行:任务已不在库里、附件还在。列名与演示源一致(orphan_count),
+        # 且**带 a.is_deleted = 0** —— 已软删的悬空行不算"要修的孤儿"。
+        # 用 NOT EXISTS 而不是 JOIN:JOIN 会把孤儿行整批丢掉,结果恒等于 0。
+        sql = """
+SELECT count(*) AS orphan_count
+FROM task_attachment a
+WHERE a.is_deleted = 0
+  AND NOT EXISTS (SELECT 1 FROM task t WHERE t.id = a.task_id)
+"""
+        return sql, ()
+
+    if scope in ("largest", "by_uploader"):
+        # 这两档要文件级字段与上传人,故不套 CTE,直接 JOIN 任务表。
+        # 闸门随参数变化:默认套任务门;给 task_id / task_name 或 include_informal 时放开 ——
+        # 附件挂在 task_id 外键上,正式集之外的任务照样有附件,带着门问只会静默答 0。
+        where = [adm.sql_soft_delete("a")]
+        params: list[object] = []
+        board_join = ""
+        if board:
+            board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+            where.append("b.code = %s")
+            params.append(board)
+        if task_id is not None:
+            where.append("a.task_id = %s")
+            params.append(int(task_id))
+        elif task_name:
+            where.append("t.task_name = %s")
+            params.append(task_name)
+        elif not include_informal:
+            where.append(adm.sql_task_admission("pg", "t"))
+        if scope == "largest":
+            sql = f"""
+SELECT a.file_name, a.file_size,
+       round(a.file_size / 1024.0 / 1024.0, 2) AS size_mb, t.task_name
+FROM task_attachment a
+JOIN task t ON t.id = a.task_id
+{board_join}
+WHERE {"\n  AND ".join(where)}
+ORDER BY a.file_size DESC, a.id
+LIMIT %s
+"""
+        else:
+            sql = f"""
+SELECT a.uploader_id,
+       count(*)                     AS upload_count,
+       sum(a.file_size)             AS total_bytes,
+       round(sum(a.file_size) / 1024.0 / 1024.0, 1) AS total_mb
+FROM task_attachment a
+JOIN task t ON t.id = a.task_id
+{board_join}
+WHERE {"\n  AND ".join(where)}
+GROUP BY a.uploader_id
+ORDER BY upload_count DESC, a.uploader_id
+LIMIT %s
+"""
+        params.append(int(limit))
+        return sql, tuple(params)
+
     where = [adm.sql_task_admission("pg", "t"), adm.sql_soft_delete("a")]
-    params: list[object] = []
+    params = []
     board_join = ""
     if board:
         board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
@@ -2304,7 +2496,58 @@ LIMIT %s
     return sql, tuple(params)
 
 
-# ---- batch 8: 规模横截面(三种 mode x 三种分组轴)----------------------------
+def workflow_actions_by_task(
+    *,
+    board_code: str | None = None,
+    task_id: int | None = None,
+    action: str | None = None,
+    granted: bool = True,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """按任务聚合的审批动作数(**一任务一行**,不是动作流水)。
+
+    问"哪些任务被驳回过、各有几次"问的是**任务集合与次数**;流水里同一任务会出现多次
+    (真库 91 条动作挂在 23 个任务上,最多的那个任务 19 条),拿流水行数报会把**次数
+    当成任务数**。所以这一档必须服务端聚合。
+
+    列集合照抄参考实现:有 ``board=`` 时 **JOIN 任务表并回 ``task_name``**(没有任务名的
+    榜单答不了"哪些任务");不带看板时只回 ``task_id`` —— 这是参考实现的形状,不统一,
+    因为带看板的那一问几乎总要念任务名,而不带看板时 id 已足够定位。
+    """
+    hint = adm.require_optional_table("task_workflow_action", granted)
+    if hint:
+        raise PermissionError(hint)
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_soft_delete("t")]
+    params: list[object] = []
+    joins = ""
+    name_column = ""
+    if board:
+        joins = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+        name_column = ",\n       t.task_name"
+    if task_id is not None:
+        where.append("a.task_id = %s")
+        params.append(int(task_id))
+    if action:
+        where.append("a.action = %s")
+        params.append(action)
+    sql = f"""
+SELECT a.task_id{name_column},
+       count(*) AS action_count
+FROM task_workflow_action a
+JOIN task t ON t.id = a.task_id
+{joins}
+WHERE {"\n  AND ".join(where)}
+GROUP BY a.task_id{", t.task_name" if board else ""}
+ORDER BY action_count DESC, a.task_id
+LIMIT %s
+"""
+    params.append(int(limit))
+    return sql, tuple(params)
 
 SCALE_MODES = ("totals", "completeness", "intensity")
 SCALE_AXES = ("board", "project_group", "primary_category")
@@ -2666,7 +2909,11 @@ PERSON_SCOPES = (
     "cross_group",
     "dual_role",
     "id_format",
+    "id_variants",
+    "id_longest",
     "reporters",
+    "reviewers",
+    "self_review",
 )
 
 # role -> (分组列, 中文标签, 对应姓名列或空)
@@ -2705,8 +2952,14 @@ def person_stats(
     * ``group_roster`` 数的是**去重后的人**(标准安全组 19 条任务只有 9 位牵头人),
       不能拿任务条数当人数;
     * ``id_format`` 只统计**有标识**的任务,空标识不进任何档,各档相加不等于任务总数;
+    * ``id_variants`` 查"同一个人挂着不同标识",**0 行就是答案**(不存在这种人),
+      不要读成"没查到";它需要姓名列与标识列成对存在,故不支持 ``role=owner``;
+    * ``id_longest`` 一行一个**去重后的标识**(不是一行一个任务),按字符长度倒序,
+      并列个数由 ``person_id_ties`` 给出;
     * ``reporters`` 的口径是"任务闸门 + ``p.is_published = 1``"两道闸门,
-      填报人在 ``task_progress`` 上而不在 ``task`` 上。
+      填报人在 ``task_progress`` 上而不在 ``task`` 上;
+    * ``reviewers`` / ``self_review`` **刻意不加** ``p.is_published``:审过但还没发布的
+      进展同样是审过的,加了发布闸门会把"待审已审"整批滤掉。
     """
     if scope not in PERSON_SCOPES:
         raise ValueError(f"未知 scope:{scope};可选 {', '.join(PERSON_SCOPES)}")
@@ -2857,7 +3110,8 @@ ORDER BY task_count DESC, id_format
         return sql, tuple(params)
 
     # reporters:任务闸门 + 进展行发布闸门,两道都要
-    sql = f"""
+    if scope == "reporters":
+        sql = f"""
 SELECT p.reporter_id, count(*) AS reported_rounds, count(DISTINCT p.task_id) AS tasks
 FROM task_progress p
 JOIN task t ON t.id = p.task_id
@@ -2868,7 +3122,123 @@ GROUP BY p.reporter_id
 ORDER BY reported_rounds DESC, p.reporter_id
 LIMIT %s
 """
-    return sql, (*params, int(top))
+        return sql, (*params, int(top))
+
+    if scope == "id_variants":
+        # "同一个人在不同任务里会不会挂着不同格式的标识"。**空集就是答案**:
+        # 返回 0 行说明该口径下不存在这种人,不能反过来说"会出现"。
+        # 列集合照抄参考查询:person / id_variants / ids(ids 是逗号连接的标识清单)。
+        name_column = _person_id_columns(role)
+        sql = f"""
+SELECT t.{name_column[0]} AS person,
+       count(DISTINCT t.{name_column[1]}) AS id_variants,
+       string_agg(DISTINCT t.{name_column[1]}, ',' ORDER BY t.{name_column[1]}) AS ids
+FROM task t
+{joins}
+WHERE {gate_sql}
+  AND t.{name_column[0]} IS NOT NULL
+  AND t.{name_column[1]} IS NOT NULL
+GROUP BY t.{name_column[0]}
+HAVING count(DISTINCT t.{name_column[1]}) > 1
+ORDER BY id_variants DESC, person
+LIMIT %s
+"""
+        return sql, (*params, int(top))
+
+    if scope in ("reviewers", "self_review"):
+        # 审核人在 task_progress 上。**审核口径刻意不加 p.is_published**:
+        # 审过但还没发布的进展同样是审过的 —— 加了发布闸门会把"待审已审"整批滤掉。
+        hist = "FROM task_progress p\nJOIN task t ON t.id = p.task_id"
+        if scope == "reviewers":
+            sql = f"""
+SELECT p.reviewer_id, count(*) AS reviewed
+{hist}
+{joins}
+WHERE {gate_sql}
+  AND p.reviewer_id IS NOT NULL
+GROUP BY p.reviewer_id
+ORDER BY reviewed DESC, p.reviewer_id
+LIMIT %s
+"""
+            return sql, (*params, int(top))
+        sql = f"""
+SELECT t.task_name, p.version_no, p.reporter_id, p.reviewer_id
+{hist}
+{joins}
+WHERE {gate_sql}
+  AND p.reviewer_id IS NOT NULL
+  AND p.reporter_id = p.reviewer_id
+ORDER BY t.id, p.version_no
+LIMIT %s
+"""
+        return sql, (*params, int(top))
+
+    # id_longest:问的是**标识**而不是任务 —— 同一个标识挂 3 个任务只算一个标识。
+    # 不去重会返回同一个标识重复多行,模型会把"最长的是哪一个"答成一串重复项。
+    longest = f"""
+SELECT t.owner_user_id, length(t.owner_user_id) AS id_length, count(*) AS task_count
+FROM task t
+{joins}
+WHERE {gate_sql}
+  AND t.owner_user_id IS NOT NULL
+  AND t.owner_user_id <> ''
+GROUP BY t.owner_user_id
+ORDER BY id_length DESC, t.owner_user_id
+LIMIT %s
+"""
+    return longest, (*params, int(top))
+
+
+def person_id_ties(board_code: str | None = None) -> tuple[str, tuple]:
+    """``id_longest`` 的并列自检:首行那个标识长度上共有几个标识。
+
+    问句"最长的是哪一个"是**单数**,而真库里等长标识常常不止一个 —— 不给这个数,
+    模型要么只报一个(漏掉并列),要么把并列的都塞进答案行(改写了行数)。
+    与 ``person_ties`` 同一个理由,只是度量从"任务数"换成"标识长度"。
+    """
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    joins = ""
+    if board:
+        joins = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    sql = f"""
+WITH ids AS (
+    SELECT t.owner_user_id, length(t.owner_user_id) AS id_length
+    FROM task t
+    {joins}
+    WHERE {"\n  AND ".join(where)}
+      AND t.owner_user_id IS NOT NULL
+      AND t.owner_user_id <> ''
+    GROUP BY t.owner_user_id
+)
+SELECT max(id_length)                                          AS max_id_length,
+       count(*) FILTER (WHERE id_length = (SELECT max(id_length) FROM ids)) AS tied_at_top
+FROM ids
+"""
+    return sql, tuple(params)
+
+
+def _person_id_columns(role: str) -> tuple[str, str]:
+    """``id_variants`` 用的 (姓名列, 标识列) —— 两者必须来自同一个角色。
+
+    只有牵头领导与项目负责人有姓名列;主责人只有工号列,没有可比的"同名"列,
+    故这一档不支持 ``role=owner``(显式报错,不去猜一个替代列)。
+    """
+    pairs = {
+        "lead_owner": ("lead_owner_name", "lead_owner_id"),
+        "project_owner": ("project_owner_name", "project_owner_id"),
+    }
+    if role not in pairs:
+        raise ValueError(
+            f"id_variants 需要「姓名列 + 标识列」成对存在,不支持 role={role};"
+            f"支持 {', '.join(pairs)}"
+        )
+    return pairs[role]
 
 
 def person_ties(role: str = "lead_owner", board_code: str | None = None) -> tuple[str, tuple]:

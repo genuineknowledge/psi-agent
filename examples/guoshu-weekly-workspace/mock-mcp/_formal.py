@@ -134,7 +134,7 @@ def dispatch(tool: str, **kwargs: Any) -> dict[str, Any] | None:
 
 def _task_query(args: dict[str, Any]) -> dict[str, Any] | None:
     """weekly_task_query:检索已发布任务(关键词 / 分类 / 负责人 / 状态 / 项目组 / 看板)。"""
-    board = (args.get("board") or "").strip() or None
+    board = _board(args)
     status = (args.get("status") or "").strip()
     if status and status not in ("0", "1", "2", "3"):
         return None  # 演示路径会给出 invalid_status,交给它
@@ -165,7 +165,7 @@ def _coverage(args: dict[str, Any]) -> dict[str, Any] | None:
     """weekly_progress_coverage:具名 scope,以及 scope=text_check 的三条文本规则。"""
     scope = (args.get("scope") or "summary").strip().lower()
     limit = int(args.get("limit") or MAX_ROWS)
-    board = (args.get("board") or "").strip() or None
+    board = _board(args)
     if scope == "text_check":
         rule = (args.get("rule") or "").strip().lower()
         if rule not in tpl.TEXT_RULES:
@@ -239,7 +239,7 @@ def _freshness(args: dict[str, Any]) -> dict[str, Any] | None:
     (rows = 分档,另给最新进展 / 滞后天数 / 任务总数),调用方无感。
     """
     limit = int(args.get("limit") or MAX_ROWS)
-    board = (args.get("board") or "").strip() or None
+    board = _board(args)
     in_flight = bool(args.get("in_flight"))
     within_days = int(args.get("within_days") or 0)
     stale_days = int(args.get("stale_days") or 0)
@@ -247,8 +247,9 @@ def _freshness(args: dict[str, Any]) -> dict[str, Any] | None:
     reported_only = bool(args.get("reported_only"))
     by = (args.get("by") or "").strip().lower()
     lag_bands = bool(args.get("lag_bands"))
-    if args.get("task"):
-        return None  # 单任务档(含任务名解析)交给演示路径
+    raw_task = (args.get("task") or "").strip()
+    if raw_task:
+        return _freshness_one_task(args, raw_task, limit=limit)
 
     if args.get("drift"):
         sql, params = tpl.latest_progress_drift(board_code=board, limit=limit)
@@ -429,10 +430,91 @@ def _resolve_task(raw: str) -> tuple[int | None, str | None]:
     return (int(value), None) if value.isdigit() else (None, value)
 
 
+_BOARD_CODES = frozenset(adm.BOARD_CODE_DOMAIN)
+
+# 看板名里与"哪个看板"无关的通用词:匹配时**只作字面包含**用,不进"特征片段"。
+# 真实库里看板名是「技术组重点任务进展」「集团重点任务调度」,而提问口径是
+# 「技术组」「集团看板」—— "看板""重点""任务""调度""进展"这些词两个看板名里都可能有,
+# 留着会让两个看板得分打平,那就等于没判。
+_BOARD_STOPWORDS = frozenset({"看板", "重点", "任务", "调度", "进展", "工作"})
+
+_board_cache: list[dict[str, Any]] | None = None
+
+
+def _board_grams(text: str) -> set[str]:
+    """取 2 字片段作为"特征"(骨架词本就两字,长度取 2 与库里名字的写法无关)。
+
+    分隔符用转义序列写(全角括号与逗号直接写会触发 RUF001 的 ambiguous unicode)。
+    """
+    clean = re.sub(r"[\s\uff08\uff09\u3001\uff0c,()/]+", "", text or "")
+    return {clean[i : i + 2] for i in range(len(clean) - 1)} - _BOARD_STOPWORDS
+
+
+def _fetch_boards() -> list[dict[str, Any]]:
+    """看板清单(进程内缓存一次)。表是两张、几乎不变,而它只在解析**看板名**时才查。"""
+    global _board_cache
+    if _board_cache is None:
+        sql, params = tpl.schema_boards()
+        got = envelope(sql=sql, params=params, caliber="看板清单", limit=MAX_ROWS)
+        _board_cache = list(got["rows"])
+    return _board_cache
+
+
+def _board(args: dict[str, Any], key: str = "board") -> str | None:
+    """把 ``board=`` 解析成**看板码**。
+
+    国数的问句说的是看板**名字**(真库:``技术组重点任务进展`` / ``集团重点任务调度``;
+    提问口径叫「技术组」「集团看板」),而模板层只认码(``tech`` / ``group``)。
+    此前给名字一律落到模板的值域校验,得到一句"取值不在值域内(group, tech)"——
+    对调用方是死路:它手上的问题本来就只能说名字。
+
+    四级匹配:
+
+    1. 已经是码(``tech`` / ``group``)⇒ 原样返回,不查库;
+    2. 名字**精确相等** ⇒ 该看板;
+    3. 名字**字面包含**(``token in name``,``技术组`` ⊂ ``技术组重点任务进展``)⇒ 该看板;
+    4. ``_board_grams`` **特征片段**重合度唯一最高 ⇒ 该看板。
+       这一条是为「集团看板」这类**改述**准备的:它既不等于也不包含库内名字
+       (``集团重点任务调度``),只有 ``集团`` 这个片段命中 —— 而 ``看板`` 是通用词,
+       留在片段集合里会让两个看板打平。
+
+    多义(并列最高)与完全不匹配都**交给模板层的值域校验**去报错(不在这里猜一个看板):
+    猜错看板会把整份答案换成另一个看板的,而错误信息里带着真实值域,调用方改一次就好。
+    查库失败时同样退回码路径 —— 那会让模板报值域错,而不是把一次网络抖动升级成
+    "这个工具坏了"。
+    """
+    token = (args.get(key) or "").strip()
+    if not token or token in _BOARD_CODES:
+        return token or None
+    try:
+        rows = _fetch_boards()
+    except Exception:  # 正式库不可达时退回码路径,由模板报值域错
+        return token
+
+    def code_of(row: dict[str, Any]) -> str:
+        return str(row["code"])
+
+    exact = [r for r in rows if str(r.get("name") or "").strip() == token]
+    if len(exact) == 1:
+        return code_of(exact[0])
+    literal = [r for r in rows if token in str(r.get("name") or "")]
+    if len(literal) == 1:
+        return code_of(literal[0])
+    if len(rows) > 1 and token:
+        wanted = _board_grams(token)
+        scored = sorted(
+            ((len(wanted & _board_grams(str(r.get("name") or ""))), code_of(r)) for r in rows),
+            reverse=True,
+        )
+        if scored and scored[0][0] > 0 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
+            return scored[0][1]
+    return token
+
+
 def _attachment(args: dict[str, Any]) -> dict[str, Any] | None:
     """weekly_attachment_query:附件**元数据**清单(storage_path 永不出现)。"""
     limit = int(args.get("limit") or MAX_ROWS)
-    board = (args.get("board") or "").strip() or None
+    board = _board(args)
     task_id, _task_name = _resolve_task(args.get("task") or "")
     sql, params = tpl.attachment_list(
         board_code=board, task_id=task_id, granted=optional_granted("task_attachment"), limit=limit
@@ -450,10 +532,74 @@ def _attachment(args: dict[str, Any]) -> dict[str, Any] | None:
     )
 
 
+def _freshness_one_task(args: dict[str, Any], raw_task: str, *, limit: int) -> dict[str, Any] | None:
+    """``weekly_freshness_distribution task=``:单任务新鲜度 + 漂移核对。
+
+    与分档清单答的**不是同一个问题**:那里是"全库有几个桶",这里是某个任务自己那一行。
+    查不到时要说清是**哪一种查不到** —— 库里没有这一行,还是有这一行但不过正式任务门
+    (已软删 / 未发布)。两者都是 0 行,但下一步动作完全不同(换 id vs 换任务);
+    真库上 104 条软删存活任务里只有 88 条是正式任务,问错一个是常事。
+    """
+    if args.get("by") or args.get("stale_days") or args.get("recent_days") or args.get("lag_bands"):
+        return None  # by / 天数窗与单任务档组合起来语义不清,交给演示路径
+    task_id, task_name = _resolve_task(raw_task)
+    sql, params = tpl.freshness_task(as_of(), task_id=task_id, task_name=task_name)
+    result = envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            f"单个任务的新鲜度 + 漂移核对;基准日 {as_of()}(数据快照日,非系统当天);"
+            "days_behind = 基准日 - latest_progress_time(按**日期**相减);"
+            "actual_latest_report 是真实最新一期已发布进展时间,与任务行的冗余列 "
+            "latest_progress_time 不一致即漂移(此时不得用冗余列回答新鲜度);"
+            "从未报过进展的任务 days_behind 为 null —— 那是「没有这个天数」,不是 0 天"
+        ),
+        limit=1,
+    )
+    if result["row_count"]:
+        return result
+    # 0 行:补一次"这一行到底在不在"的判定(不带 R-01 闸门),把两种 0 行分开
+    probe_sql, probe_params = tpl.freshness_task_probe(task_id=task_id, task_name=task_name)
+    probe = envelope(sql=probe_sql, params=probe_params, caliber="任务行是否存在(不带发布门)", limit=1)
+    row = (probe.get("rows") or [None])[0]
+    if row is None:
+        return {
+            "ok": False,
+            "error": {
+                "code": "task_not_found",
+                "message": (
+                    f"库中无此任务:{raw_task}(不是口径过滤掉的,是确实没有这行)"
+                ),
+            },
+        }
+    formal = int(row.get("is_deleted") or 0) == 0 and str(row.get("workflow_status")) == "published"
+    if formal:  # pragma: no cover - 正式任务却 0 行只可能是并发删除,仍照实说明
+        return result
+    cause = (
+        "已删除(is_deleted = 1)"
+        if int(row.get("is_deleted") or 0)
+        else f"workflow_status = '{row.get('workflow_status')}'"
+    )
+    return {
+        "ok": False,
+        "error": {
+            "code": "task_not_formal",
+            "message": (
+                f"任务 {row.get('id')}「{row.get('task_name')}」存在但不属正式任务:{cause},"
+                "未过 R-01(is_deleted = 0 AND workflow_status = 'published')。"
+                "本档按正式任务口径取数,故不返回它的新鲜度;"
+                "它的提交单 / 审批动作挂在 task_id 外键上,"
+                "weekly_submission_query / weekly_workflow_query 按同一个 id 仍可查到。"
+                "不要改用按名字搜 —— 同名系列的(N期)是另外几条任务,答的不是这一条"
+            ),
+        },
+    }
+
+
 def _year_goal(args: dict[str, Any]) -> dict[str, Any] | None:
     """weekly_year_goal_query:年度目标行清单(year=0 表示所有年度)。"""
     limit = int(args.get("limit") or MAX_ROWS)
-    board = (args.get("board") or "").strip() or None
+    board = _board(args)
     year = int(args.get("year") or 0)
     task_id, _task_name = _resolve_task(args.get("task") or "")
     sql, params = tpl.year_goal_rows(board_code=board, year=year or None, task_id=task_id, limit=limit)
@@ -537,7 +683,7 @@ def _group_detail(args: dict[str, Any]) -> dict[str, Any] | None:
     contains_field = (args.get("field") or "").strip() or None
     fields = tuple(name.strip() for name in (args.get("fields") or "").split(",") if name.strip())
     sql, params = tpl.group_detail_list(
-        board_code="group" if not args.get("board") else (args.get("board") or "").strip(),
+        board_code=_board(args) or "group",
         task_id=task_id,
         status=int(raw_status) if raw_status else None,
         non_empty=non_empty,
@@ -598,16 +744,40 @@ def _submission(args: dict[str, Any]) -> dict[str, Any] | None:
     """
     scope = (args.get("scope") or "").strip().lower()
     limit = int(args.get("limit") or MAX_ROWS)
-    board = (args.get("board") or "").strip() or None
+    board = _board(args)
     raw_task = (args.get("task") or "").strip()
     task_id, task_name = _resolve_task(raw_task)
     reporter = (args.get("reporter") or "").strip() or None
     raw_status = (args.get("status") or "").strip() or None
     raw_exclude = (args.get("exclude_status") or "").strip() or None
 
+    if args.get("status_mismatch"):
+        # 一任务一行(取最新一轮单)与任务的 workflow_status 逐条比 —— 与明细清单是
+        # **两种形状**:清单一行是一张单,拿它去数会把同一任务的多轮重复计入。
+        # 与 status / exclude_status 组合起来语义不清(那两列筛的是"单的状态",
+        # 而本档问的是"两边不一致"),故不迁移那些组合。
+        if scope or raw_status or raw_exclude:
+            return None
+        sql, params = tpl.submission_status_mismatch(limit=limit)
+        return envelope(
+            sql=sql,
+            params=params,
+            caliber=(
+                "仅 t.is_deleted = 0(**不加任务发布门**:已发布但最新单仍在流程中的任务"
+                "正是本题答案,加门会把它们滤掉);"
+                "最新一轮 = 该任务 round_no 最大的那张单,一任务一行;"
+                "任务 workflow_status 与提交单 status 是**两套码值**"
+                "(任务侧 published/pending_*/rejected;单侧 pending_fill/signing/"
+                "pending_audit/pending_leader/published/rejected/cancelled),"
+                "此处按**字面不等**判定,不代表两边的码值有一一对应;"
+                "行数即不一致任务总数,按 task id 升序;"
+                "真库实测常为 0 行 —— 0 行表示**当前不存在不一致**,不要读成「查不到」"
+            ),
+            limit=limit,
+            cap_last_param=True,
+        )
+
     if not scope:
-        if args.get("status_mismatch"):
-            return None  # 一任务一行的口径比对,另一条形状,交给演示路径
         sql, params = tpl.submission_rows(
             board_code=board,
             task_id=task_id,
@@ -650,8 +820,6 @@ def _submission(args: dict[str, Any]) -> dict[str, Any] | None:
     for key in ("task", "reporter", "status", "exclude_status"):
         if (args.get(key) or "").strip():
             return None
-    if args.get("status_mismatch"):
-        return None
     sql, params = tpl.submission_stats(scope, board_code=board, limit=limit)
     listing = scope in ("pending_review", "unpublished_by_task")
     return envelope(
@@ -743,18 +911,45 @@ def _workflow(args: dict[str, Any]) -> dict[str, Any] | None:
     ``scope`` 为空即**默认明细清单**档:一行一条动作,按 ``task_id, created_at, id``
     排序(某任务的审批轨迹),列集合见 ``tpl.WORKFLOW_ROW_COLUMNS``。它与 ``recent``
     是两道桥:``recent`` 按动作自身时间倒序、答"最近谁被驳回"。
-    只有 ``by_task``(逐任务聚合)仍交给演示路径 —— 那是另一条形状。
+    ``by_task=True`` 是**第三条形状**:一任务一行(``action_count``),答的是任务集合与
+    次数 —— 拿流水行数报会把**次数当成任务数**。
     """
     scope = (args.get("scope") or "").strip().lower()
     limit = int(args.get("limit") or MAX_ROWS)
-    board = (args.get("board") or "").strip() or None
+    board = _board(args)
     task_id, task_name = _resolve_task(args.get("task") or "")
     raw_action = (args.get("action") or "").strip() or None
     granted = optional_granted("task_workflow_action")
 
+    if args.get("by_task"):
+        if scope:
+            return None  # by_task 与具名 scope 组合语义不清,交给演示路径
+        sql, params = tpl.workflow_actions_by_task(
+            board_code=board,
+            task_id=task_id,
+            action=raw_action,
+            granted=granted,
+            limit=limit,
+        )
+        return envelope(
+            sql=sql,
+            params=params,
+            caliber=(
+                "流水带 t.is_deleted = 0 是正确闸门(1,578 行);再加任务发布门会掉到 1,519;"
+                "本档**一任务一行**,action_count 是动作**次数**不是任务数 ——"
+                "同一任务的一条流水里会出现多轮动作,拿流水行数报会把次数当成任务数"
+                "(真库 91 条动作挂在 23 个任务上,最多的那个任务 19 条);"
+                "按 action_count 降序、并列按 task id 升序;"
+                "带 board= 时一并回 task_name(没有任务名的榜单答不了「哪些任务」),"
+                "不带看板时只回 task_id"
+            ),
+            limit=limit,
+            cap_last_param=True,
+        )
+
     if scope not in tpl.WORKFLOW_SCOPES:
-        if scope or args.get("by_task"):
-            return None  # by_task 是逐任务聚合,另一条形状,交给演示路径
+        if scope:
+            return None
         sql, params = tpl.workflow_action_rows(
             board_code=board,
             task_id=task_id,
@@ -855,7 +1050,7 @@ def _rank(args: dict[str, Any]) -> dict[str, Any] | None:
         top=top,
         ascending=bool(args.get("ascending")),
         group_by=(args.get("group_by") or "").strip() or None,
-        board_code=(args.get("board") or "").strip() or None,
+        board_code=_board(args),
         granted_optional=granted,
     )
     result = envelope(
@@ -891,27 +1086,63 @@ _NEW_HANDLERS_9 = {"weekly_rank": _rank}
 
 
 def _person_stats(args: dict[str, Any]) -> dict[str, Any] | None:
-    """weekly_person_stats:人员统计(9 个已迁移 scope)。"""
+    """weekly_person_stats:人员统计(13 个 scope,只剩 1 个走演示路径)。"""
     scope = (args.get("scope") or "workload").strip().lower()
     if scope not in tpl.PERSON_SCOPES:
-        return None  # 其余 scope(id_variants/id_longest/reviewers/self_review...)交给演示路径
+        return None  # reporter_count 等未迁 scope 交给演示路径
     role = (args.get("role") or "lead_owner").strip() or "lead_owner"
     top = int(args.get("top") or MAX_ROWS)
-    board = (args.get("board") or "").strip() or None
+    board = _board(args)
     group = (args.get("project_group") or "").strip() or None
     sql, params = tpl.person_stats(scope, role=role, project_group=group, board_code=board, top=top)
+    caliber = (
+        f"{adm.BUSINESS_STATUS_NOTE};按「{tpl.PERSON_ROLES.get(role, ('', role, ''))[1]}」分组;"
+        "姓名为空的行不计入人头;workload 是硬切(并列被切掉),workload_top 用 HAVING = MAX 保留并列;"
+        "workload_summary 的均值是全局均值;group_roster 数去重后的人(不是任务条数);"
+        "id_format / id_variants 只统计有标识的任务;"
+        "reporters 走任务闸门 + 进展行发布闸门两道"
+    )
+    if scope in ("reviewers", "self_review"):
+        caliber = (
+            f"{adm.BUSINESS_STATUS_NOTE};**审核口径刻意不加 p.is_published**:"
+            "审过但还没发布的进展同样是审过的,加发布闸门会把「待审已审」整批滤掉;"
+            + (
+                "按审核人分组,并列按 reviewer_id 定序;0 行表示该口径下没有审核记录,"
+                "不要读成「取不到」"
+                if scope == "reviewers"
+                else "填报人与审核人为**同一 ID**(按 ID 相等判定,不按姓名);此清单即全部自审记录"
+            )
+        )
+    if scope == "id_variants":
+        caliber += (
+            ";同名多标识检查:**0 行就是答案**(该口径下不存在这种人),"
+            "不要据此说「会出现」;ids 是逗号连接的标识清单"
+        )
+    if scope == "id_longest":
+        caliber += (
+            ";一行一个**去重后的标识**(不是一行一个任务);"
+            "问「最长的是哪一个」传 top=1 按首行答,tied_at_top 是等长标识个数,"
+            "据它补一句「另有并列」即可,不要因为存在并列就改写答案行数"
+        )
     result = envelope(
         sql=sql,
         params=params,
-        caliber=(
-            f"{adm.BUSINESS_STATUS_NOTE};按「{tpl.PERSON_ROLES.get(role, ('', role, ''))[1]}」分组;"
-            "姓名为空的行不计入人头;workload 是硬切(并列被切掉),workload_top 用 HAVING = MAX 保留并列;"
-            "workload_summary 的均值是全局均值;group_roster 数去重后的人(不是任务条数);"
-            "id_format 只统计有标识的任务;reporters 走任务闸门 + 进展行发布闸门两道"
-        ),
+        caliber=caliber,
         limit=top,
         cap_last_param=scope
-        in ("workload", "single_task", "group_roster", "workload_top", "cross_group", "dual_role", "reporters"),
+        in (
+            "workload",
+            "single_task",
+            "group_roster",
+            "workload_top",
+            "cross_group",
+            "dual_role",
+            "reporters",
+            "reviewers",
+            "self_review",
+            "id_variants",
+            "id_longest",
+        ),
     )
     if scope == "workload":
         tsql, tparams = tpl.person_ties(role=role, board_code=board)
@@ -919,38 +1150,80 @@ def _person_stats(args: dict[str, Any]) -> dict[str, Any] | None:
         first = (ties.get("rows") or [{}])[0]
         result["top_task_count"] = first.get("top_task_count")
         result["tied_at_top"] = first.get("tied_at_top")
+    if scope == "id_longest":
+        tsql, tparams = tpl.person_id_ties(board_code=board)
+        ties = envelope(sql=tsql, params=tparams, caliber="并列自检", limit=1)
+        first = (ties.get("rows") or [{}])[0]
+        result["tied_at_top"] = first.get("tied_at_top")
+        result["max_id_length"] = first.get("max_id_length")
     return result
 
 
 _NEW_HANDLERS_10 = {"weekly_person_stats": _person_stats}
 
 
+_MIGRATED_ATTACHMENT_SCOPES = ("summary", "by_ext", "largest", "by_uploader", "deleted", "orphan")
+
+
 def _attachment_stats(args: dict[str, Any]) -> dict[str, Any] | None:
-    """weekly_attachment_stats:附件汇总 / 按扩展名分档(两种形状,不互相代答)。"""
+    """weekly_attachment_stats:附件汇总 / 分档 / 清单 / 软删审计(六种形状,不互相代答)。"""
     scope = (args.get("scope") or "summary").strip().lower()
-    if scope not in ("summary", "by_ext"):
-        return None  # 其余 scope(largest/by_uploader/by_month/deleted/orphan...)交给演示路径
+    if scope not in _MIGRATED_ATTACHMENT_SCOPES:
+        return None  # 其余 scope(by_month/on_open_submission/by_link/...)交给演示路径
     if (args.get("date_from") or "").strip():
-        return None
-    board = (args.get("board") or "").strip() or None
+        return None  # date_from 只对 by_month 有意义,那一档未迁
+    board = _board(args)
     limit = int(args.get("limit") or MAX_ROWS)
+    task_id, task_name = _resolve_task(args.get("task") or "")
+    include_informal = bool(args.get("include_informal"))
     sql, params = tpl.attachment_stats(
-        board_code=board, scope=scope, granted=optional_granted("task_attachment"), limit=limit
+        board_code=board,
+        scope=scope,
+        granted=optional_granted("task_attachment"),
+        limit=limit,
+        task_id=task_id,
+        task_name=task_name,
+        include_informal=include_informal,
     )
+    caliber = (
+        "is_deleted = 0 且关联任务已发布;file_size 单位是字节,原样报出(不要换算成 KB/MB 也不要写「约」);"
+        "total_mb 只是同一数值的另一种表示,以字节为准;storage_path 禁止外泄,不在返回字段内;"
+    )
+    if scope == "by_ext":
+        caliber += "by_ext 按扩展名每档一行(ext / n / total_bytes / total_mb),答「哪种文件最多」看 n 的首行"
+    elif scope == "summary":
+        caliber += "summary 是一行汇总(条数 / 任务数 / 字节 / 均值 / 上传人 / 挂载点 / 四个主扩展名条数)"
+    elif scope == "largest":
+        caliber += (
+            "largest 是**清单**(一行一个文件,按字节倒序),最大的一条即首行;"
+            "问「最大的几个文件」用本档,问「一共多大 / 有几个」用 summary"
+        )
+    elif scope == "by_uploader":
+        caliber += (
+            "by_uploader 是**按人分档**(一行一个人,upload_count / total_bytes / total_mb),"
+            "不是按任务或看板分组,并列按 uploader_id 定序;"
+            "拿清单去数人会把同一人的多个文件重复计入"
+        )
+    elif scope == "deleted":
+        caliber += (
+            "**全表口径,不加任务闸门**:这是关于表本身的问题(软删的行本就挂在不该再被过滤的任务上),"
+            "按任务过滤会少算;active + deleted = total_rows"
+        )
+    else:  # orphan
+        caliber += "orphan 数的是**外键悬空**的附件行(任务已不在库里、附件还在);0 行表示没有孤儿"
+    if task_id is not None or task_name:
+        caliber += (
+            f";已按任务收窄({task_name or task_id})并**刻意放开任务发布门** ——"
+            "附件挂在 task_id 外键上,正式集之外的任务照样有附件,带着门问只会静默答 0"
+        )
+    elif include_informal:
+        caliber += ";include_informal=True 已放开任务发布门(全表口径),与默认档的差异就是这批非正式任务的附件"
     return envelope(
         sql=sql,
         params=params,
-        caliber=(
-            "is_deleted = 0 且关联任务已发布;file_size 单位是字节,原样报出(不要换算成 KB/MB 也不要写「约」);"
-            "total_mb 只是同一数值的另一种表示,以字节为准;storage_path 禁止外泄,不在返回字段内;"
-            + (
-                "by_ext 按扩展名每档一行(ext / n / total_bytes / total_mb),答「哪种文件最多」看 n 的首行"
-                if scope == "by_ext"
-                else "summary 是一行汇总(条数 / 任务数 / 字节 / 均值 / 上传人 / 挂载点 / 四个主扩展名条数)"
-            )
-        ),
-        limit=limit if scope == "by_ext" else 1,
-        cap_last_param=scope == "by_ext",
+        caliber=caliber,
+        limit=limit if scope in ("by_ext", "largest", "by_uploader") else 1,
+        cap_last_param=scope in ("by_ext", "largest", "by_uploader"),
     )
 
 
@@ -1329,12 +1602,7 @@ def _year_goal_stats(args: dict[str, Any]) -> dict[str, Any] | None:
     scope = (args.get("scope") or "by_year").strip().lower()
     if scope not in tpl.YEAR_GOAL_STATS_SCOPES:
         return None  # 演示路径会报 unsupported_scope
-    board = (args.get("board") or "").strip()
-    if board and board not in adm.BOARD_CODE_DOMAIN:
-        # 演示实现的 board= 接受看板**名字**(resolve_board);正式源只认 tech/group
-        # 两个码。名字的解析交给演示路径,不在这里猜 —— 猜错会答成另一个看板。
-        return None
-    board_code = board or None
+    board_code = _board(args)  # 看板**名字**(技术组 / 集团看板)在这里解析成码
     year = int(args.get("year") or 0)
     year_to = int(args.get("year_to") or 0)
     top = max(1, min(MAX_ROWS, int(args.get("top") or 8)))
@@ -1457,10 +1725,7 @@ def _schema(args: dict[str, Any]) -> dict[str, Any] | None:
     table_columns / field_notes),不是一张表。所以 ``envelope`` 那条路用不上,
     三张子表各自跑一次再拼起来(与演示源同形)。
     """
-    raw_board = (args.get("board") or "").strip()
-    if raw_board and raw_board not in adm.BOARD_CODE_DOMAIN:
-        return None  # 看板名字的解析交给演示侧的 resolve_board
-    board_code = raw_board or None
+    board_code = _board(args)  # 看板名字(技术组 / 集团看板)在这里解析成码
 
     bsql, bparams = tpl.schema_boards()
     boards = envelope(sql=bsql, params=bparams, caliber="is_deleted = 0", limit=MAX_ROWS)
@@ -2098,10 +2363,7 @@ def _aggregate(args: dict[str, Any]) -> dict[str, Any] | None:
         raise ValueError("group_by 不能为空;支持 " + " / ".join(tpl.AGGREGATE_GROUP_BYS))
     if group_by not in tpl.AGGREGATE_GROUP_BYS:
         return None  # 演示路径会报 unsupported_group_by
-    board = (args.get("board") or "").strip()
-    if board and board not in adm.BOARD_CODE_DOMAIN:
-        return None  # 看板名字的解析交给演示侧的 resolve_board
-    board_code = board or None
+    board_code = _board(args)  # 看板名字(技术组 / 集团看板)在这里解析成码
     order_by = (args.get("order_by") or "").strip().lower()
     ascending = bool(args.get("ascending"))
     by_rate = order_by == "finish_rate" and group_by in ("primary_category", "project_group")

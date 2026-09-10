@@ -30,6 +30,20 @@ DB_USER = os.environ.get("PGUSER", "chatbi_read")
 DB_PASSWORD = os.environ.get("PGPASSWORD", "")
 DB_SCHEMA = os.environ.get("PGSCHEMA", "public")
 
+DB_CONNECT_TIMEOUT = int(os.environ.get("GUOSHU_PG_CONNECT_TIMEOUT", "10"))
+"""建连超时(秒)。**必须有**:没有它时,库里不可达(网络黑洞、隧道半死)会让工具调用
+一直挂着 —— agent 侧只看到"这一轮没返回",既不知道是查询慢还是库不可达,也拿不到
+可判断的错误。10 秒足够覆盖正常建连,又把失败压成一条明确异常(``_guard`` 会把它包成
+工具出口的信封)。
+
+``GUOSHU_PG_CONNECT_TIMEOUT=0`` 可关掉(psycopg 语义:0 即不限时)。
+"""
+
+DB_STATEMENT_TIMEOUT_MS = int(os.environ.get("GUOSHU_PG_STATEMENT_TIMEOUT_MS", "30000"))
+"""单条语句超时(毫秒),由连接参数下发。同步设它是因为:一个跑飞的查询与"库挂了"
+对调用方是同一件事(都要等),而 30 秒后报 ``query_failed`` 至少是可行动的。
+"""
+
 try:
     import psycopg  # formal source only, kept top-level guarded
 except ImportError:  # pragma: no cover
@@ -49,9 +63,13 @@ def connect() -> Any:
         raise RuntimeError(
             "psycopg is required for the o2oa data source; install with 'pip install \"psycopg[binary]>=3.2,<4\"'"
         )
-    # -c options: read-only session + pinned schema.  The DB role itself is
-    # granted SELECT only, so even a bug here cannot mutate the store.
-    options = f"-c default_transaction_read_only=on -c search_path={DB_SCHEMA}"
+    # -c options: read-only session + pinned schema + statement timeout.  The DB
+    # role itself is granted SELECT only, so even a bug here cannot mutate the store.
+    options = (
+        "-c default_transaction_read_only=on "
+        f"-c search_path={DB_SCHEMA} "
+        f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}"
+    )
     return psycopg.connect(
         host=DB_HOST,
         port=DB_PORT,
@@ -59,5 +77,6 @@ def connect() -> Any:
         user=DB_USER,
         password=DB_PASSWORD or None,
         autocommit=True,
+        connect_timeout=DB_CONNECT_TIMEOUT or None,
         options=options,
     )

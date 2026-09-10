@@ -533,14 +533,40 @@ class TestFormalBackend:
         assert _formal.dispatch("weekly_not_a_tool") is None
         assert _formal.dispatch("weekly_group_stats", scope="nope") is None
         assert _formal.dispatch("weekly_aggregate", group_by="nope") is None
-        assert _formal.dispatch("weekly_schema", board="技术看板") is None  # 看板名走演示侧解析
+        assert _formal.dispatch("weekly_group_stats", scope="nope") is None
 
-    def test_wired_schema_routes_to_the_formal_source(self, monkeypatch):
-        """weekly_schema 已接线:路由判定不连库(靠 board= 的取值域判定)。"""
-        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
-        assert _formal.dispatch("weekly_schema", board="技术看板") is None  # 看板名交给演示侧解析
-        assert _formal.dispatch("weekly_schema", board="nope") is None
+    def test_wired_schema_routes_to_the_formal_source(self):
+        """weekly_schema 已接线:不认识工具名/scope 才回落。"""
         assert "weekly_schema" in _formal._HANDLERS
+
+    def test_board_name_resolution_does_not_fall_back(self, monkeypatch):
+        """看板**名字**现在在正式源侧解析(问句说的就是名字),不再回落。
+
+        真库的看板名是「技术组重点任务进展」/「集团重点任务调度」,提问口径叫「技术组」
+        「集团看板」—— 此前一律落到模板值域校验,调用方拿到的是死路。
+        这里用桩替换看板清单,断言三级匹配(码 / 精确 / 包含),不连库。
+        """
+
+        def fake_envelope(**kwargs):
+            return {"ok": True, "columns": ["id", "name", "code", "sort_order"],
+                    "rows": [{"id": 1, "name": "技术组重点任务进展", "code": "tech", "sort_order": 1},
+                             {"id": 2, "name": "集团重点任务调度", "code": "group", "sort_order": 0}],
+                    "row_count": 2, "caliber": "口径"}
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        monkeypatch.setattr(_formal, "_board_cache", None)
+        try:
+            assert _formal._board({}) is None
+            assert _formal._board({"board": "tech"}) == "tech"      # 已是码:不查库
+            assert _formal._board({"board": "技术组重点任务进展"}) == "tech"  # 精确
+            assert _formal._board({"board": "技术组"}) == "tech"     # token ⊂ 库内名字
+            assert _formal._board({"board": "集团"}) == "group"
+            assert _formal._board({"board": "集团看板"}) == "group"  # 库内名字 ⊂ token(另一支)
+            # 认不出来的 token 原样返回:让模板报值域错(错误信息里带真实值域)
+            assert _formal._board({"board": "nope"}) == "nope"
+        finally:
+            monkeypatch.setattr(_formal, "_board_cache", None)
 
     def test_unmigrated_arguments_fall_back_instead_of_narrowing(self, monkeypatch):
         """未迁移的参数组合必须回落演示路径,绝不能返回一个范围更小的答案。"""
@@ -551,7 +577,10 @@ class TestFormalBackend:
         assert by_only["error"]["code"] == "invalid_argument"
         assert "stale_days 或 recent_days" in by_only["error"]["message"]
         assert _formal.dispatch("weekly_freshness_distribution", by="不存在") is None
-        assert _formal.dispatch("weekly_freshness_distribution", task="1") is None
+        # 单任务档现在**已迁移**(task= 单独给会真去连库),故这里的反例换成"单任务档
+        # 与分组/天数窗的组合" —— 那种组合语义不清,仍走演示路径
+        assert _formal.dispatch("weekly_freshness_distribution", task="1", stale_days=30) is None
+        assert _formal.dispatch("weekly_freshness_distribution", task="1", lag_bands=True) is None
         assert _formal.dispatch("weekly_progress_coverage", scope="latest_status") is None
         assert _formal.dispatch("weekly_task_query", status="9") is None  # 非法状态交给演示路径报错
 
@@ -975,12 +1004,19 @@ class TestYearGoalStatsRouting:
         assert _formal.dispatch("weekly_year_goal_stats", scope="span", year=2026) is None
         assert _formal.dispatch("weekly_year_goal_stats", scope="span", min_years=3) is not None
 
-    def test_board_name_falls_back_to_the_demo_resolver(self, monkeypatch):
-        """board= 接受看板名字(演示侧 resolve_board);正式源只认 tech/group 两个码。"""
+    def test_board_name_is_resolved_on_the_formal_side(self, monkeypatch):
+        """看板名字在正式源侧解析(问句说的就是名字);认不出来的报值域错,不回落。"""
         self._capture(monkeypatch)
-        assert _formal.dispatch("weekly_year_goal_stats", scope="by_year", board="集团看板") is None
-        assert _formal.dispatch("weekly_year_goal_stats", scope="by_year", board="nope") is None
+        monkeypatch.setattr(
+            _formal, "_board_cache",
+            [{"id": 1, "name": "技术组重点任务进展", "code": "tech", "sort_order": 1},
+             {"id": 2, "name": "集团重点任务调度", "code": "group", "sort_order": 0}],
+        )
+        assert _formal.dispatch("weekly_year_goal_stats", scope="by_year", board="集团看板") is not None
         assert _formal.dispatch("weekly_year_goal_stats", scope="by_year", board="tech") is not None
+        nope = _formal.dispatch("weekly_year_goal_stats", scope="by_year", board="nope")
+        assert nope is not None and nope["error"]["code"] == "invalid_argument"
+        monkeypatch.setattr(_formal, "_board_cache", None)
 
     def test_missing_year_is_an_argument_error(self, monkeypatch):
         self._capture(monkeypatch)
@@ -1663,7 +1699,11 @@ class TestAggregateRouting:
         monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
         assert _formal.dispatch("weekly_aggregate", group_by="nope") is None
         assert _formal.dispatch("weekly_aggregate", group_by="board", metric="sum") is None
-        assert _formal.dispatch("weekly_aggregate", group_by="board", board="技术看板") is None
+        # 认不出来的看板 token(既不是码、也不匹配任何看板名)报值域错,不回落
+        monkeypatch.setattr(_formal, "_board_cache", [])
+        nope = _formal.dispatch("weekly_aggregate", group_by="board", board="技术看板")
+        assert nope is not None and nope["error"]["code"] == "invalid_argument"
+        monkeypatch.setattr(_formal, "_board_cache", None)
 
     def test_top_counts_groups_then_appends_the_cut(self, monkeypatch):
         """截断落在 SQL 里,且口径要写"切前 N 组、共 M 组",否则模型会自己补列。"""
@@ -1992,10 +2032,17 @@ class TestDefaultListingRouting:
         got = _formal._submission({"status": "approved"})
         assert got is not None and "approved" in got["caliber"] and "未筛掉任何行" in got["caliber"]
 
-    def test_submission_status_mismatch_still_falls_back(self, monkeypatch):
-        """一任务一行的口径比对是另一条形状,不猜。"""
-        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
-        assert _formal._submission({"status_mismatch": True}) is None
+    def test_submission_status_mismatch_routes_to_its_own_shape(self, monkeypatch):
+        """一任务一行的口径比对与明细清单是两种形状,现在有自己的一条桥。"""
+        seen = self._capture(monkeypatch)
+        got = _formal._submission({"status_mismatch": True})
+        assert got is not None and len(seen) == 1
+        assert "t.workflow_status <> s.status" in seen[0]["sql"]
+        assert "max(x.round_no)" in seen[0]["sql"]
+        assert "row_number" not in seen[0]["sql"]  # 不是"一行一张单"的清单
+        # 与 status / exclude_status 组合起来语义不清(那两列筛的是"单的状态")
+        assert _formal._submission({"status_mismatch": True, "status": "published"}) is None
+        assert _formal._submission({"status_mismatch": True, "scope": "by_kind"}) is None
 
     def test_submission_named_scopes_still_reject_listing_filters(self, monkeypatch):
         monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
@@ -2024,9 +2071,19 @@ class TestDefaultListingRouting:
         allowed = _formal._workflow({"limit": 10, "can_read_sensitive": True})
         assert allowed is not None and allowed["rows"][0]["opinion"] == "同意"
 
-    def test_workflow_by_task_still_falls_back(self, monkeypatch):
-        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
-        assert _formal._workflow({"by_task": True}) is None
+    def test_workflow_by_task_routes_to_its_own_shape(self, monkeypatch):
+        """一任务一行的聚合:拿流水行数报会把**次数当成任务数**。"""
+        seen = self._capture(monkeypatch)
+        got = _formal._workflow({"by_task": True})
+        assert got is not None and len(seen) == 1
+        assert "count(*) AS action_count" in seen[0]["sql"]
+        assert "GROUP BY a.task_id" in seen[0]["sql"]
+        assert "t.task_name" not in seen[0]["sql"]  # 不带看板时只回 task_id(照抄参考形状)
+        # 带看板时参考实现会一并回 task_name(没有任务名的榜单答不了"哪些任务")
+        seen.clear()
+        got = _formal._workflow({"by_task": True, "board": "group"})
+        assert got is not None and "t.task_name" in seen[0]["sql"]
+        assert _formal._workflow({"by_task": True, "scope": "recent"}) is None
         assert _formal._workflow({"scope": "nope"}) is None
 
     def test_owner_roles_without_person_reports_invalid_argument(self, monkeypatch):
@@ -2084,4 +2141,85 @@ class TestNotMigratedFallback:
             assert "演示库不可用" in text
             assert "CHATBI_o2oa_接入说明.md" in text  # 指路,否则 agent 只能盲试
             assert "store_unreachable" not in text
+
+
+class TestSecondWaveScopes:
+    """第 36 轮补迁的 scope:单任务新鲜度 / 人员四档 / 附件四档。"""
+
+    def test_freshness_task_computes_days_by_dates_not_timestamps(self):
+        """天数 = 两个**日期**相减;写成 date - timestamp 会按当前时分秒少算一天。"""
+        sql, params = o2.freshness_task("2026-08-15", task_id=101)
+        assert "(%s::date - (t.latest_progress_time)::timestamp::date)::int AS days_behind" in sql
+        assert "AS actual_latest_report" in sql  # 冗余列 vs 真实最新,漂移靠这两列比出来
+        assert "p.is_published = 1" in sql
+        assert "now()" not in sql
+        assert params == ("2026-08-15", 101)  # 基准日在前,任务条件在后
+
+    def test_freshness_task_keeps_the_formal_gate(self):
+        sql, _params = o2.freshness_task("2026-08-15", task_name="某任务")
+        assert adm.sql_task_admission("pg", "t") in sql
+        assert "t.task_name = %s" in sql
+
+    def test_freshness_probe_has_no_gate(self):
+        """漂移/缺行判定要能看到**不过闸**的那一行,否则分不出"不存在"与"不属正式任务"。"""
+        sql, params = o2.freshness_task_probe(task_id=3)
+        assert "is_deleted" in sql and "workflow_status" in sql
+        assert "workflow_status = 'published'" not in sql
+        assert params == (3,)
+
+    def test_person_id_variants_needs_name_and_id_pairs(self):
+        """空集就是答案:0 行说明不存在这种人,不能反过来说"会出现"。"""
+        sql, params = o2.person_stats("id_variants", role="lead_owner", top=50)
+        assert "t.lead_owner_name AS person" in sql
+        assert "count(DISTINCT t.lead_owner_id)" in sql
+        assert "HAVING count(DISTINCT t.lead_owner_id) > 1" in sql
+        assert params == (50,)
+        with pytest.raises(ValueError):  # 主责人没有可比的姓名列
+            o2.person_stats("id_variants", role="owner")
+
+    def test_reviewers_and_self_review_skip_the_publish_gate(self):
+        """审过但没发布的进展同样是审过的:加发布闸门会把「待审已审」整批滤掉。"""
+        sql, _params = o2.person_stats("reviewers", top=50)
+        assert "p.reviewer_id IS NOT NULL" in sql
+        assert "is_published" not in sql
+        sql, _params = o2.person_stats("self_review", top=50)
+        assert "p.reporter_id = p.reviewer_id" in sql
+        assert "按姓名" not in sql and "is_published" not in sql
+
+    def test_id_longest_counts_distinct_ids_not_tasks(self):
+        """问的是**标识**而不是任务:同一个标识挂 3 个任务只算一个标识。"""
+        sql, params = o2.person_stats("id_longest", top=5)
+        assert "GROUP BY t.owner_user_id" in sql
+        assert "length(t.owner_user_id) AS id_length" in sql
+        assert params == (5,)
+        ties_sql, ties_params = o2.person_id_ties()
+        assert "tied_at_top" in ties_sql and "max_id_length" in ties_sql
+        assert ties_params == ()
+
+    def test_attachment_listing_scopes_drop_the_gate_on_task(self):
+        """附件挂在外键上:正式集之外的任务照样有附件,带着门问只会静默答 0。"""
+        sql, params = o2.attachment_stats(scope="largest", task_id=2, limit=10)
+        assert "a.task_id = %s" in sql
+        assert "workflow_status" not in sql
+        assert params == [2, 10] or params == (2, 10)
+        sql, _params = o2.attachment_stats(scope="by_uploader", include_informal=True, limit=10)
+        assert "workflow_status" not in sql
+        sql, _params = o2.attachment_stats(scope="by_uploader", limit=10)
+        assert adm.sql_task_admission("pg", "t") in sql  # 默认仍带任务门
+
+    def test_attachment_deleted_is_a_whole_table_question(self):
+        """软删审计问的是表本身:按任务过滤会少算(软删行挂在不该再被过滤的任务上)。"""
+        sql, params = o2.attachment_stats(scope="deleted")
+        assert "FROM task_attachment a" in sql
+        assert "JOIN task" not in sql and "workflow_status" not in sql
+        assert params == ()
+        assert "total_rows" in sql and "deleted_bytes" in sql
+
+    def test_attachment_orphan_counts_dangling_foreign_keys(self):
+        sql, _params = o2.attachment_stats(scope="orphan")
+        assert "NOT EXISTS (SELECT 1 FROM task t WHERE t.id = a.task_id)" in sql
+
+    def test_new_scopes_are_declared(self):
+        for scope in ("id_variants", "id_longest", "reviewers", "self_review"):
+            assert scope in o2.PERSON_SCOPES
 
