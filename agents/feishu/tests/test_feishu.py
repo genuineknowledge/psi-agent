@@ -3167,7 +3167,10 @@ async def test_query_attendance_missing_checkout(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(_impl, "_invoke", cap)
     result = await _impl.query_attendance_impl("e1", "20260714", "20260714")
     r0 = result["results"][0]
-    assert r0["check_out_time"] == ""  # no check_out_record -> empty, no crash
+    # No check_out_record -> the row says the response carried no timestamp, and does not
+    # crash. It used to be a bare "", which read as a failed lookup and invited a re-query;
+    # see test_feishu_attendance_convergence.py for the production measurement behind this.
+    assert "no punch timestamp" in r0["check_out_time"]
     assert r0["check_in_result"] == "Lack"
 
 
