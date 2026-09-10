@@ -673,9 +673,10 @@ LIMIT %s
 
 
 def milestone_list(
-    board_code: str,
+    board_code: str | None,
     year: int | str | None = None,
     status: int | None = None,
+    task_id: int | None = None,
     limit: int = 200,
 ) -> tuple[str, tuple]:
     """里程碑 / 标志性成果清单(rule:关联任务已发布且成果项未删)。
@@ -683,11 +684,17 @@ def milestone_list(
     ``year`` 与 ``status``(0 未完成 / 1 已完成)可选;不传年份时返回该看板全部年度,
     因此"某年成果"类问法必须由 caller 传 year。
     """
-    code, hint = adm.check_board_code(board_code)
+    code, hint = adm.check_board_code(board_code) if board_code else (None, None)
     if hint:
         raise ValueError(hint)
-    where = [adm.sql_task_admission("pg", "t"), "b.code = %s", adm.sql_soft_delete("m")]
-    params: list[object] = [code]
+    where = [adm.sql_task_admission("pg", "t"), adm.sql_soft_delete("m")]
+    params: list[object] = []
+    if code:
+        where.append("b.code = %s")
+        params.append(code)
+    if task_id is not None:
+        where.append("t.id = %s")
+        params.append(int(task_id))
     if year not in (None, ""):
         y, hint = adm.check_year(year)
         if hint:
@@ -1254,3 +1261,142 @@ ORDER BY task_id, version_no
 LIMIT %s
 """
     return sql, (*params_out, int(limit))
+
+
+# ---- batch 5: 年度目标行 / 里程碑(带任务过滤)/ 附件清单 ----------------------
+
+
+def year_goal_rows(
+    board_code: str | None = None,
+    year: int | str | None = None,
+    task_id: int | None = None,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """年度目标**行**清单(task_year_goal 一行一条),关联已发布任务。
+
+    与 ``year_goal_list`` 的区别:那条是"每个已发布任务一行、未填写也保留";这条是
+    "目标行本身有多少条",用来回答"某看板各任务的年度目标清单/共多少条"。
+    演示数据里全看板 313 行 / 128 任务、集团板 109 行 / 46 任务、技术组 204 行 / 82 任务。
+
+    ``year`` 可选(不传即所有年度);``task_id`` 可选。年份分布:2025 有 128 行、
+    2026 有 117 行、2027 有 68 行 —— 因此"某年目标"类问法必须把 year 传下来。
+    """
+    y: int | None = None
+    if year not in (None, ""):
+        y, hint = adm.check_year(year)
+        if hint:
+            raise ValueError(hint)
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    board_join = ""
+    if board:
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    if y is not None:
+        where.append("g.year = %s")
+        params.append(y)
+    if task_id is not None:
+        where.append("t.id = %s")
+        params.append(int(task_id))
+    sql = f"""
+SELECT t.id AS task_id, t.task_no, t.task_name, g.year,
+       g.current_year_goal, g.milestone_summary,
+       (g.current_year_goal IS NOT NULL AND g.current_year_goal <> '') OR
+       (g.milestone_summary IS NOT NULL AND g.milestone_summary <> '') AS goal_filled
+FROM task_year_goal g
+JOIN task t ON t.id = g.task_id
+{board_join}
+WHERE {"\n  AND ".join(where)}
+ORDER BY t.sort_order, t.id, g.year
+LIMIT %s
+"""
+    params.append(int(limit))
+    return sql, tuple(params)
+
+
+def attachment_list(
+    board_code: str | None = None,
+    task_id: int | None = None,
+    granted: bool = True,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """附件清单(**只出元数据**):文件名 / 字节数 / 上传人 / 上传时间。
+
+    六-1:附件内容读不到,问答只能说"存在附件《文件名》",因此 ``storage_path`` 绝不出现
+    在返回列里。演示数据里全看板 454 条 / 106 个任务、集团板 52 条 / 28 任务。
+
+    看板在 ``task`` 上:不指定看板时"集团板有哪些附件"只能逐任务翻 46 次,所以按看板
+    下推是必需的。
+    """
+    hint = adm.require_optional_table("task_attachment", granted)
+    if hint:
+        raise PermissionError(hint)
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_task_admission("pg", "t"), adm.sql_soft_delete("a")]
+    params: list[object] = []
+    board_join = ""
+    if board:
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    if task_id is not None:
+        where.append("t.id = %s")
+        params.append(int(task_id))
+    sql = f"""
+SELECT a.id, t.id AS task_id, t.task_no, t.task_name,
+       a.file_name, a.file_size,
+       {adm.normalize_ts_sql("a.upload_time")} AS upload_time,
+       a.uploader_id
+FROM task_attachment a
+JOIN task t ON t.id = a.task_id
+{board_join}
+WHERE {"\n  AND ".join(where)}
+ORDER BY t.sort_order, t.id, a.id
+LIMIT %s
+"""
+    params.append(int(limit))
+    return sql, tuple(params)
+
+
+def attachment_stats(board_code: str | None = None, granted: bool = True) -> tuple[str, tuple]:
+    """附件汇总:条数 / 涉及任务数 / 总字节 / 平均 KB / 各扩展名条数。
+
+    ``file_size`` 是字节,原样报出(不要换算成 KB/MB,也不要写"约")——口径如此规定。
+    """
+    hint = adm.require_optional_table("task_attachment", granted)
+    if hint:
+        raise PermissionError(hint)
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_task_admission("pg", "t"), adm.sql_soft_delete("a")]
+    params: list[object] = []
+    board_join = ""
+    if board:
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    ext = "lower(substring(a.file_name from '\\.([^.]+)$'))"
+    sql = f"""
+WITH files AS (
+    SELECT a.*, {ext} AS ext
+    FROM task_attachment a
+    JOIN task t ON t.id = a.task_id
+    {board_join}
+    WHERE {"\n  AND ".join(where)}
+)
+SELECT (SELECT count(*) FROM files)                                  AS attachment_count,
+       (SELECT count(DISTINCT task_id) FROM files)                   AS tasks_with_attachment,
+       (SELECT sum(file_size) FROM files)                            AS total_bytes,
+       (SELECT count(*) FROM files WHERE ext = 'pptx')               AS ext_pptx,
+       (SELECT count(*) FROM files WHERE ext = 'xlsx')               AS ext_xlsx,
+       (SELECT count(*) FROM files WHERE ext = 'pdf')                AS ext_pdf,
+       (SELECT count(*) FROM files WHERE ext = 'docx')               AS ext_docx
+"""
+    return sql, tuple(params)

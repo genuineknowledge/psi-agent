@@ -66,17 +66,29 @@ def envelope(
     limit: int,
     columns_override: list[str] | None = None,
     extra: dict[str, Any] | None = None,
+    cap_last_param: bool = False,
 ) -> dict[str, Any]:
-    """执行一条模板 SQL,并包成与演示源一致的信封。"""
+    """执行一条模板 SQL,并包成与演示源一致的信封。
+
+    ``cap_last_param``:清单类模板把**行数上限放在最后一个参数**。这时信封按
+    ``limit + 1`` 去查、再截回 ``limit``,用多出来的那一行判定 ``has_more`` ——
+    与 ``_store.fetch`` 同一个技巧。少了这一步,SQL 里写死的 ``LIMIT`` 会让
+    "刚好取满" 与 "被截断" 长得一模一样(313 行的年度目标会被报成 200 行且
+    ``has_more=false``,实测踩过)。
+    """
     if _pg is None:  # pragma: no cover - enabled() 已经挡住
         raise RuntimeError("psycopg 不可用,无法访问正式源")
     bounded = max(1, min(MAX_ROWS, int(limit)))
+    sql_params = params
+    if cap_last_param and params:
+        # 多要一行只为判定截断;模板里的 LIMIT 已经把结果集压在 bounded+1 以内
+        sql_params = (*params[:-1], bounded + 1)
     conn = _pg.connect()
     try:
         with conn.cursor() as cur:
-            cur.execute(sql, params)
+            cur.execute(sql, sql_params)
             columns = [d.name for d in cur.description] if cur.description else []
-            raw = cur.fetchmany(bounded + 1)
+            raw = cur.fetchall()
     finally:
         conn.close()
     has_more = len(raw) > bounded
@@ -109,6 +121,10 @@ def dispatch(tool: str, **kwargs: Any) -> dict[str, Any] | None:
     except ValueError as exc:
         # 参数不满足口径(缺 year、看板码不在域内……):直接按契约报错,不落到演示路径
         return {"ok": False, "error": {"code": "invalid_argument", "message": str(exc)}}
+    except PermissionError as exc:
+        # 可选表未在本次授权范围内:显式说明不可答。**不回落演示路径** ——
+        # 回落会去连演示 MySQL,把"没有权限"变成"另一个数据源的答案"。
+        return {"ok": False, "error": {"code": "table_not_granted", "message": str(exc)}}
 
 
 # ---- 各工具的映射 -----------------------------------------------------------
@@ -139,6 +155,7 @@ def _task_query(args: dict[str, Any]) -> dict[str, Any] | None:
             f"{MAX_ROWS} 行"
         ),
         limit=limit,
+        cap_last_param=True,
     )
 
 
@@ -174,6 +191,7 @@ def _coverage(args: dict[str, Any]) -> dict[str, Any] | None:
                 "集团组 task_group_progress_history 两张表;文本抽取≠结构化指标,只作待核实清单"
             ),
             limit=limit,
+            cap_last_param=True,
         )
     if scope not in tpl.COVERAGE_SCOPES:
         return None
@@ -183,11 +201,13 @@ def _coverage(args: dict[str, Any]) -> dict[str, Any] | None:
         project_group=(args.get("project_group") or "").strip() or None,
         limit=limit,
     )
+    listing = scope in ("never_reported", "unpublished_by_task", "pending_review", "version_gaps")
     return envelope(
         sql=sql,
         params=params,
         caliber=f"scope={scope};正式任务门 = is_deleted = 0 AND workflow_status = 'published'",
         limit=limit,
+        cap_last_param=listing,
     )
 
 
@@ -217,6 +237,7 @@ def _freshness(args: dict[str, Any]) -> dict[str, Any] | None:
                 "不一致时不得用该冗余列回答新鲜度"
             ),
             limit=limit,
+            cap_last_param=True,
         )
     if within_days > 0:
         sql, params = tpl.freshness_within(as_of(), within_days, board_code=board)
@@ -235,6 +256,7 @@ def _freshness(args: dict[str, Any]) -> dict[str, Any] | None:
             params=params,
             caliber=(f"最新进展早于基准日 {as_of()} 前 {stale_days} 天的任务;从未报过的也算滞后并排在最前"),
             limit=limit,
+            cap_last_param=True,
         )
 
     sql, params = tpl.freshness_distribution(as_of(), board_code=board, in_flight_only=in_flight)
@@ -258,8 +280,108 @@ def _freshness(args: dict[str, Any]) -> dict[str, Any] | None:
     return result
 
 
+def optional_granted(name: str) -> bool:
+    """四张可选表是否在本次只读授权范围内。
+
+    默认**未授权**:国数方说明里必开的是 8 张表,四张可选表(附件 / 集团历史 /
+    审批动作 / 导入批次)按是否补开而定;宁可显式说明"不可答",也不去查一张
+    没有权限的表然后报权限错。
+    环境变量 ``TASK_BOARD_GRANTED_OPTIONAL_TABLES`` 用逗号列已补开的表名。
+    """
+    raw = os.environ.get("TASK_BOARD_GRANTED_OPTIONAL_TABLES", "")
+    granted = {item.strip() for item in raw.split(",") if item.strip()}
+    return name in granted
+
+
+def _resolve_task(raw: str) -> tuple[int | None, str | None]:
+    """把工具的 task= 参数(id 或名字)解析成 task_id / task_name。"""
+    value = (raw or "").strip()
+    if not value:
+        return None, None
+    return (int(value), None) if value.isdigit() else (None, value)
+
+
+def _attachment(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_attachment_query:附件**元数据**清单(storage_path 永不出现)。"""
+    limit = int(args.get("limit") or MAX_ROWS)
+    board = (args.get("board") or "").strip() or None
+    task_id, _task_name = _resolve_task(args.get("task") or "")
+    sql, params = tpl.attachment_list(
+        board_code=board, task_id=task_id, granted=optional_granted("task_attachment"), limit=limit
+    )
+    return envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            "is_deleted = 0;storage_path 禁止外泄,不在返回字段内;"
+            "file_size 单位是字节,原样报出,不要换算成 KB/MB 也不要写「约」;"
+            "附件内容读不到,只能说明「存在附件《文件名》」"
+        ),
+        limit=limit,
+        cap_last_param=True,
+    )
+
+
+def _year_goal(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_year_goal_query:年度目标行清单(year=0 表示所有年度)。"""
+    limit = int(args.get("limit") or MAX_ROWS)
+    board = (args.get("board") or "").strip() or None
+    year = int(args.get("year") or 0)
+    task_id, _task_name = _resolve_task(args.get("task") or "")
+    sql, params = tpl.year_goal_rows(board_code=board, year=year or None, task_id=task_id, limit=limit)
+    return envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            "task_year_goal 一 (task, year) 一行;只列已发布任务;"
+            + (f"year={year}" if year else "未限定年份,即该范围内所有年度的目标行")
+        ),
+        limit=limit,
+        cap_last_param=True,
+    )
+
+
+def _milestone(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_milestone_query:里程碑清单(必须支持按任务收窄)。"""
+    limit = int(args.get("limit") or MAX_ROWS)
+    raw_year = (args.get("year") or "").strip()
+    raw_status = (args.get("status") or "").strip()
+    if raw_status and raw_status not in ("0", "1"):
+        return None  # 演示路径会报 invalid_status
+    task_id, _task_name = _resolve_task(args.get("task") or "")
+    sql, params = tpl.milestone_list(
+        None,
+        year=raw_year or None,
+        status=int(raw_status) if raw_status else None,
+        task_id=task_id,
+        limit=limit,
+    )
+    return envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            "关联任务已发布且成果项 is_deleted = 0;status 0=未完成 1=已完成;"
+            "「某任务有哪些里程碑」必须带 task=,否则答案落在整个看板的第一页"
+        ),
+        limit=limit,
+        cap_last_param=True,
+    )
+
+
+_NEW_HANDLERS = {
+    "weekly_attachment_query": _attachment,
+    "weekly_year_goal_query": _year_goal,
+    "weekly_milestone_query": _milestone,
+}
+
 _HANDLERS = {
     "weekly_task_query": _task_query,
     "weekly_progress_coverage": _coverage,
     "weekly_freshness_distribution": _freshness,
+    "weekly_attachment_query": _attachment,
+    "weekly_year_goal_query": _year_goal,
+    "weekly_milestone_query": _milestone,
 }
+
+# _NEW_HANDLERS 只是构建期的清单,避免手工漏接线
+assert set(_NEW_HANDLERS) <= set(_HANDLERS)

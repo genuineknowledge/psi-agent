@@ -133,13 +133,18 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 | `weekly_task_query` | ✅ 已接线 | 关键词 / 分类 / 负责人 / 状态 / 项目组 / 看板;不指定看板也可用 |
 | `weekly_progress_coverage` | ✅ 已接线 | 8 个具名 scope + `scope=text_check` 的三条文本规则(含 `task=` 按 id 或名字过滤) |
 | `weekly_freshness_distribution` | ✅ 已接线 | 分档 + 总览**合并进同一个信封**(rows = 分档,另给最新进展/滞后天数/任务总数/分档合计) |
-| 其余 28 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
+| `weekly_year_goal_query` | ✅ 已接线 | 年度目标**行**清单(year=0 表示所有年度);集团板 109 行 / 46 任务、全看板 313 行 / 128 任务 |
+| `weekly_milestone_query` | ✅ 已接线 | 支持按任务收窄(不带 `task=` 会答成整个看板第一页);任务 19 → 2 行 |
+| `weekly_attachment_query` | ✅ 已接线 | 仅元数据(无 `storage_path`);集团板 52 条 / 28 任务;可选表未授权时报 `table_not_granted` |
+| 其余 25 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
 
 三条硬规则:
 
 1. **信封与演示源逐字段同构**(`ok` / `caliber` / `snapshot_note` / `snapshot_date` / `source_tables` / `columns` / `rows` / `row_count` / `has_more`),agent 侧无需改动;
 2. **未迁移的 scope 或参数一律返回 `None` 回落**,绝不返回一个范围更小的答案(例如新鲜度的 `by=` / `lag_bands=` / `recent_days=` 仍是演示路径);
-3. `snapshot_note` 换成正式口径(「国数正式只读源…非演示数据」),`snapshot_date` 用基准日(`GUOSHU_AS_OF` 可固定,便于与演示快照日对齐)。
+3. **截断判定不能靠 SQL 里的 `LIMIT`**:模板把行数上限写在 SQL 里(性能上正确),但这样"刚好取满 200 行"与"被截断"长得一模一样 —— 信封因此按 `limit + 1` 去查再截回 `limit`,约定"清单类模板把行数上限放在最后一个参数"(`cap_last_param`)。实测踩过:313 行的年度目标被报成 200 行且 `has_more=false`;
+4. **四张可选表默认视为未授权**(说明里必开的是 8 张):`_formal.optional_granted()` 读 `TASK_BOARD_GRANTED_OPTIONAL_TABLES`,未授权时返回 `table_not_granted` 错误,**不回落演示路径**(回落会去连演示源,把"没权限"变成"另一个数据源的答案");
+5. `snapshot_note` 换成正式口径(「国数正式只读源…非演示数据」),`snapshot_date` 用基准日(`GUOSHU_AS_OF` 可固定,便于与演示快照日对齐)。
 
 **端到端验证**(真 PG + 正式源模式,20 项断言全通过):信封 9 字段齐全、`source_tables` 指向正式表、
 publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 103 的 V8 冲突(来自集团历史表)、

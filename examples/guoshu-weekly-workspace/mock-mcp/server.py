@@ -1046,6 +1046,10 @@ def weekly_milestone_query(task: str = "", year: str = "", status: str = "", lim
         limit: Max rows, capped at 200.
     """
 
+    formal = _formal.dispatch("weekly_milestone_query", task=task, year=year, status=status, limit=limit)
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         where = ["m.is_deleted = 0", store.formal_task_clause()]
         params: dict[str, Any] = {}
@@ -1396,6 +1400,10 @@ def weekly_attachment_query(task: str = "", board: str = "", limit: int = 200) -
             forces a task-by-task loop over 46 tasks.
         limit: Max rows, capped at 200.
     """
+
+    formal = _formal.dispatch("weekly_attachment_query", task=task, board=board, limit=limit)
+    if formal is not None:
+        return _dump(formal)
 
     def work() -> dict[str, Any]:
         params: dict[str, Any] = {}
@@ -4955,6 +4963,10 @@ def weekly_year_goal_query(task: str = "", year: int = 0, board: str = "", limit
             128 board-wide).
         limit: Max rows, capped at 200.
     """
+
+    formal = _formal.dispatch("weekly_year_goal_query", task=task, year=year, board=board, limit=limit)
+    if formal is not None:
+        return _dump(formal)
 
     def work() -> dict[str, Any]:
         params: dict[str, Any] = {}
