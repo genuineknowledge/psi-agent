@@ -945,6 +945,10 @@ def weekly_scale(by: str = "board", mode: str = "totals", year: int = 2026) -> s
             ``totals`` and ``completeness``.
     """
 
+    formal = _formal.dispatch("weekly_scale", by=by, mode=mode, year=year)
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         axis_key = (by or "board").strip().lower()
         chosen = _SCALE_AXES.get(axis_key)

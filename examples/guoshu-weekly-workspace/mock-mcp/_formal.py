@@ -519,6 +519,29 @@ _NEW_HANDLERS_7 = {
     "weekly_workflow_query": _workflow,
 }
 
+
+def _scale(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_scale:规模 / 完整度 / 强度三种横截面。"""
+    sql, params = tpl.scale_cross_section(
+        by=(args.get("by") or "board"),
+        mode=(args.get("mode") or "totals"),
+        year=int(args.get("year") or 2026),
+    )
+    return envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            "正式任务门 = is_deleted = 0 AND workflow_status = 'published';"
+            "totals 的三张子表同时 JOIN,故每个计数都按主键去重(各组里程碑相加应等于全库总数,"
+            "比总数大就是被 JOIN 放大了);completeness 的 has_* 是「有该项的任务数」而非子表条数;"
+            "intensity 的分母是任务数且保留零期任务"
+        ),
+        limit=MAX_ROWS,
+    )
+
+
+_NEW_HANDLERS_8 = {"weekly_scale": _scale}
+
 _HANDLERS = {
     "weekly_task_query": _task_query,
     "weekly_progress_coverage": _coverage,
@@ -531,6 +554,7 @@ _HANDLERS = {
     "weekly_health": _health,
     "weekly_submission_query": _submission,
     "weekly_workflow_query": _workflow,
+    "weekly_scale": _scale,
 }
 
 # _NEW_HANDLERS 只是构建期的清单,避免手工漏接线

@@ -1668,3 +1668,106 @@ LIMIT %s
 """
     params.append(int(limit))
     return sql, tuple(params)
+
+
+# ---- batch 8: 规模横截面(三种 mode x 三种分组轴)----------------------------
+
+SCALE_MODES = ("totals", "completeness", "intensity")
+SCALE_AXES = ("board", "project_group", "primary_category")
+
+# 轴 = (分组表达式, 排序键, 额外 JOIN)。排序键里出现聚合是为了 PG 的 group by 约束,
+# 与演示源同一写法。
+SCALE_AXIS_SQL: dict[str, tuple[str, str, str]] = {
+    "board": ("b.name", "min(b.sort_order)", "JOIN task_board b ON b.id = t.board_id AND b.is_deleted = 0"),
+    "project_group": (
+        "coalesce(nullif(trim(t.project_group), ''), '(未填)')",
+        "tasks DESC, bucket",
+        "",
+    ),
+    "primary_category": (
+        "pc.name",
+        "tasks DESC, bucket",
+        "JOIN task_category c ON c.id = t.category_id AND c.is_deleted = 0 "
+        "JOIN task_category pc ON pc.id = c.parent_id AND pc.is_deleted = 0",
+    ),
+}
+
+
+def scale_cross_section(by: str = "board", mode: str = "totals", year: int | str = 2026) -> tuple[str, tuple]:
+    """一次 JOIN 多张子表的横截面(规模 / 完整度 / 强度)。
+
+    三种 mode 回答三个不同的问题,不能互相代答:
+
+    * ``totals``:该组的任务数 + 里程碑数 + 附件数 + "设了该年度目标的任务数"。
+      **三张子表同时 LEFT JOIN 会把行数相乘,所以每个计数都必须 ``COUNT(DISTINCT ...)``** ——
+      不去重时技术组里程碑会从 294 变成 1363(fan_out_double_count);
+    * ``completeness``:"有目标 / 有里程碑 / 有进展的**任务数**",用 ``SUM(EXISTS ...)``;
+      它与 totals 的不是同一件事(totals 数的是子表行数);
+    * ``intensity``:已发布进展**行数**与"每任务期数";分母是任务数且 ``LEFT JOIN`` 保留零期
+      任务,否则"人均期数"会被抬高(inner_join_drops_zero)。
+
+    轴:``board``(按看板排序列)/ ``project_group``(未填归入「(未填)」,按任务数倒序)/
+    ``primary_category``(分类树的**一级**分类,按任务数倒序)。
+    """
+    axis_key = (by or "board").strip().lower()
+    if axis_key not in SCALE_AXIS_SQL:
+        raise ValueError(f"不支持的分组轴:{by};支持 {', '.join(SCALE_AXES)}")
+    mode_key = (mode or "totals").strip().lower()
+    if mode_key not in SCALE_MODES:
+        raise ValueError(f"不支持的 mode:{mode};支持 {', '.join(SCALE_MODES)}")
+    y, hint = adm.check_year(year)
+    if hint:
+        raise ValueError(hint)
+    axis, order, extra = SCALE_AXIS_SQL[axis_key]
+    gate = adm.sql_task_admission("pg", "t")
+
+    if mode_key == "intensity":
+        sql = f"""
+SELECT {axis} AS bucket,
+       count(DISTINCT t.id) AS tasks,
+       count(p.id)          AS progress_rows,
+       round(count(p.id)::numeric / NULLIF(count(DISTINCT t.id), 0), 2) AS rows_per_task
+FROM task t
+{extra}
+LEFT JOIN task_progress p ON p.task_id = t.id AND {adm.sql_published_progress("pg", "p")}
+WHERE {gate}
+GROUP BY {axis}
+ORDER BY rows_per_task DESC, bucket
+"""
+        return sql, ()
+
+    if mode_key == "completeness":
+        sql = f"""
+SELECT {axis} AS bucket,
+       count(*) AS tasks,
+       count(*) FILTER (WHERE EXISTS (SELECT 1 FROM task_year_goal g
+                                       WHERE g.task_id = t.id AND g.year = %s))          AS has_goal,
+       count(*) FILTER (WHERE EXISTS (SELECT 1 FROM task_milestone m
+                                       WHERE m.task_id = t.id AND {adm.sql_soft_delete("m")})) AS has_milestone,
+       count(*) FILTER (WHERE EXISTS (SELECT 1 FROM task_progress p
+                                       WHERE p.task_id = t.id
+                                         AND {adm.sql_published_progress("pg", "p")}))   AS has_progress
+FROM task t
+{extra}
+WHERE {gate}
+GROUP BY {axis}
+ORDER BY {order}
+"""
+        return sql, (y,)
+
+    sql = f"""
+SELECT {axis} AS bucket,
+       count(DISTINCT t.id)   AS tasks,
+       count(DISTINCT g.task_id) AS with_year_goal,
+       count(DISTINCT m.id)   AS milestones,
+       count(DISTINCT a.id)   AS attachments
+FROM task t
+{extra}
+LEFT JOIN task_year_goal g ON g.task_id = t.id AND g.year = %s
+LEFT JOIN task_milestone m ON m.task_id = t.id AND {adm.sql_soft_delete("m")}
+LEFT JOIN task_attachment a ON a.task_id = t.id AND {adm.sql_soft_delete("a")}
+WHERE {gate}
+GROUP BY {axis}
+ORDER BY {order}
+"""
+    return sql, (y,)
