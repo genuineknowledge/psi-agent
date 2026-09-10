@@ -1460,6 +1460,29 @@ def test_meeting_sop_core03_host_speech_exempt_from_3min_cap() -> None:
     assert "识别不清" in exception and "证据不足" in exception
 
 
+def test_meeting_sop_skill_is_citable_in_chat_and_pins_summary_structure() -> None:
+    """口径可见性 (2026-09-10 修复):
+
+    1) SKILL 必须写明含「每人 ≤3 分钟」等口径要点, 并允许人工会话只读引用——
+       否则海豚在私聊里被问"有没有发言不超过 3 分钟的约束"时会答"没有"(实测事故);
+    2) 必须要求 meeting_summary 以「本场 SOP 判定」开头逐条列出全部生效规则——
+       纪要卡片首屏取自 meeting_summary (1200 字符), 判定若压在长文末尾会被截断,
+       收件人在纪要里看不到判定。
+    """
+    skill = (
+        Path(pipeline.MEETING_SOP_CONFIG_PATH).parent.parent
+        / "skills"
+        / "meeting-sop"
+        / "weekday-alignment"
+        / "SKILL.md"
+    )
+    text = skill.read_text(encoding="utf-8")
+    assert "3 分钟" in text, "SKILL 未写明 3 分钟口径, 人工会话搜索会答'没有约束'"
+    assert "只读引用" in text and "人工会话" in text, "SKILL 未允许人工会话只读引用口径"
+    assert "本场 SOP 判定" in text, "SKILL 未要求纪要以「本场 SOP 判定」开头"
+    assert "meeting_summary" in text, "SKILL 未点名 meeting_summary 的输出结构要求"
+
+
 @pytest.mark.anyio
 async def test_analysis_fails_when_active_rule_has_no_criteria(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """定稿后的防线: active: true 的规则必须携带非空判定标准; 空标准 = 契约损坏,
