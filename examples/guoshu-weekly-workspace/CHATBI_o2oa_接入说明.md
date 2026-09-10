@@ -30,10 +30,39 @@
 |---|---|
 | `mock-mcp/_pg.py` | PG 只读连接(psycopg 3 延迟导入;read-only 会话 + 固定 schema) |
 | `mock-mcp/_admission.py` | 硬约束与值域:发布准入、进展正式版、历史版本(status=3)、submission published 轮、枚举校验、year 显式、时间归一化与比较片段、可选表降级文案 |
-| `mock-mcp/_o2oa_templates.py` | PG 查询模板:①已发布任务清单(5.1)②最新正式进展(5.2,`DISTINCT ON` 单次扫描)③任务详情+年度目标+里程碑+集团扩展(5.3)④历史版本进展(rule 2 例外)⑤分类路径(`WITH RECURSIVE`)⑥附件元数据(仅元数据,未授权时降级) |
-| `tests/test_o2oa_pg.py` | 22 项纯单元测试(不连库):规则、域值、模板形状、参数与占位符一致、每个模板必带准入守卫 |
+| `mock-mcp/_o2oa_templates.py` | PG 查询模板(16 个):①已发布任务清单(5.1)②最新正式进展(5.2,`DISTINCT ON` 单次扫描,定序键 `version_no DESC, id DESC`)③任务详情+年度目标+里程碑+集团扩展(5.3)④历史版本进展(rule 2 例外)⑤分类路径(`WITH RECURSIVE`)⑥附件元数据(仅元数据,未授权时降级)⑦任务检索 ⑧进展窗口 ⑨覆盖率四 scope ⑩年度目标清单 ⑪里程碑清单 ⑫新鲜度分档/总览/任意窗口/滞后清单 ⑬漂移检查 |
+| `tests/test_o2oa_pg.py` | 37 项纯单元测试(不连库):规则、域值、模板形状、参数与占位符一致、每个模板必带准入守卫 |
 
-### 3.1 本轮迭代要点(2026-09-10)
+### 3.0 批次 2:口径移植以"契约数字"为验收标准(2026-09-10)
+
+原 31 工具的口径写在 `mock-mcp/server.py` 的 docstring 里,里面有一批**可复现的数字**,
+它们才是移植是否忠实的判据(不是"看起来像就行")。批次 2 的模板已在真 PostgreSQL 15.5 上
+逐条复现:
+
+| 口径 | 契约数字 | 模板实测 |
+|---|---|---|
+| `publish_split`(带正式任务门) | 943 / 123 / 1066 | ✅ 一致 |
+| 对照:不带任务门 | 945 / 1068 | ✅ 一致(证明任务门必须带) |
+| `import_split` | 943 / 943 / 0 | ✅ 一致 |
+| `unpublished` 驳回(status=2) | 39 行 / 33 任务 | ✅ 一致 |
+| `never_reported`(`NOT EXISTS`) | 55 条 | ✅ 一致 |
+| 对照:`latest_progress_time IS NULL` | 只有 9 条 | ✅ 一致(故不能用 NULL 判据) |
+| 新鲜度「从未报进展」 | 全量 9 / 在办 8 | ✅ 一致(多的那条是任务 88,已完成) |
+| 各分档之和 | = 任务总数(可自校验) | ✅ 128 = 128 |
+
+三条由此固化的铁律:
+
+1. **相对时间窗一律以 `as_of`(数据快照日)为基准,模板内禁止 `now()`** —— 演示数据停在
+   2026-08-01,用系统时钟算"最近 30 天"会把窗口滑出数据,给出偏小的数(原工具把这个陷阱
+   记作 `now_instead_of_as_of`)。`freshness_*` / `stale_tasks` 的 `as_of` 是必填参数,
+   不给就 `ValueError`。
+2. **"从未报进展"必须用 `NOT EXISTS` 判**(有没有已发布进展行),不能用
+   `latest_progress_time IS NULL` —— 后者只找得到 55 条里的 9 条。
+3. **冗余列会漂移**:`task.latest_progress_time` 与真实最新已发布进展不一致的任务,在演示
+   数据里有 **73/128 条**。只按冗余列回答新鲜度,错误答案与正确答案从外观上无法区分,
+   因此必须提供 `latest_progress_drift` 这条检查。
+
+### 3.1 第一批迭代要点(2026-09-10)
 
 - **时间字段**:`to_char(文本列)` 在 PG 上直接报错(`function to_char(text, unknown) does not exist`),
   而国数方说明第六条明确时间字段"可能是文本也可能是时间戳"。`normalize_ts_sql` 因此改为
@@ -120,4 +149,21 @@ uv run ty check examples/guoshu-weekly-workspace
 # PG 语法校验(pglast,离线确认生成的 SQL 是合法 PostgreSQL,且参数与占位符一一对应)
 uv run --no-project --with pglast python <核对目录>/check_pg_syntax.py
 ```
+
+**真库语义与口径验收**(需要一台可写的 PostgreSQL;核对目录里的 harness):
+
+```bash
+# 1) 建实例(zonky 预编译二进制,普通用户即可,Unix socket)
+bash <核对目录>/start_pg_on_h100.sh
+# 2) 载入演示库数据 + 语义断言(准入 / 反例注入 / 最新版本 / 历史版本 / 分类路径 / 附件边界)
+python <核对目录>/load_and_verify_pg.py <weekly_mock.sqlite> <mock-mcp 目录>
+# 3) 批次 2 口径验收:复现上面那批契约数字(12 项断言)
+python <核对目录>/verify_numbers_v2.py
+# 4) 索引、执行计划与规模计时(放大到十万行,验证无 N+1)
+python <核对目录>/bench_pg.py
+```
+
+> 注意:仓库要求 Python ≥ 3.14;3.13 的解析器不接受本仓既有的 `except A, B:` 写法,
+> harness 也必须用 3.14 运行。
+
 
