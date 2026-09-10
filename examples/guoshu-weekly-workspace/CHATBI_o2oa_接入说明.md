@@ -17,8 +17,15 @@
 >   (`{=T/admin,admin=CTc/admin}`):**PUBLIC 没有 CONNECT**,必须由库 owner 显式
 >   `GRANT CONNECT ON DATABASE o2oa TO <只读账号>` 才连得上。授权生效后实测:
 >   只读账号 `task_board_readonly` 已可连,**12 张 `task_*` 表全部可见**。
-> - **真库首次核对:31 / 31 个出口正常返回**,列集合与参考一致(脚本 `verify_real_o2oa.py`,
->   4/4 断言;连法:本机 → H100 → opl 建 `chain.py forward` 端口转发,用本机 Python 3.14 跑)。
+> - **真库首次核对:31 / 31 个出口正常返回**,列集合与参考一致(脚本 `verify_real_o2oa.py`;
+>   连法:本机 → H100 → opl 建 `chain.py forward` 端口转发,用本机 Python 3.14 跑)。
+> - **真库基线交叉核对:21 / 21 通过**(`verify_real_baseline.py`)—— 每个关键数字都拿一条
+>   **直接 SQL** 去对。这类断言的价值是**不依赖具体数字**:活库每天在变,「工具口径 == 直连口径」
+>   这条关系不变量始终成立。据此补齐的真值:`never_reported` **35**;`task_query` tech **48** /
+>   group 40(合计 = 已发布 88);`year_goal(2026)` **54**;审批动作(软删闸门)**91**;
+>   提交单(软删闸门)**28**;近 120 天正式进展 **9** 行;近 30 天有更新 **7** 条;
+>   `task_ranking(progress)` 榜首仅 **1 期** —— 真库里多数任务只有一期正式进展,
+>   所以"谁进展最多"类问题在真库上几乎全是并列(`rank` 的 `tied_at_top` 达 53)。
 > - **真值快照(2026-09-10;活库会变,数字带日期,形状与口径才是不变量)**:`task` 105 行 /
 >   已发布 **88**;`task_progress` 197 行 / `is_published=1` 仅 **56**;`task_milestone` 20(状态
 >   全为 0 未完成);`task_attachment` 30;`task_workflow_submission` 29;
