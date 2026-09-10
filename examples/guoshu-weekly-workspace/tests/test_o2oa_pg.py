@@ -1122,3 +1122,176 @@ class TestFreshnessSnapshotRouting:
         assert all(value is None for value in got["tech_import"].values())
         assert "task_progress_import 未在本次只读授权范围内" in got["caliber"]
         assert "task_group_progress_history 未在本次只读授权范围内" in got["caliber"]
+
+
+class TestFieldCompletenessTemplates:
+    """完整度的三条判据:空串算未填、明细表用 LEFT JOIN、另给裸表口径。"""
+
+    def test_empty_string_counts_as_missing(self):
+        sql, params = o2.completeness_counts("project_owner_id")
+        assert "t.project_owner_id IS NOT NULL AND t.project_owner_id <> ''" in sql
+        assert "count(*) FILTER (WHERE NOT (" in sql
+        assert params == ()
+
+    def test_detail_table_fields_keep_tasks_without_a_row(self):
+        """R-08:没有明细行的任务也算缺项,INNER JOIN 会把它们丢掉、填写率凭空变高。"""
+        sql, _params = o2.completeness_counts("progress_effect")
+        assert "LEFT JOIN task_group_detail d ON d.task_id = t.id" in sql
+        sql, _params = o2.completeness_missing_rows("progress_effect")
+        assert "LEFT JOIN task_group_detail d ON d.task_id = t.id" in sql
+        assert "t.id, t.task_name, t.owner_user_id" in sql
+
+    def test_raw_table_view_is_a_second_caliber(self):
+        sql, params = o2.completeness_raw_table("implementation_measure")
+        assert "FROM task_group_detail d" in sql
+        assert "workflow_status" not in sql  # 裸表口径刻意不带任务闸门
+        assert "raw_row_count" in sql and "raw_distinct_values" in sql
+        assert params == ()
+        with pytest.raises(ValueError, match="没有裸表口径"):
+            o2.completeness_raw_table("overall_goal")
+
+    def test_quality_query_returns_both_discrimination_numbers(self):
+        """只报填写率不够:"同一句话复制 55 遍"的字段填写率可以是 100%。"""
+        sql, _params = o2.completeness_quality("progress_effect")
+        assert "count(*) AS distinct_values" in sql and "coalesce(max(g.n), 0) AS top_value_rows" in sql
+        assert "GROUP BY val" in sql
+
+    def test_unknown_field_rejected(self):
+        with pytest.raises(ValueError, match="不支持的字段"):
+            o2.completeness_counts("salary")
+
+    def test_all_whitelisted_fields_have_a_table(self):
+        assert set(o2.COMPLETENESS_FIELDS) == {
+            "overall_goal", "annual_goals", "project_owner_name", "lead_owner_name",
+            "project_group", "owner_user_id", "project_owner_id", "lead_owner_id",
+            "target_result", "implementation_measure", "progress_effect", "completion_time",
+        }
+        assert {table for table, _label in o2.COMPLETENESS_FIELDS.values()} == {
+            "task",
+            "task_group_detail",
+        }
+
+
+class TestProgressHistoryTemplates:
+    """单任务进展各期:相邻两期并排 + 间隔均值由服务端算 + 同名系列显式回报。"""
+
+    def test_adjacent_versions_are_stacked_by_the_server(self):
+        sql, params = o2.progress_history_rows(7)
+        assert "lag(p.latest_progress) OVER (ORDER BY p.version_no) AS prev_progress" in sql
+        assert "AS gap_days" in sql
+        assert "ORDER BY p.version_no DESC, p.id DESC" in sql
+        assert params == (7, 200)
+
+    def test_published_only_switch(self):
+        sql, _params = o2.progress_history_rows(7, published_only=True)
+        assert "p.is_published = 1" in sql
+        sql, _params = o2.progress_history_rows(7, published_only=False)
+        assert "p.is_published = 1" not in sql
+
+    def test_gap_summary_rounds_and_skips_the_first_period(self):
+        sql, params = o2.progress_history_gap_summary(7)
+        assert "round(avg(gap_days)::numeric, 1)" in sql
+        assert "WHERE gap_days IS NOT NULL" in sql  # 首期没有上一期,不进分母
+        assert params == (7,)
+
+    def test_name_series_passes_the_regex_as_a_parameter(self):
+        """正则含反斜杠与全角括号:拼进 SQL 文本要处理两层转义,还撞 psycopg 的 % 解析。"""
+        sql, params = o2.name_series(3)
+        assert "regexp_replace(t2.task_name, %s, '')" in sql
+        assert params[0] == o2.SERIES_SUFFIX and params[1:] == (3, 3)
+        assert "\\d" not in sql  # 正则不在 SQL 文本里
+        assert "%s" not in sql.replace("%s", "", 2) or sql.count("%s") == 3
+
+
+class TestFieldCompletenessRouting:
+    """路由与打码:未支持的字段回落;支持字段清单由服务端给。"""
+
+    @staticmethod
+    def _capture(monkeypatch) -> list[dict]:
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            row = {"total": 128, "filled": 119, "missing": 9, "filled_pct": 93.0,
+                   "distinct_values": 3, "top_value_rows": 40,
+                   "raw_row_count": 55, "raw_filled": 55, "raw_distinct_values": 1,
+                   "total_count": 9}
+            return {"ok": True, "columns": ["c"], "rows": [row], "row_count": 1, "caliber": "口径"}
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        return seen
+
+    def test_empty_field_lists_the_supported_ones(self, monkeypatch):
+        self._capture(monkeypatch)
+        got = _formal.dispatch("weekly_field_completeness")
+        assert got is not None and got["ok"] is True
+        assert set(got["supported_fields"]) == set(o2.COMPLETENESS_FIELDS)
+
+    def test_unknown_field_falls_back(self, monkeypatch):
+        self._capture(monkeypatch)
+        assert _formal.dispatch("weekly_field_completeness", field="salary") is None
+
+    def test_task_table_field_has_no_raw_caliber(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        got = _formal._field_completeness({"field": "project_owner_id"})
+        assert got is not None and len(seen) == 2  # 计数 + 区分度,没有裸表那一次
+        assert "raw_row_count" not in got
+        assert "裸表口径" not in got["caliber"]
+
+    def test_detail_field_adds_the_raw_caliber_and_the_quality_signal(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        got = _formal._field_completeness({"field": "progress_effect"})
+        assert got is not None and len(seen) == 3  # 计数 + 区分度 + 裸表
+        assert got["raw_row_count"] == 55 and got["raw_distinct_values"] == 1
+        # 裸表口径里不同值只有 1 个 -> 必须报「同一份内容、不具备区分度」
+        assert "只有 1 个不同的值" in got["caliber"]
+        assert "不构成对项目或人员的绩效判断" in got["caliber"]
+
+    def test_list_missing_hoists_total_count(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        got = _formal._field_completeness({"field": "project_owner_id", "list_missing": True})
+        assert got is not None and len(seen) == 2
+        assert got["total_count"] == 9 and got["field"] == "project_owner_id"
+
+
+class TestProgressHistoryRouting:
+    def test_missing_task_falls_back(self, monkeypatch):
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _formal.dispatch("weekly_progress_history", task="") is None
+
+    def test_number_task_never_touches_the_resolver(self, monkeypatch):
+        """task= 是数字时直接当 id 用,不该为了解析名字再查一次库。"""
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            # 假信封要像真行一样带 name_series 查询的那两列(调用方要拿 id / task_name 组句子)
+            row = {"avg_gap_days": 30.3, "gap_count": 5, "task_id": 7, "task_name": "甲",
+                   "id": 8, "review_comment": None}
+            return {"ok": True, "columns": ["c"], "rows": [row], "row_count": 1, "caliber": "口径"}
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        got = _formal._progress_history({"task": "7", "limit": 3})
+        assert got is not None
+        assert got["gap_summary"]["avg_gap_days"] == 30.3
+        assert seen[0]["params"][0] == 7 and seen[0]["params"][-1] == 3
+        # 三次查询:明细 + 间隔均值 + 同名系列
+        assert len(seen) == 3
+        assert "FROM task_progress p" in seen[0]["sql"]
+
+    def test_sensitive_comment_is_masked_not_dropped(self, monkeypatch):
+        """敏感字段按权限打码而不是删列 —— 藏列会让调用方分不清「没有意见」与「没权限看」。"""
+        def fake_envelope(**kwargs):
+            row = {"review_comment": "原文", "avg_gap_days": 1.0, "gap_count": 1, "task_id": 7,
+                   "id": 8, "task_name": "甲"}
+            return {"ok": True, "columns": ["c"], "rows": [row], "row_count": 1, "caliber": "口径"}
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        masked = _formal._progress_history({"task": "7"})
+        assert masked is not None and masked["rows"][0]["review_comment"] == "[按权限不展示]"
+        assert "review_comment" in masked["rows"][0]  # 键还在,只是值打码
+        raw = _formal._progress_history({"task": "7", "can_read_sensitive": True})
+        assert raw is not None and raw["rows"][0]["review_comment"] == "原文"

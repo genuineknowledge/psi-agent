@@ -1,12 +1,12 @@
 # ChatBI 正式数据接入说明(o2oa / O2OA PostgreSQL)
 
-> **进度快照(2026-09-10,第 28 轮)**
+> **进度快照(2026-09-10,第 29 轮)**
 >
-> - **工具接线:23 / 31**。余下 8 个调用时回落演示路径;接线优先级见第 4 节。
+> - **工具接线:25 / 31**。余下 6 个调用时回落演示路径;接线优先级见第 4 节。
 > - **三套真库验收(同构 PG 实例 + 演示库数据)**:
->   - 端到端 `verify_end_to_end.py`:**268 / 268** 断言通过;
+>   - 端到端 `verify_end_to_end.py`:**293 / 293** 断言通过;
 >   - 口径验收 `verify_numbers_v2.py`:**38 / 38** 通过(mock docstring 里写死的契约数字逐条复现);
->   - 列集合对照 `column_parity.py`:**78 / 78** 一致(原先剩的 3 处已查清:全是**对照器侧**的
+>   - 列集合对照 `column_parity.py`:**84 / 84** 一致(原先剩的 3 处已查清:全是**对照器侧**的
 >     解析与桩问题,不是正式源的列对不上 —— 详见 3.0.6)。
 > - **交付形式**:服务 / Docker(`Dockerfile`,streamable-http,默认 18900);不含前端,由主 Agent 经 MCP 调用。
 > - **唯一外部卡点**:`o2oa` 库缺 `CONNECT` 授权,直连尚未打通 ——
@@ -201,7 +201,9 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 | `weekly_year_goal_stats` | ✅ 已接线(6 scope) | `by_year` 2025/2026/2027 = 128/117/68(**合计 313**),`include_informal=True` 放开闸门得 **387**(差 74 条挂在非正式任务上);`coverage` 用 **EXISTS** 不是 JOIN,分母恒为全部 128 项(2026 → 117 有 / 11 缺 = 91.4%);`missing` 提到顶层 `total_count`(11;加 `in_progress_only` → 10);`missing_by_group` 各档之和 = 11;`span` 均值 **2.45** 由服务端算(分母只含设过目标的任务);`multi_year` 2026×2025 = **117**(技术组 77);缺 `year` / `board=` 给看板名 / `span` 带 `year` 一律回落 |
 | `weekly_schema` | ✅ 已接线 | 复合信封(boards / categories / table_columns / field_notes,**没有 `columns`**):看板 2 条、分类树 47 条(`board=group` → 19 条);字段字典覆盖契约内 **12 张表**(task 表 22 列,含 `is_deleted`)+ 剔除禁止外泄列;`board=` 给看板名回落 |
 | `weekly_freshness` | ✅ 已接线 | **数据快照日**,不是新鲜度分布:各看板行(技术组 latest 08-09 / 落后 6 天、集团组 08-14 / 1 天)+ `overall`(全库 08-14 / 1 天 / 128 项)+ `published_progress`(技术组 **07-31** / 15 天 —— 与 08-09 差 9 天即发布滞后;集团组取自集团历史表)+ `tech_import`(跑完批次 **07-31**,最新批次 08-15 仍在处理中);两张可选表未授权时**保留键、值给 null** 并在口径里说明 |
-| 其余 8 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
+| `weekly_field_completeness` | ✅ 已接线(12 个字段) | `project_owner_id` 128 项里 **119** 项填了 / 9 项缺 = 93.0%,而 `project_owner_name` **128 全满** —— 姓名列与 ID 列不是一回事;明细表字段用 LEFT JOIN(分母仍是 128),并**另给裸表口径**(`task_group_detail` 55 行);`implementation_measure` 裸表 55 行**全非空但只有 1 个不同的值** → 必须报「填写率 100% ≠ 字段可信」;`list_missing` 给缺项清单 + 顶层 `total_count` |
+| `weekly_progress_history` | ✅ 已接线 | 单任务各期(任务 3 = **14 期**),`prev_progress` / `gap_days` 由服务端 `lag()` **相邻两期并排**;`gap_summary` 均值 **30.4** / 分母 13(首期不进分母);同名系列显式回报(任务 3 另有 2期/3期/4期 **3 条独立任务**);任务 7 已发布 0 期、含未发布 1 期(`published_only` 开关);`review_comment` 按权限打码 |
+| 其余 6 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
 
 三条硬规则:
 
@@ -577,6 +579,32 @@ publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 1
 > 实现(`weekly_schema` 的 `by_table` 循环读 `row["table_name"]`)抛 `KeyError`、被 `_guard`
 > 包成 `internal_error`,对照器只看到"取不到演示列"。现在按解析出的列名给键 ——
 > 桩造出来的行就该像真行。
+
+### 3.1.0 字段完整度与单任务进展历史(2026-09-10 第 29 轮)
+
+`weekly_field_completeness` 与 `weekly_progress_history` 接线完成。两条新踩到的坑:
+
+1. **SQL 文本里的字面 `%` 必须写成 `%%`** —— 第 8 条铁律里已经写过(psycopg 会对整条
+   SQL 做占位符解析,`可用性(\d+)%` 会被当成参数标记)。这一轮它以**另一种面孔**又出现:
+   `LIKE base.name || '（%期）'` 里的 `%` 后面紧跟的是**多字节汉字**,psycopg 报的不是
+   `only '%s', '%b', '%t' are allowed as placeholders`,而是
+   `'utf-8' codec can't decode byte 0xe6 in position 1: unexpected end of data` ——
+   看着像编码问题,其实是同一个坑。**纯单测与 pglast 语法校验都照不出来**,只有连真库跑才算数。
+2. **同名系列的正则作为参数传,不拼进 SQL 文本**。`（\d+期）$` 含反斜杠与全角括号,
+   拼进去要处理两层转义(还要再躲一次上面那个 `%` 坑),作为绑定参数传就都没了。
+
+三条口径上的加固:
+
+- **两个分母各自的数都要写进口径**。明细表字段的"填写率"有两个都对的分母:过闸口径是
+  **128 项正式任务**(R-08 把无明细行的任务算成缺项),裸表口径是 **task_group_detail 的 55 行**。
+  只说"两个口径不同"、不给数,调用方还是不知道该拿哪个当分母,于是问字段质量的拿 128、
+  问业务结论的拿 55,两边都答偏。
+- **区分度信号按裸表那一档判**。`implementation_measure` 裸表 55 行**全部非空**、填写率 100%,
+  但**只有 1 个不同的值**(55 行同一句话复制)。过闸后行数减到 46,如果按过闸那一档判就会
+  漏掉这个信号 —— 区分度是表本身的属性,不该被闸门冲淡。信号文案同时带免责口径
+  (「规则校验信号,不构成对项目或人员的绩效判断」)。
+- **`published_only` 开关与"空结果"的含义**。任务 7 已发布 **0** 期、含未发布 **1** 期 ——
+  `row_count = 0` 不等于"没报过进展",口径里把这两件事分开写。
 
 ## 5. 能力边界(未授权表时)
 - `task_attachment` 只读元数据:问答只能答“存在附件《文件名》”,文件体在

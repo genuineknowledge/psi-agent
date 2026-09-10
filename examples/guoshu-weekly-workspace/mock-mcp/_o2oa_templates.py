@@ -3728,3 +3728,239 @@ SELECT {adm.normalize_date_sql("max(CASE WHEN status = 1 THEN (data_date)::times
 FROM task_progress_import
 """
     return sql, ()
+
+
+# ---- batch 15: 字段完整度 / 单任务进展历史 ------------------------------------
+#
+# 两条判据:
+#
+#   1. **空字符串按未填计入**。判据是 ``IS NULL OR = ''``,只看 NULL 会把"填了个空格"
+#      当成已填 —— 真库上 project_owner_id 有 9 条是空的,而 project_owner_name 全满;
+#   2. **完整率必须服务端算**,并且要一起给 ``distinct_values`` / ``top_value_rows``。
+#      集团组"实施举措"55 行全部非空、填写率 100%,但 55 行是同一句话复制的 ——
+#      只报填写率会推出"字段没问题",与真相相反。
+
+# 可统计的字段白名单 -> (表, 中文标签)。列名直接进 SQL(标识符,占位符绑不了),
+# 所以只能白名单,不能由调用方的字符串拼出来。
+COMPLETENESS_FIELDS: dict[str, tuple[str, str]] = {
+    "overall_goal": ("task", "总体目标"),
+    "annual_goals": ("task", "年度目标"),
+    "project_owner_name": ("task", "项目负责人"),
+    "lead_owner_name": ("task", "分管领导"),
+    "project_group": ("task", "项目组"),
+    # 姓名列与 ID 列的完整度不是一回事:project_owner_name 128 条全满,
+    # project_owner_id 只有 119 条,缺的那 9 条只能从 ID 列看出来。
+    "owner_user_id": ("task", "责任人 ID"),
+    "project_owner_id": ("task", "项目负责人 ID"),
+    "lead_owner_id": ("task", "分管领导 ID"),
+    "target_result": ("task_group_detail", "目标成果"),
+    "implementation_measure": ("task_group_detail", "实施举措"),
+    "progress_effect": ("task_group_detail", "进度成效"),
+    "completion_time": ("task_group_detail", "完成时间(文本)"),
+}
+
+
+def _completeness_target(field: str) -> tuple[str, str, str]:
+    """(表, 标签, 取该列的别名前缀)。明细表字段要 LEFT JOIN 回 task。"""
+    if field not in COMPLETENESS_FIELDS:
+        raise ValueError(f"不支持的字段:{field};支持 {', '.join(sorted(COMPLETENESS_FIELDS))}")
+    table, label = COMPLETENESS_FIELDS[field]
+    return table, label, ("t" if table == "task" else "d")
+
+
+def completeness_counts(field: str) -> tuple[str, tuple]:
+    """完整率 + 分母 + 不同值个数 + 最高频值占的行数(全部服务端算)。
+
+    明细表字段用 LEFT JOIN:**没有明细行的任务也算缺项**(R-08),用 INNER JOIN
+    会把它们整行丢掉,分母从 128 缩到有明细的那些,填写率凭空变高。
+    """
+    table, _label, alias = _completeness_target(field)
+    join = "" if table == "task" else f"LEFT JOIN {table} d ON d.task_id = t.id"
+    filled = f"{alias}.{field} IS NOT NULL AND {alias}.{field} <> ''"
+    sql = f"""
+SELECT count(*) AS total,
+       count(*) FILTER (WHERE {filled}) AS filled,
+       count(*) FILTER (WHERE NOT ({filled})) AS missing,
+       round(count(*) FILTER (WHERE {filled})::numeric / NULLIF(count(*), 0) * 100, 1) AS filled_pct
+FROM task t
+{join}
+WHERE {adm.sql_task_admission("pg", "t")}
+"""
+    return sql, ()
+
+
+def completeness_quality(field: str) -> tuple[str, tuple]:
+    """区分度:非空值里有多少个**不同值** + 最高频那个值占多少行。
+
+    只报填写率是不够的 —— "同一句话复制 N 遍"的字段填写率可以 100%,
+    而它不具备任何区分度。两个数都在服务端算:模型没法从占比里反推出来。
+    """
+    table, _label, alias = _completeness_target(field)
+    join = "" if table == "task" else f"LEFT JOIN {table} d ON d.task_id = t.id"
+    filled = f"{alias}.{field} IS NOT NULL AND {alias}.{field} <> ''"
+    sql = f"""
+WITH v AS (
+    SELECT {alias}.{field} AS val
+    FROM task t
+    {join}
+    WHERE {adm.sql_task_admission("pg", "t")}
+      AND {filled}
+)
+SELECT count(*) AS distinct_values,
+       coalesce(max(g.n), 0) AS top_value_rows
+FROM (SELECT val, count(*) AS n FROM v GROUP BY val) g
+"""
+    return sql, ()
+
+
+def completeness_missing_rows(field: str, limit: int = 200) -> tuple[str, tuple]:
+    """缺项清单:字段为空或空串的正式任务(与计数同一个判据,不许两套)。"""
+    table, _label, alias = _completeness_target(field)
+    join = "" if table == "task" else f"LEFT JOIN {table} d ON d.task_id = t.id"
+    filled = f"{alias}.{field} IS NOT NULL AND {alias}.{field} <> ''"
+    sql = f"""
+SELECT t.id, t.task_name, t.owner_user_id, t.project_owner_id,
+       t.project_owner_name, t.lead_owner_name
+FROM task t
+{join}
+WHERE {adm.sql_task_admission("pg", "t")}
+  AND NOT ({filled})
+ORDER BY t.id
+LIMIT %s
+"""
+    return sql, (max(1, int(limit)),)
+
+
+def completeness_missing_total(field: str) -> tuple[str, tuple]:
+    """缺项总数(清单被 200 行截断后,调用方还原不出真值)。"""
+    table, _label, alias = _completeness_target(field)
+    join = "" if table == "task" else f"LEFT JOIN {table} d ON d.task_id = t.id"
+    filled = f"{alias}.{field} IS NOT NULL AND {alias}.{field} <> ''"
+    sql = f"""
+SELECT count(*) AS total_count
+FROM task t
+{join}
+WHERE {adm.sql_task_admission("pg", "t")}
+  AND NOT ({filled})
+"""
+    return sql, ()
+
+
+def completeness_raw_table(field: str) -> tuple[str, tuple]:
+    """明细表字段另给**裸表口径**(不加任务闸门)。
+
+    两个分母都对、各答各的问题:过闸的分母是 128 条正式任务(R-08 把无明细行的
+    任务算成缺项),裸表的分母是这张表自己的行数。不写明分母,问"字段质量"的会拿
+    128 当分母、问业务结论的会拿表行数当分母,两边都答偏。
+    """
+    table, _label, _alias = _completeness_target(field)
+    if table == "task":
+        raise ValueError("task 表上的字段没有裸表口径")
+    sql = f"""
+SELECT count(*) AS raw_row_count,
+       count(*) FILTER (WHERE d.{field} IS NOT NULL AND d.{field} <> '') AS raw_filled,
+       count(DISTINCT d.{field}) FILTER (WHERE d.{field} IS NOT NULL AND d.{field} <> '')
+           AS raw_distinct_values
+FROM {table} d
+"""
+    return sql, ()
+
+
+# ---- 单任务进展历史 -----------------------------------------------------------
+
+# 同名系列:名字去掉结尾的「(N期)」后相同的其他任务。
+# 「数据资源登记体系建设」与它的三个"N期"是四条**独立**任务,各有自己的进展;
+# 按裸名解析只会落到其中一条(这是对的),但只被告知"这里有 14 期"的调用方
+# 无从知道系列存在,答"这个任务的进展历史"时就容易把整个系列铺开。
+#
+# 全角括号按转义序列写出:它是**任务名的字面量**的一部分(库里就是这个字符),
+# 写成全角会触发 RUF001,换成半角就匹配不上了。
+SERIES_SUFFIX = "(?:\uff08\\d+期\uff09)$"
+# SQL 文本里的字面 ``%`` 必须写成 ``%%``:psycopg 会对整条 SQL 做占位符解析,
+# 单写的 ``%`` 会被当成参数标记。这里后面紧跟的是**多字节**汉字,报出来的还不是
+# 那句 "only '%s' ... are allowed",而是 ``'utf-8' codec can't decode byte 0xe6``
+# —— 同一个坑的另一种面孔,纯单测与 pglast 语法校验都照不出来。
+_SERIES_LIKE = "base.name || '\uff08%%期\uff09'"
+
+
+def progress_history_rows(task_id: int, published_only: bool = True, limit: int = 200) -> tuple[str, tuple]:
+    """某任务的进展各期(**相邻两期并排**,不是各期原文)。
+
+    ``prev_progress`` 与 ``gap_days`` 由服务端 ``lag()`` 算好:"这几期有什么变化"
+    要的是相邻两期并排,只给各期让模型自己错位对照,它会把上一期的正文抄串行。
+    ``reporter_id`` 与 ``report_time`` 同排返回:问"最新一次进展是谁报的、什么时候报的"
+    本是一问,分两次调用取的行集不一定对齐(提交单按轮次、进展按期号)。
+
+    注意与 ``historical_progress_versions`` 的区别:那条走的是 rule 2 的例外
+    (历史版本须 ``status = 3`` 已通过),这条走的是"某任务的进展各期",
+    默认只要 ``is_published = 1``。
+    """
+    where = ["t.id = %s", adm.sql_task_admission("pg", "t")]
+    params: list[object] = [int(task_id)]
+    if published_only:
+        where.append(adm.sql_published_progress("pg", "p"))
+    ts = adm.normalize_ts_sql("p.report_time")
+    pdate = adm.normalize_date_sql("p.progress_date")
+    sql = f"""
+SELECT p.id, p.task_id, p.version_no, p.latest_progress, p.next_work,
+       {pdate} AS progress_date,
+       {ts}    AS report_time,
+       p.reporter_id, p.is_published, p.review_comment,
+       lag(p.latest_progress) OVER (ORDER BY p.version_no) AS prev_progress,
+       (p.progress_date::date
+        - lag(p.progress_date) OVER (ORDER BY p.version_no)::date)::int AS gap_days
+FROM task_progress p
+JOIN task t ON t.id = p.task_id
+WHERE {"\n  AND ".join(where)}
+ORDER BY p.version_no DESC, p.id DESC
+LIMIT %s
+"""
+    return sql, (*params, max(1, int(limit)))
+
+
+def progress_history_gap_summary(task_id: int, published_only: bool = True) -> tuple[str, tuple]:
+    """平均间隔天数:服务端 ``round(avg(), 1)``,首期没有上一期、不进分母。
+
+    让模型拿 ``gap_days`` 自己平均,结果是 30.285714,报成 30.29 而口径是 30.3 ——
+    与完成率 24.22 vs 24.2 同一族的毛病:小数位由谁定。
+    """
+    where = ["t.id = %s", adm.sql_task_admission("pg", "t")]
+    params: list[object] = [int(task_id)]
+    if published_only:
+        where.append(adm.sql_published_progress("pg", "p"))
+    sql = f"""
+WITH g AS (
+    SELECT (p.progress_date::date
+            - lag(p.progress_date) OVER (ORDER BY p.version_no)::date)::int AS gap_days
+    FROM task_progress p
+    JOIN task t ON t.id = p.task_id
+    WHERE {"\n  AND ".join(where)}
+)
+SELECT round(avg(gap_days)::numeric, 1) AS avg_gap_days,
+       count(gap_days) AS gap_count
+FROM g
+WHERE gap_days IS NOT NULL
+"""
+    return sql, tuple(params)
+
+
+def name_series(task_id: int) -> tuple[str, tuple]:
+    """同名系列里的**其他**正式任务(名字去掉结尾「(N期)」后相同)。
+
+    正则作为**参数**传,不拼进 SQL 文本 —— 它含反斜杠与全角括号,拼进去要处理
+    两层转义(psycopg 还会把字面 ``%`` 当占位符解析)。基准名放在 CTE 里算一次,
+    三处引用共用。
+    """
+    sql = f"""
+WITH base AS (
+    SELECT regexp_replace(t2.task_name, %s, '') AS name
+    FROM task t2 WHERE t2.id = %s
+)
+SELECT t.id, t.task_name
+FROM task t, base
+WHERE {adm.sql_task_admission("pg", "t")}
+  AND t.id <> %s
+  AND (t.task_name = base.name OR t.task_name LIKE {_SERIES_LIKE})
+ORDER BY t.id
+"""
+    return sql, (SERIES_SUFFIX, int(task_id), int(task_id))

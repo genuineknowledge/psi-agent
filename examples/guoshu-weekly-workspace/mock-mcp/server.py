@@ -476,6 +476,16 @@ def weekly_progress_history(
     """
     may_read = _caller_may_read_sensitive(ctx)
 
+    formal = _formal.dispatch(
+        "weekly_progress_history",
+        task=task,
+        published_only=published_only,
+        limit=limit,
+        can_read_sensitive=may_read,
+    )
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         task_id = store.resolve_task_id(task)
         if task_id is None:
@@ -3267,6 +3277,15 @@ def weekly_field_completeness(field: str = "", list_missing: bool = False, limit
         list_missing: Return the rows that are missing the field, not just counts.
         limit: Row cap for ``list_missing``.
     """
+
+    formal = _formal.dispatch(
+        "weekly_field_completeness",
+        field=field,
+        list_missing=list_missing,
+        limit=limit,
+    )
+    if formal is not None:
+        return _dump(formal)
 
     def work() -> dict[str, Any]:
         token = (field or "").strip()

@@ -1430,6 +1430,214 @@ def _freshness_snapshot(args: dict[str, Any]) -> dict[str, Any] | None:
 
 
 # 工具名 -> 处理函数。放在最后:新加的函数要先 def 出来再进这张表。
+
+
+def _field_completeness(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_field_completeness:某字段的填报完整度(+ 区分度 + 缺项清单)。
+
+    三条判据:
+
+    * **空字符串按未填计入**(`IS NULL OR = ''`),只看 NULL 会把"填了个空格"当已填;
+    * 明细表字段用 **LEFT JOIN**:没有明细行的任务也算缺项(R-08),INNER JOIN
+      会把它们整行丢掉、分母从 128 缩到有明细的那些,填写率凭空变高;
+    * 明细表字段**另给裸表口径**(不加任务闸门):两个分母都对、各答各的问题,
+      不写明分母两边都会答偏。
+    """
+    field = (args.get("field") or "").strip()
+    if not field:
+        return {
+            "ok": True,
+            "supported_fields": {
+                name: {"table": table, "label": label}
+                for name, (table, label) in sorted(tpl.COMPLETENESS_FIELDS.items())
+            },
+            "caliber": "传入 field 以统计该字段的填报完整度",
+            "snapshot_note": FORMAL_SNAPSHOT_NOTE,
+            "snapshot_date": as_of(),
+        }
+    if field not in tpl.COMPLETENESS_FIELDS:
+        return None  # 演示路径会报 unsupported_field
+    table, label, _alias = tpl._completeness_target(field)
+    limit = max(1, min(MAX_ROWS, int(args.get("limit") or MAX_ROWS)))
+
+    if args.get("list_missing"):
+        sql, params = tpl.completeness_missing_rows(field, limit=limit)
+        result = envelope(
+            sql=sql,
+            params=params,
+            caliber=(
+                f"is_deleted = 0 AND workflow_status = 'published';列出「{label}」为空的正式任务"
+                "(R-07/R-19);空字符串按未填计入;此清单即全部缺项,按 total_count 逐条列全"
+            ),
+            limit=limit,
+            cap_last_param=True,
+        )
+        tsql, tparams = tpl.completeness_missing_total(field)
+        total = envelope(sql=tsql, params=tparams, caliber="缺项总数", limit=1)
+        result["total_count"] = (total.get("rows") or [{}])[0].get("total_count")
+        result["field"] = field
+        result["field_label"] = label
+        return result
+
+    sql, params = tpl.completeness_counts(field)
+    quality_note = []
+    if table != "task":
+        quality_note.append(
+            "另给裸表口径(不加任务闸门):问「这个字段本身可信吗 / 填得怎么样」"
+            "看裸表那一档(明细表有多少行就是多少行),问「有多少任务填了」看上面过闸的 "
+            "filled / total(分母是正式任务,R-08 保留无明细行的任务);两档不要混着引用"
+        )
+    result = envelope(
+        sql=sql,
+        params=params,
+        caliber="\uff1b".join(
+            [
+                f"is_deleted = 0 AND workflow_status = 'published';统计「{label}」非空占比(R-07/R-19);"
+                "空字符串按未填计入 missing;"
+                "filled_pct 已按 total 算好(保留一位小数),直接引用,不要自己拿 filled / total 重算"
+                + (";LEFT JOIN 保留无明细行的任务(R-08)" if table != "task" else ""),
+                "distinct_values 是非空值里的不同值个数,top_value_rows 是最高频值占的行数,"
+                "两者已算好,问「字段是否可信 / 有没有区分度」看它们,不要只看 filled_pct",
+                *quality_note,
+            ]
+        ),
+        limit=1,
+    )
+    qsql, qparams = tpl.completeness_quality(field)
+    quality = envelope(sql=qsql, params=qparams, caliber="字段区分度", limit=1)
+    qrow = (quality.get("rows") or [{}])[0]
+    distinct_values = int(qrow.get("distinct_values") or 0)
+    top_value_rows = int(qrow.get("top_value_rows") or 0)
+    result["field"] = field
+    result["field_label"] = label
+    result["distinct_values"] = distinct_values
+    result["top_value_rows"] = top_value_rows
+
+    raw_distinct = distinct_values
+    if table != "task":
+        rsql, rparams = tpl.completeness_raw_table(field)
+        raw = envelope(sql=rsql, params=rparams, caliber="裸表口径", limit=1)
+        rrow = (raw.get("rows") or [{}])[0]
+        result["raw_row_count"] = rrow.get("raw_row_count")
+        result["raw_filled"] = rrow.get("raw_filled")
+        result["raw_distinct_values"] = rrow.get("raw_distinct_values")
+        # 两个分母各自的**数**要写出来:只说"两个口径不同",调用方还是不知道该拿哪个当分母。
+        result["caliber"] += (
+            f";两个分母:过闸口径的分母是正式任务 {result['rows'][0].get('total')} 项"
+            f"(R-08 把无明细行的任务算成缺项),裸表口径的分母是 {table} 的 "
+            f"{rrow.get('raw_row_count')} 行(其中非空 {rrow.get('raw_filled')} 行、"
+            f"不同值 {rrow.get('raw_distinct_values')} 个)—— 两档不要混着引用"
+        )
+        raw_distinct = int(rrow.get("raw_distinct_values") or 0)
+
+    # 质量信号按**裸表**那一档判:明细表字段的区分度是表本身的属性,过闸只是少看了 9 行,
+    # 不该让"同一句话复制 55 遍"因为闸门把行数减到 46 就不再报警。
+    if raw_distinct <= 1:
+        result["caliber"] += (
+            f";字段质量信号:非空行里只有 {raw_distinct} 个不同的值,即所有行填的是同一份内容 —— "
+            "填写率再高也不具备区分度,不能拿它做差异化归纳(比较各组各任务的举措有何不同),"
+            "应回查生成逻辑或源数据;这是规则校验信号,不构成对项目或人员的绩效判断,"
+            "需业务责任人核实后才能进正式结论"
+        )
+    elif raw_distinct and top_value_rows:
+        result["caliber"] += (
+            f";字段质量信号:非空行里有 {raw_distinct} 个不同的值,"
+            f"最高频的那个值占 {top_value_rows} 行;不同值远少于行数时说明内容高度重复,"
+            "做差异化归纳前先核实源数据"
+        )
+    return result
+
+
+def _progress_history(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_progress_history:某任务的进展各期(相邻两期并排)。
+
+    与 ``weekly_progress_coverage scope=latest_round`` 的区别:那条**一任务一行**
+    (只给最新一期),这条给某任务的**全部期次**。问"最近几期有什么变化"要的是后者,
+    但按最近 3 期作答(传 limit=3)—— 多列一期就与口径不一致。
+    """
+    raw = (args.get("task") or "").strip()
+    if not raw:
+        return None  # 演示路径会报 invalid_argument
+    if raw.isdigit():
+        task_id = int(raw)
+    else:
+        # 名字要先去库里解析成 id;解析不出来(或命中多条)就回落演示路径 ——
+        # 猜错会把"某任务的进展"答成另一条同名系列任务。
+        resolved = _lookup_task_id(raw)
+        if resolved is None:
+            return None
+        task_id = resolved
+    published_only = args.get("published_only")
+    published_only = True if published_only is None else bool(published_only)
+    limit = max(1, min(MAX_ROWS, int(args.get("limit") or MAX_ROWS)))
+
+    sql, params = tpl.progress_history_rows(task_id, published_only=published_only, limit=limit)
+    result = envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            "按 version_no 倒序,越大越新"
+            + (";is_published = 1" if published_only else ";含未发布期次(published_only = false)")
+            + ";prev_progress 是同一任务上一期(version_no 小一档)的正文,gap_days 是与上一期 "
+            "progress_date 相隔天数,两列均由服务端 lag() 算好,对比相邻两期直接读这两列,"
+            "不要自己把行错位相减;问「最近几期有什么变化」按最近 3 期作答(传 limit=3),"
+            "多列一期就与口径不一致;reporter_id 与 report_time 同排返回,"
+            "「最新一次是谁报的、什么时候报的」一次答完"
+        ),
+        limit=limit,
+        cap_last_param=True,
+        extra={"task_id": task_id},
+    )
+    gsql, gparams = tpl.progress_history_gap_summary(task_id, published_only=published_only)
+    gaps = envelope(sql=gsql, params=gparams, caliber="间隔均值", limit=1)
+    grow = (gaps.get("rows") or [{}])[0]
+    result["gap_summary"] = grow
+    result["caliber"] += (
+        "\uff1b问「两次报进展平均隔多少天」直接读 gap_summary.avg_gap_days"
+        "(服务端 AVG 后 ROUND 到一位小数,首期无上一期不进分母),"
+        "自己拿 gap_days 平均会多带小数位(30.29 与口径的 30.3 不一致)"
+    )
+    ssql, sparams = tpl.name_series(task_id)
+    siblings = envelope(sql=ssql, params=sparams, caliber="同名系列", limit=MAX_ROWS)
+    series = siblings.get("rows") or []
+    result["same_name_series"] = series
+    if series:
+        result["caliber"] += (
+            f"\uff1b本次只含任务 {task_id} 一条的进展,同系列另有 {len(series)} 条独立任务("
+            + "、".join(f"{s['id']} {s['task_name']}" for s in series)
+            + "),各有自己的期次,不要合并进本任务的历史;"
+            "要另一条就按 id 或完整名(含「(N期)」)再查一次"
+        )
+    if not bool(args.get("can_read_sensitive")):
+        # 敏感字段打码而不是删列:列集合在两种权限下保持一致(与参考实现的 _scrub 同语义,
+        # 藏列会让调用方分不清「没有审核意见」与「没权限看」)。
+        for row in result["rows"]:
+            if "review_comment" in row:
+                row["review_comment"] = "[按权限不展示]"
+    return result
+
+
+def _lookup_task_id(name: str) -> int | None:
+    """按任务名解析 id(精确优先,再做子串匹配);解析不出来返回 None。
+
+    演示实现的 ``resolve_task`` 是模糊匹配且带"同名系列"的取舍;正式源只做
+    精确 + 唯一子串两种:命中多条时**返回 None 回落演示路径**,不在这里猜是哪一条
+    —— 猜错会把"某任务的进展"答成另一条同名系列任务。
+    """
+    sql = """
+SELECT id, task_name FROM task
+WHERE is_deleted = 0 AND workflow_status = 'published'
+  AND (task_name = %s OR task_name ILIKE %s)
+ORDER BY id
+LIMIT 2
+"""
+    rows = envelope(sql=sql, params=(name, f"%{name}%"), caliber="任务解析", limit=2)["rows"]
+    if len(rows) == 1:
+        return int(rows[0]["id"])
+    exact = [r for r in rows if r["task_name"] == name]
+    return int(exact[0]["id"]) if len(exact) == 1 else None
+
+
 _HANDLERS = {
     "weekly_task_query": _task_query,
     "weekly_progress_coverage": _coverage,
@@ -1454,6 +1662,8 @@ _HANDLERS = {
     "weekly_milestone_stats": _milestone_stats,
     "weekly_year_goal_stats": _year_goal_stats,
     "weekly_schema": _schema,
+    "weekly_field_completeness": _field_completeness,
+    "weekly_progress_history": _progress_history,
 }
 
 # _NEW_HANDLERS 只是构建期的清单,避免手工漏接线
