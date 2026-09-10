@@ -56,6 +56,13 @@
 | `pending_review` | 58 行 / 47 任务,任务 48 的 public_version 为空 | ✅ 一致 |
 | `unpublished_by_task` | 72 条任务(按 version_no 去重) | ✅ 与直接查询一致 |
 | `version_gaps` | 5 条任务缺号,缺号 = 最大期号 − 实际期数 | ✅ 逐行自洽 |
+| 提交单总数 | 462(= 470 行减 8 个软删任务的单) | ✅ 一致 |
+| `external_ids` 三个 O2OA 标识 | 460 / 460 / 60 | ✅ 一致 |
+| `rejected_by_board` | 技术组 9/293 = 3.07%、集团组 4/169 = 2.37% | ✅ 一致(分子分母都在提交单上) |
+| `inflight_external` | 枚举 59 / 取反会得 60 | ✅ 一致(cancelled 那张既未发布也不在途) |
+| `by_kind` | progress 312 / initial 150 | ✅ 一致(合计 462) |
+| `inflight_by_kind` | 状态 × 类型 **九档** | ✅ 一致 |
+| `rounds_per_task` | 150 任务 / 462 单 / 3.08 单每任务 | ✅ 一致(分子分母都给出) |
 
 三条由此固化的铁律:
 
@@ -69,7 +76,9 @@
 4. **冗余列会漂移**:`task.latest_progress_time` 与真实最新已发布进展不一致的任务,在演示
    数据里有 **73/128 条**。只按冗余列回答新鲜度,错误答案与正确答案从外观上无法区分,
    因此必须提供 `latest_progress_drift` 这条检查。
-5. **`latest_round` 按 `version_no DESC, id DESC` 取最新一期**,不按 `progress_date`:补报的老期号可能有更晚的日期。
+5. **提交单域只加 `t.is_deleted = 0`**(462 = 470 − 8 个软删任务下的单),**不带任务发布门**;看板在 `task` 上,按看板提问必须从任务侧下推(462 张单 vs 清单封顶 200 行);
+6. **「在途」按成员枚举 `SUBMISSION_INFLIGHT`**(含 `rejected`、不含 `cancelled`),写成 `status <> 'published'` 会多算 cancelled 那张(60 vs 59);
+7. **`latest_round` 按 `version_no DESC, id DESC` 取最新一期**,不按 `progress_date`:补报的老期号可能有更晚的日期。
 
 ### 3.0.1 性能与索引要求(2026-09-10 实测,真 PG 15.5)
 

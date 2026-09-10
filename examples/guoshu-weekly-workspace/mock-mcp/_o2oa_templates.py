@@ -890,3 +890,182 @@ LIMIT %s
 """
     params.append(int(limit))
     return sql, tuple(params)
+
+
+# ---- batch 3: 提交单 / 审批域 -------------------------------------------------
+
+SUBMISSION_SCOPES = (
+    "by_kind",
+    "by_status",
+    "external_ids",
+    "inflight_count",
+    "inflight_by_board",
+    "inflight_by_kind",
+    "inflight_external",
+    "rejected_by_board",
+    "rounds_per_task",
+)
+
+# 「在途」必须按成员枚举,不能写成 status <> 'published':
+# cancelled 那张单既未发布也不在途,取反会把它算进来(60 vs 59)。
+SUBMISSION_INFLIGHT = ("pending_fill", "signing", "pending_audit", "pending_leader", "rejected")
+
+# 提交单本身没有 board_id,看板在 task 上 —— 所有按看板的问法都要从任务侧下推,
+# 否则 462 张单在封顶 200 行的清单里手工挑选必然残缺。
+SUBMISSION_GATE = "t.is_deleted = 0"
+
+
+def _submission_where(board_code: str | None) -> tuple[str, str, list[object]]:
+    """提交单域的公共 WHERE:只有 t.is_deleted = 0(不带任务发布门)。"""
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = [SUBMISSION_GATE]
+    params: list[object] = []
+    board_join = ""
+    if board:
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    return "\n  AND ".join(where), board_join, params
+
+
+def submission_stats(
+    scope: str,
+    board_code: str | None = None,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """提交单 / 审批域的服务端聚合,对齐 mock 的 ``weekly_submission_query`` 各 scope。
+
+    口径要点:
+
+    * 提交单**没有** ``board_id``,看板在 ``task`` 上:按看板提问必须从任务侧下推
+      (演示数据共 462 张单,清单封顶 200 行,手工挑必然残缺);
+    * 提交单域只加 ``t.is_deleted = 0``(**不加**任务发布门)—— 462 = 470 行减去
+      8 个软删任务下的单;
+    * 「在途」按成员枚举 ``SUBMISSION_INFLIGHT``(含 ``rejected`` 不含 ``cancelled``),
+      写成 ``status <> 'published'`` 会多算 cancelled 那张(60 vs 59);
+    * ``rejected_by_board`` 的分子分母**都在提交单上**(技术组 9/293 = 3.07% >
+      集团组 4/169 = 2.37%);动作流水表的驳回数是"动作次数"不是"单数",不能混用;
+    * ``external_ids`` 的三个 O2OA 标识列只有这一档会输出(清单行不带)。
+    """
+    if scope not in SUBMISSION_SCOPES:
+        raise ValueError(f"未知 scope:{scope};可选 {', '.join(SUBMISSION_SCOPES)}")
+    where_sql, board_join, params = _submission_where(board_code)
+    inflight_list = ", ".join(f"'{s}'" for s in SUBMISSION_INFLIGHT)
+
+    if scope == "by_kind":
+        sql = f"""
+SELECT s.submission_kind, count(*) AS forms
+FROM task_workflow_submission s
+JOIN task t ON t.id = s.task_id
+{board_join}
+WHERE {where_sql}
+GROUP BY s.submission_kind
+ORDER BY forms DESC, s.submission_kind
+"""
+        return sql, tuple(params)
+
+    if scope == "by_status":
+        sql = f"""
+SELECT s.status, count(*) AS forms, count(DISTINCT s.task_id) AS tasks
+FROM task_workflow_submission s
+JOIN task t ON t.id = s.task_id
+{board_join}
+WHERE {where_sql}
+GROUP BY s.status
+ORDER BY forms DESC, s.status
+"""
+        return sql, tuple(params)
+
+    if scope == "external_ids":
+        sql = f"""
+SELECT count(*)                                                  AS total,
+       count(*) FILTER (WHERE s.o2_process_id IS NOT NULL)        AS has_process_id,
+       count(*) FILTER (WHERE s.o2_work_id    IS NOT NULL)        AS has_work_id,
+       count(*) FILTER (WHERE s.o2_task_id    IS NOT NULL)        AS has_task_id
+FROM task_workflow_submission s
+JOIN task t ON t.id = s.task_id
+{board_join}
+WHERE {where_sql}
+"""
+        return sql, tuple(params)
+
+    if scope == "inflight_count":
+        sql = f"""
+SELECT count(*)                    AS inflight_forms,
+       count(DISTINCT s.task_id)   AS tasks
+FROM task_workflow_submission s
+JOIN task t ON t.id = s.task_id
+{board_join}
+WHERE {where_sql}
+  AND s.status IN ({inflight_list})
+"""
+        return sql, tuple(params)
+
+    if scope == "inflight_by_board":
+        sql = f"""
+SELECT b.code AS board_code, s.status, count(*) AS forms
+FROM task_workflow_submission s
+JOIN task t ON t.id = s.task_id
+JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
+WHERE {SUBMISSION_GATE}
+  AND s.status IN ({inflight_list})
+GROUP BY b.code, s.status
+ORDER BY b.code, forms DESC, s.status
+"""
+        return sql, ()
+
+    if scope == "inflight_by_kind":
+        sql = f"""
+SELECT s.status, s.submission_kind, count(*) AS forms
+FROM task_workflow_submission s
+JOIN task t ON t.id = s.task_id
+{board_join}
+WHERE {where_sql}
+  AND s.status IN ({inflight_list})
+GROUP BY s.status, s.submission_kind
+ORDER BY s.status, s.submission_kind
+"""
+        return sql, tuple(params)
+
+    if scope == "inflight_external":
+        sql = f"""
+SELECT count(*)                  AS inflight_with_process_id,
+       count(DISTINCT s.task_id) AS tasks
+FROM task_workflow_submission s
+JOIN task t ON t.id = s.task_id
+{board_join}
+WHERE {where_sql}
+  AND s.o2_process_id IS NOT NULL
+  AND s.status IN ({inflight_list})
+"""
+        return sql, tuple(params)
+
+    if scope == "rejected_by_board":
+        sql = f"""
+SELECT b.code                                                   AS board_code,
+       count(*)                                                 AS forms,
+       count(*) FILTER (WHERE s.status = 'rejected')             AS rejected,
+       round(count(*) FILTER (WHERE s.status = 'rejected') * 100.0
+             / NULLIF(count(*), 0), 2)                           AS rejected_pct
+FROM task_workflow_submission s
+JOIN task t ON t.id = s.task_id
+JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
+WHERE {SUBMISSION_GATE}
+GROUP BY b.code
+ORDER BY b.code
+"""
+        return sql, ()
+
+    # rounds_per_task:分子分母都给,避免模型自己拿别的分母去除
+    sql = f"""
+SELECT count(DISTINCT s.task_id) AS tasks,
+       count(*)                  AS forms,
+       round(count(*)::numeric / NULLIF(count(DISTINCT s.task_id), 0), 2) AS rounds_per_task
+FROM task_workflow_submission s
+JOIN task t ON t.id = s.task_id
+{board_join}
+WHERE {where_sql}
+"""
+    return sql, tuple(params)

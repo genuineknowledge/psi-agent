@@ -353,3 +353,54 @@ class TestCoverageScopes:
         assert "p.rn = 1" in sql
         assert "(p.next_work IS NULL OR p.next_work = '')" in sql
         assert params == ()
+
+
+class TestSubmissionScopes:
+    """提交单 / 审批域:看板下推、在途枚举、驳回率分子分母。"""
+
+    def test_submission_gate_has_no_publish_filter(self):
+        """提交单域只加 t.is_deleted = 0:462 = 470 行减去 8 个软删任务下的单。"""
+        for scope in ("by_kind", "external_ids", "inflight_count", "rounds_per_task"):
+            sql, _params = o2.submission_stats(scope)
+            assert "t.is_deleted = 0" in sql
+            assert "workflow_status" not in sql, scope
+
+    def test_inflight_is_enumerated_not_negated(self):
+        """写成 status <> 'published' 会多算 cancelled 那张(60 vs 59)。"""
+        sql, _params = o2.submission_stats("inflight_count")
+        for status in o2.SUBMISSION_INFLIGHT:
+            assert f"'{status}'" in sql
+        assert "rejected" in o2.SUBMISSION_INFLIGHT  # 驳回也算在途
+        assert "cancelled" not in o2.SUBMISSION_INFLIGHT
+        assert "status <> 'published'" not in sql and "status != 'published'" not in sql
+
+    def test_external_ids_exposes_the_three_identifier_columns(self):
+        sql, _params = o2.submission_stats("external_ids")
+        assert "o2_process_id" in sql and "o2_work_id" in sql and "o2_task_id" in sql
+        assert sql.count("IS NOT NULL") == 3
+
+    def test_rejected_by_board_keeps_numerator_and_denominator_on_submissions(self):
+        sql, _params = o2.submission_stats("rejected_by_board")
+        assert "s.status = 'rejected'" in sql
+        assert "JOIN task_board b" in sql  # 看板从任务侧下推
+        assert "count(*)" in sql  # 分母是该看板全部提交单
+        assert "rejected_pct" in sql
+
+    def test_board_pushdown_carries_the_filter(self):
+        sql, params = o2.submission_stats("by_kind", board_code="group")
+        assert "b.code = %s" in sql
+        assert params == ("group",)
+
+    def test_rounds_per_task_returns_both_sides(self):
+        sql, _params = o2.submission_stats("rounds_per_task")
+        assert "count(DISTINCT s.task_id)" in sql and "count(*)" in sql
+        assert "rounds_per_task" in sql
+
+    def test_inflight_by_kind_is_the_status_times_kind_axis(self):
+        sql, _params = o2.submission_stats("inflight_by_kind")
+        assert "s.status, s.submission_kind" in sql  # 与 inflight_by_board 不是同一根轴
+        assert "GROUP BY s.status, s.submission_kind" in sql
+
+    def test_unknown_scope_rejected(self):
+        with pytest.raises(ValueError):
+            o2.submission_stats("everything")
