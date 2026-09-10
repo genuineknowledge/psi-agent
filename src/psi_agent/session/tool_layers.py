@@ -62,11 +62,13 @@ from loguru import logger
 
 SCOPE_PREFIX = "psi_layer_"
 
-# ``layer_id`` is a tools-dir path in production (see ``tool_registry._layer_id``),
-# and a path is not usable inside a dotted module name: separators and dots would
-# make CPython read it as further package nesting.  So the scope segment is a
-# sanitised stem plus a hash of the full id — readable in a traceback, and still
-# one distinct segment per layer, which is the property the isolation rests on.
+# ``layer_id`` is a declared content-root name where roots are configured, and a
+# tools-dir path where they are not (see ``tool_registry._layer_id``).  A path is
+# not usable inside a dotted module name — separators and dots would make CPython
+# read it as further package nesting — so the scope segment is a sanitised stem
+# plus a hash of the full id: readable in a traceback, and still one distinct
+# segment per layer, which is the property the isolation rests on.  Hashing the
+# whole id means both id shapes work here without this module knowing which it got.
 _UNSAFE_IN_MODULE_NAME = re.compile(r"[^0-9A-Za-z_]+")
 
 
@@ -78,8 +80,9 @@ class Layer:
     closest to the user outranks the ones behind it.  It is an explicit field
     rather than the caller's list order because list order is *open* order (glob
     order in production, which no layer controls), and rather than something
-    inferred from ``layer_id`` because the real ids are tools-dir paths, not the
-    words "official"/"personal".  Both shortcuts were the bug this field exists
+    inferred from ``layer_id`` because an id is an *identity* — it says which
+    content this is, not how it ranks, and a name like ``official`` carries no
+    rank a reader could rely on.  Both shortcuts were the bug this field exists
     to remove; keeping either as a fallback would relocate it rather than fix
     it.  Whoever assembles the layers knows their ranks and states them here.
 
