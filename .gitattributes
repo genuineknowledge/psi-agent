@@ -2,3 +2,8 @@
 # file or directory` 直接死 —— 而这类脚本正是 cp 上生产机运行的那批, 在 Windows
 # 侧改一次就会被 core.autocrlf 转成 CRLF, 提交时不报错、上机才死。
 *.sh text eol=lf
+
+# Dockerfile 同理: 里面的 `RUN` 是多行 shell, 由镜像内的 /bin/sh 执行, 和上面那条
+# `*.sh` 是同一类失效面。预防性质, 没有实测过 CRLF 版真的炸在哪一步。
+Dockerfile text eol=lf
+Dockerfile.* text eol=lf

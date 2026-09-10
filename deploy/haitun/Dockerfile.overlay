@@ -1,0 +1,34 @@
+# 增量镜像: 只换 /app/src, 依赖沿用基础镜像里已装好的那份。秒级完成。
+#
+# 用法(在仓库根):
+#     docker build -f deploy/haitun/Dockerfile.overlay \
+#       --build-arg BASE_IMAGE=psi-agent-gateway:local \
+#       -t psi-agent-gateway:<commit> .
+#
+# 何时**不能**用它: 改了 `pyproject.toml` 或 `uv.lock`。overlay 不跑 pip install, 新依赖装
+# 不进去 —— 而表现是运行期 ImportError, 不是构建期报错。那种情况走 `Dockerfile` 全量 build。
+#
+# 收进 git 的原因: 此前它不在仓库里, 发布流程要求每次用 printf 现写一份(因为流程里的
+# `git clean -qfd` 会把它删掉)。手抄一个两行文件本来风险不大, 直到它需要跟着 feishu-web
+# 的 dist 一起演进 —— 下面那句 COPY dist 就是手抄版本从来没有的。
+
+# 基础镜像默认取 :local, 与发布流程一致。它是全量 build 出来的那份, 里头有依赖。
+ARG BASE_IMAGE=psi-agent-gateway:local
+FROM ${BASE_IMAGE}
+# 必须重声明一次。`FROM` 之前的 ARG 只对 `FROM` 行可见, 阶段内引用到的是空串 ——
+# 于是下面报错信息里的镜像名会消失, 而构建仍然"成功"地报了个没头没尾的错。
+ARG BASE_IMAGE
+
+COPY src /app/src
+
+# 前端产物: overlay 的上下文是干净 clone, `feishu-web/dist/` 被 gitignore 排除, 所以上面
+# 那句 COPY src **会把基础镜像里已有的 dist 连带覆盖成"不存在"** —— COPY 目录是合并而非
+# 替换, 但 dist 本身不在源里, 于是基础镜像那份得以留存。**这一点靠的是 COPY 的合并语义,
+# 不是设计**: 一旦有人在 clone 里跑过 `npm run build`, 上下文里就有了 dist, 行为随之改变。
+# 两种情况下都要保证 dist 在, 所以这里显式自检而不是假设。
+#
+# 自检失败说明基础镜像是个没有前端产物的镜像。补法: 用 `Dockerfile` 全量 build 一份新的
+# 基础镜像(它的阶段 1 会构建前端), 不要在这里加 npm —— overlay 的全部价值就是不装东西。
+RUN test -f /app/src/psi_agent/gateway/feishu/feishu-web/dist/index.html \
+    || { echo "ERROR: 基础镜像 ${BASE_IMAGE} 里没有 feishu-web/dist, overlay 补不出来。"; \
+         echo "       用 deploy/haitun/Dockerfile 全量 build 一份基础镜像再来。"; exit 1; }
