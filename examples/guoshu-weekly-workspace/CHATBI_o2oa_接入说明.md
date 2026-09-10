@@ -34,6 +34,17 @@
 > - 另:`weekly_task_detail` / `weekly_schema` / `weekly_field_completeness` 返回的是**结构化多块
 >   信封**(`task` / `year_goals` / `group_detail`、`table_columns`、`supported_fields`),本就没有
 >   `rows` —— 这不是缺陷,但 agent 侧读法与 rows 类工具不同,应在工具说明里点明。
+>
+> **给主 Agent / 入口组的调用建议(按真库实测整理,避开会报错的组合)**:
+> 1. `weekly_submission_query`、`weekly_workflow_query` **必须带 `scope`**(默认清单分支未迁移);
+> 2. `weekly_owner_roles` **必须带 `person`**;
+> 3. `weekly_aggregate` 目前**任何参数都不可用**(未迁移)—— 需要分组聚合请用 `weekly_scale`(三种
+>    mode × 三种轴)或 `weekly_group_stats`;
+> 4. `weekly_task_detail` / `weekly_schema` / `weekly_field_completeness` **没有 `rows`/`row_count`**,
+>    读它们的结构化字段(`task`+`year_goals`+`group_detail`、`table_columns`、`supported_fields`);
+> 5. 相对时间窗锚**数据基准日**(活库即当天),要可复现就显式传 `date_from/date_to`;
+> 6. 真库当前**多数任务只有一期正式进展**,"谁进展最多"类问题请先看 `tied_at_top`,
+>    并列数大时如实报"并列",不要报成唯一第一名。
 > - **真值快照(2026-09-10;活库会变,数字带日期,形状与口径才是不变量)**:`task` 105 行 /
 >   已发布 **88**;`task_progress` 197 行 / `is_published=1` 仅 **56**;`task_milestone` 20(状态
 >   全为 0 未完成);`task_attachment` 30;`task_workflow_submission` 29;
