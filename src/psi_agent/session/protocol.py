@@ -52,8 +52,30 @@ __all__ = [
 ]
 
 
-DEFAULT_MAX_TOOL_ROUNDS = 40
+DEFAULT_MAX_TOOL_ROUNDS = 60
 """Default ceiling on agent-loop rounds per turn.
+
+Raised from 40 to 60 on 2026-09-10, after measuring what actually hits the
+ceiling in ToB production (443 history files, 64 hits across 10 sessions).  The
+hits split into two shapes with opposite remedies, and only one of them is what
+this number governs:
+
+- **Real work that ran long** (the three human sessions read line by line):
+  23-25 distinct calls per turn with *zero* repeats — build a client deck (find
+  logo, read the generator, extract links, resolve the domain, fall back to the
+  Wayback archive), or clone a repo and read eight files before editing five.
+  These turns were doing useful work and got cut off mid-way, so a higher
+  ceiling converts a truncated answer into a finished one.
+- **A convergence bug** (``scheduler-cedce38a1e5fcfab``): 22 calls to
+  ``feishu_attendance_query`` with byte-identical arguments returning
+  byte-identical ``ok: true`` payloads.  The tool never failed and the data was
+  never empty; the model simply would not accept the result.  Raising the
+  ceiling makes this shape *worse*, which is the cost this bump knowingly pays
+  — the fix belongs in the SOP prompt, not here.
+
+Tool discovery is not what fills these turns: the three meta tools are 3.1% of
+all calls (826 of 26607) and none of them reach the top 15 in the turns that
+hit the ceiling.  So the M2 exposure gate is not implicated either way.
 
 Raised from 20 to 40 on 2026-09-05.  20 replaced 128 after real-traffic
 measurements (rounds per turn p50=3, p90=13, observed max=49): 128 sat so far
@@ -73,6 +95,13 @@ above the local p99 of 32) while remaining a real ceiling: a runaway now burns
 about a third of the old 128-round cost, and the observed runaway shapes
 (bash x128, a 49-round turn holding the turn lock) are still stopped well
 short of where they used to land.
+
+60 keeps that property — under half the old 128 cap — while clearing the
+longest *legitimate* turns measured above, which ran into 40 while still
+producing new calls every round.  It is deliberately not raised further: the
+ceiling has to stay low enough that the repeat-the-same-call shape is stopped
+before it burns a turn's worth of upstream calls unattended, since schedules
+hit it with nobody watching.
 
 Hitting the limit therefore stays a visible, occasional event rather than
 "never": the stop is reported explicitly to the user (``MAX_ROUNDS_NOTICE``)

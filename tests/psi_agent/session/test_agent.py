@@ -1646,10 +1646,12 @@ def test_default_max_tool_rounds_is_single_sourced() -> None:
     They were three separate ``128`` literals, so "change the default" silently
     meant "change one of three". Pinning the number as well as the agreement
     keeps a future edit from lowering one copy and leaving the others.
-    (40 since 2026-09-05: raised from 20 when the grown tool/skill surfaces
-    pushed normal turns past 20; see DEFAULT_MAX_TOOL_ROUNDS docstring.)
+    (60 since 2026-09-10: raised from 40 after production measurement showed
+    the turns hitting 40 were still producing a new call every round. 40 since
+    2026-09-05, itself raised from 20 when the grown tool/skill surfaces pushed
+    normal turns past 20; see DEFAULT_MAX_TOOL_ROUNDS docstring.)
     """
-    assert DEFAULT_MAX_TOOL_ROUNDS == 40
+    assert DEFAULT_MAX_TOOL_ROUNDS == 60
     assert Session.__dataclass_fields__["max_tool_rounds"].default == DEFAULT_MAX_TOOL_ROUNDS
     assert inspect.signature(SessionAgent.__init__).parameters["max_tool_rounds"].default == DEFAULT_MAX_TOOL_ROUNDS
     assert inspect.signature(SessionAgent.create).parameters["max_tool_rounds"].default == DEFAULT_MAX_TOOL_ROUNDS
