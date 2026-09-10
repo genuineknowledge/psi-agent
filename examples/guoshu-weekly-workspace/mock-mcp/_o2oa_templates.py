@@ -84,7 +84,8 @@ SELECT s.task_id, s.task_name, s.latest_progress, s.next_work,
 FROM (
     SELECT DISTINCT ON (t.id)
            t.id AS task_id, t.task_name,
-           p.latest_progress, p.next_work, p.progress_date, p.reporter_id,
+           p.latest_progress, p.next_work,
+           {adm.normalize_date_sql("p.progress_date")} AS progress_date, p.reporter_id,
            {adm.normalize_ts_sql("p.report_time")} AS report_time,
            p.version_no
     FROM task_progress p
@@ -93,7 +94,8 @@ FROM (
     WHERE {adm.sql_task_admission("pg", "t")}
       AND b.code = %s
       AND {adm.sql_published_progress("pg", "p")}
-    ORDER BY t.id, p.version_no DESC
+    -- 定序键两级:期号大者为新,同期再按 id 兜底(只按一个键会取错行)
+    ORDER BY t.id, p.version_no DESC, p.id DESC
 ) s
 ORDER BY s.task_name
 LIMIT %s
@@ -118,14 +120,14 @@ def historical_progress_versions(
         (adm.sql_historical_progress("pg", "p"), None),
     ]
     if date_from:
-        conditions.append(("p.progress_date >= %s", date_from))
+        conditions.append((f"{adm.parse_ts_sql('p.progress_date')} >= %s", date_from))
     if date_to:
-        conditions.append(("p.progress_date <= %s", date_to))
+        conditions.append((f"{adm.parse_ts_sql('p.progress_date')} <= %s", date_to))
     where_sql = "\n  AND ".join(clause for clause, _ in conditions)
     params = tuple(value for _, value in conditions if value is not None)
     sql = f"""
 SELECT t.task_name, p.version_no, p.latest_progress, p.next_work,
-       p.progress_date, p.status,
+       {adm.normalize_date_sql("p.progress_date")} AS progress_date, p.status,
        {adm.normalize_ts_sql("p.report_time")} AS report_time,
        {adm.normalize_ts_sql("p.review_time")} AS review_time
 FROM task_progress p
@@ -223,3 +225,460 @@ ORDER BY a.upload_time DESC
 LIMIT %s
 """
     return sql, (int(task_id), int(limit))
+
+
+# ---- batch 2: 任务检索 / 进展窗口 / 覆盖率 / 年度目标 / 里程碑 / 新鲜度 -------
+
+
+def task_search(
+    board_code: str,
+    keyword: str | None = None,
+    category_name: str | None = None,
+    person: str | None = None,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """已发布任务检索:按任务名关键词、分类名、责任人(负责人或牵头领导)过滤。
+
+    ``person`` 同时匹配 ``project_owner_name`` / ``lead_owner_name``(多值以"、"连接,
+    因此用 ILIKE 子串)或精确命中 ``owner_user_id``;三者都为 "谁负责什么" 这类问法服务,
+    且一律锚在已发布主集上(rule 1)。
+    """
+    code, hint = adm.check_board_code(board_code)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_task_admission("pg", "t"), "b.code = %s"]
+    params: list[object] = [code]
+    if keyword:
+        where.append("t.task_name ILIKE %s")
+        params.append(f"%{keyword}%")
+    if category_name:
+        where.append("c.name = %s")
+        params.append(category_name)
+    if person:
+        where.append("(t.project_owner_name ILIKE %s OR t.lead_owner_name ILIKE %s OR t.owner_user_id = %s)")
+        params.extend([f"%{person}%", f"%{person}%", person])
+    sql = f"""
+SELECT t.id, t.task_no, t.task_name,
+       c.name            AS category,
+       t.project_owner_name, t.lead_owner_name, t.project_group,
+       {adm.normalize_ts_sql("t.latest_progress_time")} AS latest_progress_time,
+       {adm.normalize_ts_sql("t.published_at")}         AS published_at
+FROM task t
+JOIN task_board    b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
+JOIN task_category c ON c.id = t.category_id AND {adm.sql_soft_delete("c")}
+WHERE {"\n  AND ".join(where)}
+ORDER BY t.sort_order, t.id
+LIMIT %s
+"""
+    params.append(int(limit))
+    return sql, tuple(params)
+
+
+def progress_range(
+    board_code: str,
+    date_from: str,
+    date_to: str,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """某时间窗内的正式进展(rule 2:只取展示版本),按进展日期倒序。
+
+    ``progress_date`` 是 date 类型,窗口参数直接比较;这里的价值在于**窗口过滤发生在
+    正式版本上**,而不是拿到历史/草稿版本再筛 —— 后者会把没进公示的进展答给用户。
+    """
+    code, hint = adm.check_board_code(board_code)
+    if hint:
+        raise ValueError(hint)
+    sql = f"""
+SELECT t.id AS task_id, t.task_name, p.version_no,
+       p.latest_progress, p.next_work,
+       {adm.normalize_date_sql("p.progress_date")} AS progress_date, p.reporter_id,
+       {adm.normalize_ts_sql("p.report_time")} AS report_time
+FROM task_progress p
+JOIN task t     ON t.id = p.task_id
+JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
+WHERE {adm.sql_task_admission("pg", "t")}
+  AND b.code = %s
+  AND {adm.sql_published_progress("pg", "p")}
+  AND {adm.parse_ts_sql("p.progress_date")} >= %s
+  AND {adm.parse_ts_sql("p.progress_date")} <= %s
+ORDER BY p.progress_date DESC, t.sort_order
+LIMIT %s
+"""
+    return sql, (code, date_from, date_to, int(limit))
+
+
+COVERAGE_SCOPES = ("publish_split", "import_split", "unpublished", "never_reported")
+
+# 相对时间窗的基准日必须由调用方显式给出,绝不使用 now()。
+# 演示包的数据停在 2026-08-01、快照日是 2026-08-15;用真实时钟算"最近 30 天"会把窗口
+# 滑出数据、给出偏小的数(mock 把这个陷阱记作 now_instead_of_as_of,396 题里有专项)。
+AS_OF_TRAP_NOTE = "相对时间窗以数据快照日为准,不用系统当前时间"
+
+
+def _check_as_of(as_of: str | None) -> None:
+    """``as_of`` 必须是显式日期:绝不拿系统时间当基准。"""
+    if not as_of:
+        raise ValueError(f"{AS_OF_TRAP_NOTE};请显式传入 as_of(演示包用 2026-08-15)")
+
+
+def coverage_stats(
+    scope: str,
+    board_code: str | None = None,
+    in_flight_only: bool = False,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """进展覆盖率与分发口径,对齐 mock 的 ``weekly_progress_coverage`` 各 scope。
+
+    口径要点(每条都在 mock 的 docstring 里被反复强调,直接决定数字对不对):
+
+    * ``publish_split`` 数的是 **task_progress 行**而不是任务:带正式任务门是
+      943 / 123 / 1066,不带门是 945 / 1068 —— 手工相加时最容易丢掉任务门;
+    * ``import_split`` 只用 ``import_id IS NULL`` 区分手工录入与批量导入;
+    * ``unpublished`` 按进展**自己的** status 码值分档(0 草稿 / 1 待审核 /
+      2 驳回 / 3 通过),与任务的 ``workflow_status`` 是两套词表,因此同时给
+      行数与去重任务数(演示数据里驳回 = 39 行 / 33 任务);
+    * ``never_reported`` 必须用 ``NOT EXISTS`` 判"有没有已发布进展行",不能用
+      ``latest_progress_time IS NULL`` —— 后者只能找出 55 条里的 9 条。
+    """
+    if scope not in COVERAGE_SCOPES:
+        raise ValueError(f"未知 scope:{scope};可选 {', '.join(COVERAGE_SCOPES)}")
+    board = None
+    if board_code:
+        board, hint = adm.check_board_code(board_code)
+        if hint:
+            raise ValueError(hint)
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    board_join = ""
+    if board:
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    where_sql = "\n  AND ".join(where)
+
+    if scope == "publish_split":
+        sql = f"""
+SELECT count(*) FILTER (WHERE p.is_published = 1) AS published,
+       count(*) FILTER (WHERE p.is_published = 0) AS unpublished,
+       count(*)                                   AS total
+FROM task_progress p
+JOIN task t ON t.id = p.task_id
+{board_join}
+WHERE {where_sql}
+"""
+        return sql, tuple(params)
+
+    if scope == "import_split":
+        sql = f"""
+SELECT count(*) FILTER (WHERE p.import_id IS NOT NULL) AS imported,
+       count(*) FILTER (WHERE p.import_id IS NULL)     AS manual,
+       count(*)                                        AS total
+FROM task_progress p
+JOIN task t ON t.id = p.task_id
+{board_join}
+WHERE {where_sql}
+  AND p.is_published = 1
+"""
+        return sql, tuple(params)
+
+    if scope == "unpublished":
+        sql = f"""
+SELECT p.status,
+       count(*)                  AS progress_rows,
+       count(DISTINCT p.task_id) AS tasks
+FROM task_progress p
+JOIN task t ON t.id = p.task_id
+{board_join}
+WHERE {where_sql}
+  AND p.is_published = 0
+GROUP BY p.status
+ORDER BY p.status
+"""
+        return sql, tuple(params)
+
+    # never_reported:存在性判定,不是 NULL 判定
+    if in_flight_only:
+        where.append("t.status IN (0, 1)")
+    sql = f"""
+SELECT t.id, t.task_no, t.task_name, t.status, t.project_owner_name
+FROM task t
+{board_join}
+WHERE {where_sql}
+  AND NOT EXISTS (
+      SELECT 1 FROM task_progress p
+      WHERE p.task_id = t.id AND p.is_published = 1
+  )
+ORDER BY t.sort_order, t.id
+LIMIT %s
+"""
+    params.append(int(limit))
+    return sql, tuple(params)
+
+
+def year_goal_list(
+    board_code: str,
+    year: int | str,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """年度目标清单(rule 5:必须显式给 year)。
+
+    用 LEFT JOIN 保留"已发布但当年目标未填写"的任务 —— 这类要如实答"未填写",
+    不能因为 INNER JOIN 把它们从清单里悄悄抹掉。
+    """
+    y, hint = adm.check_year(year)
+    if hint:
+        raise ValueError(hint)
+    code, hint = adm.check_board_code(board_code)
+    if hint:
+        raise ValueError(hint)
+    sql = f"""
+SELECT t.id, t.task_no, t.task_name, c.name AS category,
+       y.year, y.current_year_goal, y.milestone_summary,
+       (y.task_id IS NOT NULL) AS goal_filled
+FROM task t
+JOIN task_board    b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
+JOIN task_category c ON c.id = t.category_id AND {adm.sql_soft_delete("c")}
+LEFT JOIN task_year_goal y ON y.task_id = t.id AND y.year = %s
+WHERE {adm.sql_task_admission("pg", "t")}
+  AND b.code = %s
+ORDER BY t.sort_order, t.id
+LIMIT %s
+"""
+    return sql, (y, code, int(limit))
+
+
+def milestone_list(
+    board_code: str,
+    year: int | str | None = None,
+    status: int | None = None,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """里程碑 / 标志性成果清单(rule:关联任务已发布且成果项未删)。
+
+    ``year`` 与 ``status``(0 未完成 / 1 已完成)可选;不传年份时返回该看板全部年度,
+    因此"某年成果"类问法必须由 caller 传 year。
+    """
+    code, hint = adm.check_board_code(board_code)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_task_admission("pg", "t"), "b.code = %s", adm.sql_soft_delete("m")]
+    params: list[object] = [code]
+    if year not in (None, ""):
+        y, hint = adm.check_year(year)
+        if hint:
+            raise ValueError(hint)
+        where.append("m.year = %s")
+        params.append(y)
+    if status is not None:
+        if int(status) not in (0, 1):
+            raise ValueError("milestone.status 只能是 0(未完成)或 1(已完成)")
+        where.append("m.status = %s")
+        params.append(int(status))
+    sql = f"""
+SELECT m.id, t.id AS task_id, t.task_name, m.year, m.category, m.group_name,
+       m.content, m.status, m.reporter_id, m.owner_id, m.sort_order
+FROM task_milestone m
+JOIN task t     ON t.id = m.task_id
+JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
+WHERE {"\n  AND ".join(where)}
+ORDER BY m.year, m.sort_order, m.id
+LIMIT %s
+"""
+    params.append(int(limit))
+    return sql, tuple(params)
+
+
+def freshness_distribution(
+    as_of: str,
+    board_code: str | None = None,
+    in_flight_only: bool = False,
+) -> tuple[str, tuple]:
+    """进展新鲜度分档(30 天内 / 31-90 天 / 91-180 天 / 从未报进展 / 超过 180 天)。
+
+    ``as_of`` **必须显式给**:分档以数据快照日为基准,不用 ``now()``
+    (见 ``AS_OF_TRAP_NOTE``)。桶标签带序号前缀并按标签排序,与原工具一致。
+
+    ``in_flight_only`` 只算在办任务(``status`` 0 与 1 都算在办)。原工具的 docstring
+    记下了这条差异:「从未报进展」在办是 8 条、全量是 9 条,差的那条是任务 88(已完成)
+    —— 两个数回答的是不同问题,不能混用。
+    """
+    _check_as_of(as_of)
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    ts = adm.parse_ts_sql("t.latest_progress_time")
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    board_join = ""
+    if board:
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    if in_flight_only:
+        where.append("t.status IN (0, 1)")
+    sql = f"""
+SELECT CASE
+           WHEN t.latest_progress_time IS NULL         THEN '4 从未报进展'
+           WHEN {ts} >= %s::date - interval '30 days'  THEN '1 30 天内'
+           WHEN {ts} >= %s::date - interval '90 days'  THEN '2 31-90 天'
+           WHEN {ts} >= %s::date - interval '180 days' THEN '3 91-180 天'
+           ELSE '5 超过 180 天'
+       END      AS freshness_bucket,
+       count(*) AS task_count
+FROM task t
+{board_join}
+WHERE {"\n  AND ".join(where)}
+GROUP BY freshness_bucket
+ORDER BY freshness_bucket
+"""
+    # as_of 在 SELECT 里出现三次;JOIN / WHERE 的过滤参数排在其后
+    return sql, (as_of, as_of, as_of, *params)
+
+
+def freshness_overall(
+    as_of: str,
+    board_code: str | None = None,
+    in_flight_only: bool = False,
+) -> tuple[str, tuple]:
+    """新鲜度总览:最新进展时间、距快照日滞后天数、任务总数。
+
+    与分档一起给出:回答"看板整体有多新"时不必再单独查任务总数,
+    也让分档之和可以自校验(应等于 ``task_total``)。
+    """
+    _check_as_of(as_of)
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    ts = adm.parse_ts_sql("t.latest_progress_time")
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    board_join = ""
+    if board:
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    if in_flight_only:
+        where.append("t.status IN (0, 1)")
+    sql = f"""
+SELECT {adm.normalize_ts_sql("MAX(t.latest_progress_time)")} AS newest_progress,
+       date_part('day', %s::date - MAX({ts}))::int           AS days_behind,
+       count(*)                                              AS task_total
+FROM task t
+{board_join}
+WHERE {"\n  AND ".join(where)}
+"""
+    return sql, (as_of, *params)
+
+
+def freshness_within(
+    as_of: str,
+    within_days: int,
+    board_code: str | None = None,
+) -> tuple[str, tuple]:
+    """在快照日前 ``within_days`` 天内报过进展的任务数(任意窗口,例如 7 天)。
+
+    固定档位表达不了任意窗口(题面里就有问 7 天的),所以单独给出这一条。
+    """
+    _check_as_of(as_of)
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    ts = adm.parse_ts_sql("t.latest_progress_time")
+    where = [adm.sql_task_admission("pg", "t"), "t.latest_progress_time IS NOT NULL"]
+    params: list[object] = []
+    board_join = ""
+    if board:
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    sql = f"""
+SELECT count(*) AS reported_within
+FROM task t
+{board_join}
+WHERE {"\n  AND ".join(where)}
+  AND {ts} >= %s::date - make_interval(days => %s)
+"""
+    return sql, (as_of, int(within_days), *params)
+
+
+def stale_tasks(
+    as_of: str,
+    stale_days: int,
+    board_code: str | None = None,
+    in_flight_only: bool = True,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """滞后任务清单:最新进展早于窗口的;从未报过的**也算滞后并排在最前**。
+
+    默认只看在办任务 —— "哪些在办任务拖着没更新"才是要问的问题,已完成任务长期
+    不更新属于正常。``NULLS FIRST`` 让从未报过的排最前。
+    """
+    _check_as_of(as_of)
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    ts = adm.parse_ts_sql("t.latest_progress_time")
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    board_join = ""
+    if board:
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    if in_flight_only:
+        where.append("t.status IN (0, 1)")
+    sql = f"""
+SELECT t.id, t.task_no, t.task_name, t.status, t.project_owner_name,
+       {adm.normalize_ts_sql("t.latest_progress_time")}     AS latest_progress_time,
+       CASE WHEN t.latest_progress_time IS NULL THEN NULL
+            ELSE date_part('day', %s::date - {ts})::int END AS days_behind
+FROM task t
+{board_join}
+WHERE {"\n  AND ".join(where)}
+  AND (t.latest_progress_time IS NULL
+       OR {ts} < %s::date - make_interval(days => %s))
+ORDER BY t.latest_progress_time NULLS FIRST, t.id
+LIMIT %s
+"""
+    return sql, (as_of, as_of, int(stale_days), *params, int(limit))
+
+
+def latest_progress_drift(
+    board_code: str | None = None,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """漂移检查:``task.latest_progress_time`` 与真实最新已发布进展不一致的任务。
+
+    冗余列随发布同步,可能落后于进展表。不查这一项的话,错误的新鲜度答案与正确的
+    答案从外观上无法区分 —— 原工具把这条检查直接写进了 docstring。
+    """
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    board_join = ""
+    if board:
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    sql = f"""
+SELECT t.id, t.task_no, t.task_name,
+       {adm.normalize_ts_sql("t.latest_progress_time")} AS denormalized_time,
+       {adm.normalize_ts_sql("m.newest")}               AS real_newest_progress
+FROM task t
+{board_join}
+JOIN LATERAL (
+    SELECT max(p.report_time) AS newest
+    FROM task_progress p
+    WHERE p.task_id = t.id AND p.is_published = 1
+) m ON TRUE
+WHERE {"\n  AND ".join(where)}
+  AND m.newest IS NOT NULL
+  AND (t.latest_progress_time IS NULL
+       OR {adm.parse_ts_sql("t.latest_progress_time")} <> {adm.parse_ts_sql("m.newest")})
+ORDER BY t.sort_order, t.id
+LIMIT %s
+"""
+    params.append(int(limit))
+    return sql, tuple(params)

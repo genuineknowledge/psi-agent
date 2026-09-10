@@ -182,3 +182,18 @@ def parse_ts_sql(column: str, dialect: str = "pg") -> str:
     if dialect == "pg":
         return f"({column})::timestamp"
     return f"STR_TO_DATE(({column}), '%Y-%m-%d %H:%i:%s')"
+
+
+def normalize_date_sql(column: str, dialect: str = "pg") -> str:
+    """Render a date-valued column as ``YYYY-MM-DD`` text.
+
+    ``task_progress.progress_date`` is declared ``date`` by the note, but the demo
+    snapshot stores it as text -- the same text-or-native split as the timestamp
+    columns.  Selecting it raw makes the answer envelope carry either a
+    ``datetime.date`` (formal source) or a ``str`` (text-backed source); casting
+    to ``date`` first then formatting gives every caller one stable shape, and is
+    a no-op on the formal source.
+    """
+    if dialect == "pg":
+        return f"to_char(({column})::date, 'YYYY-MM-DD')"
+    return f"DATE_FORMAT(({column}), '%Y-%m-%d')"
