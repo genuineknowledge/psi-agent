@@ -588,6 +588,18 @@ def weekly_aggregate(
         ascending: True with order_by=finish_rate puts the LOWEST rate first.
     """
 
+    formal = _formal.dispatch(
+        "weekly_aggregate",
+        group_by=group_by,
+        board=board,
+        metric=metric,
+        top=top,
+        order_by=order_by,
+        ascending=ascending,
+    )
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         if metric != "count":
             return {

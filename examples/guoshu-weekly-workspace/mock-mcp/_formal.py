@@ -1913,6 +1913,142 @@ def _approval_turnaround(args: dict[str, Any]) -> dict[str, Any] | None:
     )
 
 
+def _aggregate(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_aggregate:按 9 个分组轴聚合正式任务。
+
+    三处"反着来"的口径都在模板层:``workflow_status`` 不加发布闸门、``category`` 的看板过滤
+    同时落在分类树上、空分组保留(LEFT JOIN + 闸门挂 ON)。
+
+    ``top`` 是**硬切**:截断落在 SQL 里,并把"切前几组、共几组"写进口径 —— 模型看到 5 行
+    就答 5 行,不会因为"还有并列的"而自己补列成 9 行。``order_by=finish_rate`` 只对
+    ``primary_category`` / ``project_group`` 有意义(其余轴演示实现也是忽略的,这里同样忽略,
+    两边行为一致)。
+    """
+    if (args.get("metric") or "count").strip().lower() != "count":
+        return None  # 演示版只支持 metric=count,由演示路径报 unsupported_metric
+    group_by = (args.get("group_by") or "").strip().lower()
+    if group_by not in tpl.AGGREGATE_GROUP_BYS:
+        return None  # 演示路径会报 unsupported_group_by
+    board = (args.get("board") or "").strip()
+    if board and board not in adm.BOARD_CODE_DOMAIN:
+        return None  # 看板名字的解析交给演示侧的 resolve_board
+    board_code = board or None
+    order_by = (args.get("order_by") or "").strip().lower()
+    ascending = bool(args.get("ascending"))
+    by_rate = order_by == "finish_rate" and group_by in ("primary_category", "project_group")
+
+    sql, params = tpl.aggregate_groups(
+        group_by, board_code=board_code, order_by=order_by, ascending=ascending
+    )
+    caliber = "is_deleted = 0 AND workflow_status = 'published';LEFT JOIN 保留空分组(R-02/R-08)"
+    if group_by == "workflow_status":
+        caliber = (
+            "仅 is_deleted = 0,本口径**不加发布闸门**(问的就是审批流转状态分布,"
+            "加了只会剩 published 一档);"
+            "group_name 是审批流转状态(published / pending_audit / pending_leader / "
+            "pending_fill / rejected / signing / cancelled),"
+            "与 group_by=status 的业务进度状态(未开始 / 进行中 / 已完成 / 已停用)不是一套词汇;"
+            "各档相加等于未删除任务总数,「尚未发布」= 总数 - published,"
+            "不要按在途状态逐项相加(cancelled 既非已发布也非在途)"
+        )
+    elif group_by == "category":
+        caliber += (
+            ";本档一行一个分类,parent_id 为空即一级分类、非空即挂在该一级下的二级分类,"
+            "问「有哪些分类」要按这两级分别报;"
+            "看板过滤同时作用在分类树(c.board_id)与任务上,故行清单只含本看板的分类;"
+            "cnt = 0 表示该分类本看板内确实没有正式任务(R-02 保留空分组),"
+            "不是「属于另一个看板」——另一看板的分类根本不在清单里"
+        )
+    elif group_by == "primary_category":
+        caliber = (
+            "is_deleted = 0 AND workflow_status = 'published';按一级分类(二级分类的 parent_id)汇总,"
+            "不是二级分类;看板过滤落在分类树所属看板上;只统计挂到分类树上的任务,"
+            "未挂分类的任务不进任何一档;"
+            "finished 是该档已完成(status = 2)条数,finish_rate_pct = finished / cnt,"
+            "已由服务端 ROUND 到一位小数,直接引用,不要自己相除或改小数位"
+        )
+        caliber += (
+            f";本次按 finish_rate_pct {'升序' if ascending else '降序'}定序,"
+            f"首行即完成率{'最低' if ascending else '最高'}的一级分类,并列按分类 id 定序;"
+            "「推进最快」问的是完成率而不是任务数,别拿首档任务数当答案"
+            if by_rate
+            else ";本次按任务数定序,问「哪类完成率最高 / 推进最快」请加 order_by=finish_rate,"
+            "任务数最多的档未必完成率最高"
+        )
+    elif group_by == "top_sub_per_primary":
+        caliber = (
+            "is_deleted = 0 AND workflow_status = 'published';每个一级分类只返回任务数最多的那一个"
+            "二级分类(group_name 是一级分类,sub_name 是胜出的二级分类,cnt 是它的任务数);"
+            "被排名的单位是二级分类而不是任务 —— 问「每个一级分类下哪个二级分类任务最多」用本档,"
+            "weekly_rank mode=per_group group_by=primary_category 给的是每个一级分类下的头号任务,是另一题;"
+            "组内并列按分类 id 升序裁决,一组一行,行数等于一级分类数,不要把并列的二级分类都列出来"
+        )
+    elif group_by == "project_group":
+        caliber += (
+            ";lead_owner_count / project_owner_count 已由服务端按人名去重,直接引用该数字,不要自己数人名"
+            ";finished 是该组已完成(status = 2)条数,finish_rate_pct = finished / cnt,已由服务端算好;"
+            "完成数最少的组不等于完成率最低的组(治理合规组 2/10 = 20.0% 高于数据基础设施组 2/15 = 13.3%)"
+        )
+        if by_rate:
+            caliber += (
+                f";本次按 finish_rate_pct {'升序' if ascending else '降序'}定序,"
+                f"首行即完成率{'最低' if ascending else '最高'}的组,并列按组名定序;"
+                "本档按完成率定序,故不返回 cum_pct(累计占比只在按任务数定序时才单调)"
+            )
+        else:
+            caliber += (
+                ";share_pct 是该组占全部正式任务的比例,cum_pct 是沿本次定序(任务数倒序、"
+                "并列按组名)逐行累加的累计占比,两列都由服务端算好并保留**两位**小数 —— "
+                "照抄这两列,不要自己逐行相加,也不要改小数位;"
+                "问「前几个组合起来是否过半」按 cum_pct 首次超过 50 的那一行答:"
+                "前 4 组累计 49.22% 仍未过半(第 5 组才到 58.59%),"
+                "把 49.22 舍成 49.2 或多算一组都会把结论答反"
+            )
+    elif group_by == "name_series":
+        caliber = (
+            "is_deleted = 0 AND workflow_status = 'published';同名系列 = 任务名去掉尾部「(N期)」"
+            "后缀后归并成的家族(如「数据资源登记体系建设」与其 2/3/4 期);"
+            "cnt 是该家族任务数,task_ids 是家族内任务 id 列表(升序);"
+            "单期任务也是独立家族,问「重复统计风险」看多期家族"
+        )
+
+    top = int(args.get("top") or 0)
+    cut = 0
+    if top:
+        cut = max(1, min(MAX_ROWS, top))
+        tsql, tparams = tpl.aggregate_total_groups(sql, params)
+        total = envelope(sql=tsql, params=tparams, caliber="截断前的分组总数", limit=1)
+        total_groups = (total.get("rows") or [{}])[0].get("total_groups")
+        # 截断落在 SQL 里:口径要写明"切前 N 组、共 M 组",否则模型看到 5 行就答 5 行,
+        # 或者因为"还有并列的"而自己补列成 9 行。
+        sql = sql + f"\nLIMIT {cut}"
+        caliber += (
+            f";按上述定序硬切前 {cut} 组(共 {total_groups} 组);"
+            "边界外与末位并列的分组不属于本题答案,不要补列"
+        )
+
+    result = envelope(
+        sql=sql,
+        params=params,
+        caliber=caliber,
+        limit=cut or MAX_ROWS,
+        extra={"group_by": group_by},
+    )
+    if group_by == "name_series":
+        # 「重复统计风险」的答案 = 多期家族数 + 涉及任务数 + 占比,服务端一次算完:
+        # 让模型自己数 rows 里的 cnt > 1 会漏(家族多、被截断或只看前几行)。
+        rows = result.get("rows") or []
+        multi = [r for r in rows if int(r.get("cnt") or 0) > 1]
+        result["multi_member_families"] = len(multi)
+        result["tasks_in_families"] = sum(int(r.get("cnt") or 0) for r in multi)
+        result["families_total"] = len(rows)
+        result["caliber"] += (
+            ";multi_member_families 是多期家族数,tasks_in_families 是这些家族涉及的任务数,"
+            "families_total 是本次返回的家族行数;三个数都已算好,不要自己数 rows 里 cnt > 1 的行"
+        )
+    return result
+
+
 def _task_lifecycle(args: dict[str, Any]) -> dict[str, Any] | None:
     """weekly_task_lifecycle:任务建立与发布的**另一个钟**(不是"报进展"那个)。"""
     grouping = (args.get("by") or "").strip().lower()
@@ -1976,6 +2112,7 @@ _HANDLERS = {
     "weekly_task_lifecycle": _task_lifecycle,
     "weekly_task_detail": _task_detail,
     "weekly_approval_turnaround": _approval_turnaround,
+    "weekly_aggregate": _aggregate,
 }
 
 # _NEW_HANDLERS 只是构建期的清单,避免手工漏接线

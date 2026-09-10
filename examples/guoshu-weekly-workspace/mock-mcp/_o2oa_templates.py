@@ -4363,3 +4363,229 @@ ORDER BY pending_days DESC, t.id
 LIMIT %s
 """
     return sql, (as_of, max(1, min(50, int(limit))))
+
+
+# ---- batch 19: 任务聚合(aggregate 的 9 个分组轴)-------------------------------
+#
+# 三条口径各有一处"反着来":
+#
+#   * ``workflow_status`` 是**唯一不加发布闸门**的分组 —— 问的就是审批流转状态分布,
+#     把 published 当前置条件会只剩一档 128,其余六档(未发布的 22 条)全部消失;
+#   * ``category`` 的看板过滤要**同时**落在分类树(``c.board_id``)与任务上:只过滤计数时
+#     行清单仍是全部 47 个分类,另一看板的只是变成 cnt=0,与"本看板确实没有任务"长得一样
+#     (技术组真值是 28 = 7 个一级 + 21 个二级);
+#   * 空分组要保留(R-02):``board`` / ``category`` 用 LEFT JOIN,闸门挂在 **ON** 上。
+
+AGGREGATE_GROUP_BYS = (
+    "board",
+    "category",
+    "primary_category",
+    "top_sub_per_primary",
+    "status",
+    "workflow_status",
+    "project_group",
+    "owner",
+    "name_series",
+)
+
+# 业务进度状态(与 workflow_status 是两套词汇,不可互换)。
+BUSINESS_STATUS_LABELS = (
+    "CASE t.status WHEN 0 THEN '未开始' WHEN 1 THEN '进行中' "
+    "WHEN 2 THEN '已完成' WHEN 3 THEN '已停用' ELSE '未知' END"
+)
+
+# 项目组:空值归成"(未填)"而不是自成一档空字符串。
+_PROJECT_GROUP = "coalesce(nullif(btrim(t.project_group), ''), '(未填)')"
+# 牵头领导:同样归并空值(R-11:该栏有不止一种填法,先按填法枚举再计数,不做归一化猜测)。
+_LEAD_OWNER = "coalesce(nullif(btrim(t.lead_owner_name), ''), '(未填)')"
+
+# 同名系列:任务名去掉尾部「(N期)」后归并成家族。全角括号按转义序列写出
+# (它是任务名的字面量的一部分,写成全角会触发 RUF001)。
+SERIES_FAMILY_RE = "\uff08[0-9]+期\uff09$"
+
+
+def _aggregate_scope(board_code: str | None) -> tuple[str, list[object]]:
+    """聚合的准入口径(可选按看板收窄)。"""
+    code, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    if code:
+        where.append("t.board_id = (SELECT id FROM task_board WHERE code = %s AND is_deleted = 0)")
+        params.append(code)
+    return "\n  AND ".join(where), params
+
+
+def aggregate_groups(
+    group_by: str,
+    board_code: str | None = None,
+    order_by: str = "",
+    ascending: bool = False,
+) -> tuple[str, tuple]:
+    """按 ``group_by`` 聚合正式任务(LEFT JOIN 保留空分组,R-02/R-08)。
+
+    行数上限**不写进 SQL**:截断由上层加(它还要先数有多少组,才能把"切掉了几个"写进口径)。
+    """
+    key = (group_by or "").strip().lower()
+    if key not in AGGREGATE_GROUP_BYS:
+        raise ValueError(f"不支持的 group_by:{group_by};支持 {', '.join(AGGREGATE_GROUP_BYS)}")
+    by_rate = (order_by or "").strip().lower() == "finish_rate"
+    direction = "ASC" if ascending else "DESC"
+
+    if key == "workflow_status":
+        # 唯一不加发布闸门的一档:问的就是审批流转状态分布。
+        where = [adm.sql_soft_delete("t")]
+        params: list[object] = []
+        code, hint = adm.check_board_code(board_code) if board_code else (None, None)
+        if hint:
+            raise ValueError(hint)
+        if code:
+            where.append("t.board_id = (SELECT id FROM task_board WHERE code = %s AND is_deleted = 0)")
+            params.append(code)
+        sql = f"""
+SELECT t.workflow_status AS group_name, count(*) AS cnt
+FROM task t
+WHERE {"\n  AND ".join(where)}
+GROUP BY t.workflow_status
+ORDER BY cnt DESC, t.workflow_status
+"""
+        return sql, tuple(params)
+
+    scope, params = _aggregate_scope(board_code)
+    if key == "board":
+        sql = f"""
+SELECT b.name AS group_name, count(t.id) AS cnt
+FROM task_board b
+LEFT JOIN task t ON t.board_id = b.id AND {scope}
+WHERE {adm.sql_soft_delete("b")}
+GROUP BY b.id, b.name, b.sort_order
+ORDER BY b.sort_order
+"""
+        return sql, tuple(params)
+
+    if key == "category":
+        # 看板过滤要**同时**落在分类树上:只过滤计数会让另一看板的 19 个分类以 cnt=0 出现。
+        cat_board = ""
+        if board_code:
+            cat_board = "\n  AND c.board_id = (SELECT id FROM task_board WHERE code = %s AND is_deleted = 0)"
+        sql = f"""
+SELECT c.name AS group_name, c.parent_id, count(t.id) AS cnt
+FROM task_category c
+LEFT JOIN task t ON t.category_id = c.id AND {scope}
+WHERE {adm.sql_soft_delete("c")}{cat_board}
+GROUP BY c.id, c.name, c.parent_id
+ORDER BY cnt DESC, c.id
+"""
+        tail = (board_code,) if board_code else ()
+        return sql, (*params, *tail)
+
+    if key == "primary_category":
+        board_filter = ""
+        if board_code:
+            board_filter = "\n  AND cb.id = (SELECT id FROM task_board WHERE code = %s AND is_deleted = 0)"
+        order = (
+            f"finish_rate_pct {direction}, pc.id" if by_rate else "cnt DESC, pc.id"
+        )
+        sql = f"""
+SELECT pc.name AS group_name, count(*) AS cnt,
+       count(*) FILTER (WHERE t.status = 2) AS finished,
+       round(count(*) FILTER (WHERE t.status = 2)::numeric / NULLIF(count(*), 0) * 100, 1)
+           AS finish_rate_pct
+FROM task t
+JOIN task_category c  ON c.id = t.category_id AND {adm.sql_soft_delete("c")}
+JOIN task_board    cb ON cb.id = c.board_id   AND {adm.sql_soft_delete("cb")}{board_filter}
+JOIN task_category pc ON pc.id = c.parent_id  AND {adm.sql_soft_delete("pc")}
+WHERE {adm.sql_task_admission("pg", "t")}
+GROUP BY pc.id, pc.name
+ORDER BY {order}
+"""
+        tail = (board_code,) if board_code else ()
+        return sql, (*tail,)
+
+    if key == "top_sub_per_primary":
+        # 每个一级分类下任务数最多的那一个二级分类:组内并列按 c.id 裁决(与参考实现的
+        # ROW_NUMBER 同一套定序键),一组一行,行数即一级分类数。
+        sql = f"""
+SELECT r.primary_name AS group_name, r.sub_name, r.tasks AS cnt
+FROM (
+    SELECT pc.name AS primary_name, c.name AS sub_name,
+           count(t.id) AS tasks,
+           row_number() OVER (PARTITION BY pc.id ORDER BY count(t.id) DESC, c.id) AS rn
+    FROM task t
+    JOIN task_category c  ON c.id = t.category_id AND {adm.sql_soft_delete("c")}
+    JOIN task_category pc ON pc.id = c.parent_id  AND {adm.sql_soft_delete("pc")}
+    WHERE {scope}
+    GROUP BY pc.id, pc.name, c.id, c.name
+) r
+WHERE r.rn = 1
+ORDER BY r.primary_name
+"""
+        return sql, tuple(params)
+
+    if key == "status":
+        sql = f"""
+SELECT {BUSINESS_STATUS_LABELS} AS group_name, count(*) AS cnt
+FROM task t
+WHERE {scope}
+GROUP BY t.status
+ORDER BY t.status
+"""
+        return sql, tuple(params)
+
+    if key == "owner":
+        sql = f"""
+SELECT {_LEAD_OWNER} AS group_name, count(*) AS cnt
+FROM task t
+WHERE {scope}
+GROUP BY group_name
+ORDER BY cnt DESC, group_name
+"""
+        return sql, tuple(params)
+
+    if key == "name_series":
+        # 家族名用正则算;正则作为**参数**传(全角括号 + 结尾锚点,拼进文本要处理转义)。
+        sql = f"""
+SELECT regexp_replace(t.task_name, %s, '') AS family_name,
+       count(*) AS cnt,
+       string_agg(t.id::text, ',' ORDER BY t.id) AS task_ids
+FROM task t
+WHERE {scope}
+GROUP BY family_name
+ORDER BY cnt DESC, family_name
+"""
+        return sql, (SERIES_FAMILY_RE, *params)
+
+    # project_group:占比与累计占比必须服务端算。小数位取 **2** 而不是 1:
+    # 累计占比要跟阈值比大小,58.59% 舍成 58.6% 再跟 55% 比就会串档。
+    share_cols = ""
+    if not by_rate:
+        share_cols = (
+            f"round(count(*)::numeric / NULLIF(sum(count(*)) OVER (), 0) * 100, 2) AS share_pct,\n       "
+            f"round((sum(count(*)) OVER (ORDER BY count(*) DESC, {_PROJECT_GROUP}))::numeric\n"
+            f"             / NULLIF(sum(count(*)) OVER (), 0) * 100, 2) AS cum_pct,\n       "
+        )
+    order = f"finish_rate_pct {direction}, group_name" if by_rate else "cnt DESC, group_name"
+    sql = f"""
+SELECT {_PROJECT_GROUP} AS group_name,
+       count(*) AS cnt,
+       count(*) FILTER (WHERE t.status = 2) AS finished,
+       round(count(*) FILTER (WHERE t.status = 2)::numeric / NULLIF(count(*), 0) * 100, 1)
+           AS finish_rate_pct,
+       {share_cols}count(DISTINCT nullif(btrim(t.lead_owner_name), ''))    AS lead_owner_count,
+       count(DISTINCT nullif(btrim(t.project_owner_name), '')) AS project_owner_count
+FROM task t
+WHERE {scope}
+GROUP BY group_name
+ORDER BY {order}
+"""
+    return sql, tuple(params)
+
+
+def aggregate_total_groups(sql: str, params: tuple) -> tuple[str, tuple]:
+    """本次定序下的**分组总数**(截断前)。
+
+    截断落在上层,所以要先知道总共有几组,才能把"硬切前 N 组、共 M 组"写进口径 ——
+    模型看到 5 行就答 5 行,不会因为"还有并列的"而自己补列成 9 行。
+    """
+    return f"SELECT count(*) AS total_groups FROM (\n{sql}\n) all_groups", params

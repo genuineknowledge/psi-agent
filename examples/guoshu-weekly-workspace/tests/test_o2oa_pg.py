@@ -527,10 +527,8 @@ class TestFormalBackend:
         monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
         assert _formal.enabled() is True
         # 用真正未接线的工具做断言:已接线的工具会去连库,不能拿来当反例
-        # (schema / task_lifecycle / task_detail / approval_turnaround 接线后,
-        #  断言逐批挪到仍未迁移的工具上 —— 现在只剩这三个)
-        assert _formal.dispatch("weekly_aggregate", group_by="board") is None
-        assert _formal.dispatch("weekly_group_stats") is None
+        assert _formal.dispatch("weekly_group_stats", scope="owners") is None
+        assert _formal.dispatch("weekly_aggregate", group_by="nope") is None
         assert _formal.dispatch("weekly_schema", board="技术看板") is None  # 看板名走演示侧解析
 
     def test_wired_schema_routes_to_the_formal_source(self, monkeypatch):
@@ -1570,3 +1568,133 @@ class TestApprovalTurnaroundRouting:
         assert got is not None and len(seen) == 1 and seen[0]["limit"] == 1
         # 单行汇总没有行数上限参数,信封不该按 limit+1 去查
         assert seen[0].get("cap_last_param", False) is False
+
+
+class TestAggregateTemplates:
+    """聚合的三处"反着来":workflow_status 不带闸门、category 过滤落在分类树、空分组保留。"""
+
+    def test_workflow_status_is_the_only_gate_free_axis(self):
+        sql, params = o2.aggregate_groups("workflow_status")
+        assert "workflow_status" in sql and "workflow_status = 'published'" not in sql
+        assert "is_deleted = 0" in sql and params == ()
+        sql, params = o2.aggregate_groups("workflow_status", board_code="tech")
+        assert "task_board WHERE code = %s" in sql and params == ("tech",)
+        # 其余轴照常带发布闸门
+        for axis in ("board", "category", "primary_category", "status", "owner", "project_group"):
+            sql, _params = o2.aggregate_groups(axis)
+            assert "workflow_status = 'published'" in sql, axis
+
+    def test_category_board_filter_lands_on_the_category_tree(self):
+        """只过滤计数会让另一看板的 19 个分类以 cnt=0 出现,与"本看板确实没有"长得一样。"""
+        sql, params = o2.aggregate_groups("category", board_code="tech")
+        assert "c.board_id = (SELECT id FROM task_board WHERE code = %s AND is_deleted = 0)" in sql
+        # 两个看板参数:ON 子句里的那条(任务侧)+ 分类树那条 —— 参数顺序与 SQL 文本一致
+        assert params == ("tech", "tech")
+        assert sql.index("%s") < sql.index("c.board_id = (")
+        sql, params = o2.aggregate_groups("category")
+        assert "c.board_id" not in sql and params == ()
+
+    def test_empty_groups_survive(self):
+        sql, _params = o2.aggregate_groups("board")
+        assert "LEFT JOIN task t ON t.board_id = b.id AND" in sql
+        sql, _params = o2.aggregate_groups("category")
+        assert "LEFT JOIN task t ON t.category_id = c.id AND" in sql
+
+    def test_project_group_share_uses_two_decimals(self):
+        """累计占比要跟阈值比大小:58.59% 舍成 58.6% 再跟 55% 比就会串档。"""
+        sql, _params = o2.aggregate_groups("project_group")
+        assert "* 100, 2) AS share_pct" in sql and "* 100, 2) AS cum_pct" in sql
+        assert "sum(count(*)) OVER (ORDER BY count(*) DESC," in sql
+        assert "count(DISTINCT nullif(btrim(t.lead_owner_name), ''))" in sql
+
+    def test_rate_ordering_drops_cum_pct(self):
+        """按完成率排之后累计不再单调,留着就是个假信号。"""
+        sql, _params = o2.aggregate_groups("project_group", order_by="finish_rate")
+        assert "cum_pct" not in sql and "share_pct" not in sql
+        assert "ORDER BY finish_rate_pct DESC, group_name" in sql
+        sql, _params = o2.aggregate_groups("project_group", order_by="finish_rate", ascending=True)
+        assert "ORDER BY finish_rate_pct ASC, group_name" in sql
+
+    def test_top_sub_per_primary_is_one_row_per_group(self):
+        sql, _params = o2.aggregate_groups("top_sub_per_primary")
+        assert "row_number() OVER (PARTITION BY pc.id ORDER BY count(t.id) DESC, c.id)" in sql
+        assert "WHERE r.rn = 1" in sql
+
+    def test_name_series_passes_the_regex_as_a_parameter(self):
+        sql, params = o2.aggregate_groups("name_series")
+        assert "regexp_replace(t.task_name, %s, '')" in sql
+        assert "string_agg(t.id::text, ',' ORDER BY t.id)" in sql
+        assert params[0] == o2.SERIES_FAMILY_RE and "期" not in sql  # 正则不在 SQL 文本里
+
+    def test_total_groups_wraps_the_same_sql(self):
+        sql, params = o2.aggregate_groups("project_group", board_code="tech")
+        wrapped, wparams = o2.aggregate_total_groups(sql, params)
+        assert wrapped.startswith("SELECT count(*) AS total_groups FROM (")
+        assert wrapped.rstrip().endswith(") all_groups")
+        assert wparams == params
+
+    def test_unknown_axis_rejected(self):
+        with pytest.raises(ValueError, match="不支持的 group_by"):
+            o2.aggregate_groups("task_name")
+
+
+class TestAggregateRouting:
+    @staticmethod
+    def _capture(monkeypatch) -> list[dict]:
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            row = {"group_name": "甲", "cnt": 3, "total_groups": 11,
+                   "multi_member_families": 33, "tasks_in_families": 97}
+            result = {"ok": True, "columns": ["c"], "rows": [row], "row_count": 1, "caliber": "口径"}
+            result.update(kwargs.get("extra") or {})
+            return result
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        return seen
+
+    def test_unknown_axis_and_metric_fall_back(self, monkeypatch):
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _formal.dispatch("weekly_aggregate", group_by="nope") is None
+        assert _formal.dispatch("weekly_aggregate", group_by="board", metric="sum") is None
+        assert _formal.dispatch("weekly_aggregate", group_by="board", board="技术看板") is None
+
+    def test_top_counts_groups_then_appends_the_cut(self, monkeypatch):
+        """截断落在 SQL 里,且口径要写"切前 N 组、共 M 组",否则模型会自己补列。"""
+        seen = self._capture(monkeypatch)
+        got = _formal._aggregate({"group_by": "project_group", "top": 4})
+        assert got is not None and len(seen) == 2  # 先数总数,再取前 4
+        assert "total_groups" in seen[0]["sql"]
+        assert seen[1]["sql"].rstrip().endswith("LIMIT 4")
+        # 口径断言要看**传给信封的那一段**(假信封回的是它自己的"口径")
+        assert "硬切前 4 组" in seen[1]["caliber"] and "共 11 组" in seen[1]["caliber"]
+        assert "不要补列" in seen[1]["caliber"]
+        assert got["group_by"] == "project_group"
+
+    def test_without_top_nothing_is_cut(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        got = _formal._aggregate({"group_by": "board"})
+        assert got is not None and len(seen) == 1
+        assert "LIMIT" not in seen[0]["sql"]
+        assert "硬切" not in seen[0]["caliber"]
+
+    def test_name_series_hoists_the_repeat_count(self, monkeypatch):
+        """三个自检数从**本次返回的行**里算(不是写死),假信封给一行 cnt=3 就应是 1/3/1。"""
+        seen = self._capture(monkeypatch)
+        got = _formal._aggregate({"group_by": "name_series"})
+        assert got is not None and len(seen) == 1
+        assert got["multi_member_families"] == 1
+        assert got["tasks_in_families"] == 3
+        assert got["families_total"] == 1
+        assert "不要自己数 rows 里 cnt > 1 的行" in got["caliber"]
+
+    def test_rate_order_only_applies_to_the_two_rate_axes(self, monkeypatch):
+        """其余轴的 order_by 演示实现也是忽略的 —— 正式源同样忽略,两边行为一致。"""
+        seen = self._capture(monkeypatch)
+        _formal._aggregate({"group_by": "board", "order_by": "finish_rate"})
+        assert "finish_rate_pct" not in seen[0]["sql"]
+        seen.clear()
+        _formal._aggregate({"group_by": "project_group", "order_by": "finish_rate"})
+        assert "ORDER BY finish_rate_pct" in seen[0]["sql"]
