@@ -17,7 +17,7 @@ TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-export = importlib.import_module("meeting_record_export")  # ty: ignore[unresolved-import]
+export = importlib.import_module("meeting_record_export")
 
 #: 转写 record_file_id（管道 manifest 里的那个）
 RECORD_ID = "2097519504906416129"
