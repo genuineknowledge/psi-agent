@@ -1297,7 +1297,6 @@ from _feishu.sheet import (  # noqa: E402,F401
 )
 from _feishu.strike import (  # noqa: E402,F401
     _col_letter,
-    _find_col,
     _norm_name,
     _parse_cell_strikes,
     sheet_strike_read_impl,
