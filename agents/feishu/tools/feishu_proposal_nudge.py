@@ -68,9 +68,9 @@ async def feishu_proposal_nudge(
     except json.JSONDecodeError:
         card = {"ok": False, "error": card_raw if isinstance(card_raw, str) else "card parse failed"}
 
-    card_ok = bool(card.get("ok")) if isinstance(card, dict) and "ok" in card else not str(
-        card_raw
-    ).startswith("[Error]")
+    card_ok = (
+        bool(card.get("ok")) if isinstance(card, dict) and "ok" in card else not str(card_raw).startswith("[Error]")
+    )
 
     return _f.dumps_result(
         {

@@ -22,11 +22,7 @@ def score_reply(text: str, case: dict[str, Any]) -> dict[str, Any]:
             continue
         if not any(n in body for n in needles):
             missing.append(needles)
-    forbid_hits = [
-        str(f)
-        for f in (case.get("forbid_any") or [])
-        if str(f).strip() and str(f) in body
-    ]
+    forbid_hits = [str(f) for f in (case.get("forbid_any") or []) if str(f).strip() and str(f) in body]
     ok = (not empty) and (not missing) and (not forbid_hits)
     return {
         "ok": ok,

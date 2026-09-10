@@ -19,13 +19,7 @@ score_mod: Any = importlib.import_module("_feature_uat_score")
 impl: Any = importlib.import_module("_feature_uat_impl")
 tool: Any = importlib.import_module("poc_feature_uat")
 
-PLAYBOOK = (
-    FEISHU_ROOT
-    / "skills"
-    / "haitun-feature-uat"
-    / "playbooks"
-    / "proposal-capabilities-natural.json"
-)
+PLAYBOOK = FEISHU_ROOT / "skills" / "haitun-feature-uat" / "playbooks" / "proposal-capabilities-natural.json"
 
 
 def test_score_expect_groups_and_forbid() -> None:
@@ -81,9 +75,7 @@ async def test_runner_pass_with_scripted_replies() -> None:
         created.append(sid_hint)
         return {"ok": True, "session_id": f"b-{len(created)}"}
 
-    async def send_message(
-        target: str, message: str, timeout_seconds: float
-    ) -> dict[str, Any]:
+    async def send_message(target: str, message: str, timeout_seconds: float) -> dict[str, Any]:
         assert target == "b-1"
         if message == "hello":
             return {"ok": True, "reply_text": "这是中事,建议整理。"}
@@ -117,9 +109,7 @@ async def test_runner_refuses_current_session() -> None:
     async def create_session(sid_hint: str) -> dict[str, Any]:
         return {"ok": True, "session_id": "same"}
 
-    async def send_message(
-        target: str, message: str, timeout_seconds: float
-    ) -> dict[str, Any]:
+    async def send_message(target: str, message: str, timeout_seconds: float) -> dict[str, Any]:
         raise AssertionError("must not send")
 
     result = await impl.run_feature_uat(
@@ -150,9 +140,7 @@ async def test_runner_fail_on_missing_expect() -> None:
     async def create_session(sid_hint: str) -> dict[str, Any]:
         return {"ok": True, "session_id": "b-x"}
 
-    async def send_message(
-        target: str, message: str, timeout_seconds: float
-    ) -> dict[str, Any]:
+    async def send_message(target: str, message: str, timeout_seconds: float) -> dict[str, Any]:
         return {"ok": True, "reply_text": "我帮你排个 checklist。"}
 
     result = await impl.run_feature_uat(
@@ -219,9 +207,7 @@ async def test_fixed_session_skips_create() -> None:
         creates += 1
         return {"ok": True, "session_id": "should-not"}
 
-    async def send_message(
-        target: str, message: str, timeout_seconds: float
-    ) -> dict[str, Any]:
+    async def send_message(target: str, message: str, timeout_seconds: float) -> dict[str, Any]:
         assert target == "existing-b"
         return {"ok": True, "reply_text": "ok"}
 
@@ -305,11 +291,7 @@ async def test_chat_via_gateway_parses_sse(monkeypatch: pytest.MonkeyPatch) -> N
         status = 200
 
         def __init__(self) -> None:
-            body = (
-                b'data: {"type":"text","text":"hello "}\n\n'
-                b'data: {"type":"text","text":"world"}\n\n'
-                b"data: [DONE]\n\n"
-            )
+            body = b'data: {"type":"text","text":"hello "}\n\ndata: {"type":"text","text":"world"}\n\ndata: [DONE]\n\n'
             self.content = _FakeContent(body)
 
         async def __aenter__(self) -> _FakeResp:

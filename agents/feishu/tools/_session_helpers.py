@@ -1658,9 +1658,7 @@ async def create_session(
         # Prefer Gateway defaults.agent so tool-spawned sessions share the same
         # capability pack as SPA / Feishu unless the caller overrides.
         try:
-            defaults = await _sub._fetch_gateway_json(
-                f"{resolved_gateway.rstrip('/')}/defaults"
-            )
+            defaults = await _sub._fetch_gateway_json(f"{resolved_gateway.rstrip('/')}/defaults")
             if isinstance(defaults, dict):
                 default_agent = str(defaults.get("agent", "")).strip()
                 if default_agent:

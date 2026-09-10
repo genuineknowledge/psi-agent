@@ -71,9 +71,7 @@ async def test_create_success_mocked(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.anyio
-async def test_create_passes_explicit_agent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_create_passes_explicit_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
     async def fake_resolve(_workspace: Path) -> str:
@@ -85,9 +83,7 @@ async def test_create_passes_explicit_agent(
     async def fake_fetch(url: str, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
         raise AssertionError("defaults must not be fetched when agent= is set")
 
-    async def fake_post(
-        url: str, body: dict[str, Any], *, timeout_seconds: float = 30.0
-    ) -> dict[str, Any]:
+    async def fake_post(url: str, body: dict[str, Any], *, timeout_seconds: float = 30.0) -> dict[str, Any]:
         captured["body"] = body
         return {
             "id": "new-session-2",
@@ -120,9 +116,7 @@ async def test_create_passes_explicit_agent(
 
 
 @pytest.mark.anyio
-async def test_create_uses_explicit_gateway_url(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_create_uses_explicit_gateway_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     async def never_resolve(_workspace: Path) -> str:
         raise AssertionError("resolve_gateway_url must not run when gateway_url is set")
 
@@ -133,9 +127,7 @@ async def test_create_uses_explicit_gateway_url(
     async def fake_fetch(url: str, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
         return {"agent": ""}
 
-    async def fake_post(
-        url: str, body: dict[str, Any], *, timeout_seconds: float = 30.0
-    ) -> dict[str, Any]:
+    async def fake_post(url: str, body: dict[str, Any], *, timeout_seconds: float = 30.0) -> dict[str, Any]:
         assert url.startswith("http://10.0.0.2:8765/")
         return {
             "id": "remote-1",
