@@ -103,6 +103,8 @@ jobs:
         --add-data src/psi_agent/gateway/desktop/spa/dist:psi_agent/gateway/desktop/spa/dist
         --add-data src/psi_agent/gateway/desktop/spa-v2/dist:psi_agent/gateway/desktop/spa-v2/dist
         --add-data src/psi_agent/i18n:psi_agent/i18n
+        --hidden-import psi_agent.session._compaction
+        --hidden-import sqlite3
         --collect-submodules any_llm
         --collect-submodules mcp
         --collect-submodules serper_mcp_server
@@ -151,6 +153,13 @@ jobs:
         working-directory: src/psi_agent/gateway/desktop/spa-v2
       - shell: bash
         run: uv run pyinstaller $PYINSTALLER_COMMON_FLAGS src/psi_agent/cli.py
+      - name: Smoke-test frozen desktop system hooks
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: >-
+          uv run python scripts/pyinstaller_system_smoke.py
+          --exe pyinstaller-dist/psi-agent.exe
+          --agent agents/desktop
       - uses: actions/upload-artifact@v7
         with:
           name: psi-agent-pyinstaller-${{ matrix.os }}
