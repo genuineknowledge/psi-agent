@@ -27,10 +27,10 @@ def test_buckets_are_exclusive_and_complete() -> None:
     )
     assert out["缺写"] == ["在职缺写"]
     assert out["请假免填"] == ["在职请假"]
-    assert out["已离职/冻结"] == ["离职"]
+    # 离职人员在工具内部剔除:桶里没有,只算总数一致性
     assert out["解析失败"] == ["重名", "名字对不上请假"]
     assert out["已填"] == ["在职已填"]
-    total = sum(len(out[k]) for k in ("缺写", "请假免填", "已离职/冻结", "解析失败", "已填"))
+    total = sum(len(out[k]) for k in ("缺写", "请假免填", "解析失败", "已填")) + 1  # +1 = 内部剔除的离职者
     assert total == len(people)
 
 

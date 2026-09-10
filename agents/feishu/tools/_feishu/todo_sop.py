@@ -72,9 +72,9 @@ async def todo_fill_status_impl(
 ) -> dict[str, Any]:
     """Deterministic 缺写 pipeline: read board → group by mentor → classify → check leave.
 
-    Returns buckets 缺写/请假免填/已离职或冻结/解析失败/已填. 判定口径全在代码里:
-    - 已离职/冻结(通讯录已移除或 status 标记不活跃)不查假、不进缺写,
-      且对 mentor 输出完全不体现(表格/文字/报告都不出现,也不解释跳过);
+    Returns buckets 缺写/请假免填/解析失败/已填. 判定口径全在代码里:
+    - 已离职/冻结(通讯录已移除或 status 标记不活跃)在工具内部剔除:
+      不查假、不进缺写、**不返回**——调用方拿不到名字,输出天然不体现;
     - 解析失败(重名等)不进缺写,归「解析失败」;
     - 在职且当期格空白 → 查假,该日命中已通过请假 = 请假免填,否则 = 缺写;
     - 在职且当期格非空 = 已填。
@@ -93,36 +93,46 @@ async def todo_fill_status_impl(
     if not obj_token:
         return _core._error(f"wiki get_node 没拿到 obj_token: {board_link}")
 
-    # 2. 读表(前 60 行,表头+人员行足够)
-    grid = await read_sheet_grid_impl(obj_token, max_rows=60, user_key=user_key)
-    if not grid.get("ok"):
-        return grid
-    rows = grid.get("rows", []) or grid.get("values", []) or []
-    if not rows:
+    # 2. 表头限列单行读(全宽整表读会被行边界字符预算截成两三行,名单全丢)
+    header_grid = await read_sheet_grid_impl(obj_token, range_="!A1:AZ1", max_rows=1, user_key=user_key)
+    if not header_grid.get("ok"):
+        return header_grid
+    header_rows = header_grid.get("rows", []) or header_grid.get("values", []) or []
+    if not header_rows:
         return _core._error("看板表读不到内容。")
 
     # 3. 表结构解析:第 1 行表头;人名列/mentor 列/cycle_date 列按表头文字找
-    header = [str(c).strip() for c in rows[0]]
+    header = [str(c).strip() for c in header_rows[0]]
     person_col = _find_col(header, ("负责人", "人", "姓名"))
     mentor_col = _find_col(header, ("mentor", "上级", "导师"))
     if person_col < 0:
         return _core._error(f"人名列认不出来,表头: {header[:8]}")
     date_col = _find_col(header, (cycle_date,))
 
-    # 4. 名单:人员行 = 人名列非空;mentor 过滤
+    # 4. 名单:人员行 = 人名列非空;mentor 过滤。限列 + 分页,避免预算截断丢行。
     people: list[dict[str, Any]] = []
-    for row in rows[1:]:
-        if len(row) <= person_col:
-            continue
-        name = str(row[person_col]).strip()
-        if not name:
-            continue
-        if mentor_name:
-            m = str(row[mentor_col]).strip() if mentor_col >= 0 and len(row) > mentor_col else ""
-            if m != mentor_name:
+    start_row = 2  # 表头占第 1 行
+    for _ in range(8):  # 最多翻 8 页(400 行)
+        grid = await read_sheet_grid_impl(
+            obj_token, range_="!A1:AZ400", max_rows=50, start_row=start_row, user_key=user_key
+        )
+        if not grid.get("ok"):
+            return grid
+        for row in grid.get("rows", []) or []:
+            if len(row) <= person_col:
                 continue
-        cell = str(row[date_col]).strip() if date_col >= 0 and len(row) > date_col else ""
-        people.append({"name": name, "filled": bool(cell)})
+            name = str(row[person_col]).strip()
+            if not name:
+                continue
+            if mentor_name:
+                m = str(row[mentor_col]).strip() if mentor_col >= 0 and len(row) > mentor_col else ""
+                if m != mentor_name:
+                    continue
+            cell = str(row[date_col]).strip() if date_col >= 0 and len(row) > date_col else ""
+            people.append({"name": name, "filled": bool(cell)})
+        if not grid.get("has_more"):
+            break
+        start_row = grid.get("next_start_row") or start_row + 1
 
     # 5. 离职/在职分类(确定性)
     classified = await member_status_check_impl([p["name"] for p in people], user_key)
@@ -171,7 +181,6 @@ def _build_buckets(
         "mentor_name": mentor_name or "(全部)",
         "缺写": [],
         "请假免填": [],
-        "已离职/冻结": sorted(resigned),
         "解析失败": sorted(unresolved),
         "已填": [],
     }
