@@ -1017,9 +1017,139 @@ def _short_window_hint() -> str:
     )
 
 
+def _milestone_stats(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_milestone_stats:里程碑统计(6 个 scope x 10 个维度)。
+
+    三条判据的由来见 ``tpl.milestone_stats`` 上方那段注释。``per_task`` 在演示源里
+    是**三个信封**(逐任务清单 + 总览 + 并列数)拼出来的,这里同样合成一个 ——
+    ``summary`` 是总览那一行(不是行数组),``top_tie_count`` 是并列档条数。
+
+    参数名跟工具契约走:行数上限叫 ``top``(不是 ``limit``)。
+    """
+    scope = (args.get("scope") or "summary").strip().lower()
+    if scope not in tpl.MILESTONE_STATS_SCOPES:
+        return None  # 演示路径会报 unsupported_scope
+    by = (args.get("by") or "category").strip().lower()
+    if scope == "by_dimension" and by not in tpl.MILESTONE_DIMENSIONS:
+        return None  # 演示路径会报 unsupported_group_by
+    kind = (args.get("kind") or "task_done_milestones_open").strip().lower()
+    if scope == "mismatch" and kind not in tpl.MILESTONE_MISMATCH_KINDS:
+        return None
+    year = int(args.get("year") or 0) or None
+    category = (args.get("category") or "").strip() or None
+    min_total = max(0, int(args.get("min_total") or 0))
+    top = max(1, min(MAX_ROWS, int(args.get("top") or 8)))
+
+    gate_note = "m.is_deleted = 0 且关联任务满足 is_deleted = 0 AND workflow_status = 'published'"
+    status_note = "m.status 是 0/1 两值码:1 已完成、0 未完成,「已完成」只认 status = 1"
+    span = []
+    if year:
+        span.append(f"仅 {year} 年度里程碑")
+    if category:
+        span.append(f"仅类别「{category}」")
+    span_note = (";" + ";".join(span)) if span else ""
+
+    if scope == "per_task":
+        # 逐任务清单:LEFT JOIN,零里程碑任务保留为 0(inner join 会把它们整行抹掉,
+        # 而覆盖率的分母正是它们),年度/类别条件挂在 JOIN 的 ON 上,见模板注释。
+        sql, params = tpl.milestone_per_task_rows(year, category, limit=top)
+        result = envelope(
+            sql=sql,
+            params=params,
+            caliber=(
+                f"is_deleted = 0 AND workflow_status = 'published';LEFT JOIN 保留零里程碑任务;"
+                f"{status_note}{span_note}"
+            ),
+            limit=top,
+            cap_last_param=True,
+            extra={"scope": scope},
+        )
+        ssql, sparams = tpl.milestone_per_task_summary(year, category)
+        summary = envelope(sql=ssql, params=sparams, caliber="per_task 总览", limit=1)
+        # 总览是一行(不是行数组),与演示源同形:调用方读 result["summary"]["coverage_pct"]。
+        result["summary"] = (summary.get("rows") or [{}])[0]
+        tsql, tparams = tpl.milestone_per_task_ties(year, category)
+        ties = envelope(sql=tsql, params=tparams, caliber="per_task 并列档", limit=1)
+        tied_at_top = (ties.get("rows") or [{}])[0].get("tied_at_top")
+        result["top_tie_count"] = tied_at_top
+        head = (result.get("rows") or [{}])[0]
+        top_n = head.get("milestones")
+        top_task = f"任务 {head.get('task_id')} {head.get('task_name')}" if head else "首行"
+        result["caliber"] += (
+            ";按里程碑数降序、并列按 task id 升序(与其他榜单同一套定序键);"
+            f"最多那档有 {tied_at_top} 条任务并列(各 {top_n} 个),"
+            f"问「最多的是哪条」取首行一条({top_task}),"
+            "要把并列都报出来请说明是并列,不要当成几十个独立答案;"
+            "零里程碑任务不等于「从没建过里程碑」:里程碑被全部软删的任务(scope=fully_deleted)"
+            "在这里同样一条不剩,两个问句会指向同一批任务"
+        )
+        return result
+
+    sql, params = tpl.milestone_stats(
+        scope, by=by, year=year, category=category, min_total=min_total, kind=kind, limit=top
+    )
+    caliber = f"{gate_note};{status_note}{span_note}"
+    if scope == "deleted":
+        # 这是唯一不套任务闸门的 scope:问的是表本身被软删了多少行,
+        # 按任务过滤会少算。有删的任务 23 条、删干净的只有 3 条 —— 两个数
+        # 回答的是不同问题,`deleted` 那三个数答不了 fully_deleted 的问句。
+        caliber = (
+            "全表口径(不加任务闸门):这是关于表的问题,按任务过滤会少算;"
+            "问「哪些任务的里程碑被全部删掉了」用 scope=fully_deleted,"
+            "这三个数答不了那个问题(有删的任务共 23 条,全删的只有 3 条)"
+        )
+    elif scope == "fully_deleted":
+        caliber = (
+            "is_deleted = 0 AND workflow_status = 'published';「全部删掉」按 NOT EXISTS 未删里程碑判,"
+            "不是「删过里程碑」——删过的任务有 23 条,删干净的只有这 3 条;"
+            "deleted_milestones 是该任务被删的里程碑数;"
+            "行数为 0 才是「没有任务被全删」,这是结论本身,不要换口径重算"
+        )
+    elif scope == "by_dimension":
+        dimension = tpl.MILESTONE_DIMENSIONS[by][1]
+        caliber += f";按{dimension}分组"
+        if min_total:
+            caliber += f";仅保留计数不少于 {min_total} 的分组(边界取等)"
+        if by == "primary_category":
+            caliber += (
+                ";一级分类取 t.category_id 的父级(任务分类只到二级,往上跳一层),"
+                "与里程碑自己的 m.category 文本不是同一个维度 —— 问「哪个一级分类完成率最高」"
+                "必须用这个轴,用 by=category 会答成里程碑类别;本轴按 finish_rate_pct 降序,"
+                "首行即最高;小样本分类会把比率抬高,要设门槛请加 min_total"
+            )
+        elif by == "project_group":
+            caliber += (
+                ";项目组取 t.project_group(任务上的列),与 by=group_name 的里程碑承担组短名"
+                "不是一个轴,取值集合都不一样(这里是 11 个项目组,那里是 区域组/安全组 等 6 个短名)"
+                "—— 问「哪些项目组的里程碑完成比例高 / 低」用本轴;本轴按 finish_rate_pct 降序,"
+                "首行最高、末行最低;这只是填报状态,不能当项目组绩效"
+            )
+    elif scope == "mismatch":
+        label = "任务已完成但里程碑未全完成" if kind == "task_done_milestones_open" else "里程碑全完成但任务仍在办"
+        quantifier = (
+            "存在量词(有任一里程碑未完成即入选):限定年度只会漏掉矛盾,跨年度的未完成里程碑"
+            "是更硬的矛盾,默认不限年度的 6 项才是全量"
+            if kind == "task_done_milestones_open"
+            else "全称量词(全部里程碑都已完成才入选):限定年度会放宽条件而非收紧,"
+            "限 2026 得 22 项、不限得 8 项,多出的那些尚有 2025 年里程碑未完成,"
+            "答「进行中但里程碑都完成了」要说明是哪一种"
+        )
+        span_extra = "" if year else "比对该任务的全部年度里程碑(2025 与 2026)"
+        caliber = ";".join([caliber, f"{label}(task.status 2 已完成 / 1 进行中)", span_extra, quantifier])
+    return envelope(
+        sql=sql,
+        params=params,
+        caliber=caliber,
+        limit=top,
+        cap_last_param=scope in ("by_dimension", "fully_deleted", "mismatch"),
+        extra={"scope": scope},
+    )
+
+
 _NEW_HANDLERS_12 = {
     "weekly_task_ranking": _task_ranking,
     "weekly_progress_range": _progress_range,
+    "weekly_milestone_stats": _milestone_stats,
 }
 
 _HANDLERS = {
@@ -1042,6 +1172,7 @@ _HANDLERS = {
     "weekly_group_owner_query": _group_owner,
     "weekly_task_ranking": _task_ranking,
     "weekly_progress_range": _progress_range,
+    "weekly_milestone_stats": _milestone_stats,
 }
 
 # _NEW_HANDLERS 只是构建期的清单,避免手工漏接线

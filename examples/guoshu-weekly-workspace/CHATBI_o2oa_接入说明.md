@@ -1,12 +1,13 @@
 # ChatBI 正式数据接入说明(o2oa / O2OA PostgreSQL)
 
-> **进度快照(2026-09-10)**
+> **进度快照(2026-09-10,第 26 轮)**
 >
-> - **工具接线:19 / 31**。余下 12 个调用时回落演示路径;接线优先级见第 4 节。
+> - **工具接线:20 / 31**。余下 11 个调用时回落演示路径;接线优先级见第 4 节。
 > - **三套真库验收(同构 PG 实例 + 演示库数据)**:
->   - 端到端 `verify_end_to_end.py`:**173 / 173** 断言通过;
+>   - 端到端 `verify_end_to_end.py`:**213 / 213** 断言通过;
 >   - 口径验收 `verify_numbers_v2.py`:**38 / 38** 通过(mock docstring 里写死的契约数字逐条复现);
->   - 列集合对照 `column_parity.py`:**59 / 62** 一致(1 处待查 + 2 处对照器桩未覆盖演示的手工信封分支)。
+>   - 列集合对照 `column_parity.py`:**69 / 69** 一致(原先剩的 3 处已查清:全是**对照器侧**的
+>     解析与桩问题,不是正式源的列对不上 —— 详见 3.0.6)。
 > - **交付形式**:服务 / Docker(`Dockerfile`,streamable-http,默认 18900);不含前端,由主 Agent 经 MCP 调用。
 > - **唯一外部卡点**:`o2oa` 库缺 `CONNECT` 授权,直连尚未打通 ——
 >   `GRANT CONNECT ON DATABASE o2oa TO read_only_all;` 一生效即可跑 `dump_real_schema.py` 做逐列 diff。
@@ -196,7 +197,8 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 | `weekly_group_owner_query` | ✅ 已接线 | 多值负责人**元素级精确**匹配:吴晓东 → 4 个集团任务(按 id `u3124` 同样 4 个);role=project 列出 46 行 |
 | `weekly_task_ranking` | ✅ 已接线 | 按子表条数排名(附件/进展/里程碑/提交单):**INNER JOIN 语义**(零条目的任务不参赛),列名照抄参考查询 `id / task_name / cnt`,并回显 `metric` / `metric_label`;附件榜首任务 73(20 个,`tied_at_top=1`);进展榜首任务 4(18 期,`tied_at_top=12`)。未迁移的 metric 回落,附件未授权报 `table_not_granted` |
 | `weekly_progress_range` | ✅ 已接线 | 时间轴出口:列集合 `task_id / task_name / version_no / progress_date / report_time / lag_days`;窗口两端闭区间,相对窗口锚在基准日(非系统时间);`total_count` / `total_tasks` **活过截断**;短窗口 0 行时附「按月上报」提示;`by=` / `peak=` / `date_field=report_time` 回落 |
-| 其余 12 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
+| `weekly_milestone_stats` | ✅ 已接线(6 scope × 10 维度) | summary 474 / 已完成 242 / 51.1%;`deleted` **全表口径** 566/36/602(不套任务闸门);`fully_deleted` 用 NOT EXISTS 得 **3** 条(「有软删行」是 23 条,差一个量级);`per_task` LEFT JOIN 保留零里程碑任务并把 `top_tie_count`(**23**)提到顶层,总览挂 `summary` 键;`mismatch` 两个 kind 是反向量词(6 ↔ 限 2026 只剩 3;8 ↔ 限 2026 涨到 22) |
+| 其余 11 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
 
 三条硬规则:
 
@@ -463,6 +465,53 @@ publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 1
 - 剩 1 处 `import_split` 与 2 处 `text_check` / `health` 是**对照器侧**的问题
   (演示实现有手工拼信封的分支,桩还没覆盖到),不是正式源代码的差异 ——
   下轮补桩即可。
+
+### 3.0.6 列集合对照收到 69/69:那 3 处全是**对照器**的错(2026-09-10 第 26 轮)
+
+上一轮把剩下 3 处记成"待查 + 桩未覆盖"。本轮查清:**正式源的列是对的,错在对照器自己**,
+三处各有各的成因,一并修掉后 62 个旧用例 + 7 个新增用例全部一致(69/69)。
+
+| 出口 | 症状 | 真因 | 修法 |
+|---|---|---|---|
+| `scope=import_split` | 演示列解析成 `['total', 'AS']` | `_parse_aliases` 找 `FROM` 用的是**裸四字符窗口**:`AS from_import` 里的 `from` 被当成 FROM,SELECT 列表被切在第二个聚合函数上 | 按**词边界 + 括号深度**找深度 0 的 `FROM`(词边界手写,不用 `\b` + `re.match(text, pos)` —— 实测那个组合在带 `pos` 时压根匹配不上,会把整条 SQL 当成 SELECT 列表) |
+| `scope=text_check` | 取不到演示列(NO-DEMO) | `_text_check` 走 `store.all_rows`(全文扫描),桩只替换了 `fetch` / `scalar`,于是它去连真实 MySQL 然后抛异常 | 补 `all_rows` 桩(列名在演示实现里是**手工拼的**,与 SQL 无关,给空行集即可走到那个 return) |
+| `weekly_health` | 取不到演示列(NO-DEMO) | 演示实现**不用** `store.fetch`,自己开游标逐表 `count(*)` | 补 `_FakeConn` / `_FakeCursor` 桩;并给对照器加一条**载荷键比对**:没有 `columns` 的出口(体检回的是 `row_counts` 映射)按顶层键比,正式源必须照样给出演示源那几个键(多给允许) |
+
+顺带固化两条:**对照器要能就地跑**(`CHATBI_WORK` / `CHATBI_MOCK_DIR` 两个环境变量,
+默认仍是 H100 的 `~/chatbi_check`),以及**语法校验按分支枚举**(`check_pg_syntax.py` 现在把
+`milestone_stats` 的每个 scope × 每个维度 × 带不带门槛都过一遍 —— 维度表达式直接拼进 SQL,
+漏一个就是一条只在特定问句上才炸的语法错;用例从 21 条升到 41 条)。
+
+### 3.0.7 里程碑统计接线:三条判据与两个"像但不是一个轴"(2026-09-10 第 26 轮)
+
+`weekly_milestone_stats`(6 scope × 10 维度)接线完成。侦察结论里那三条判据**逐条在真库复现**:
+
+| 判据 | 真库实测 |
+|---|---|
+| `status` 是 0/1 两值码,「已完成」只认 `status = 1` | summary 474 = 已完成 242 + 未完成 232,两值相加恰好等于总数,没有第三档 |
+| `fully_deleted` 用 **NOT EXISTS** 未删里程碑 | 得 **3** 条(任务 63/78/110);对照「有软删里程碑的任务」是 **23** 条,差一个量级 |
+| `per_task` 保留零里程碑任务 + `top_tie_count` | 128 项里 3 项为 0 / 125 项至少 1 条;榜首 **23 路并列在 6 个**,首行任务 8 |
+
+同一轮里还固化了几条**此前只在文档里、没有出口能验**的性质:
+
+1. **`deleted` 是唯一不套任务闸门的 scope**:全表 566/36/602,套上闸门只剩 474 —— 差 128 行,
+   这正是"按任务过滤会少算"的量化证据。它与其余五个 scope 的口径**正好相反**,别顺手统一。
+2. **`per_task` 的年度/类别条件必须挂在 LEFT JOIN 的 `ON` 上**:进 `WHERE` 会把"没有该年度
+   里程碑"的任务整行删掉,而它们正是要数的部分 —— 分母从 128 缩到 112,覆盖率永远算成 100%。
+   挂 `ON` 上得 2026:16 项没配 / 112 项配了 = **87.5%**。
+3. **`mismatch` 的两个 kind 是反向量词,限年度一个收紧一个放宽**:`task_done_milestones_open`
+   不限年度 6 项、限 2026 **只剩 3 项**(限定年度会漏掉跨年度的更硬矛盾);
+   `milestones_done_task_open` 不限年度 8 项、限 2026 **反而涨到 22 项**。两个数都对,
+   但答的是不同的话,口径里必须写清是哪一个。
+4. **`top` 默认 8,截断必须看 `has_more`**:上一条的 22 项在默认 `top=8` 下只回 8 行 ——
+   不报 `has_more` 的话,"限年度没变化"与"被截断"长得一模一样(端到端验收专门钉了这条)。
+5. **零里程碑任务与 `fully_deleted` 在本库是同一批 3 条**:里程碑被全部软删后,在 `per_task`
+   口径下一条都不剩 —— 两个问句会指向同一批任务,口径里写明,免得被当成两条独立证据。
+6. **维度白名单里 `group_name` 与 `project_group` 是两个轴**:真库上 `group_name` 6 个短名
+   (区域组/安全组/技术组/标准组/运营组/总体组),`project_group` 11 个项目组
+   (关键技术攻关组/算力网络组/国家工程办…);`primary_category` 11 个一级分类,
+   首行「改革与治理 67.5%」,与 `category`(里程碑自己的类别,首行「国家任务 58.9%」)不同轴。
+   `reporter_id` / `owner_id` 在本库里恰好都有 47 个取值,但**仍是两列**,不可互相代答。
 
 ## 5. 能力边界(未授权表时)
 - `task_attachment` 只读元数据:问答只能答“存在附件《文件名》”,文件体在

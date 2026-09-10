@@ -3032,3 +3032,297 @@ LIMIT %s
 """
     params.append(int(limit))
     return sql, tuple(params)
+
+
+# ---- batch 12: 里程碑统计(milestone_stats 的 6 个 scope x 10 个维度)----------
+#
+# 三条必须照抄的判据(第 25 轮侦察,结论见接入说明第 4 节):
+#
+#   1. ``m.status`` 是 **0/1 两值码**(1 已完成 / 0 未完成),「已完成」只认
+#      ``status = 1``,不做文本匹配,也不拿 ``task.status`` 顶替;
+#   2. ``fully_deleted`` 用 **NOT EXISTS 未删里程碑**判,不是「有软删行」——
+#      有删的任务 23 条,删干净的只有 3 条,混起来差一个量级;
+#   3. ``per_task`` 必须用 **LEFT JOIN 保留零里程碑任务**(inner join 会把
+#      1 条都没配的任务整行抹掉,而覆盖率的分母正是它们),并给 ``top_tie_count``
+#      —— 榜首是 23 路并列在 6 个,只回榜单时模型会把并列读成 23 个独立答案。
+#
+# 另有两个**像但不是一个轴**的维度,取值集合都不一样,不可互换:
+# ``group_name`` 是里程碑行自己的承担组短标签(区域组/安全组… 6 种),
+# ``project_group`` 是任务上的项目组(关键技术攻关组/算力网络组… 11 种)。
+
+MILESTONE_STATS_SCOPES = (
+    "summary",
+    "by_dimension",
+    "deleted",
+    "fully_deleted",
+    "per_task",
+    "mismatch",
+)
+
+# 维度 -> (分组表达式, 中文标签)。表达式只能来自这张白名单:它直接进 SQL。
+MILESTONE_DIMENSIONS: dict[str, tuple[str, str]] = {
+    "year": ("m.year", "里程碑年度"),
+    "category": ("m.category", "里程碑类别"),
+    "group_name": ("m.group_name", "里程碑承担组"),
+    "status": ("m.status", "里程碑完成状态"),
+    "task_status": ("t.status", "任务状态"),
+    # 任务分类树的一级:任务的分类只到二级,一级要再往上跳一层 parent_id。
+    # 与 ``category``(里程碑自己的类别文本)不是一个维度 —— 按 m.category 分组
+    # 首行是「国家任务 58.9%」,按一级分类分组首行是「改革与治理 67.5%」。
+    "primary_category": ("pc.name", "任务一级分类"),
+    "project_group": ("coalesce(nullif(btrim(t.project_group), ''), '(未填)')", "任务项目组"),
+    "reporter_id": ("m.reporter_id", "里程碑填报人"),
+    "owner_id": ("m.owner_id", "里程碑责任人"),
+    "board": ("bd.name", "看板"),
+}
+
+# 只有这两个维度要 JOIN 别的表,其余全在 m / t 上。JOIN 各自带 is_deleted = 0。
+MILESTONE_DIMENSION_JOINS: dict[str, str] = {
+    "primary_category": (
+        "JOIN task_category c  ON c.id = t.category_id AND c.is_deleted = 0\n"
+        "JOIN task_category pc ON pc.id = c.parent_id  AND pc.is_deleted = 0"
+    ),
+    "board": "JOIN task_board bd ON bd.id = t.board_id AND bd.is_deleted = 0",
+}
+
+# 问「哪个维度完成率最高 / 最低」时按比率排序,首行即答案;其余按条数排序。
+# 让模型自己在结果里挑最高,样本小的分类会被排到末页而看不见 —— 排错端等于把末位当第一。
+MILESTONE_RATE_ORDERED = frozenset({"primary_category", "project_group"})
+
+MILESTONE_MISMATCH_KINDS = ("task_done_milestones_open", "milestones_done_task_open")
+
+# 里程碑完成数表达式。PG 没有 ``sum(bool)``(把 MySQL 的 ``SUM(m.status = 1)``
+# 直接搬过来会报 ``function sum(boolean) does not exist``),一律写 FILTER。
+_MS_FINISHED = "count(*) FILTER (WHERE m.status = 1)"
+_MS_UNFINISHED = "count(*) FILTER (WHERE m.status = 0)"
+
+
+def _milestone_year_category(year: int | str | None, category: str | None) -> tuple[list[str], list[object]]:
+    """year / category 两个可选收窄条件。"""
+    where: list[str] = []
+    params: list[object] = []
+    if year not in (None, "", 0, "0"):
+        y, hint = adm.check_year(year)
+        if hint:
+            raise ValueError(hint)
+        where.append("m.year = %s")
+        params.append(y)
+    if category and category.strip():
+        where.append("m.category = %s")
+        params.append(category.strip())
+    return where, params
+
+
+def _milestone_active(
+    year: int | str | None = None,
+    category: str | None = None,
+) -> tuple[str, tuple]:
+    """``active`` 条件:任务闸门 + 里程碑行未删(+ 可选年度/类别)。"""
+    where = [adm.sql_task_admission("pg", "t"), adm.sql_soft_delete("m")]
+    extra, params = _milestone_year_category(year, category)
+    where.extend(extra)
+    return "\n  AND ".join(where), tuple(params)
+
+
+def _milestone_per_task_join(
+    year: int | str | None = None,
+    category: str | None = None,
+    *,
+    milestone_alias: str = "m",
+    task_alias: str = "t",
+) -> tuple[str, tuple]:
+    """``per_task`` 的 LEFT JOIN。
+
+    年度/类别条件**必须挂在 ON 上,不能进 WHERE**:进 WHERE 会把「没有该年度里程碑」
+    的任务整行删掉,而那恰好就是要数的部分,分母同时从 128 缩到 112,覆盖率永远算成
+    100%。挂 ON 上则保留它们:128 项里 16 项没配、112 项配了,即 87.5%。
+    """
+    extra, params = _milestone_year_category(year, category)
+    clause = (
+        f"LEFT JOIN task_milestone {milestone_alias} ON {milestone_alias}.task_id = {task_alias}.id"
+        f" AND {adm.sql_soft_delete(milestone_alias)}"
+    )
+    for item in extra:
+        clause += " AND " + item.replace("m.", f"{milestone_alias}.")
+    return clause, tuple(params)
+
+
+def milestone_stats(
+    scope: str,
+    by: str = "category",
+    year: int | str | None = None,
+    category: str | None = None,
+    min_total: int = 0,
+    kind: str = "task_done_milestones_open",
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """里程碑统计的 5 个"一次查询"scope(``per_task`` 走 ``milestone_per_task_*``)。
+
+    ``deleted`` / ``fully_deleted`` 是全表口径,**刻意不套任务闸门**:它们问的是
+    "表里有多少行被软删",按任务过滤会少算。全表口径下 year/category 也不参与
+    —— 与其余 scope 正好相反,别顺手统一。
+    """
+    if scope not in MILESTONE_STATS_SCOPES:
+        raise ValueError(f"未知 scope:{scope};可选 {', '.join(MILESTONE_STATS_SCOPES)}")
+    bounded = max(1, int(limit))
+
+    if scope == "deleted":
+        sql = """
+SELECT count(*) FILTER (WHERE m.is_deleted = 0) AS active,
+       count(*) FILTER (WHERE m.is_deleted = 1) AS deleted,
+       count(*)                                 AS total_rows
+FROM task_milestone m
+"""
+        return sql, ()
+
+    if scope == "fully_deleted":
+        sql = f"""
+SELECT t.id AS task_id, t.task_name, count(*) AS deleted_milestones
+FROM task_milestone m
+JOIN task t ON t.id = m.task_id
+WHERE {adm.sql_task_admission("pg", "t")}
+  AND m.is_deleted = 1
+  AND NOT EXISTS (SELECT 1 FROM task_milestone m2
+                  WHERE m2.task_id = t.id AND m2.is_deleted = 0)
+GROUP BY t.id, t.task_name
+ORDER BY t.id
+LIMIT %s
+"""
+        return sql, (bounded,)
+
+    base_from = "FROM task_milestone m\nJOIN task t ON t.id = m.task_id"
+
+    if scope == "summary":
+        active, params = _milestone_active(year, category)
+        sql = f"""
+SELECT count(*)       AS total,
+       {_MS_FINISHED}   AS finished,
+       {_MS_UNFINISHED} AS unfinished,
+       round({_MS_FINISHED}::numeric / NULLIF(count(*), 0) * 100, 1) AS finish_rate_pct
+{base_from}
+WHERE {active}
+"""
+        return sql, params
+
+    if scope == "by_dimension":
+        dimension = (by or "category").strip().lower()
+        if dimension not in MILESTONE_DIMENSIONS:
+            raise ValueError(f"不支持的维度:{by};支持 {', '.join(sorted(MILESTONE_DIMENSIONS))}")
+        column, _label = MILESTONE_DIMENSIONS[dimension]
+        joins = MILESTONE_DIMENSION_JOINS.get(dimension, "")
+        active, params = _milestone_active(year, category)
+        having = ""
+        if int(min_total or 0) > 0:
+            having = "\nHAVING count(*) >= %s"
+            params = (*params, max(1, int(min_total)))
+        order = "finish_rate_pct DESC, bucket" if dimension in MILESTONE_RATE_ORDERED else "total DESC, bucket"
+        sql = f"""
+SELECT {column} AS bucket,
+       count(*)  AS total,
+       {_MS_FINISHED} AS finished,
+       round({_MS_FINISHED}::numeric / NULLIF(count(*), 0) * 100, 1) AS finish_rate_pct
+{base_from}
+{joins}
+WHERE {active}
+GROUP BY {column}{having}
+ORDER BY {order}
+LIMIT %s
+"""
+        return sql, (*params, bounded)
+
+    # mismatch:任务状态与里程碑状态互相矛盾的两种比法。
+    mismatch = (kind or "task_done_milestones_open").strip().lower()
+    if mismatch not in MILESTONE_MISMATCH_KINDS:
+        raise ValueError(f"不支持的比对:{kind};支持 {', '.join(MILESTONE_MISMATCH_KINDS)}")
+    if mismatch == "task_done_milestones_open":
+        extra, having = "t.status = 2", f"{_MS_FINISHED} < count(*)"
+    else:
+        extra, having = "t.status = 1", f"{_MS_FINISHED} = count(*)"
+    active, params = _milestone_active(year, category)
+    sql = f"""
+SELECT t.id AS task_id, t.task_name, t.status AS task_status,
+       count(*)       AS milestones,
+       {_MS_FINISHED} AS finished_milestones
+{base_from}
+WHERE {active}
+  AND {extra}
+GROUP BY t.id, t.task_name, t.status
+HAVING {having}
+ORDER BY t.id
+LIMIT %s
+"""
+    return sql, (*params, bounded)
+
+
+def milestone_per_task_summary(
+    year: int | str | None = None,
+    category: str | None = None,
+) -> tuple[str, tuple]:
+    """``per_task`` 的总览:分母是**全部正式任务**(含零里程碑任务)。"""
+    join, join_params = _milestone_per_task_join(year, category)
+    sql = f"""
+SELECT count(DISTINCT t.id) AS tasks,
+       count(m.id)          AS milestones,
+       round(count(m.id)::numeric / NULLIF(count(DISTINCT t.id), 0), 2) AS avg_per_task,
+       count(*) FILTER (WHERE m.id IS NULL) AS tasks_without_milestone,
+       count(DISTINCT CASE WHEN m.id IS NOT NULL THEN t.id END) AS tasks_with_milestone,
+       round(count(DISTINCT CASE WHEN m.id IS NOT NULL THEN t.id END)::numeric
+             / NULLIF(count(DISTINCT t.id), 0) * 100, 1) AS coverage_pct
+FROM task t
+{join}
+WHERE {adm.sql_task_admission("pg", "t")}
+"""
+    return sql, join_params
+
+
+def milestone_per_task_rows(
+    year: int | str | None = None,
+    category: str | None = None,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """``per_task`` 的逐任务清单(LEFT JOIN,零里程碑任务保留为 0)。"""
+    join, join_params = _milestone_per_task_join(year, category)
+    sql = f"""
+SELECT t.id AS task_id, t.task_name, t.status AS task_status,
+       count(m.id)    AS milestones,
+       {_MS_FINISHED} AS finished
+FROM task t
+{join}
+WHERE {adm.sql_task_admission("pg", "t")}
+GROUP BY t.id, t.task_name, t.status
+ORDER BY milestones DESC, t.id
+LIMIT %s
+"""
+    return sql, (*join_params, max(1, int(limit)))
+
+
+def milestone_per_task_ties(
+    year: int | str | None = None,
+    category: str | None = None,
+) -> tuple[str, tuple]:
+    """``per_task`` 的并列档条数(榜首那个里程碑数上并列了几条任务)。
+
+    参数按 **SQL 文本顺序**出现:两次子查询各自带一遍 ON 上的年度/类别参数。
+    """
+    join, join_params = _milestone_per_task_join(year, category)
+    join2, join_params2 = _milestone_per_task_join(year, category, milestone_alias="m2", task_alias="t2")
+    sql = f"""
+SELECT count(*) AS tied_at_top
+FROM (
+    SELECT t.id, count(m.id) AS n
+    FROM task t
+    {join}
+    WHERE {adm.sql_task_admission("pg", "t")}
+    GROUP BY t.id
+) r
+WHERE r.n = (
+    SELECT max(r2.n) FROM (
+        SELECT count(m2.id) AS n
+        FROM task t2
+        {join2}
+        WHERE {adm.sql_task_admission("pg", "t2")}
+        GROUP BY t2.id
+    ) r2
+)
+"""
+    return sql, (*join_params, *join_params2)

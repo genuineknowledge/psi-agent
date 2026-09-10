@@ -762,3 +762,130 @@ class TestFreshnessRouting:
         assert got is not None and got["ok"] is False
         assert got["error"]["code"] == "invalid_argument"
         assert "stale_days=90" in got["error"]["message"]
+
+
+class TestMilestoneStatsTemplates:
+    """里程碑统计的三条判据都在 SQL 里钉住(真库数字由端到端 harness 覆盖)。"""
+
+    def test_status_is_a_two_value_code_never_a_text_match(self):
+        """「已完成」只能写成 m.status = 1;文本匹配会把取值换个写法就悄悄答错。"""
+        sql, _params = o2.milestone_stats("summary")
+        assert "FILTER (WHERE m.status = 1)" in sql
+        assert "FILTER (WHERE m.status = 0)" in sql
+        assert "sum(m.status" not in sql.lower()  # PG 没有 sum(bool)
+
+    def test_deleted_scope_has_no_task_gate(self):
+        """deleted 问的是表本身被软删了多少行:套上任务闸门会少算,这里刻意不带。"""
+        sql, params = o2.milestone_stats("deleted")
+        assert "workflow_status" not in sql and "JOIN task" not in sql
+        assert params == ()
+        assert "total_rows" in sql and "active" in sql and "deleted" in sql
+
+    def test_fully_deleted_uses_not_exists(self):
+        """全删 = NOT EXISTS 未删里程碑,不是「有软删行」—— 23 条 vs 3 条差一个量级。"""
+        sql, params = o2.milestone_stats("fully_deleted")
+        assert "NOT EXISTS" in sql and "m2.is_deleted = 0" in sql
+        assert "is_deleted = 1" in sql
+        assert params == (200,)
+
+    def test_per_task_keeps_zero_milestone_tasks(self):
+        """LEFT JOIN 而不是 INNER JOIN:零里程碑任务正是覆盖率的分母。"""
+        sql, params = o2.milestone_per_task_rows()
+        assert "LEFT JOIN task_milestone m ON m.task_id = t.id" in sql
+        assert "count(m.id)" in sql
+        assert params == (200,)
+
+    def test_per_task_year_filter_sits_on_the_join(self):
+        """年度条件进 WHERE 会把「没有该年度里程碑」的任务整行删掉,分母永远算成 100%。"""
+        sql, params = o2.milestone_per_task_rows(2026)
+        where_part, _, join_part = sql.partition("WHERE")
+        assert "m.year = %s" in join_part
+        assert "m.year" not in where_part
+        assert params == (2026, 200)
+
+    def test_per_task_ties_lists_params_in_sql_order(self):
+        """并列数查两次同样的子查询,参数要按 SQL 文本顺序给一遍给每一处。"""
+        sql, params = o2.milestone_per_task_ties(2026, "国家任务")
+        assert sql.count("%s") == 4
+        assert params == (2026, "国家任务", 2026, "国家任务")
+
+    def test_per_task_summary_divides_by_all_tasks(self):
+        sql, _params = o2.milestone_per_task_summary()
+        assert "count(DISTINCT t.id) AS tasks" in sql
+        assert "tasks_without_milestone" in sql and "coverage_pct" in sql
+
+    def test_by_dimension_dims_are_whitelisted(self):
+        with pytest.raises(ValueError, match="不支持的维度"):
+            o2.milestone_stats("by_dimension", by="task_name")
+
+    def test_primary_category_walks_up_one_level(self):
+        """任务分类只到二级,一级要再跳一层 parent_id;两个 JOIN 各带软删。"""
+        sql, _params = o2.milestone_stats("by_dimension", by="primary_category")
+        assert "JOIN task_category c  ON c.id = t.category_id AND c.is_deleted = 0" in sql
+        assert "JOIN task_category pc ON pc.id = c.parent_id  AND pc.is_deleted = 0" in sql
+        assert "finish_rate_pct DESC, bucket" in sql  # 问「最高」时首行即答案
+
+    def test_project_group_and_group_name_are_different_axes(self):
+        sql_pg, _ = o2.milestone_stats("by_dimension", by="project_group")
+        sql_gn, _ = o2.milestone_stats("by_dimension", by="group_name")
+        assert "t.project_group" in sql_pg and "m.group_name" not in sql_pg
+        assert "m.group_name" in sql_gn and "t.project_group" not in sql_gn
+
+    def test_min_total_is_a_having_threshold(self):
+        sql, params = o2.milestone_stats("by_dimension", by="category", min_total=5)
+        assert "HAVING count(*) >= %s" in sql
+        assert params == (5, 200)
+
+    def test_mismatch_kinds_are_mirror_images(self):
+        open_sql, _ = o2.milestone_stats("mismatch", kind="task_done_milestones_open")
+        done_sql, _ = o2.milestone_stats("mismatch", kind="milestones_done_task_open")
+        assert "t.status = 2" in open_sql and "FILTER (WHERE m.status = 1) < count(*)" in open_sql
+        assert "t.status = 1" in done_sql and "FILTER (WHERE m.status = 1) = count(*)" in done_sql
+
+    def test_unknown_scope_and_kind_rejected(self):
+        with pytest.raises(ValueError, match="未知 scope"):
+            o2.milestone_stats("nope")
+        with pytest.raises(ValueError, match="不支持的比对"):
+            o2.milestone_stats("mismatch", kind="nope")
+
+
+class TestMilestoneStatsRouting:
+    """路由判定不连库:未迁移/非法参数必须回落,不静默缩小问题范围。"""
+
+    def test_unmigrated_arguments_fall_back(self, monkeypatch):
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _formal.dispatch("weekly_milestone_stats", scope="nope") is None
+        assert _formal.dispatch("weekly_milestone_stats", scope="by_dimension", by="nope") is None
+        assert _formal.dispatch("weekly_milestone_stats", scope="mismatch", kind="nope") is None
+
+    def test_per_task_merges_three_envelopes(self, monkeypatch):
+        """per_task 在演示源是三个信封拼的:逐任务清单 + 总览(一行)+ 并列数。"""
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            row = {"tied_at_top": 7, "coverage_pct": 87.5, "task_id": 8, "task_name": "甲", "milestones": 6}
+            return {"ok": True, "columns": ["task_id"], "rows": [row], "row_count": 1, "caliber": "口径"}
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        got = _formal._milestone_stats({"scope": "per_task", "top": 8})
+        assert got is not None and len(seen) == 3
+        assert isinstance(got["summary"], dict) and got["summary"]["coverage_pct"] == 87.5
+        assert got["top_tie_count"] == 7
+        assert "7 条任务并列" in got["caliber"]
+
+    def test_deleted_scope_drops_the_gate_note(self, monkeypatch):
+        """deleted 的口径要写明「不加任务闸门」,否则模型会拿它当"已发布任务的里程碑数"。"""
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            return {"ok": True, "columns": ["active"], "rows": [{}], "row_count": 1}
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        got = _formal._milestone_stats({"scope": "deleted"})
+        assert got is not None
+        assert "不加任务闸门" in seen[0]["caliber"] and "fully_deleted" in seen[0]["caliber"]
+        assert seen[0]["cap_last_param"] is False

@@ -5339,6 +5339,19 @@ def weekly_milestone_stats(
         top: Row cap for the listing scopes.
     """
 
+    formal = _formal.dispatch(
+        "weekly_milestone_stats",
+        scope=scope,
+        by=by,
+        year=year,
+        category=category,
+        min_total=min_total,
+        kind=kind,
+        top=top,
+    )
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         key = (scope or "summary").strip().lower()
         if key not in _MILESTONE_STATS_SCOPES:
