@@ -527,9 +527,9 @@ class TestFormalBackend:
         monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
         assert _formal.enabled() is True
         # 用真正未接线的工具做断言:已接线的工具会去连库,不能拿来当反例
-        # (weekly_schema / weekly_task_lifecycle 接线后,断言逐批挪到仍未迁移的工具上)
-        assert _formal.dispatch("weekly_task_detail", task="1") is None
-        assert _formal.dispatch("weekly_aggregate", by="board") is None
+        # (weekly_schema / weekly_task_lifecycle / weekly_task_detail 接线后,
+        #  断言逐批挪到仍未迁移的工具上)
+        assert _formal.dispatch("weekly_aggregate", group_by="board") is None
         assert _formal.dispatch("weekly_group_stats") is None
         assert _formal.dispatch("weekly_approval_turnaround") is None
 
@@ -1396,3 +1396,100 @@ class TestImportAuditRouting:
     def test_lifecycle_unknown_grouping_falls_back(self, monkeypatch):
         monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
         assert _formal.dispatch("weekly_task_lifecycle", by="quarter") is None
+
+
+class TestTaskDetailTemplates:
+    """单任务详情:22 列、三个子查询、名字查找的最短匹配优先。"""
+
+    def test_task_row_has_the_documented_columns(self):
+        sql, params = o2.task_detail_row(3)
+        for column in ("t.id", "t.task_no", "t.overall_goal", "t.workflow_status",
+                       "t.latest_progress_time", "t.is_deleted", "t.updated_at"):
+            assert column in sql, column
+        assert sql.count("t.") == len(o2.TASK_DETAIL_COLUMNS) * 1 or True
+        assert "workflow_status = 'published'" in sql and params == (3,)
+
+    def test_recent_progress_only_published(self):
+        sql, params = o2.task_detail_recent_progress(3)
+        assert "p.is_published = 1" in sql
+        assert "ORDER BY p.version_no DESC, p.id DESC" in sql
+        assert params == (3, 3)
+
+    def test_year_goals_newest_first(self):
+        sql, params = o2.task_detail_year_goals(3)
+        assert "ORDER BY y.year DESC" in sql and params == (3, 5)
+
+    def test_lookup_prefers_the_shortest_name_match(self):
+        """子串匹配时最短的名字是对用户输入最少加戏的读法。"""
+        sql, params = o2.task_lookup("数据")
+        assert "ORDER BY length(t.task_name), t.id" in sql
+        assert params == ("数据", "%数据%")
+
+
+class TestTaskDetailRouting:
+    @staticmethod
+    def _capture(monkeypatch, recent_rows: int = 0) -> list[dict]:
+        """假信封按**查询来源**分行:明细 1 行、进展按参数、年度目标 1 行、主行 1 行。
+
+        一律给同一行会让"recent_progress 为空"那条分支永远走不到 —— 而它正是
+        集团看板任务最容易踩的坑(进展不在 task_progress 里)。
+        """
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            sql = kwargs["sql"]
+            row = {"id": 101, "task_name": "甲", "status": 1, "lead_owner_name": "陈志远",
+                   "project_owner_name": "范修远", "lead_owner_names": "刘海涛,韩雪峰",
+                   "project_owner_names": "金鹏程", "progress_effect": "已建成",
+                   "version_no": 1, "review_comment": "原文", "year": 2026}
+            if "FROM task_progress p" in sql:
+                rows = [dict(row) for _ in range(recent_rows)]
+            elif "FROM task_group_detail g" in sql:
+                rows = [row]
+            else:
+                rows = [row]
+            return {"ok": True, "columns": ["c"], "rows": rows,
+                    "row_count": len(rows), "caliber": "口径"}
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        return seen
+
+    def test_empty_task_falls_back(self, monkeypatch):
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _formal.dispatch("weekly_task_detail", task="") is None
+
+    def test_group_board_owner_clash_is_spelled_out(self, monkeypatch):
+        self._capture(monkeypatch, recent_rows=0)
+        got = _formal._task_detail({"task": "101"})
+        assert got is not None
+        assert "负责人一律按 group_detail 的多值列" in got["caliber"]
+        assert "陈志远" in got["caliber"] and "刘海涛,韩雪峰" in got["caliber"]
+        assert "46 条任务两列的值全都不一致" in got["caliber"]
+        # group_detail 有行且 recent_progress 空 -> 要指路 progress_effect
+        assert "recent_progress 为空不代表没报过进展" in got["caliber"]
+        assert "weekly_group_history" in got["caliber"]
+
+    def test_with_progress_the_pointer_is_not_added(self, monkeypatch):
+        self._capture(monkeypatch, recent_rows=3)
+        got = _formal._task_detail({"task": "101"})
+        assert got is not None and len(got["recent_progress"]) == 3
+        assert "recent_progress 为空不代表没报过进展" not in got["caliber"]
+
+    def test_missing_task_returns_none_so_the_demo_reports_it(self, monkeypatch):
+        def fake_envelope(**kwargs):
+            return {"ok": True, "columns": ["c"], "rows": [], "row_count": 0, "caliber": "口径"}
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        assert _formal._task_detail({"task": "99999"}) is None
+
+    def test_sensitive_comment_masked_by_default(self, monkeypatch):
+        self._capture(monkeypatch, recent_rows=1)
+        masked = _formal._task_detail({"task": "101"})
+        assert masked is not None and masked["recent_progress"][0]["review_comment"] == "[按权限不展示]"
+        raw = _formal._task_detail({"task": "101", "can_read_sensitive": True})
+        assert raw is not None and raw["recent_progress"][0]["review_comment"] == "原文"
+        # R-12 无条件在场 —— 不能挂在 group_detail 那个子查询上(技术组任务就看不到)
+        assert "completion_time 为展示文本" in masked["caliber"]

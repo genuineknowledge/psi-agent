@@ -367,6 +367,14 @@ def weekly_task_detail(task: str, ctx: Context | None = None) -> str:
     """
     may_read = _caller_may_read_sensitive(ctx)
 
+    formal = _formal.dispatch(
+        "weekly_task_detail",
+        task=task,
+        can_read_sensitive=may_read,
+    )
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         found = store.resolve_task(task)
         if found is None:

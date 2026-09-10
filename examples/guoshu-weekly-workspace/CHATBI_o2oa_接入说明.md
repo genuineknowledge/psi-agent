@@ -1,13 +1,13 @@
 # ChatBI 正式数据接入说明(o2oa / O2OA PostgreSQL)
 
-> **进度快照(2026-09-10,第 30 轮)**
+> **进度快照(2026-09-10,第 31 轮)**
 >
-> - **工具接线:27 / 31**。余下 4 个(`task_detail` / `aggregate` / `group_stats` /
->   `approval_turnaround`)调用时回落演示路径;接线优先级见第 4 节。
+> - **工具接线:28 / 31**。余下 3 个(`aggregate` / `group_stats` / `approval_turnaround`)
+>   调用时回落演示路径;接线优先级见第 4 节。
 > - **三套真库验收(同构 PG 实例 + 演示库数据)**:
->   - 端到端 `verify_end_to_end.py`:**315 / 315** 断言通过;
+>   - 端到端 `verify_end_to_end.py`:**330 / 330** 断言通过;
 >   - 口径验收 `verify_numbers_v2.py`:**38 / 38** 通过(mock docstring 里写死的契约数字逐条复现);
->   - 列集合对照 `column_parity.py`:**91 / 91** 一致(原先剩的 3 处已查清:全是**对照器侧**的
+>   - 列集合对照 `column_parity.py`:**93 / 93** 一致(原先剩的 3 处已查清:全是**对照器侧**的
 >     解析与桩问题,不是正式源的列对不上 —— 详见 3.0.6)。
 > - **交付形式**:服务 / Docker(`Dockerfile`,streamable-http,默认 18900);不含前端,由主 Agent 经 MCP 调用。
 > - **唯一外部卡点**:`o2oa` 库缺 `CONNECT` 授权,直连尚未打通 ——
@@ -206,7 +206,8 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 | `weekly_progress_history` | ✅ 已接线 | 单任务各期(任务 3 = **14 期**),`prev_progress` / `gap_days` 由服务端 `lag()` **相邻两期并排**;`gap_summary` 均值 **30.4** / 分母 13(首期不进分母);同名系列显式回报(任务 3 另有 2期/3期/4期 **3 条独立任务**);任务 7 已发布 0 期、含未发布 1 期(`published_only` 开关);`review_comment` 按权限打码 |
 | `weekly_import_audit` | ✅ 已接线(4 分支) | 批次 **20** 个(批次数 = 去重日期数 = 去重导入时间数);`latest_finished` 挑的是**跑完**那批(第 **19** 批 status=1,**17** 条任务),不是日期最新的第 20 批(它 status 0、实落 0 行 —— 只按日期取会答成一批没跑的);`reconcile_rows` 声明 vs 实际 **20 批全对不上**(第 20 批声明 43 / 实落 0);`orphans` 孤儿 **0**(手工填报 120 行另计,不混进孤儿数);未授权时报 `table_not_granted` |
 | `weekly_task_lifecycle` | ✅ 已接线 | 建立/发布这**另一个钟**(不是"报进展"那个):128 项、均值 **30.3 天**到发布、最长 60 天;`by=year` 各档 `currently_finished` 相加 = 全库已完成 **31**(2025 年 26 + 2026 年 5);口径写明这是"按建单档看当前状态",任务表**没有完成时间列** |
-| 其余 4 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
+| `weekly_task_detail` | ✅ 已接线 | 复合信封(task 22 列 / group_detail / recent_progress 最近 3 期 / year_goals):任务 3 有 3 期进展、3 条年度目标;任务 101 有 1 行明细、0 期进展 → 口径指路 `group_detail.progress_effect`;两套负责人列打架时**点名**(task 行「陈志远」vs 明细「刘海涛,韩雪峰」)并说明集团板 46 条全不一致;**R-12 无条件在场**(挂子查询会让技术组任务看不到);纯数字 token 只当 id,不拿 LIKE 匹配到的别的任务顶替 |
+| 其余 3 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
 
 三条硬规则:
 
@@ -628,6 +629,27 @@ publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 1
    `by=` 分组档是**建单档**:任务表没有"完成时间"列,所以这是"按建单档看当前状态",
    **不是**"那一年完成的任务数"——跨档完成的任务仍记在建单档。口径里必须写明,
    否则会被读成按完成年份统计(各档 `currently_finished` 相加 = 全库已完成 31,是一条自校验)。
+
+### 3.1.2 单任务详情:两条"挂错地方就等于没有"的口径(2026-09-10 第 31 轮)
+
+`weekly_task_detail` 接线完成(复合信封:`task` 22 列 + `group_detail` + `recent_progress` 最近 3 期 + `year_goals`)。
+
+1. **R-12 必须无条件在场**。`completion_time 为展示文本,不可做日期运算` 这句话如果挂在
+   `task_group_detail` 那个子查询的 caliber 上,就只对集团看板任务生效 —— 而**技术组任务
+   永远看不到它**,规则本来就是为它们立的。所以它拼在顶层 `caliber` 里。
+2. **两套负责人列打架时要点名**。集团看板任务的牵头人/负责人有**两套列**:`task` 行上的单值
+   `lead_owner_name` / `project_owner_name`,与明细表里的多值 `lead_owner_names` /
+   `project_owner_names`。真库上任务 101 的两边分别是「陈志远 / 范修远」与
+   「刘海涛,韩雪峰 / 金鹏程」,**46 条集团任务两列的值全都不一致** —— 谁在上面谁就被当成答案
+   (参考实现里 R8-02 就是照 task 行答了「陈志远」)。有明细行就直接判给多值列,并把不一致本身
+   写进口径,不让模型猜。
+3. **`recent_progress` 为空 ≠ 没报过进展**。集团看板的进展不在 `task_progress`(那张表 0 行全属
+   技术看板),当期成效在 `group_detail.progress_effect` 里。任务 101 就是 1 行明细 + 0 期进展;
+   不点明这点,模型会在 `progress_history` / `milestone_stats` 之间来回试(参考实现里 Q1-02 的
+   6 轮 13 次调用就是这么耗掉的)。
+4. **纯数字 token 只当 id**。名字兜底的 LIKE 会把一个**错的任务**悄悄顶上来:参考实现里
+   `task="2"` 曾落到 LIKE 分支、把另一条名字含 "2" 的任务当成了任务 2。名字查找则是
+   精确优先、再取**最短**的子串匹配(最短的名字是对用户输入最少加戏的读法)。
 
 ## 5. 能力边界(未授权表时)
 - `task_attachment` 只读元数据:问答只能答“存在附件《文件名》”,文件体在

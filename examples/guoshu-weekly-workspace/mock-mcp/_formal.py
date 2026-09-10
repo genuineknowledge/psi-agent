@@ -1749,6 +1749,97 @@ def _import_audit(args: dict[str, Any]) -> dict[str, Any] | None:
     return result
 
 
+def _task_detail(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_task_detail:一条任务的四个部分(task / group_detail / recent_progress / year_goals)。
+
+    复合信封,**没有 columns**。两条口径无条件在场(见 ``_o2oa_templates`` 里那段注释):
+
+    * ``completion_time`` 是展示文本、不做日期运算(R-12)—— 挂在子查询上会让技术组任务
+      永远看不到它,而这条规则本来就是为它们立的;
+    * 集团看板任务的负责人有两套列(task 行单值 vs 明细表多值),真库上 46 条**全不一致**,
+      有明细行就直接判给多值列,并在口径里把不一致本身点出来。
+    """
+    token = (args.get("task") or "").strip()
+    if not token:
+        return None  # 演示路径会报 invalid_argument
+    if token.isdigit():
+        sql, params = tpl.task_detail_row(int(token))
+        found = (envelope(sql=sql, params=params, caliber="按 id 定位已发布任务", limit=1)["rows"] or [None])[0]
+    else:
+        sql, params = tpl.task_lookup(token)
+        found = (envelope(sql=sql, params=params, caliber="按名字定位已发布任务", limit=1)["rows"] or [None])[0]
+    if found is None:
+        return None  # 找不到就回落演示路径(它会给 _task_miss)
+    task_id = int(found["id"])
+
+    gsql, gparams = tpl.task_detail_group_row(task_id)
+    group_detail = envelope(sql=gsql, params=gparams, caliber="task_group_detail 与 task 是 1:1", limit=1)["rows"]
+    psql, pparams = tpl.task_detail_recent_progress(task_id, limit=3)
+    recent = envelope(
+        sql=psql,
+        params=pparams,
+        caliber=(
+            "is_published = 1(仅正式发布进展);review_comment 按权限展示(R-04/R-14)"
+            + ("(本次凭证有权限,原文返回)" if args.get("can_read_sensitive") else "(本次凭证无权限,已遮蔽)")
+        ),
+        limit=3,
+        cap_last_param=True,
+    )
+    ysql, yparams = tpl.task_detail_year_goals(task_id, limit=5)
+    goals = envelope(sql=ysql, params=yparams, caliber="task_id + year 唯一", limit=5, cap_last_param=True)
+
+    caliber = (
+        "is_deleted = 0 AND workflow_status = 'published';"
+        "completion_time 为展示文本,不可做日期运算(R-12);"
+        "review_comment 按权限展示(R-04/R-14)"
+    )
+    task_row = {k: v for k, v in found.items() if k not in tpl.BLOCKED_COLUMNS}
+    if group_detail:
+        row = group_detail[0]
+        clashes = []
+        for label, single, multi in (
+            ("牵头人", "lead_owner_name", "lead_owner_names"),
+            ("项目负责人", "project_owner_name", "project_owner_names"),
+        ):
+            one = (task_row.get(single) or "").strip()
+            many = (row.get(multi) or "").strip()
+            if many and one != many:
+                clashes.append(f"{label} task 行是「{one or '(空)'}」、集团明细是「{many}」")
+        if clashes:
+            caliber += (
+                ";本任务属集团看板,负责人一律按 group_detail 的多值列"
+                "(lead_owner_names / project_owner_names)答,"
+                "不要用 task 行上单值的 lead_owner_name / project_owner_name:"
+                f"两边并非同一个数据,本任务就不一致({'\uff1b'.join(clashes)}),"
+                "集团看板 46 条任务两列的值全都不一致"
+            )
+    if not recent["rows"] and group_detail:
+        effect = (group_detail[0].get("progress_effect") or "").strip()
+        if effect:
+            caliber += (
+                ";本任务属集团看板,进展不在 task_progress(该表 0 行全属技术看板),"
+                "recent_progress 为空不代表没报过进展:"
+                "当期进度成效就在本次返回的 group_detail.progress_effect 里,"
+                "问「目前进展如何」按它答即可;要历次报送请用 weekly_group_history"
+                "(task_group_progress_history),weekly_progress_history / weekly_progress_range "
+                "对集团任务一律返回空"
+            )
+    if not bool(args.get("can_read_sensitive")):
+        for row in recent["rows"]:
+            if "review_comment" in row:
+                row["review_comment"] = "[按权限不展示]"
+    return {
+        "ok": True,
+        "task": task_row,
+        "group_detail": group_detail,
+        "recent_progress": recent["rows"],
+        "year_goals": goals["rows"],
+        "caliber": caliber,
+        "snapshot_note": FORMAL_SNAPSHOT_NOTE,
+        "snapshot_date": as_of(),
+    }
+
+
 def _task_lifecycle(args: dict[str, Any]) -> dict[str, Any] | None:
     """weekly_task_lifecycle:任务建立与发布的**另一个钟**(不是"报进展"那个)。"""
     grouping = (args.get("by") or "").strip().lower()
@@ -1810,6 +1901,7 @@ _HANDLERS = {
     "weekly_progress_history": _progress_history,
     "weekly_import_audit": _import_audit,
     "weekly_task_lifecycle": _task_lifecycle,
+    "weekly_task_detail": _task_detail,
 }
 
 # _NEW_HANDLERS 只是构建期的清单,避免手工漏接线

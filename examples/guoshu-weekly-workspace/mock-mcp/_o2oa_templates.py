@@ -4152,3 +4152,100 @@ ORDER BY bucket
 LIMIT %s
 """
     return sql, (*params, max(1, int(limit)))
+
+
+# ---- batch 17: 单任务详情(task_detail 的四个部分)-----------------------------
+#
+# 返回值**没有 columns** —— 它是复合信封:task(一行)+ group_detail(0/1 行)
+# + recent_progress(最近 3 期)+ year_goals(各年度目标)。
+#
+# 两条口径必须在场:
+#
+#   1. ``completion_time`` 是**展示文本**,不做日期运算(R-12)。这条要**无条件**挂上:
+#      task_group_detail 只覆盖集团看板,把这句话挂在那个子查询的 caliber 上,
+#      技术组任务就永远看不到它 —— 而规则本来就是为它们立的;
+#   2. 集团看板任务的负责人有**两套列**:task 行上的单值 ``lead_owner_name`` /
+#      ``project_owner_name``,与明细表里的多值 ``lead_owner_names`` /
+#      ``project_owner_names``。真库上 46 条集团任务这两边**全都不一致**,
+#      谁在上面谁就被当成答案 —— 有明细行就直接判给多值列,别让模型猜。
+
+TASK_DETAIL_COLUMNS = (
+    "t.id", "t.board_id", "t.category_id", "t.task_no", "t.task_name",
+    "t.owner_user_id", "t.project_owner_id", "t.project_owner_name",
+    "t.lead_owner_id", "t.lead_owner_name", "t.project_group",
+    "t.overall_goal", "t.annual_goals", "t.status", "t.workflow_status",
+    "t.data_version", "t.sort_order",
+    "t.latest_progress_time", "t.published_at", "t.is_deleted",
+    "t.created_at", "t.updated_at",
+)
+
+
+def task_detail_row(task_id: int) -> tuple[str, tuple]:
+    """任务主行(列集合与字段字典里 task 表的那 22 列一致)。"""
+    sql = f"""
+SELECT {", ".join(TASK_DETAIL_COLUMNS)}
+FROM task t
+WHERE t.id = %s
+  AND {adm.sql_task_admission("pg", "t")}
+"""
+    return sql, (int(task_id),)
+
+
+def task_detail_group_row(task_id: int) -> tuple[str, tuple]:
+    """集团板扩展行(task_group_detail 与 task 是 1:1,只有集团看板任务有行)。"""
+    sql = """
+SELECT g.task_id, g.target_result, g.implementation_measure, g.completion_time,
+       g.lead_owner_names, g.lead_owner_ids,
+       g.project_owner_names, g.project_owner_ids, g.project_group, g.progress_effect
+FROM task_group_detail g
+WHERE g.task_id = %s
+"""
+    return sql, (int(task_id),)
+
+
+def task_detail_recent_progress(task_id: int, limit: int = 3) -> tuple[str, tuple]:
+    """最近几期**已发布**进展(按 version_no 倒序、同号按 id 倒序)。"""
+    ts = adm.normalize_ts_sql("p.report_time")
+    pdate = adm.normalize_date_sql("p.progress_date")
+    sql = f"""
+SELECT p.id, p.task_id, p.version_no, p.latest_progress, p.next_work,
+       {pdate} AS progress_date, {ts} AS report_time,
+       p.is_published, p.review_comment
+FROM task_progress p
+WHERE p.task_id = %s
+  AND {adm.sql_published_progress("pg", "p")}
+ORDER BY p.version_no DESC, p.id DESC
+LIMIT %s
+"""
+    return sql, (int(task_id), max(1, int(limit)))
+
+
+def task_detail_year_goals(task_id: int, limit: int = 5) -> tuple[str, tuple]:
+    """该任务的各年度目标(按年度倒序)。"""
+    sql = """
+SELECT y.id, y.task_id, y.year, y.current_year_goal, y.milestone_summary
+FROM task_year_goal y
+WHERE y.task_id = %s
+ORDER BY y.year DESC
+LIMIT %s
+"""
+    return sql, (int(task_id), max(1, int(limit)))
+
+
+def task_lookup(token: str) -> tuple[str, tuple]:
+    """按 id 或名字定位一条**已发布**任务(与演示实现同一套优先级)。
+
+    纯数字只当 id:**名字兜底会把一个错的任务悄悄顶上来** —— 演示实现曾因
+    ``task="2"`` 落到 LIKE 分支、把另一条名字含 "2" 的任务当成了任务 2。
+    名字先精确匹配;没有再取**最短**的子串匹配(最短的名字是对用户输入最少加戏的读法)。
+    """
+    gate = adm.sql_task_admission("pg", "t")
+    sql = f"""
+SELECT {", ".join(TASK_DETAIL_COLUMNS)}
+FROM task t
+WHERE {gate}
+  AND (t.task_name = %s OR t.task_name ILIKE %s)
+ORDER BY length(t.task_name), t.id
+LIMIT 1
+"""
+    return sql, (token, f"%{token}%")
