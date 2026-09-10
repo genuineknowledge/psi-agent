@@ -772,7 +772,6 @@ async def _get_valid_uat(user_key: str = "") -> Any:
     uat = await store.get(key)
     if uat is None:
         return None
-    old_scopes = list(uat.scopes or [])
     if uat_needs_refresh(uat) and uat.refresh_token:
         app_token = await _get_app_access_token()
         if app_token is not None:
@@ -783,10 +782,6 @@ async def _get_valid_uat(user_key: str = "") -> Any:
             )
             if payload.get("code") in (0, None) and (payload.get("data") or payload).get("access_token"):
                 uat = _uat_from_token_response(payload)
-                if not uat.scopes and old_scopes:
-                    # 刷新响应通常不回显 scope(首次授权才带);清空会让授权
-                    # 卡片等展示层误以为权限丢了,保留旧值只回填展示信息。
-                    uat.scopes = old_scopes
                 await store.set(key, uat)
     return uat
 
