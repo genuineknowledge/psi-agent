@@ -154,7 +154,7 @@ def test_person_filters_use_contains_because_person_fields_are_multi_select() ->
 def test_multi_person_row_is_found_when_querying_one_of_its_people(monkeypatch) -> None:
     """同一条记录挂多人时, 按其中一人查询必须能查到 (contains 语义)。"""
     reader = importlib.import_module("_positive_negative_list.reader")
-    row = {
+    row: dict[str, Any] = {
         "record_id": "rec_share",
         "fields": {
             "事件描述": [{"text": "方案未按优先级排", "type": "text"}],
