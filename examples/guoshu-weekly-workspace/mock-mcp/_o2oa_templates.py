@@ -3326,3 +3326,247 @@ WHERE r.n = (
 )
 """
     return sql, (*join_params, *join_params2)
+
+
+# ---- batch 13: 年度目标统计(year_goal_stats 的 6 个 scope)--------------------
+#
+# 一条最要紧的区分(演示实现的 docstring 写死):**缺口类口径永远按正式任务算**。
+# ``coverage`` / ``missing`` / ``missing_by_group`` 量的是「正式任务里有多少没设目标」,
+# 把分母放宽到已删除、未发布的任务上,这个缺口就不成立了 —— 所以全表出口
+# (``include_informal``)只对 ``by_year`` / ``span`` 这类纯计数生效。
+#
+# 另一条:``coverage`` 必须用 **EXISTS 而不是 JOIN**。没有目标行的任务恰好就是要数的
+# 那部分,INNER JOIN 会把它们整行丢掉,缺口永远算成 0(``missing_goal_as_zero`` 陷阱)。
+
+YEAR_GOAL_STATS_SCOPES = ("by_year", "coverage", "missing", "missing_by_group", "span", "multi_year")
+
+# 缺口类口径:永远按正式任务算,include_informal 对它们无效。
+YEAR_GOAL_GAP_SCOPES = frozenset({"coverage", "missing", "missing_by_group"})
+
+
+def _year_goal_gate(board_code: str | None, whole_table: bool) -> tuple[str, tuple]:
+    """年度目标统计的准入口径。``whole_table`` 放开任务闸门(只给纯计数口径用)。"""
+    code, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = ["1 = 1"] if whole_table else [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    if code:
+        where.append("t.board_id = (SELECT id FROM task_board WHERE code = %s AND is_deleted = 0)")
+        params.append(code)
+    return "\n  AND ".join(where), tuple(params)
+
+
+def year_goal_stats(
+    scope: str,
+    year: int | str | None = None,
+    year_to: int | str | None = None,
+    min_years: int = 3,
+    board_code: str | None = None,
+    whole_table: bool = False,
+    in_progress_only: bool = False,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """年度目标统计的 5 个"一次查询"scope(``span`` 另有两条模板)。"""
+    if scope not in YEAR_GOAL_STATS_SCOPES:
+        raise ValueError(f"未知 scope:{scope};可选 {', '.join(YEAR_GOAL_STATS_SCOPES)}")
+    if scope == "span":
+        # span 要均值 + 清单两条查询(``year_goal_span_avg`` / ``year_goal_span_rows``),
+        # 不是一次查询能答的。落到这里说明路由写错了,直接报错而不是悄悄跑成 multi_year。
+        raise ValueError("span 请用 year_goal_span_avg / year_goal_span_rows")
+    bounded = max(1, int(limit))
+    gate, gate_params = _year_goal_gate(board_code, whole_table and scope not in YEAR_GOAL_GAP_SCOPES)
+
+    if scope == "by_year":
+        sql = f"""
+SELECT g.year, count(*) AS goal_count, count(DISTINCT g.task_id) AS task_count
+FROM task_year_goal g
+JOIN task t ON t.id = g.task_id
+WHERE {gate}
+GROUP BY g.year
+ORDER BY g.year
+LIMIT %s
+"""
+        return sql, (*gate_params, bounded)
+
+    if scope == "coverage":
+        # EXISTS 而不是 JOIN:没有目标行的任务正是要数的缺口,JOIN 会把它们丢掉。
+        # 口径里那条 ``yr`` 参数在三处都出现,写进 CTE 只需要给一次。
+        y, hint = adm.check_year(year)
+        if hint:
+            raise ValueError(hint)
+        sql = f"""
+WITH g AS (
+    SELECT EXISTS (SELECT 1 FROM task_year_goal y
+                   WHERE y.task_id = t.id AND y.year = %s) AS has_goal
+    FROM task t
+    WHERE {gate}
+)
+SELECT count(*) AS total_tasks,
+       count(*) FILTER (WHERE has_goal)     AS has_goal,
+       count(*) FILTER (WHERE NOT has_goal) AS missing_goal,
+       round(count(*) FILTER (WHERE has_goal)::numeric / NULLIF(count(*), 0) * 100, 1) AS coverage_pct
+FROM g
+"""
+        return sql, (y, *gate_params)
+
+    if scope == "missing":
+        y, hint = adm.check_year(year)
+        if hint:
+            raise ValueError(hint)
+        extra = "\n  AND t.status IN (0, 1)" if in_progress_only else ""
+        sql = f"""
+SELECT t.id AS task_id, t.task_name, t.status, t.project_group
+FROM task t
+WHERE {gate}{extra}
+  AND NOT EXISTS (SELECT 1 FROM task_year_goal g WHERE g.task_id = t.id AND g.year = %s)
+ORDER BY t.id
+LIMIT %s
+"""
+        return sql, (*gate_params, y, bounded)
+
+    if scope == "missing_by_group":
+        y, hint = adm.check_year(year)
+        if hint:
+            raise ValueError(hint)
+        sql = f"""
+SELECT t.project_group, count(*) AS missing_count
+FROM task t
+WHERE {gate}
+  AND NOT EXISTS (SELECT 1 FROM task_year_goal g WHERE g.task_id = t.id AND g.year = %s)
+GROUP BY t.project_group
+ORDER BY missing_count DESC, t.project_group
+LIMIT %s
+"""
+        return sql, (*gate_params, y, bounded)
+
+    # multi_year
+    y1, hint = adm.check_year(year)
+    if hint:
+        raise ValueError(hint)
+    y2, hint = adm.check_year(year_to)
+    if hint:
+        raise ValueError(hint)
+    if y1 == y2:
+        raise ValueError(f"multi_year 需要两个不同的年度:{y1} 与 {y2} 相同")
+    # HAVING 里**不能**引用输出列别名(PG 只在 ORDER BY 与 GROUP BY 允许),
+    # 所以两处 CASE 表达式要写全 —— 抄演示实现的 ``HAVING goal_year_1 IS NOT NULL``
+    # 会报 ``column "goal_year_1" does not exist``。
+    case1 = f"max(CASE WHEN g.year = {y1} THEN g.current_year_goal END)"
+    case2 = f"max(CASE WHEN g.year = {y2} THEN g.current_year_goal END)"
+    sql = f"""
+SELECT t.id AS task_id, t.task_name,
+       {case1} AS goal_year_1,
+       {case2} AS goal_year_2
+FROM task_year_goal g
+JOIN task t ON t.id = g.task_id
+WHERE {gate}
+  AND g.year IN ({y1}, {y2})
+GROUP BY t.id, t.task_name
+HAVING {case1} IS NOT NULL AND {case2} IS NOT NULL
+ORDER BY t.id
+LIMIT %s
+"""
+    return sql, (*gate_params, bounded)
+
+
+def year_goal_missing_total(
+    year: int | str,
+    board_code: str | None = None,
+    in_progress_only: bool = False,
+) -> tuple[str, tuple]:
+    """``missing`` 的总数(明细被 200 行截断后,调用方还原不出真值)。"""
+    y, hint = adm.check_year(year)
+    if hint:
+        raise ValueError(hint)
+    gate, gate_params = _year_goal_gate(board_code, whole_table=False)
+    extra = "\n  AND t.status IN (0, 1)" if in_progress_only else ""
+    sql = f"""
+SELECT count(*) AS total_count
+FROM task t
+WHERE {gate}{extra}
+  AND NOT EXISTS (SELECT 1 FROM task_year_goal g WHERE g.task_id = t.id AND g.year = %s)
+"""
+    return sql, (*gate_params, y)
+
+
+def year_goal_span_avg(
+    board_code: str | None = None,
+    whole_table: bool = False,
+) -> tuple[str, tuple]:
+    """``span`` 的均值:分母只含**已设过目标**的任务(没设过的不该拉低均值)。
+
+    刻意**不收 year**:演示实现里 span 的 SQL 只带任务闸门与看板,`year` 传进来
+    是被静默丢掉的。正式源在这里按年度过滤就会返回一个范围更小的答案 ——
+    所以调用方(``_formal``)在 span 带 year 时直接回落演示路径,不猜。
+    """
+    gate, gate_params = _year_goal_gate(board_code, whole_table)
+    sql = f"""
+SELECT round(avg(yr_cnt)::numeric, 2) AS avg_years
+FROM (
+    SELECT count(*) AS yr_cnt
+    FROM task_year_goal g
+    JOIN task t ON t.id = g.task_id
+    WHERE {gate}
+    GROUP BY g.task_id
+) x
+"""
+    return sql, gate_params
+
+
+def year_goal_span_rows(
+    min_years: int = 3,
+    board_code: str | None = None,
+    whole_table: bool = False,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """``span`` 的逐任务清单:至少 ``min_years`` 个年度(边界取等)。
+
+    ``GROUP_CONCAT(g.year ORDER BY g.year)`` 在 PG 里是
+    ``string_agg(g.year::text, ',' ORDER BY g.year)`` —— ``year`` 是整数,
+    不转文本会报 ``function string_agg(integer, unknown) does not exist``。
+
+    同样刻意不收 year,理由见 ``year_goal_span_avg``。
+    """
+    gate, gate_params = _year_goal_gate(board_code, whole_table)
+    threshold = max(1, int(min_years))
+    sql = f"""
+SELECT t.id AS task_id, t.task_name, count(*) AS year_count,
+       string_agg(g.year::text, ',' ORDER BY g.year) AS years
+FROM task_year_goal g
+JOIN task t ON t.id = g.task_id
+WHERE {gate}
+GROUP BY t.id, t.task_name
+HAVING count(*) >= %s
+ORDER BY year_count DESC, t.id
+LIMIT %s
+"""
+    return sql, (*gate_params, threshold, max(1, int(limit)))
+
+
+def year_goal_multi_year_total(
+    year: int | str,
+    year_to: int | str,
+    board_code: str | None = None,
+) -> tuple[str, tuple]:
+    """``multi_year`` 的「两个年度都设了目标」的任务数(明细只有那批任务,总数另给)。"""
+    y1, hint = adm.check_year(year)
+    if hint:
+        raise ValueError(hint)
+    y2, hint = adm.check_year(year_to)
+    if hint:
+        raise ValueError(hint)
+    gate, gate_params = _year_goal_gate(board_code, whole_table=False)
+    sql = f"""
+SELECT count(*) AS tasks
+FROM (
+    SELECT g.task_id
+    FROM task_year_goal g
+    JOIN task t ON t.id = g.task_id
+    WHERE {gate}
+      AND g.year IN ({y1}, {y2})
+    GROUP BY g.task_id
+    HAVING count(DISTINCT g.year) = 2
+) x
+"""
+    return sql, gate_params

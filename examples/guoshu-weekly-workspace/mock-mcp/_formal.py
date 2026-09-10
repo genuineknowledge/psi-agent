@@ -1152,6 +1152,139 @@ _NEW_HANDLERS_12 = {
     "weekly_milestone_stats": _milestone_stats,
 }
 
+
+def _year_goal_stats(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_year_goal_stats:年度目标统计(6 个 scope)。
+
+    两条判据在模板层钉住,这里只负责路由与信封:
+
+    * **缺口类口径永远按正式任务算**(``coverage`` / ``missing`` / ``missing_by_group``):
+      ``include_informal`` 对它们无效 —— 放宽分母会把已删除、未发布的任务算进缺口;
+    * ``coverage`` 用 EXISTS 而不是 JOIN:没有目标行的任务正是要数的缺口。
+    """
+    scope = (args.get("scope") or "by_year").strip().lower()
+    if scope not in tpl.YEAR_GOAL_STATS_SCOPES:
+        return None  # 演示路径会报 unsupported_scope
+    board = (args.get("board") or "").strip()
+    if board and board not in adm.BOARD_CODE_DOMAIN:
+        # 演示实现的 board= 接受看板**名字**(resolve_board);正式源只认 tech/group
+        # 两个码。名字的解析交给演示路径,不在这里猜 —— 猜错会答成另一个看板。
+        return None
+    board_code = board or None
+    year = int(args.get("year") or 0)
+    year_to = int(args.get("year_to") or 0)
+    top = max(1, min(MAX_ROWS, int(args.get("top") or 8)))
+    min_years = max(1, int(args.get("min_years") or 3))
+    in_progress_only = bool(args.get("in_progress_only"))
+    include_informal = bool(args.get("include_informal"))
+    if scope in tpl.YEAR_GOAL_GAP_SCOPES and not year:
+        raise ValueError(f"口径 {scope} 需要指定 year")
+    if scope == "multi_year" and (not year or not year_to):
+        raise ValueError("口径 multi_year 需要 year 与 year_to")
+    if scope == "multi_year" and year == year_to:
+        raise ValueError(f"multi_year 需要两个不同的年度:{year} 与 {year_to} 相同")
+
+    gap_scope = scope in tpl.YEAR_GOAL_GAP_SCOPES
+    whole_table = include_informal and not gap_scope
+    if scope == "span" and year:
+        # 演示实现里 span 的 SQL **不带年度条件** —— year 传进去是被静默丢掉的
+        # (docstring 也只说 by_year/span 不必给 year,没说给了会怎样)。正式源在这里
+        # 按年度过滤就会返回一个范围更小的答案,所以带着 year 的 span 一律回落演示路径。
+        return None
+    if whole_table:
+        # 目标表没有孤儿行(全表 387 = INNER JOIN 后 387),所以放开闸门就够。
+        base = (
+            "全表口径:不加正式任务闸门,统计整张 task_year_goal;"
+            "本档 387 条目标,加闸门(任务未删除且 workflow_status = 'published')是 313 条,"
+            "差额 74 条挂在非正式任务上;"
+            "问「正式任务设了多少目标」请用 include_informal = False(对外周报口径)"
+        )
+    else:
+        base = "is_deleted = 0 AND workflow_status = 'published'"
+        if include_informal and gap_scope:
+            base += (
+                ";本档量的是正式任务的目标缺口,include_informal 对它无效"
+                "(放宽分母会把已删除、未发布的任务算进缺口,缺口即失去意义)"
+            )
+    if board_code:
+        base += f";仅看板 {board_code}"
+
+    # span:均值与清单是两条查询,均值另给(分母只含设过目标的任务)
+    if scope == "span":
+        rows_sql, rows_params = tpl.year_goal_span_rows(
+            min_years=min_years, board_code=board_code, whole_table=whole_table, limit=top
+        )
+        result = envelope(
+            sql=rows_sql,
+            params=rows_params,
+            caliber=f"{base};至少 {min_years} 个年度(含 {min_years},边界取等);按年度数降序、并列按 task id 升序",
+            limit=top,
+            cap_last_param=True,
+            extra={"scope": scope},
+        )
+        avg_sql, avg_params = tpl.year_goal_span_avg(board_code=board_code, whole_table=whole_table)
+        avg = envelope(sql=avg_sql, params=avg_params, caliber="span 均值", limit=1)
+        result["avg_years_per_task"] = (avg.get("rows") or [{}])[0].get("avg_years")
+        result["min_years"] = min_years
+        result["caliber"] += (
+            ";avg_years_per_task 的分母只含**已设过目标**的任务(没设过的不该拉低均值);"
+            "years 是服务端按年度升序拼好的字符串,直接读,不要自己重排"
+        )
+        return result
+
+    sql, params = tpl.year_goal_stats(
+        scope,
+        year=year or None,
+        year_to=year_to or None,
+        min_years=min_years,
+        board_code=board_code,
+        whole_table=whole_table,
+        in_progress_only=in_progress_only,
+        limit=top,
+    )
+    caliber = base
+    listing = scope in ("missing", "missing_by_group", "multi_year", "span")
+    if scope == "by_year":
+        caliber += ";按年度统计目标条数与涉及任务数"
+    elif scope == "coverage":
+        caliber += ";分母为全部正式任务,未设目标的任务计入缺口(不能用 JOIN 丢掉)"
+    elif scope == "missing":
+        caliber += (
+            f";{year} 年度无目标行"
+            + (";仅在办任务(status IN (0, 1),0 未开始同样在办)" if in_progress_only else ";含全部状态,未按在办过滤")
+            + ";status 0 未开始 / 1 进行中 / 2 已完成 / 3 已暂停"
+        )
+    elif scope == "missing_by_group":
+        caliber += f";按专项组统计 {year} 年度目标缺口"
+    elif scope == "multi_year":
+        caliber += f";{year} 与 {year_to} 两年对照"
+
+    result = envelope(
+        sql=sql,
+        params=params,
+        caliber=caliber,
+        limit=top,
+        cap_last_param=listing,
+        extra={"scope": scope},
+    )
+    if scope == "missing":
+        tsql, tparams = tpl.year_goal_missing_total(
+            year, board_code=board_code, in_progress_only=in_progress_only
+        )
+        total = envelope(sql=tsql, params=tparams, caliber="missing 总数", limit=1)
+        result["total_count"] = (total.get("rows") or [{}])[0].get("total_count")
+        result["caliber"] += ";total_count 是缺口任务总数(明细被 row cap 截断后仍可引用)"
+    elif scope == "multi_year":
+        tsql, tparams = tpl.year_goal_multi_year_total(year, year_to, board_code=board_code)
+        both = envelope(sql=tsql, params=tparams, caliber="multi_year 总数", limit=1)
+        result["tasks_in_both_years"] = (both.get("rows") or [{}])[0].get("tasks")
+        result["years"] = [year, year_to]
+        result["caliber"] += (
+            ";tasks_in_both_years 是两个年度**都设了**目标的任务数;"
+            "goal_year_1 / goal_year_2 两列并排给出,不要自己错位对照"
+        )
+    return result
+
 _HANDLERS = {
     "weekly_task_query": _task_query,
     "weekly_progress_coverage": _coverage,
@@ -1173,6 +1306,7 @@ _HANDLERS = {
     "weekly_task_ranking": _task_ranking,
     "weekly_progress_range": _progress_range,
     "weekly_milestone_stats": _milestone_stats,
+    "weekly_year_goal_stats": _year_goal_stats,
 }
 
 # _NEW_HANDLERS 只是构建期的清单,避免手工漏接线

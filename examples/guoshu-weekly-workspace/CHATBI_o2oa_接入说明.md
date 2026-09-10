@@ -1,12 +1,12 @@
 # ChatBI 正式数据接入说明(o2oa / O2OA PostgreSQL)
 
-> **进度快照(2026-09-10,第 26 轮)**
+> **进度快照(2026-09-10,第 27 轮)**
 >
-> - **工具接线:20 / 31**。余下 11 个调用时回落演示路径;接线优先级见第 4 节。
+> - **工具接线:21 / 31**。余下 10 个调用时回落演示路径;接线优先级见第 4 节。
 > - **三套真库验收(同构 PG 实例 + 演示库数据)**:
->   - 端到端 `verify_end_to_end.py`:**213 / 213** 断言通过;
+>   - 端到端 `verify_end_to_end.py`:**247 / 247** 断言通过;
 >   - 口径验收 `verify_numbers_v2.py`:**38 / 38** 通过(mock docstring 里写死的契约数字逐条复现);
->   - 列集合对照 `column_parity.py`:**69 / 69** 一致(原先剩的 3 处已查清:全是**对照器侧**的
+>   - 列集合对照 `column_parity.py`:**75 / 75** 一致(原先剩的 3 处已查清:全是**对照器侧**的
 >     解析与桩问题,不是正式源的列对不上 —— 详见 3.0.6)。
 > - **交付形式**:服务 / Docker(`Dockerfile`,streamable-http,默认 18900);不含前端,由主 Agent 经 MCP 调用。
 > - **唯一外部卡点**:`o2oa` 库缺 `CONNECT` 授权,直连尚未打通 ——
@@ -198,7 +198,8 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 | `weekly_task_ranking` | ✅ 已接线 | 按子表条数排名(附件/进展/里程碑/提交单):**INNER JOIN 语义**(零条目的任务不参赛),列名照抄参考查询 `id / task_name / cnt`,并回显 `metric` / `metric_label`;附件榜首任务 73(20 个,`tied_at_top=1`);进展榜首任务 4(18 期,`tied_at_top=12`)。未迁移的 metric 回落,附件未授权报 `table_not_granted` |
 | `weekly_progress_range` | ✅ 已接线 | 时间轴出口:列集合 `task_id / task_name / version_no / progress_date / report_time / lag_days`;窗口两端闭区间,相对窗口锚在基准日(非系统时间);`total_count` / `total_tasks` **活过截断**;短窗口 0 行时附「按月上报」提示;`by=` / `peak=` / `date_field=report_time` 回落 |
 | `weekly_milestone_stats` | ✅ 已接线(6 scope × 10 维度) | summary 474 / 已完成 242 / 51.1%;`deleted` **全表口径** 566/36/602(不套任务闸门);`fully_deleted` 用 NOT EXISTS 得 **3** 条(「有软删行」是 23 条,差一个量级);`per_task` LEFT JOIN 保留零里程碑任务并把 `top_tie_count`(**23**)提到顶层,总览挂 `summary` 键;`mismatch` 两个 kind 是反向量词(6 ↔ 限 2026 只剩 3;8 ↔ 限 2026 涨到 22) |
-| 其余 11 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
+| `weekly_year_goal_stats` | ✅ 已接线(6 scope) | `by_year` 2025/2026/2027 = 128/117/68(**合计 313**),`include_informal=True` 放开闸门得 **387**(差 74 条挂在非正式任务上);`coverage` 用 **EXISTS** 不是 JOIN,分母恒为全部 128 项(2026 → 117 有 / 11 缺 = 91.4%);`missing` 提到顶层 `total_count`(11;加 `in_progress_only` → 10);`missing_by_group` 各档之和 = 11;`span` 均值 **2.45** 由服务端算(分母只含设过目标的任务);`multi_year` 2026×2025 = **117**(技术组 77);缺 `year` / `board=` 给看板名 / `span` 带 `year` 一律回落 |
+| 其余 10 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
 
 三条硬规则:
 
@@ -512,6 +513,34 @@ publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 1
    (关键技术攻关组/算力网络组/国家工程办…);`primary_category` 11 个一级分类,
    首行「改革与治理 67.5%」,与 `category`(里程碑自己的类别,首行「国家任务 58.9%」)不同轴。
    `reporter_id` / `owner_id` 在本库里恰好都有 47 个取值,但**仍是两列**,不可互相代答。
+
+### 3.0.8 年度目标统计接线:两个"必须反着来"的口径(2026-09-10 第 27 轮)
+
+`weekly_year_goal_stats`(6 scope)接线完成。两个 scope 群的口径正好相反,规则写死在模板层:
+
+1. **缺口类口径永远按正式任务算**。`coverage` / `missing` / `missing_by_group` 量的是
+   「**正式任务**里有多少没设目标」—— 把分母放宽到已删除、未发布的任务上,这个缺口就不成立了。
+   所以 `include_informal=True` 只对 `by_year` / `span` 这类纯计数生效;缺口类即使传了它,
+   SQL 里仍然是 `workflow_status = 'published'`,并在口径句里写明「对它无效」。
+   真库上两者的差是量化的:`by_year` 加闸门 **313** 条目标,放开是 **387** 条,差 **74** 条挂非正式任务。
+2. **`coverage` 必须用 EXISTS,不能用 JOIN**。没有目标行的任务**恰好就是要数的缺口**,
+   INNER JOIN 会把它们整行丢掉 —— 于是 `missing_goal` 永远是 0、覆盖率永远是 100%
+   (演示实现把这个陷阱记作 `missing_goal_as_zero`)。真库上 2026 年:128 项里 117 有 / 11 缺 = 91.4%;
+   用 JOIN 会答成「128 项全都有目标」。
+
+同一轮里另外固化了四条:
+
+3. **`span` 的 `year` 在演示实现里是被静默丢掉的**(它的 SQL 只带任务闸门与看板)。
+   docstring 只说「by_year / span 不必给 year」,没说给了会怎样。正式源在这里按年度过滤就会返回
+   **范围更小的答案** —— 所以 `scope=span` 带 `year` 一律回落演示路径。这是「不得静默缩小问题范围」
+   那条纪律的一个具体落点:遇到参考实现自己都说不清的可选参数,回落比猜更安全。
+4. **`multi_year` 的 `HAVING` 不能引用输出列别名**。PG 只在 `ORDER BY` 与 `GROUP BY` 允许别名,
+   `HAVING` 里必须把 CASE 表达式写全 —— 照抄演示实现的 `HAVING goal_year_1 IS NOT NULL`
+   会报 `column "goal_year_1" does not exist`。模板里两个 CASE 各写了两遍,单测钉住了这一点。
+5. **`span` 的年份串要 `string_agg(g.year::text, ...)`**:`year` 是整数,
+   不转文本会报 `function string_agg(integer, unknown) does not exist`。
+6. **`board=` 只认 `tech` / `group` 两个码**:演示实现的 `resolve_board` 还接受看板**名字**
+   (「集团看板」)。名字的解析交给演示路径,正式源不猜 —— 猜错会答成另一个看板。
 
 ## 5. 能力边界(未授权表时)
 - `task_attachment` 只读元数据:问答只能答“存在附件《文件名》”,文件体在

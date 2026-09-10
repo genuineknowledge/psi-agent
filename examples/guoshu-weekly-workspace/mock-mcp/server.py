@@ -5130,6 +5130,20 @@ def weekly_year_goal_stats(
             denominator to deleted and unpublished tasks makes the gap meaningless.
     """
 
+    formal = _formal.dispatch(
+        "weekly_year_goal_stats",
+        scope=scope,
+        year=year,
+        year_to=year_to,
+        min_years=min_years,
+        top=top,
+        in_progress_only=in_progress_only,
+        board=board,
+        include_informal=include_informal,
+    )
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         key = (scope or "by_year").strip().lower()
         if key not in _YEAR_GOAL_SCOPES:

@@ -889,3 +889,125 @@ class TestMilestoneStatsRouting:
         assert got is not None
         assert "不加任务闸门" in seen[0]["caliber"] and "fully_deleted" in seen[0]["caliber"]
         assert seen[0]["cap_last_param"] is False
+
+
+class TestYearGoalStatsTemplates:
+    """年度目标统计的两条判据:S 缺口类永远按正式任务算;coverage 必须用 EXISTS。"""
+
+    def test_coverage_uses_exists_not_join(self):
+        """没有目标行的任务正是要数的缺口,INNER JOIN 会把它们整行丢掉。"""
+        sql, params = o2.year_goal_stats("coverage", year=2026)
+        assert "EXISTS" in sql and "task_year_goal" in sql
+        assert "JOIN task_year_goal" not in sql
+        assert "count(*) FILTER (WHERE NOT has_goal) AS missing_goal" in sql
+        assert params == (2026,)
+
+    def test_whole_table_only_applies_to_counting_scopes(self):
+        """by_year 放开闸门;缺口类口径即使传了 whole_table 也仍带闸门。"""
+        sql_open, _ = o2.year_goal_stats("by_year", whole_table=True)
+        sql_gated, _ = o2.year_goal_stats("by_year")
+        assert "1 = 1" in sql_open and "workflow_status" not in sql_open
+        assert "workflow_status = 'published'" in sql_gated
+        for scope in ("coverage", "missing", "missing_by_group"):
+            sql, _ = o2.year_goal_stats(scope, year=2026, whole_table=True)
+            assert "workflow_status = 'published'" in sql, scope
+
+    def test_multi_year_having_repeats_the_expression(self):
+        """PG 只在 ORDER BY / GROUP BY 允许输出列别名,HAVING 里必须把表达式写全。"""
+        sql, _params = o2.year_goal_stats("multi_year", year=2026, year_to=2025)
+        assert "HAVING goal_year_1" not in sql and "HAVING goal_year_2" not in sql
+        assert sql.count("max(CASE WHEN g.year = 2026 THEN g.current_year_goal END)") == 2
+        assert sql.count("max(CASE WHEN g.year = 2025 THEN g.current_year_goal END)") == 2
+
+    def test_span_uses_string_agg_and_takes_no_year(self):
+        """year 是整数,string_agg 不转文本会报错;span 也不收 year(见模板 docstring)。"""
+        sql, params = o2.year_goal_span_rows(3)
+        assert "string_agg(g.year::text, ',' ORDER BY g.year)" in sql
+        assert params == (3, 200)
+        assert "g.year = " not in sql
+
+    def test_board_filter_goes_through_the_board_code(self):
+        sql, params = o2.year_goal_stats("by_year", board_code="tech")
+        assert "task_board WHERE code = %s" in sql
+        assert params == ("tech", 200)
+
+    def test_invalid_scope_and_missing_year(self):
+        with pytest.raises(ValueError, match="未知 scope"):
+            o2.year_goal_stats("nope")
+        # coverage / missing / missing_by_group 都必须显式给 year(rule 5)
+        with pytest.raises(ValueError, match="year"):
+            o2.year_goal_stats("coverage")
+        # span 要走 year_goal_span_* 两条模板,落到这里说明路由写错了
+        with pytest.raises(ValueError, match="请用 year_goal_span_avg"):
+            o2.year_goal_stats("span")
+
+
+class TestYearGoalStatsRouting:
+    """路由与回落不连库:`envelope` 一律换成假信封,避免测试去连真 PG。"""
+
+    @staticmethod
+    def _capture(monkeypatch) -> list[dict]:
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            row = {"avg_years": 2.45, "total_count": 11, "tasks": 117}
+            return {"ok": True, "columns": ["c"], "rows": [row], "row_count": 1, "caliber": "口径"}
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        return seen
+
+    def test_span_with_year_falls_back(self, monkeypatch):
+        """演示实现的 span 把 year 静默丢掉:正式源按年度过滤会返回范围更小的答案。"""
+        self._capture(monkeypatch)
+        assert _formal.dispatch("weekly_year_goal_stats", scope="span", year=2026) is None
+        assert _formal.dispatch("weekly_year_goal_stats", scope="span", min_years=3) is not None
+
+    def test_board_name_falls_back_to_the_demo_resolver(self, monkeypatch):
+        """board= 接受看板名字(演示侧 resolve_board);正式源只认 tech/group 两个码。"""
+        self._capture(monkeypatch)
+        assert _formal.dispatch("weekly_year_goal_stats", scope="by_year", board="集团看板") is None
+        assert _formal.dispatch("weekly_year_goal_stats", scope="by_year", board="nope") is None
+        assert _formal.dispatch("weekly_year_goal_stats", scope="by_year", board="tech") is not None
+
+    def test_missing_year_is_an_argument_error(self, monkeypatch):
+        self._capture(monkeypatch)
+        got = _formal.dispatch("weekly_year_goal_stats", scope="coverage")
+        assert got is not None and got["ok"] is False
+        assert got["error"]["code"] == "invalid_argument"
+        got = _formal.dispatch("weekly_year_goal_stats", scope="multi_year", year=2026, year_to=2026)
+        assert got is not None and got["ok"] is False
+        assert "两个不同的年度" in got["error"]["message"]
+
+    def test_span_merges_avg_and_rows(self, monkeypatch):
+        """span 的均值与清单是两条查询,均值挂顶层(分母只含设过目标的任务)。"""
+        seen = self._capture(monkeypatch)
+        got = _formal._year_goal_stats({"scope": "span", "min_years": 3})
+        assert got is not None and len(seen) == 2
+        assert got["avg_years_per_task"] == 2.45 and got["min_years"] == 3
+        assert "分母只含" in got["caliber"]
+
+    def test_missing_hoists_total_count(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        got = _formal._year_goal_stats({"scope": "missing", "year": 2026})
+        assert got is not None and len(seen) == 2
+        assert got["total_count"] == 11
+        assert "t.status IN (0, 1)" not in seen[0]["sql"]
+        got = _formal._year_goal_stats({"scope": "missing", "year": 2026, "in_progress_only": True})
+        assert got is not None and "t.status IN (0, 1)" in seen[2]["sql"]
+
+    def test_multi_year_hoists_both_count_and_years(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        got = _formal._year_goal_stats({"scope": "multi_year", "year": 2026, "year_to": 2025})
+        assert got is not None and len(seen) == 2
+        assert got["tasks_in_both_years"] == 117 and got["years"] == [2026, 2025]
+
+    def test_gap_scopes_keep_the_gate_even_with_include_informal(self, monkeypatch):
+        """缺口类口径量的是"正式任务里有多少没设目标",放宽分母会让缺口失去意义。"""
+        seen = self._capture(monkeypatch)
+        _formal._year_goal_stats({"scope": "by_year", "include_informal": True})
+        assert "1 = 1" in seen[0]["sql"]
+        _formal._year_goal_stats({"scope": "coverage", "year": 2026, "include_informal": True})
+        assert "workflow_status = 'published'" in seen[1]["sql"]
+        assert "include_informal 对它无效" in seen[1]["caliber"]
