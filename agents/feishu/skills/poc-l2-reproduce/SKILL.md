@@ -7,7 +7,7 @@ category: productivity
 # POC L2 · 可操作则复现
 
 承接 L1 对照实验结论: **L1 不做海豚特化**; 差异化在 **L2**.
-设计见 `docs/superpowers/specs/2026-09-09-poc-l2-self-replay-design.md`.
+权威约定见本 skill 与工具 `poc_l2_probe`。
 
 **对话式功能 UAT**（A→B 发用户话术对照 Pass）不在本 skill：见 [`haitun-feature-uat`](../haitun-feature-uat/SKILL.md) / `poc_feature_uat`。
 

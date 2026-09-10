@@ -16,6 +16,8 @@ category: productivity
 |---|---|---|
 | `card` | `title`(必填)/ `template` | 根容器:标题与卡头配色 |
 | `info` | `label` / `value`(必填) | 信息行,如 负责人/截止日期 |
+| `section` | `title` / `text` | 只读分节(报告/总结卡):小标题+正文合成一个 markdown;两者皆空 = 占位,整节不渲染 |
+| `divider` | — | 分节分隔线 |
 | `score` | `min`(默认1)/ `max`(默认5)/ `rounds`(默认20)/ `bind-record` / `selected` | 评分按钮组,点选即回调,可多轮改分 |
 | `comment` | `placeholder` / `bind-record` | 评语输入框(引擎自动配「确认」按钮,点确认才回传文字) |
 | `action-row` | — | 按钮行容器 |

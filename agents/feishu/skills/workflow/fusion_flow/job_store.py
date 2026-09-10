@@ -29,10 +29,13 @@ from ._atomic_io import atomic_write_text
 from .workflow_execution import (
     ExecutionCheckpoint,
     ForeachIterationCheckpoint,
+    LoopExecutionCheckpoint,
     ResourceCapacity,
 )
 
 STATE_VERSION = 3
+DEFAULT_MAX_LOOP_EPOCHS = 25
+
 type RunStatus = Literal[
     "running",
     "waiting_for_human",
@@ -52,6 +55,7 @@ _RUN_KEYS = frozenset(
         "definition_digest",
         "inputs",
         "resource_capacities",
+        "max_loop_epochs",
         "checkpoint",
         "prepared_request",
         "human_responses",
@@ -59,6 +63,7 @@ _RUN_KEYS = frozenset(
         "error",
     }
 )
+_LEGACY_RUN_KEYS = _RUN_KEYS - {"max_loop_epochs"}
 _CHECKPOINT_KEYS = frozenset(
     {
         "workflow_id",
@@ -67,8 +72,10 @@ _CHECKPOINT_KEYS = frozenset(
         "completed_step_ids",
         "completed_selection_ids",
         "foreach_iterations",
+        "loops",
     }
 )
+_LEGACY_CHECKPOINT_KEYS = _CHECKPOINT_KEYS - {"loops"}
 _REQUEST_KEYS = frozenset(
     {
         "request_id",
@@ -169,6 +176,7 @@ class HumanWorkflowRun:
     definition_digest: str
     inputs: dict[str, object]
     resource_capacities: dict[str, ResourceCapacity]
+    max_loop_epochs: int = DEFAULT_MAX_LOOP_EPOCHS
     checkpoint: ExecutionCheckpoint | None = None
     prepared_request: HumanRequestSpec | None = None
     human_responses: dict[str, object] = field(default_factory=dict)
@@ -318,6 +326,7 @@ class JobStore:
         definition_digest: str,
         inputs: Mapping[str, object],
         resource_capacities: Mapping[str, ResourceCapacity] | None = None,
+        max_loop_epochs: int = DEFAULT_MAX_LOOP_EPOCHS,
         checkpoint: ExecutionCheckpoint | None = None,
     ) -> HumanWorkflowRun:
         """Create and persist a new running job with an opaque run ID."""
@@ -339,6 +348,7 @@ class JobStore:
                 definition_digest=definition_digest,
                 inputs=dict(inputs),
                 resource_capacities=dict(resource_capacities or {}),
+                max_loop_epochs=max_loop_epochs,
                 checkpoint=checkpoint,
             )
             run_lock: _RunLock | None = None
@@ -539,6 +549,16 @@ def _run_to_json(run: HumanWorkflowRun) -> dict[str, object]:
                 }
                 for iteration in run.checkpoint.foreach_iterations
             ],
+            "loops": [
+                {
+                    "loop_id": loop.loop_id,
+                    "epoch": loop.epoch,
+                    "current_values": loop.current_values,
+                    "staged_values": loop.staged_values,
+                    "completed_step_ids": list(loop.completed_step_ids),
+                }
+                for loop in run.checkpoint.loops
+            ],
         }
     request: dict[str, object] | None = None
     if run.prepared_request is not None:
@@ -562,6 +582,7 @@ def _run_to_json(run: HumanWorkflowRun) -> dict[str, object]:
         "definition_digest": run.definition_digest,
         "inputs": run.inputs,
         "resource_capacities": capacities,
+        "max_loop_epochs": run.max_loop_epochs,
         "checkpoint": checkpoint,
         "prepared_request": request,
         "human_responses": run.human_responses,
@@ -574,7 +595,8 @@ def _run_from_json(payload: object) -> HumanWorkflowRun:
     if not isinstance(payload, dict):
         raise InvalidRunStateError("run state must be a JSON object")
     payload = cast(dict[str, object], payload)
-    _require_exact_keys(payload, _RUN_KEYS, "run state")
+    if frozenset(payload) not in {_RUN_KEYS, _LEGACY_RUN_KEYS}:
+        _require_exact_keys(payload, _RUN_KEYS, "run state")
     if type(payload["version"]) is not int or payload["version"] != STATE_VERSION:
         raise InvalidRunStateError(f"unsupported run state version: {payload['version']!r}")
 
@@ -586,7 +608,8 @@ def _run_from_json(payload: object) -> HumanWorkflowRun:
         if not isinstance(checkpoint_payload, dict):
             raise InvalidRunStateError("checkpoint must be an object or null")
         checkpoint_payload = cast(dict[str, object], checkpoint_payload)
-        _require_exact_keys(checkpoint_payload, _CHECKPOINT_KEYS, "checkpoint")
+        if frozenset(checkpoint_payload) not in {_CHECKPOINT_KEYS, _LEGACY_CHECKPOINT_KEYS}:
+            _require_exact_keys(checkpoint_payload, _CHECKPOINT_KEYS, "checkpoint")
         try:
             iteration_payloads = checkpoint_payload["foreach_iterations"]
             if not isinstance(iteration_payloads, list):
@@ -641,6 +664,51 @@ def _run_from_json(payload: object) -> HumanWorkflowRun:
                         ),
                     )
                 )
+            loop_payloads = checkpoint_payload.get("loops", [])
+            if not isinstance(loop_payloads, list):
+                raise InvalidRunStateError("checkpoint.loops must be a list")
+            loops: list[LoopExecutionCheckpoint] = []
+            for index, raw_loop in enumerate(loop_payloads):
+                if not isinstance(raw_loop, dict):
+                    raise InvalidRunStateError(f"checkpoint.loops[{index}] must be an object")
+                raw_loop = cast(dict[str, object], raw_loop)
+                _require_exact_keys(
+                    raw_loop,
+                    frozenset(
+                        {
+                            "loop_id",
+                            "epoch",
+                            "current_values",
+                            "staged_values",
+                            "completed_step_ids",
+                        }
+                    ),
+                    f"checkpoint.loops[{index}]",
+                )
+                loops.append(
+                    LoopExecutionCheckpoint(
+                        loop_id=_require_string(
+                            raw_loop["loop_id"],
+                            context=f"checkpoint.loops[{index}].loop_id",
+                        ),
+                        epoch=_require_int(
+                            raw_loop["epoch"],
+                            context=f"checkpoint.loops[{index}].epoch",
+                        ),
+                        current_values=_require_json_mapping(
+                            raw_loop["current_values"],
+                            context=f"checkpoint.loops[{index}].current_values",
+                        ),
+                        staged_values=_require_json_mapping(
+                            raw_loop["staged_values"],
+                            context=f"checkpoint.loops[{index}].staged_values",
+                        ),
+                        completed_step_ids=_require_string_tuple(
+                            raw_loop["completed_step_ids"],
+                            context=f"checkpoint.loops[{index}].completed_step_ids",
+                        ),
+                    )
+                )
             checkpoint = ExecutionCheckpoint(
                 workflow_id=_require_string(
                     checkpoint_payload["workflow_id"],
@@ -663,6 +731,7 @@ def _run_from_json(payload: object) -> HumanWorkflowRun:
                     context="checkpoint.completed_selection_ids",
                 ),
                 foreach_iterations=tuple(foreach_iterations),
+                loops=tuple(loops),
             )
         except ValueError as error:
             raise InvalidRunStateError(str(error)) from error
@@ -728,6 +797,10 @@ def _run_from_json(payload: object) -> HumanWorkflowRun:
             ),
             inputs=_require_json_mapping(payload["inputs"], context="inputs"),
             resource_capacities=_decode_resource_capacities(payload["resource_capacities"]),
+            max_loop_epochs=_require_int(
+                payload.get("max_loop_epochs", DEFAULT_MAX_LOOP_EPOCHS),
+                context="max_loop_epochs",
+            ),
             checkpoint=checkpoint,
             prepared_request=request,
             human_responses=_require_json_mapping(
@@ -764,6 +837,7 @@ def _copy_checkpoint(
         completed_step_ids=tuple(checkpoint.completed_step_ids),
         completed_selection_ids=tuple(checkpoint.completed_selection_ids),
         foreach_iterations=tuple(checkpoint.foreach_iterations),
+        loops=tuple(checkpoint.loops),
     )
 
 
@@ -774,6 +848,8 @@ def _validate_run(
 ) -> None:
     if type(run.version) is not int or run.version != STATE_VERSION:
         raise error_type(f"version must be {STATE_VERSION}")
+    if type(run.max_loop_epochs) is not int or run.max_loop_epochs < 1:
+        raise error_type("max_loop_epochs must be a positive integer")
     _validate_opaque_id(run.run_id, "run_id", error_type=error_type)
     if run.status not in {
         "running",
@@ -1045,6 +1121,7 @@ def _reject_json_constant(value: str) -> object:
 
 
 __all__ = [
+    "DEFAULT_MAX_LOOP_EPOCHS",
     "STATE_VERSION",
     "HumanRequestSpec",
     "HumanWorkflowRun",

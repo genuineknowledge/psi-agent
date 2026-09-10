@@ -5,7 +5,7 @@ description: "Automate Haitun feature-module UAT by driving a target Session B w
 
 # 海豚功能 UAT · A→B 对话验收
 
-设计: `docs/superpowers/specs/2026-09-09-haitun-feature-uat-design.md`
+权威实现在本 skill + 工具 `poc_feature_uat`。
 
 ## 何时加载
 

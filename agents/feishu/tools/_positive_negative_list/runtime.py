@@ -7,29 +7,24 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 from typing import Any, cast
 
 import _feishu_impl as _f
-import anyio
-from lark_channel.core.enum import AccessTokenType, HttpMethod
-from lark_channel.core.model import BaseRequest
 
 from _positive_negative_list.preflight import TableSchemaValidation, validate_table_schema
 from _positive_negative_list.reader import FeishuLedgerClient, _field_name_list, resolve_table_config
 from _positive_negative_list.table import TableAdapter, TableClient, _encode_field_value
 
-# The source ledger is the existing organization base.  These coordinates are
-# intentionally kept in code: they are the user-provided source, not a new
-# deployment configuration surface.  The write target is provisioned once in
-# AppData and is never the public base.
+# The ledger is the existing organization base and the single production
+# target for both reads and confirmed writes.  These coordinates are
+# intentionally kept in code: they are the user-provided ledger, not a new
+# deployment configuration surface.  There is no robot-provisioned test table
+# and no AppData target file; the write path reuses the public ledger's own
+# six columns after a fail-closed preflight.
 _SOURCE_APP_TOKEN = "RNEvbLIJAaPPdksfv8YceTmjndg"
 _SOURCE_TABLE_ID = "tblwXV7Xlwu0hVYH"
 _SOURCE_VIEW_ID = "veweChthHV"
-_TEST_APP_TOKEN = ""
-_TEST_TABLE_ID = ""
-_TEST_VIEW_ID = ""
-_TEST_FIELD_NAMES = {
+_LEDGER_FIELD_NAMES = {
     "nature": "正负面归属",
     "subject_user_key": "员工姓名",
     "fact_summary": "事件描述",
@@ -111,13 +106,10 @@ def _target_env(config: dict[str, Any], target: str, key: str, default: str) -> 
 
 
 def _target_coordinates(config: dict[str, Any], target: str) -> tuple[str, str, str]:
-    global _TEST_APP_TOKEN, _TEST_TABLE_ID, _TEST_VIEW_ID
     if not config:
-        if target == "read":
-            return _SOURCE_APP_TOKEN, _SOURCE_TABLE_ID, _SOURCE_VIEW_ID
-        if not _TEST_APP_TOKEN or not _TEST_TABLE_ID:
-            raise ValueError("测试表尚未初始化，请先确认一条候选记录")
-        return _TEST_APP_TOKEN, _TEST_TABLE_ID, _TEST_VIEW_ID
+        # Reads and confirmed writes both target the same public ledger; there
+        # is no robot-provisioned test table left to initialize.
+        return _SOURCE_APP_TOKEN, _SOURCE_TABLE_ID, _SOURCE_VIEW_ID
     app_env = _target_env(config, target, "app_token_env", "HAITUN_PNL_APP_TOKEN")
     table_env = _target_env(config, target, "table_id_env", "HAITUN_PNL_TABLE_ID")
     view_env = _target_env(config, target, "view_id_env", "HAITUN_PNL_VIEW_ID")
@@ -317,27 +309,16 @@ class ConfiguredTableClient(FeishuLedgerClient):
         if not isinstance(view_purposes, dict):
             view_purposes = {}
         view_env = _target_env(self._config, "write", "view_id_env", "HAITUN_PNL_VIEW_ID")
-        view_id = (
-            _TEST_VIEW_ID
-            if self.app_token == _TEST_APP_TOKEN and self.table_id == _TEST_TABLE_ID
-            else os.environ.get(view_env, "").strip()
-        )
+        view_id = os.environ.get(view_env, "").strip() if view_env else ""
         if not view_purposes and view_id:
             view_purposes = {view_id: "public_ledger"}
-        # The MVP write target is provisioned by the robot at runtime and has
-        # no deployment config or user-selected view.  It is already isolated
-        # by its own Base/table coordinates, so requiring an additional view
-        # identifier here would make the first confirmed write impossible and
-        # would contradict the no-extra-config requirement.  Keep the generic
-        # validation contract for configured targets, while treating this
-        # private robot-owned table as its own public-ledger purpose.
-        if (
-            not view_purposes
-            and _write_mode(self._config) == "existing_columns"
-            and self.app_token == _TEST_APP_TOKEN
-            and self.table_id == _TEST_TABLE_ID
-        ):
-            view_purposes = {self.table_id: "public_ledger"}
+        # The production write target is the existing public ledger itself: the
+        # coordinates are hard-coded like the read side, and there is no
+        # robot-provisioned table or AppData target file.  Declare the ledger's
+        # public view as the write-path view purpose so the first confirmed
+        # write never requires extra deployment configuration.
+        if not view_purposes and self.app_token == _SOURCE_APP_TOKEN and self.table_id == _SOURCE_TABLE_ID:
+            view_purposes = {_SOURCE_VIEW_ID: "public_ledger"}
         required = {
             "nature": {
                 "field_id": field_ids.get("nature", ""),
@@ -401,9 +382,9 @@ class ConfiguredTableClient(FeishuLedgerClient):
         return result
 
     def build_existing_case_fields(self, case, schema):
-        """Map the rich case into the six columns shared with the formal ledger.
+        """Map the rich case into the six columns of the public ledger.
 
-        The test table intentionally has no extra columns.  Analysis and
+        The public ledger intentionally has no extra columns.  Analysis and
         deduplication metadata therefore lives together in the existing
         ``备注`` column instead of allowing repeated semantic aliases to
         overwrite each other during generic field translation.
@@ -482,7 +463,7 @@ class ConfiguredTableClient(FeishuLedgerClient):
 def configured_table_adapter() -> TableAdapter:
     config = _load_config()
     app_token, table_id, _ = _target_coordinates(config, "write")
-    effective = config or {"write_target": {"mode": "existing_columns", "field_names": _TEST_FIELD_NAMES}}
+    effective = config or {"write_target": {"mode": "existing_columns", "field_names": _LEDGER_FIELD_NAMES}}
     return TableAdapter(ConfiguredTableClient(app_token, table_id, effective))
 
 
@@ -507,122 +488,9 @@ def configured_read_view_id() -> str:
     return _target_coordinates(config, "read")[2]
 
 
-def _create_base_request() -> BaseRequest:
-    request = BaseRequest()
-    request.http_method = HttpMethod.POST
-    request.uri = "/open-apis/bitable/v1/apps"
-    request.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
-    request.body = {"name": "HaiTun 正负面清单测试表"}
-    return request
-
-
-def _create_table_request(app_token: str) -> BaseRequest:
-    request = BaseRequest()
-    request.http_method = HttpMethod.POST
-    request.uri = "/open-apis/bitable/v1/apps/:app_token/tables"
-    request.paths["app_token"] = app_token
-    request.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
-    request.body = {
-        "table": {
-            "name": "正负面清单",
-            "fields": [
-                {"field_name": "事件描述", "type": 1},
-                {
-                    "field_name": "正负面归属",
-                    "type": 3,
-                    "property": {
-                        "options": [
-                            {"name": "正面清单", "color": 0},
-                            {"name": "负面清单", "color": 1},
-                            {"name": "中性", "color": 2},
-                            {"name": "证据不足", "color": 3},
-                        ]
-                    },
-                },
-                {"field_name": "员工姓名", "type": 11},
-                {"field_name": "记录日期", "type": 5},
-                {"field_name": "备注", "type": 1},
-                {"field_name": "填写人", "type": 11},
-            ],
-        }
-    }
-    return request
-
-
-async def _load_test_state() -> None:
-    global _TEST_APP_TOKEN, _TEST_TABLE_ID, _TEST_VIEW_ID
-    if _TEST_APP_TOKEN and _TEST_TABLE_ID:
-        return
-    try:
-        from psi_agent._appdata import resolve_appdata_root  # noqa: PLC0415
-
-        root = await resolve_appdata_root()
-        path = Path(root) / "positive-negative-list" / "test-target.json"
-        payload = json.loads(await anyio.Path(str(path)).read_text(encoding="utf-8"))
-    except OSError, TypeError, ValueError, json.JSONDecodeError:
-        return
-    if isinstance(payload, dict):
-        app_token = str(payload.get("app_token") or "").strip()
-        table_id = str(payload.get("table_id") or "").strip()
-        view_id = str(payload.get("view_id") or "").strip()
-        if app_token and table_id:
-            _TEST_APP_TOKEN, _TEST_TABLE_ID, _TEST_VIEW_ID = app_token, table_id, view_id
-
-
-async def _save_test_state(app_token: str, table_id: str, view_id: str) -> None:
-    from psi_agent._appdata import resolve_appdata_root  # noqa: PLC0415
-
-    root = await resolve_appdata_root()
-    directory = Path(root) / "positive-negative-list"
-    await anyio.Path(str(directory)).mkdir(parents=True, exist_ok=True)
-    path = directory / "test-target.json"
-    temporary = anyio.Path(str(path) + ".tmp")
-    await temporary.write_text(
-        json.dumps({"app_token": app_token, "table_id": table_id, "view_id": view_id}),
-        encoding="utf-8",
-    )
-    await temporary.replace(anyio.Path(str(path)))
-
-
-async def ensure_test_table(user_key: str) -> tuple[str, str]:
-    """Load or create the robot-owned isolated test table.
-
-    This is deliberately runtime state, not a new config field.  Creation is
-    attempted only on the first confirmed write and is idempotent across
-    process restarts through AppData.
-    """
-    global _TEST_APP_TOKEN, _TEST_TABLE_ID, _TEST_VIEW_ID
-    await _load_test_state()
-    if _TEST_APP_TOKEN and _TEST_TABLE_ID:
-        return _TEST_APP_TOKEN, _TEST_TABLE_ID
-    base = await _f._invoke(_create_base_request(), user_key=user_key, identity="bot")
-    if not isinstance(base, dict) or not base.get("ok"):
-        raise RuntimeError(str((base or {}).get("error") or "无法创建机器人测试表"))
-    data_raw = base.get("data")
-    data: dict[str, Any] = data_raw if isinstance(data_raw, dict) else {}
-    app_raw = data.get("app")
-    app: dict[str, Any] = app_raw if isinstance(app_raw, dict) else data
-    app_token = str(app.get("app_token") or "").strip()
-    if not app_token:
-        raise RuntimeError("创建测试表成功但未返回 app_token")
-    table = await _f._invoke(_create_table_request(app_token), user_key=user_key, identity="bot")
-    if not isinstance(table, dict) or not table.get("ok"):
-        raise RuntimeError(str((table or {}).get("error") or "无法创建测试表结构"))
-    table_data_raw = table.get("data")
-    table_data: dict[str, Any] = table_data_raw if isinstance(table_data_raw, dict) else {}
-    table_id = str(table_data.get("table_id") or "").strip()
-    if not table_id:
-        raise RuntimeError("创建测试表成功但未返回 table_id")
-    view_id = str(table_data.get("default_view_id") or "").strip()
-    _TEST_APP_TOKEN, _TEST_TABLE_ID, _TEST_VIEW_ID = app_token, table_id, view_id
-    await _save_test_state(app_token, table_id, view_id)
-    return app_token, table_id
-
-
 __all__ = [
     "ConfiguredTableClient",
     "configured_read_table_adapter",
     "configured_read_view_id",
     "configured_table_adapter",
-    "ensure_test_table",
 ]

@@ -102,6 +102,30 @@ async def test_ensure_is_idempotent(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_ensure_session_id_is_always_workspace_derived(tmp_path: Path) -> None:
+    """组织任务不复用固定 session id: id 一律由 workspace 派生, 调用方无从指定。
+
+    派生 id 意味着组织级任务 (公司 seed workspace) 用的是哪个调度 Session 由落点
+    决定, 网页可见性等策略按 workspace 配置即可, 不需要在 Gateway 里认某个字符串。
+    """
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+    try:
+        am, sm = await _make_managers(tg)
+        await _write_schedule(tmp_path)
+        schedm = SchedulerManager(_sm=sm, _ai_id="ai1")
+
+        sid = await schedm.ensure(str(tmp_path))
+
+        assert sid == await _sid(tmp_path)
+        assert sid.startswith("scheduler-")
+        assert sm.has(sid)
+    finally:
+        await _drain(sm, am)
+        await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
 async def test_ensure_skips_workspace_without_schedules(tmp_path: Path) -> None:
     """按需 spawn: 没有 schedules 就不开 Session (免得 N 个飞书用户各挂一个空的)。"""
     tg = anyio.create_task_group()
@@ -576,6 +600,37 @@ async def test_sweep_seeds_cold_seed_workspace(tmp_path: Path) -> None:
 
         await schedm._sweep_once()
         assert await (_sched_dir(seed_ws) / "todo-remind" / "TASK.md").exists()
+    finally:
+        await _drain(sm, am)
+        await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_sweep_seeds_newly_deployed_tasks_while_session_alive(tmp_path: Path) -> None:
+    """调度 Session 已存活 (如重启后由 state 恢复) 时, 后续部署新增的任务也由 sweep 补种。
+
+    旧实现只在调度 Session 缺失时对 seed workspace 跑 ensure —— 会话已存在就永远
+    轮不到补种, 新部署的公司级任务 (如新增会议场次) 会一直不落盘、到点不触发。
+    每轮 sweep 幂等 ensure 让新任务最迟一个轮询周期内出现。
+    """
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+    try:
+        am, sm = await _make_managers(tg)
+        seed_ws = tmp_path / "seed-ws"
+        agent_pkg = tmp_path / "agent-pkg"
+        await _write_agent_schedule(agent_pkg, "todo-remind")
+        schedm = SchedulerManager(_sm=sm, _ai_id="ai1", seed_workspace=str(seed_ws), seed_agent=str(agent_pkg))
+
+        sid = await schedm.ensure(str(seed_ws))
+        assert sid and sm.has(sid)
+
+        # 「后续部署」: agent 包新增一个任务, 会话保持存活。
+        await _write_agent_schedule(agent_pkg, "mentor-check-remind")
+        await schedm._sweep_once()
+
+        assert await (_sched_dir(seed_ws) / "mentor-check-remind" / "TASK.md").exists()
+        assert len(await sm.list_all(include_scheduler=True)) == 1  # 复用同一调度 Session
     finally:
         await _drain(sm, am)
         await tg.__aexit__(None, None, None)

@@ -245,6 +245,51 @@ def test_priority_importance_and_consistency_check_are_wired_in() -> None:
     assert "待人工确认" in block, "an uncertain consistency verdict must go to human confirmation"
 
 
+def test_priority_urgency_trap_prompts_downgrade_not_violation() -> None:
+    """SOP 陷阱·紧急错觉: 模型判定「重要且紧急」但命中 urgency_trap → 提示降级, 不判违规。"""
+    block = _subsection("按优先级", within=_section("规则集段"))
+    assert "紧急错觉" in block, "must name the urgency-trap check"
+    assert "先问:产出对用户有价值吗?没有则降级" in block, "must quote the SOP downgrade question verbatim"
+    assert "不判违规" in block, "the urgency-trap hint must never count as a violation"
+    assert "不报 mentor" in block, "the urgency-trap hint must stay with the member only"
+
+
+def test_priority_is_member_mark_first_then_model_fallback() -> None:
+    """已定口径: 成员自标优先(第一判断), 未标海豚判定兜底, 判定全程提示级。"""
+    body = _body()
+    assert "不强制标注" in body, "members must not be REQUIRED to mark quadrants"
+    assert "第一判断" in body, "the member's own mark must be the first judgment"
+    block = _subsection("按优先级", within=_section("规则集段"))
+    assert "成员自标优先" in block, "the rule must state member-mark-first"
+    assert "兜底" in block, "the rule must state the model fallback for unmarked items"
+    assert "建议排序" in block, "the rule must output a suggested ordering"
+
+
+def test_priority_uses_structured_evidence_for_fallback() -> None:
+    """兜底判定用结构证据: 紧急轴 deadline+urgency_trap, 重要轴 importance 三档+小目标拆解背书。"""
+    block = _subsection("按优先级", within=_section("规则集段"))
+    assert "deadline" in block, "urgency must read the deadline field as hard evidence"
+    assert "拆解证据" in block, "importance must use sub-goal decomposition as backing"
+    assert "不进排序" in block, "chat history must NOT enter the ordering weight"
+
+
+def test_priority_judgment_consistency_with_value_is_hint_level() -> None:
+    """模型判定的象限 vs 该条价值表述不一致 → 提示级, 给理由与依据。"""
+    block = _subsection("按优先级", within=_section("规则集段"))
+    assert "标注与价值一致" in block, "must check the member mark against the value statement"
+    assert "提示级" in block, "a mismatch must be a hint, never a violation"
+    assert "理由与依据" in block, "the hint must carry the tier judgment and its grounds"
+
+
+def test_priority_suggested_order_delivers_copyable_list() -> None:
+    """建议排序: 按海豚判定的象限给出建议排序(保留原文只调顺序), 可直接复制回看板。"""
+    block = _subsection("补救", within=_section("引擎段"))
+    assert "优先级建议排序" in block, "the remedy table must cover priority suggestion"
+    assert "建议排序" in block, "the output must be a suggested ordering, not a violation fix"
+    assert "可直接复制回看板" in block, "the reordered list must be copyable back to the board"
+    assert "只调顺序" in block, "the remedy must keep the original item text, reorder only"
+
+
 def test_params_section_pins_the_confirmed_values() -> None:
     params = _section("参数段")
     for value in PARAMS:

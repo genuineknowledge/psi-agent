@@ -43,9 +43,13 @@ async def test_nudge_sends_text_then_card(monkeypatch: pytest.MonkeyPatch) -> No
     assert out["card"]["message_id"] == "om_card"
     send_msg.assert_awaited_once()
     send_card.assert_awaited_once()
-    assert send_msg.await_args.args[0] == "ou_realuser"
-    assert "方案提醒" in send_msg.await_args.args[1]
-    assert send_card.await_args.kwargs["items_json"] == items
+    msg_call = send_msg.await_args
+    card_call = send_card.await_args
+    assert msg_call is not None
+    assert card_call is not None
+    assert msg_call.args[0] == "ou_realuser"
+    assert "方案提醒" in msg_call.args[1]
+    assert card_call.kwargs["items_json"] == items
 
 
 @pytest.mark.anyio

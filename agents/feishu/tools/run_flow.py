@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import locale
 import marshal
 import os
 import re
@@ -25,7 +26,7 @@ from anyio.abc import ByteReceiveStream, Process
 from json_repair import repair_json
 from loguru import logger
 
-from psi_agent.session.agent import SessionAgent, current_tool_ai_socket
+from psi_agent.session.agent import AgentError, SessionAgent, current_tool_ai_socket
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.schedule_registry import ScheduleRegistry
@@ -53,6 +54,7 @@ from fusion_flow.execution import (  # noqa: E402
 )
 from fusion_flow.execution import run as _run_execution  # noqa: E402
 from fusion_flow.job_store import (  # noqa: E402
+    DEFAULT_MAX_LOOP_EPOCHS,
     HumanRequestSpec,
     HumanWorkflowRun,
     JobStore,
@@ -72,9 +74,11 @@ from fusion_flow.workflow_runner import (  # noqa: E402
     CompiledWorkflow,
     CompletionContext,
     ProgramInvocation,
+    _normalize_program_stdout,
     compile_workflow,
 )
 from fusion_flow.workflow_runner import execute_workflow as _execute_workflow  # noqa: E402
+from workflow_sample import _record_workflow_authoring  # noqa: E402
 
 _STEP_SYSTEM_PROMPT = (
     "You execute exactly one assigned FusionFlow Agent step. "
@@ -189,6 +193,7 @@ _PROGRAM_STDERR_LIMIT_BYTES = 1 * 1024 * 1024
 _PROGRAM_TERMINATION_GRACE_SECONDS = 1.0
 _PROGRAM_STDOUT_LIMIT_ENV = "PSI_FUSION_FLOW_PROGRAM_STDOUT_LIMIT_BYTES"
 _PROGRAM_STDERR_LIMIT_ENV = "PSI_FUSION_FLOW_PROGRAM_STDERR_LIMIT_BYTES"
+_JSON_SCHEMA_MODEL_PREFIXES_ENV = "PSI_FUSION_FLOW_JSON_SCHEMA_MODEL_PREFIXES"
 _PROGRAM_FOREACH_ERROR_MESSAGE_LIMIT = 240
 _JOB_STORE_RELATIVE_PATH = Path(".psi") / "fusion-flow" / "runs"
 _SESSION_RUNS_RELATIVE_PATH = Path(".psi") / "fusion-flow" / "session-runs"
@@ -969,6 +974,7 @@ def _checkpoint_human_response(
         completed_step_ids=tuple(sorted((*checkpoint.completed_step_ids, request.step_id))),
         completed_selection_ids=checkpoint.completed_selection_ids,
         foreach_iterations=checkpoint.foreach_iterations,
+        loops=checkpoint.loops,
     )
 
 
@@ -1154,6 +1160,43 @@ def _workflow_definition_digest(
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _workflow_sample_plan(compiled: CompiledWorkflow) -> list[str]:
+    """Build the public plan metadata stored with a captured workflow sample.
+
+    This list is deliberately separate from the execution plan used by the
+    runner. It is only a human-readable summary for the local JSON record:
+    the compiled graph still controls execution, and no model self-report or
+    private chain-of-thought is involved.
+    """
+
+    # These fixed boundary entries make the lifecycle clear even for an empty
+    # graph; one generated string below describes each compiled graph step.
+    plan = ["Validate the workflow declaration"]
+    plan.extend(
+        f"Execute step {step.step_id} ({compiled.executor_kinds[step.executor_id]})" for step in compiled.graph.steps
+    )
+    plan.append("Return the declared output artifacts")
+    return plan
+
+
+async def _record_workflow_sample_if_needed(
+    flow_path: str,
+    compiled: CompiledWorkflow,
+) -> None:
+    """Persist authoring context before dispatch, best-effort and fail-open."""
+
+    try:
+        result = await _record_workflow_authoring(
+            flow_path,
+            _workflow_sample_plan(compiled),
+        )
+    except Exception as error:
+        logger.warning(f"Could not record local workflow authoring sample: {error!r}")
+    else:
+        if result is not None:
+            logger.info("Recorded local workflow authoring sample")
 
 
 def _resource_payload(context: CompletionContext) -> dict[str, list[str]]:
@@ -1498,14 +1541,39 @@ def _program_stream_payload(raw: bytes) -> tuple[str | None, str | None]:
         return None, base64.b64encode(raw).decode("ascii")
 
 
+def _program_diagnostic_payload(raw: bytes) -> tuple[str, str | None, str]:
+    """Decode diagnostics opportunistically while keeping an exact byte fallback."""
+
+    encodings = ["utf-8"]
+    with suppress(Exception):
+        encodings.append(locale.getencoding())
+    seen: set[str] = set()
+    for encoding in encodings:
+        if encoding in seen:
+            continue
+        seen.add(encoding)
+        try:
+            text = raw.decode(encoding)
+            raw_base64 = None if encoding == "utf-8" else base64.b64encode(raw).decode("ascii")
+            return text, raw_base64, encoding
+        except LookupError, UnicodeDecodeError:
+            continue
+    return (
+        raw.decode("utf-8", errors="backslashreplace"),
+        base64.b64encode(raw).decode("ascii") if raw else None,
+        "utf-8/backslashreplace",
+    )
+
+
 def _program_attempt_payload(result: _ProgramProcessResult) -> dict[str, object]:
     stdout, stdout_base64 = _program_stream_payload(result.stdout)
-    stderr, stderr_base64 = _program_stream_payload(result.stderr)
+    stderr, stderr_base64, stderr_encoding = _program_diagnostic_payload(result.stderr)
     return {
         "argv": list(result.argv),
         "exit_code": result.exit_code,
         "stdout": stdout,
         "stderr": stderr,
+        "stderr_encoding": stderr_encoding,
         "stdout_base64": stdout_base64,
         "stderr_base64": stderr_base64,
         "error": result.error or None,
@@ -1520,7 +1588,10 @@ def _program_error_outputs(
     message: str,
     attempts: list[_ProgramProcessResult],
 ) -> dict[str, object]:
-    if getattr(invocation.dispatch, "iteration_index", None) is not None:
+    if (
+        getattr(invocation.dispatch, "iteration_index", None) is not None
+        or getattr(invocation.dispatch, "loop_id", None) is not None
+    ):
         invocation_id = getattr(invocation.dispatch, "invocation_id", "") or invocation.binding_name
         summary = " ".join(message.split())
         if len(summary) > _PROGRAM_FOREACH_ERROR_MESSAGE_LIMIT:
@@ -1565,17 +1636,15 @@ def _program_result_outputs(
         )
 
     stdout, stdout_base64 = _program_stream_payload(result.stdout)
-    stderr, stderr_base64 = _program_stream_payload(result.stderr)
-    if stdout_base64 is not None or stderr_base64 is not None:
+    if stdout_base64 is not None:
         return _program_error_outputs(
             invocation,
             phase="output_format",
             kind="invalid_utf8",
-            message="Program stdout and stderr must be valid UTF-8 text.",
+            message="Program stdout must be valid UTF-8 text.",
             attempts=attempts,
         )
     assert stdout is not None
-    assert stderr is not None
     if result.exit_code != 0:
         return _program_error_outputs(
             invocation,
@@ -1594,6 +1663,30 @@ def _program_result_outputs(
                 attempts=attempts,
             )
         return {}
+    if invocation.terminal:
+        if len(invocation.output_ids) != 1:
+            return _program_error_outputs(
+                invocation,
+                phase="output_format",
+                kind="invalid_output_contract",
+                message="TerminalStep must have exactly one BoolArtifact output.",
+                attempts=attempts,
+            )
+        try:
+            return _normalize_program_stdout(
+                invocation.binding_name,
+                invocation.output_ids,
+                stdout,
+                terminal=True,
+            )
+        except ValueError as error:
+            return _program_error_outputs(
+                invocation,
+                phase="output_format",
+                kind="invalid_output_contract",
+                message=str(error),
+                attempts=attempts,
+            )
     if len(invocation.output_ids) == 1:
         return {invocation.output_ids[0]: stdout}
 
@@ -1617,7 +1710,9 @@ def _program_result_outputs(
     return outputs
 
 
-def _program_output_mode(output_ids: tuple[str, ...]) -> str:
+def _program_output_mode(output_ids: tuple[str, ...], *, terminal: bool = False) -> str:
+    if terminal:
+        return "strict_json_boolean"
     if not output_ids:
         return "none"
     if len(output_ids) == 1:
@@ -1989,7 +2084,7 @@ async def _complete_program_step(
         "step_instruction": invocation.instruction,
         "input_artifacts": dict(invocation.inputs),
         "output_artifact_ids": list(invocation.output_ids),
-        "output_mode": _program_output_mode(invocation.output_ids),
+        "output_mode": _program_output_mode(invocation.output_ids, terminal=invocation.terminal),
         "reserved_resources": _resource_payload(
             CompletionContext(
                 step_id=invocation.binding_name,
@@ -2189,6 +2284,66 @@ async def _complete_step_agent(
     return content
 
 
+def _validate_terminal_step_outputs(
+    outputs: Mapping[str, object],
+    *,
+    step_id: str,
+    output_ids: tuple[str, ...],
+) -> None:
+    """Require every TerminalStep output to be a strict JSON boolean.
+
+    This is the local guarantee behind the ``{"type": "boolean"}`` native
+    structured-output schema on ``submit_step_result`` for TerminalStep steps:
+    a value such as ``{}`` or ``"false"`` is rejected here, which routes the
+    malformed result through the Agent Step repair loop instead of failing the
+    whole workflow at the strict-bool loop check.
+    """
+
+    for artifact_id in output_ids:
+        value = outputs.get(artifact_id)
+        if type(value) is not bool:
+            raise ValueError(
+                f"TerminalStep {step_id!r} output {artifact_id!r} must be a strict JSON "
+                f"boolean true or false, got {type(value).__name__}"
+            )
+
+
+def _terminal_boolean_response_format() -> dict[str, object] | None:
+    """Vendor-gated native structured output for a single TerminalStep boolean.
+
+    Returns an OpenAI-style ``response_format`` (strict JSON Schema that forces a
+    ``{\"done\": <boolean>}`` object) only when the step's declared model is in the
+    ``PSI_FUSION_FLOW_JSON_SCHEMA_MODEL_PREFIXES`` allowlist. Unknown or
+    unsupported models get ``None``, so the function-calling + local-validation
+    path stays the fallback (and providers such as DeepSeek that reject
+    ``json_schema`` never receive it). The ``strict`` schema uses the object
+    form, not a bare boolean, so the model's text output still matches the
+    ``{\"done\": ...}`` shape the step parser expects.
+    """
+
+    allowed_raw = os.environ.get(_JSON_SCHEMA_MODEL_PREFIXES_ENV, "")
+    prefixes = [part.strip() for part in allowed_raw.split(",") if part.strip()]
+    if not prefixes:
+        return None
+    config = _CURRENT_AGENT_CONFIG.get()
+    model = config.model if config is not None else None
+    if not model or not any(model.startswith(prefix) for prefix in prefixes):
+        return None
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "done",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {"done": {"type": "boolean"}},
+                "required": ["done"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
 async def _complete_agent_step(
     prompt: str,
     context: CompletionContext,
@@ -2210,11 +2365,18 @@ async def _complete_agent_step(
             encoded = json.dumps(outputs, ensure_ascii=False, allow_nan=False)
         except (TypeError, ValueError) as error:
             raise ValueError("step result must contain finite JSON values") from error
-        submitted = _parse_agent_step_result(
+        parsed = _parse_agent_step_result(
             encoded,
             step_id=context.step_id,
             output_ids=context.output_ids,
         )
+        if context.terminal:
+            _validate_terminal_step_outputs(
+                parsed,
+                step_id=context.step_id,
+                output_ids=context.output_ids,
+            )
+        submitted = parsed
         return "Step result accepted."
 
     tools = tool_registry.tools
@@ -2224,7 +2386,9 @@ async def _complete_agent_step(
         description="Submit this step's final artifacts and stop.",
         parameters={
             "type": "object",
-            "properties": {artifact_id: {} for artifact_id in context.output_ids},
+            "properties": {
+                artifact_id: {"type": "boolean"} if context.terminal else {} for artifact_id in context.output_ids
+            },
             "required": list(context.output_ids),
             "additionalProperties": False,
         },
@@ -2262,6 +2426,14 @@ async def _complete_agent_step(
         if agent_config.reasoning_effort is not None:
             extra_params["reasoning_effort"] = agent_config.reasoning_effort
         extra_params = {name: value for name, value in extra_params.items() if value is not None}
+    # Vendor-gated native structured output for TerminalStep: send response_format
+    # only to allowlisted models; if the provider rejects it, the attempt loop
+    # below strips it and retries via the function-calling path.
+    structured_output = _terminal_boolean_response_format() if context.terminal else None
+    if structured_output is not None:
+        if extra_params is None:
+            extra_params = {}
+        extra_params["response_format"] = structured_output
     message = (
         "Execute exactly one assigned FusionFlow step. Do not start another workflow.\n"
         f"Workspace root: {workspace}\n"
@@ -2295,13 +2467,34 @@ async def _complete_agent_step(
     for attempt in range(3):
         submission_error = None
         repair_response: str | None = None
-        response = await _complete_step_agent(
-            agent,
-            conversation,
-            message,
-            stop_when=stop_after_submission,
-            extra_params=extra_params,
-        )
+        try:
+            response = await _complete_step_agent(
+                agent,
+                conversation,
+                message,
+                stop_when=stop_after_submission,
+                extra_params=extra_params,
+            )
+        except AgentError as error:
+            if structured_output is not None and extra_params is not None:
+                # Provider rejected response_format (e.g. it does not support
+                # strict json_schema). Downgrade gracefully to the
+                # function-calling + local-validation path instead of failing.
+                logger.warning(
+                    f"step {context.step_id!r}: provider rejected response_format; "
+                    f"retrying via function-calling: {error}"
+                )
+                structured_output = None
+                extra_params.pop("response_format", None)
+                response = await _complete_step_agent(
+                    agent,
+                    conversation,
+                    message,
+                    stop_when=stop_after_submission,
+                    extra_params=extra_params,
+                )
+            else:
+                raise
         if submission_error is not None:
             submitted = None
             validation_error = submission_error
@@ -2309,11 +2502,18 @@ async def _complete_agent_step(
             return submitted
         else:
             try:
-                return _parse_agent_step_result(
+                parsed = _parse_agent_step_result(
                     response,
                     step_id=context.step_id,
                     output_ids=context.output_ids,
                 )
+                if context.terminal:
+                    _validate_terminal_step_outputs(
+                        parsed,
+                        step_id=context.step_id,
+                        output_ids=context.output_ids,
+                    )
+                return parsed
             except _AgentStepResultParseError as error:
                 validation_error = error
                 repair_response = response
@@ -2342,6 +2542,12 @@ async def _complete_agent_step(
                         repair_count=repair_count,
                         response_form=response_form,
                     ).warning("FusionFlow Agent Step accepted safe trailing-comma output from json-repair")
+                    if context.terminal:
+                        _validate_terminal_step_outputs(
+                            repaired,
+                            step_id=context.step_id,
+                            output_ids=context.output_ids,
+                        )
                     return repaired
             raise ValueError(f"step {context.step_id!r} result remained invalid after 3 attempts") from validation_error
         message = (
@@ -2536,6 +2742,7 @@ async def _execute_persisted_run(
                     inputs=run.inputs,
                     complete=agent_sessions.complete,
                     resource_capacities=run.resource_capacities,
+                    max_loop_epochs=run.max_loop_epochs,
                     supported_executor_kinds=("Agent", "Human", "Program"),
                     work_dir=_workspace_dir(),
                     run_program=complete_program,
@@ -2604,6 +2811,10 @@ async def _execute_persisted_run(
         outputs=outputs,
     )
     with anyio.CancelScope(shield=True):
+        # Checkpoints expose intermediate epochs to recovery, but final
+        # materialization is published only after successful termination.
+        final_values = outputs if completed.checkpoint is None else completed.checkpoint.values
+        await artifact_store.persist(final_values, overwrite=True)
         await lease.save(completed)
         await timing_reporter.finalize(
             status="completed",
@@ -2616,6 +2827,7 @@ async def run_flow(
     flow_path: str,
     inputs_json: str = "{}",
     resource_capacities_json: str = "",
+    max_loop_epochs: int = DEFAULT_MAX_LOOP_EPOCHS,
 ) -> str:
     """Start one G4 workflow and return outputs or a persisted Human request.
 
@@ -2624,6 +2836,8 @@ async def run_flow(
         inputs_json: JSON object keyed by the workflow's input artifact IDs.
         resource_capacities_json: Optional JSON object mapping resource IDs to
             positive counts or concrete instance-ID arrays.
+        max_loop_epochs: Positive upper bound on loop epochs across Human
+            pauses and resumes.
 
     Returns:
         A JSON object keyed by output artifact IDs, or a
@@ -2634,11 +2848,14 @@ async def run_flow(
     ai_socket = current_tool_ai_socket()
     if ai_socket is None:
         raise RuntimeError("run_flow must be called by a psi-agent Session")
+    if type(max_loop_epochs) is not int or max_loop_epochs < 1:
+        raise ValueError("max_loop_epochs must be a positive integer")
 
     source = await _read_flow_source(flow_path)
     inputs = _parse_mapping(inputs_json, label="inputs_json")
     resource_capacities = _parse_resource_capacities(resource_capacities_json)
     compiled = _compile_workflow_for_run(source, flow_path=flow_path)
+    await _record_workflow_sample_if_needed(flow_path, compiled)
     instruction_files = await _materialize_instruction_files(compiled, flow_path)
     initial_checkpoint = create_execution_checkpoint(
         generate_plan(compiled.graph),
@@ -2653,6 +2870,7 @@ async def run_flow(
             definition_digest=_workflow_definition_digest(source, instruction_files),
             inputs=inputs,
             resource_capacities=resource_capacities,
+            max_loop_epochs=max_loop_epochs,
             checkpoint=initial_checkpoint,
         )
         async with store.acquire(run.run_id) as lease:
@@ -2690,12 +2908,15 @@ async def run_flow(
         flow_path=flow_path,
     )
     await artifact_store.persist(initial_checkpoint.values)
+    latest_checkpoint = initial_checkpoint
     agent_sessions = _AgentSessionAdapter(
         ai_socket=ai_socket,
         get_tool_registry=get_step_tools,
     )
 
     async def observe_checkpoint(checkpoint: ExecutionCheckpoint) -> None:
+        nonlocal latest_checkpoint
+        latest_checkpoint = checkpoint
         await artifact_store.persist(checkpoint.values)
         await timing_reporter.persist()
 
@@ -2706,6 +2927,7 @@ async def run_flow(
                 inputs=inputs,
                 complete=agent_sessions.complete,
                 resource_capacities=resource_capacities,
+                max_loop_epochs=max_loop_epochs,
                 supported_executor_kinds=("Agent", "Program"),
                 resolve_instruction=_cached_instruction_resolver(instruction_files),
                 work_dir=_workspace_dir(),
@@ -2725,6 +2947,9 @@ async def run_flow(
             )
         raise
     with anyio.CancelScope(shield=True):
+        # Publish all final materialized values, including feedback state that
+        # feeds an outside output extractor but is not itself a workflow output.
+        await artifact_store.persist(latest_checkpoint.values, overwrite=True)
         await timing_reporter.finalize(
             status="completed",
             error_type=None,

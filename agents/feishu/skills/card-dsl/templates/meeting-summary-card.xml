@@ -1,0 +1,18 @@
+<!--
+  会议总结卡模板(meeting 自动投递固定卡型)
+  使用方式:feishu_card_render(template="meeting-summary-card", values_json="{...}")
+  values: meeting_line / summary / key_points / positives / negatives / footer
+    meeting_line = 首行元信息,如 "周中对齐会 · 2026-09-08"
+    summary / key_points / positives / negatives = 已渲染好的 markdown 文本
+    任一为空:整节不渲染(<section> 空占位由引擎跳过,与 {note} 同语义)
+-->
+<card title="会议总结" template="blue">
+  <section text="{meeting_line}"/>
+  <divider/>
+  <section title="会议摘要" text="{summary}"/>
+  <section title="关键决定与分析" text="{key_points}"/>
+  <section title="✅ 正面候选" text="{positives}"/>
+  <section title="⚠️ 负面候选" text="{negatives}"/>
+  <divider/>
+  <section text="{footer}"/>
+</card>

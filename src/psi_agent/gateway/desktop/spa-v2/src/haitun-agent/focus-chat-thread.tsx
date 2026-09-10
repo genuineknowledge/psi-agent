@@ -388,6 +388,16 @@ export function FocusChatThread({
     return isCompleteAgent(msg);
   };
 
+  /** 重新生成只挂在「最后一条完整助手气泡」上：`runChatTurn` 只往末条 agent 写流，
+   * 点中间那条会清空该气泡却把新回复盖到末条上，等于抹掉最新一轮。 */
+  let lastCompleteAgentIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === "agent" && isCompleteAgent(messages[i]!)) {
+      lastCompleteAgentIndex = i;
+      break;
+    }
+  }
+
   const thinkingBubble = (
     <div className="focus-chat-bubble thinking focus-chat-progress-wrap">
       <div
@@ -574,16 +584,18 @@ export function FocusChatThread({
                 >
                   <ThumbsDown size={16} aria-hidden />
                 </button>
-                <button
-                  type="button"
-                  className="focus-chat-action-btn"
-                  title={t("chat.regenerate")}
-                  aria-label={t("chat.regenerate")}
-                  disabled={typing}
-                  onClick={() => onRegenerate?.(index)}
-                >
-                  <RefreshCw size={16} aria-hidden />
-                </button>
+                {index === lastCompleteAgentIndex ? (
+                  <button
+                    type="button"
+                    className="focus-chat-action-btn"
+                    title={t("chat.regenerate")}
+                    aria-label={t("chat.regenerate")}
+                    disabled={typing}
+                    onClick={() => onRegenerate?.(index)}
+                  >
+                    <RefreshCw size={16} aria-hidden />
+                  </button>
+                ) : null}
                 <CopyButton text={displayText || clean} className="focus-chat-action-btn" />
               </div>
             )}

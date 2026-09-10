@@ -14,6 +14,7 @@ from typing import Any, ClassVar
 
 import _feishu_impl
 import anyio
+from _assignment_display import resolve_people_display
 
 from _positive_negative_list.models import CaseDraft, LedgerRecord
 
@@ -38,6 +39,7 @@ class NotificationResult:
 # Imported as a module-level name so offline tests and deployments can inject a
 # transport without constructing a Feishu client.
 send_message_impl = _feishu_impl.send_message_impl
+send_card_impl = _feishu_impl.send_card_impl
 
 
 def _receipt_path(root: str | Path, case_id: str) -> Path:
@@ -58,10 +60,11 @@ def _record_receipt_path(root: str | Path, record_id: str, subject_user_key: str
     return directory / f"{digest}.json"
 
 
-def _notice_text(case: CaseDraft, public_record_id: str) -> str:
+def _notice_text(case: CaseDraft, public_record_id: str, subject_display: str = "姓名未解析") -> str:
     nature = {"positive": "正面行为", "negative": "负面行为"}.get(case.nature, case.nature)
     lines = [
         "正负面清单记录通知",
+        f"涉事人：{subject_display}",
         f"发生时间：{case.occurred_at}",
         f"行为事实：{case.fact_summary}",
         f"行为性质：{nature}",
@@ -82,6 +85,11 @@ def _notice_text(case: CaseDraft, public_record_id: str) -> str:
             )
         )
     return "\n".join(lines)
+
+
+async def notice_text_with_names(case: CaseDraft, public_record_id: str) -> str:
+    subject_display = await resolve_people_display(case.subject_user_key, _feishu_impl.get_users_batch_impl)
+    return _notice_text(case, public_record_id, subject_display)
 
 
 def _identity_parts(value: str) -> list[str]:
@@ -107,10 +115,11 @@ def _record_content_gaps(record: LedgerRecord) -> tuple[str, ...]:
     return tuple(name for name, value in required.items() if not value.strip())
 
 
-def _record_notice_text(record: LedgerRecord) -> str:
+def _record_notice_text(record: LedgerRecord, subject_display: str = "姓名未解析") -> str:
     nature = {"positive": "正面行为", "negative": "负面行为"}.get(record.nature, record.nature)
     lines = [
         "正负面清单记录通知",
+        f"涉事人：{subject_display}",
         f"发生时间：{record.occurred_at}",
         f"行为事实：{record.fact_summary}",
         f"行为性质：{nature}",
@@ -138,6 +147,109 @@ def _record_notice_text(record: LedgerRecord) -> str:
     return "\n".join(lines)
 
 
+def _record_card_context(record: LedgerRecord) -> str:
+    return json.dumps(
+        {
+            "kind": "pn_record_notice",
+            "record_id": record.record_id,
+            "subject_user_key": record.subject_user_key,
+            "record": record.to_mapping(),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _record_card_handlers(record: LedgerRecord) -> str:
+    handlers = {"pn_record_review_start": "positive_negative_case_remind"} if record.nature == "negative" else {}
+    return json.dumps(handlers, ensure_ascii=False)
+
+
+async def record_notice_text_with_names(record: LedgerRecord) -> str:
+    subject_display = await resolve_people_display(record.subject_user_key, _feishu_impl.get_users_batch_impl)
+    return _record_notice_text(record, subject_display)
+
+
+def render_record_notice_card(record: LedgerRecord, subject_display: str, *, notice_id: str = "") -> dict[str, Any]:
+    """Render the employee-facing notice with the PR #843 Card 2.0 grammar."""
+    negative = record.nature == "negative"
+    nature = "负面行为" if negative else "正面行为"
+    elements: list[dict[str, Any]] = [
+        {
+            "tag": "markdown",
+            "content": f"**正负面清单 · 记录通知**\n对象：{subject_display} · {nature}",
+        },
+        {"tag": "hr"},
+        {"tag": "markdown", "content": f"**判断**　{record.fact_summary}"},
+        {"tag": "markdown", "content": f"**发生时间**　{record.occurred_at}　·　**分类**　{record.category}"},
+    ]
+    if negative:
+        elements.extend(
+            [
+                {
+                    "tag": "markdown",
+                    "content": (
+                        f"**正确做法 · 建议**　{record.correct_behavior or '发现风险后及时同步现状、影响和补救方案。'}"
+                    ),
+                },
+                {
+                    "tag": "markdown",
+                    "content": f"**立即补救**　{record.immediate_remedy or '补充同步并明确下一步和时间点。'}",
+                },
+                {
+                    "tag": "markdown",
+                    "content": f"**预防措施**　{record.prevention or '设置明确的节点、验收和风险反馈提醒。'}",
+                },
+            ]
+        )
+    else:
+        elements.append({"tag": "markdown", "content": "这条记录用于沉淀可复用的工作方式，感谢你的实践和贡献。"})
+    if negative:
+        elements.extend(
+            [
+                {"tag": "hr"},
+                {
+                    "tag": "column_set",
+                    "flex_mode": "none",
+                    "columns": [
+                        {
+                            "tag": "column",
+                            "width": "weighted",
+                            "weight": 1,
+                            "elements": [
+                                {
+                                    "tag": "button",
+                                    "text": {"tag": "plain_text", "content": "开始复盘"},
+                                    "type": "primary",
+                                    "behaviors": [
+                                        {
+                                            "type": "callback",
+                                            "value": {
+                                                "action": "pn_record_review_start",
+                                                "record_id": record.record_id,
+                                                "subject_user_key": record.subject_user_key,
+                                                "notice_id": notice_id or record.record_id,
+                                                "record": record.to_mapping(),
+                                            },
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ]
+        )
+    return {
+        "schema": "2.0",
+        "config": {"width_mode": "regular"},
+        "header": {
+            "title": {"tag": "plain_text", "content": "正负面清单 · 记录通知"},
+            "template": "red" if negative else "green",
+        },
+        "body": {"elements": elements},
+    }
+
+
 async def _write_receipt_async(path: Path, payload: dict[str, Any]) -> None:
     """Atomically replace a receipt without blocking the async event loop."""
     temporary = anyio.Path(f"{path}.tmp")
@@ -151,6 +263,9 @@ class NotificationSender:
 
     def __init__(self, appdata_root: str | Path | None = None) -> None:
         self.appdata_root = Path(appdata_root) if appdata_root is not None else None
+        self._notice_text_cache: dict[str, str] = {}
+        self._notice_card_cache: dict[str, dict[str, str]] = {}
+        self._notice_record_cache: dict[str, dict[str, dict[str, Any]]] = {}
 
     async def send_subject_notice(self, case: CaseDraft, public_record_id: str) -> NotificationResult:
         loop = asyncio.get_running_loop()
@@ -163,7 +278,7 @@ class NotificationSender:
         subjects, subject_error = _trusted_identities(case.subject_user_key)
         if subject_error:
             return NotificationResult(False, "notification_identity_unresolved", error=subject_error)
-        reporters, reporter_error = _trusted_identities(case.reporter_user_key)
+        _, reporter_error = _trusted_identities(case.reporter_user_key)
         if reporter_error:
             status = (
                 "notification_reporter_identity_missing"
@@ -171,43 +286,73 @@ class NotificationSender:
                 else "notification_reporter_identity_unresolved"
             )
             return NotificationResult(False, status, error=reporter_error)
-        if set(subjects).issubset(set(reporters)):
-            return NotificationResult(True, "skipped_same_person")
-        text = _notice_text(case, public_record_id)
+        # A self-report still receives the notice card: it is the entry point
+        # for the optional private review flow.  The card is sent once per
+        # subject, including when reporter and subject are the same person.
         attempts: list[tuple[str, NotificationResult]] = []
         for identity in subjects:
-            if identity in reporters:
-                continue
+            subject_display = await resolve_people_display(identity, _feishu_impl.get_users_batch_impl)
+            record = LedgerRecord.from_mapping(
+                {
+                    "record_id": public_record_id,
+                    "case_id": case.case_id,
+                    "reporter_user_key": case.reporter_user_key,
+                    "subject_user_key": identity,
+                    "occurred_at": case.occurred_at,
+                    "nature": case.nature,
+                    "category": case.category,
+                    "fact_summary": case.fact_summary,
+                    "evidence_sources": list(case.evidence_sources),
+                    "correct_behavior": case.correct_behavior,
+                    "immediate_remedy": case.immediate_remedy,
+                    "prevention": case.prevention,
+                    "record_link": public_record_id,
+                }
+            )
+            text = _record_notice_text(record, subject_display)
+            card = render_record_notice_card(record, subject_display, notice_id=public_record_id)
+            self._notice_text_cache[case.case_id] = text
+            self._notice_card_cache.setdefault(case.case_id, {})[identity] = json.dumps(card, ensure_ascii=False)
+            self._notice_record_cache.setdefault(case.case_id, {})[identity] = record.to_mapping()
             try:
-                response = await send_message_impl(identity, text, "open_id")
-            except Exception as exc:  # transport failures are retryable
-                attempts.append(
-                    (
-                        identity,
-                        NotificationResult(
-                            False,
-                            "notification_pending_retry",
-                            error=f"{type(exc).__name__}: {exc}",
-                        ),
-                    )
+                response = await send_card_impl(
+                    identity,
+                    json.dumps(card, ensure_ascii=False),
+                    "open_id",
+                    "",
+                    _record_card_context(record),
+                    _record_card_handlers(record),
+                    False,
                 )
+            except Exception as exc:  # transport failures are retryable
+                result = NotificationResult(
+                    False,
+                    "notification_pending_retry",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                attempts.append((identity, result))
+                if self.appdata_root is not None:
+                    self.save_record_receipt(
+                        record,
+                        result,
+                        notice_text=text,
+                        card_json=json.dumps(card, ensure_ascii=False),
+                    )
                 continue
             if not isinstance(response, dict) or not response.get("ok"):
                 message = response.get("message") if isinstance(response, dict) else "notification failed"
-                attempts.append(
-                    (
-                        identity,
-                        NotificationResult(
-                            False, "notification_pending_retry", error=str(message or "notification failed")
-                        ),
-                    )
+                result = NotificationResult(
+                    False, "notification_pending_retry", error=str(message or "notification failed")
                 )
             else:
-                attempts.append(
-                    (
-                        identity,
-                        NotificationResult(True, "notification_sent", message_id=str(response.get("message_id") or "")),
-                    )
+                result = NotificationResult(True, "notification_sent", message_id=str(response.get("message_id") or ""))
+            attempts.append((identity, result))
+            if self.appdata_root is not None:
+                self.save_record_receipt(
+                    record,
+                    result,
+                    notice_text=text,
+                    card_json=json.dumps(card, ensure_ascii=False),
                 )
         results = [result for _, result in attempts]
         target_results = tuple(
@@ -220,8 +365,8 @@ class NotificationSender:
             }
             for identity, result in attempts
         )
-        if not results or all(result.status == "skipped_same_person" for result in results):
-            return NotificationResult(True, "skipped_same_person")
+        if not results:
+            return NotificationResult(False, "notification_pending_retry", error="no notification target")
         failures = [result for result in results if not result.ok]
         if failures:
             return replace(failures[0], target_results=target_results)
@@ -289,13 +434,28 @@ class NotificationSender:
                     message_id=str(existing.get("notification_message_id") or ""),
                 )
 
-        text = _record_notice_text(record)
+        subject_display = await resolve_people_display(record.subject_user_key, _feishu_impl.get_users_batch_impl)
+        text = _record_notice_text(record, subject_display)
+        card = render_record_notice_card(record, subject_display, notice_id=record.record_id)
         try:
-            response = await send_message_impl(record.subject_user_key, text, "open_id")
+            response = await send_card_impl(
+                record.subject_user_key,
+                json.dumps(card, ensure_ascii=False),
+                "open_id",
+                "",
+                _record_card_context(record),
+                _record_card_handlers(record),
+                False,
+            )
         except Exception as exc:  # transport failures are retryable
             result = NotificationResult(False, "notification_pending_retry", error=f"{type(exc).__name__}: {exc}")
             if self.appdata_root is not None:
-                self.save_record_receipt(record, result)
+                self.save_record_receipt(
+                    record,
+                    result,
+                    notice_text=text,
+                    card_json=json.dumps(card, ensure_ascii=False),
+                )
             return result
         if not isinstance(response, dict) or not response.get("ok"):
             message = response.get("message") if isinstance(response, dict) else "notification failed"
@@ -303,11 +463,16 @@ class NotificationSender:
                 False, "notification_pending_retry", error=str(message or "notification failed")
             )
             if self.appdata_root is not None:
-                self.save_record_receipt(record, result)
+                self.save_record_receipt(
+                    record,
+                    result,
+                    notice_text=text,
+                    card_json=json.dumps(card, ensure_ascii=False),
+                )
             return result
         result = NotificationResult(True, "notification_sent", str(response.get("message_id") or ""))
         if self.appdata_root is not None:
-            self.save_record_receipt(record, result)
+            self.save_record_receipt(record, result, notice_text=text, card_json=json.dumps(card, ensure_ascii=False))
         return result
 
     def _read_record_receipt(self, record_id: str, subject_user_key: str) -> dict[str, Any] | None:
@@ -320,18 +485,22 @@ class NotificationSender:
             return None
         return payload if isinstance(payload, dict) else None
 
-    def save_record_receipt(self, record: LedgerRecord, result: NotificationResult) -> Path:
+    def save_record_receipt(
+        self, record: LedgerRecord, result: NotificationResult, *, notice_text: str | None = None, card_json: str = ""
+    ) -> Path:
         if self.appdata_root is None:
             raise ValueError("appdata_root is required to save a receipt")
         path = _record_receipt_path(self.appdata_root, record.record_id, record.subject_user_key)
         payload = {
             "record_id": record.record_id,
             "subject_user_key": record.subject_user_key,
+            "record": record.to_mapping(),
             "reporter_user_key": record.reporter_user_key,
             "notification_status": result.status,
             "notification_message_id": result.message_id,
             "notification_error": result.error,
-            "notice_text": _record_notice_text(record),
+            "notice_text": notice_text or _record_notice_text(record),
+            "card_json": card_json,
             "updated_at": time.time(),
         }
         temporary = path.with_suffix(".tmp")
@@ -339,6 +508,19 @@ class NotificationSender:
         temporary.chmod(0o600)
         temporary.replace(path)
         return path
+
+    def load_record_receipt(self, record_id: str, subject_user_key: str) -> LedgerRecord | None:
+        """Recover a normalized record from a private notification receipt."""
+        payload = self._read_record_receipt(record_id, subject_user_key)
+        if not isinstance(payload, dict):
+            return None
+        raw_record = payload.get("record")
+        if not isinstance(raw_record, dict):
+            return None
+        try:
+            return LedgerRecord.from_mapping(raw_record)
+        except TypeError, ValueError, KeyError:
+            return None
 
     async def retry_record_notice(self, record_id: str, subject_user_key: str) -> NotificationResult:
         if self.appdata_root is None:
@@ -357,7 +539,23 @@ class NotificationSender:
             return NotificationResult(True, "already_sent", str(payload.get("notification_message_id") or ""))
         text = str(payload.get("notice_text") or "")
         try:
-            response = await send_message_impl(subject_user_key, text, "open_id")
+            card_json = str(payload.get("card_json") or "")
+            if card_json:
+                raw_record = payload.get("record")
+                record = LedgerRecord.from_mapping(raw_record) if isinstance(raw_record, dict) else None
+                response = await send_card_impl(
+                    subject_user_key,
+                    card_json,
+                    "open_id",
+                    "",
+                    _record_card_context(record)
+                    if record is not None
+                    else json.dumps({"kind": "pn_record_notice", "record_id": record_id}, ensure_ascii=False),
+                    _record_card_handlers(record) if record is not None else "{}",
+                    False,
+                )
+            else:
+                response = await send_message_impl(subject_user_key, text, "open_id")
         except Exception as exc:
             result = NotificationResult(False, "notification_pending_retry", error=f"{type(exc).__name__}: {exc}")
             self.save_record_receipt_from_payload(payload, result)
@@ -401,7 +599,6 @@ class NotificationSender:
             raise ValueError("appdata_root is required to save a receipt")
         path = _receipt_path(self.appdata_root, case.case_id)
         reporter_parts = _identity_parts(case.reporter_user_key)
-        reporter_ids = set(reporter_parts)
         targets = [dict(item) for item in result.target_results]
         reporters_trusted = bool(reporter_parts) and all(
             identity.startswith(("ou_", "user_")) for identity in reporter_parts
@@ -416,7 +613,6 @@ class NotificationSender:
                     "error": "notification delivery pending",
                 }
                 for identity in _identity_parts(case.subject_user_key)
-                if identity not in reporter_ids
             ]
         payload = {
             "case_id": case.case_id,
@@ -426,9 +622,11 @@ class NotificationSender:
             "notification_status": result.status,
             "notification_message_id": result.message_id,
             "notification_error": result.error,
-            "notice_text": _notice_text(case, public_record_id),
+            "notice_text": self._notice_text_cache.get(case.case_id) or _notice_text(case, public_record_id),
             "subject_user_key": case.subject_user_key,
             "notification_targets": targets,
+            "notification_cards": self._notice_card_cache.get(case.case_id, {}),
+            "notification_records": self._notice_record_cache.get(case.case_id, {}),
             "updated_at": time.time(),
         }
         temporary = path.with_suffix(".tmp")
@@ -467,7 +665,6 @@ class NotificationSender:
             # Receipts written before a process interruption may only contain
             # the subject identity. Reconstruct per-recipient targets so a
             # multi-subject case is never sent as one invalid open_id.
-            reporters = set(_identity_parts(str(payload.get("reporter_user_key") or "")))
             subjects = _identity_parts(str(payload.get("subject_user_key") or ""))
             targets = [
                 {
@@ -478,7 +675,6 @@ class NotificationSender:
                     "error": "notification delivery pending",
                 }
                 for identity in subjects
-                if identity not in reporters
             ]
         if targets:
             return await self._retry_case_targets(path, payload, targets)
@@ -486,6 +682,10 @@ class NotificationSender:
 
     async def _retry_case_targets(self, path: Path, payload: dict[str, Any], targets: list[Any]) -> NotificationResult:
         text = str(payload.get("notice_text") or "")
+        cards_raw = payload.get("notification_cards")
+        cards: dict[str, Any] = cards_raw if isinstance(cards_raw, dict) else {}
+        records_raw = payload.get("notification_records")
+        records: dict[str, Any] = records_raw if isinstance(records_raw, dict) else {}
         updated_targets: list[dict[str, str]] = []
         failures: list[NotificationResult] = []
         message_id = ""
@@ -499,7 +699,23 @@ class NotificationSender:
                 updated_targets.append({str(key): str(value) for key, value in raw_target.items()})
                 continue
             try:
-                response = await send_message_impl(identity, text, "open_id")
+                card_json = str(cards.get(identity) or "")
+                if card_json:
+                    raw_record = records.get(identity)
+                    record = LedgerRecord.from_mapping(raw_record) if isinstance(raw_record, dict) else None
+                    response = await send_card_impl(
+                        identity,
+                        card_json,
+                        "open_id",
+                        "",
+                        _record_card_context(record)
+                        if record is not None
+                        else json.dumps({"kind": "pn_record_notice"}, ensure_ascii=False),
+                        _record_card_handlers(record) if record is not None else "{}",
+                        False,
+                    )
+                else:
+                    response = await send_message_impl(identity, text, "open_id")
             except Exception as exc:
                 result = NotificationResult(False, "notification_pending_retry", error=f"{type(exc).__name__}: {exc}")
             else:

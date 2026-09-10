@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Loader2, Mail, Monitor, Smartphone, Trash2 } from 'lucide-react'
 
 import { notifyAuthChanged } from '../../services/useAuthAccount'
+import { isIdentityLikeDisplayName, resolveAccountDisplayName } from '../../services/accountDisplayName'
+import { readStoredAvatar, readStoredName, writeStoredProfile } from '../../services/userProfile'
 
 import {
   authLogout,
@@ -169,6 +171,17 @@ export default function HubLoginPanel({
         ])
         setMe(info)
         setDevices(Array.isArray(devs?.devices) ? devs.devices : [])
+        if (info) {
+          setDisplayName(
+            resolveAccountDisplayName({
+              loggedIn: true,
+              cloudName: info.user?.displayName,
+              identities: info.identities,
+              localName: readStoredName(),
+              fallback: '',
+            }),
+          )
+        }
         return true
       }
       setStage('input')
@@ -331,9 +344,16 @@ export default function HubLoginPanel({
       setError(t('auth.error.completeTimeout'))
     }, 8000)
     try {
-      // 注册凭证由 api 层内部持有，此处只提交昵称，组件不碰凭证
-      const wanted = skipName ? '' : displayName.trim()
+      // 注册凭证由 api 层内部持有，此处只提交昵称，组件不碰凭证。
+      // 「开始使用」且输入为空时用 placeholder（海豚用户）—— 避免空串落到云端后
+      // 被默认成手机号，侧栏一直显示号码。
+      const placeholder = t('auth.nicknamePlaceholder').trim()
+      const wanted = skipName ? '' : (displayName.trim() || placeholder)
       await completeAuth(wanted ? { displayName: wanted } : {})
+      // 同步写本地 gw-user-name：云端若仍回手机号作 displayName，侧栏可回落本地昵称。
+      if (wanted && !isIdentityLikeDisplayName(wanted)) {
+        writeStoredProfile(wanted, readStoredAvatar())
+      }
       // 建号成功同样关窗回工作台，侧栏就地更新（原型 D4）
       // 同上传 false：D4 的转圈屏直接接关窗, 中间不插一屏空账户面板
       if (await refresh(false)) finishAndClose(t('auth.toastAccountCreated'))
@@ -627,12 +647,28 @@ export default function HubLoginPanel({
   // ---- 屏 C1：已登录账户面板 ----
   const renderAccount = () => {
     if (!me) return null
-    const name = me.user?.displayName || me.user?.id || t('auth.userFallback')
     const ids = me.identities ?? []
+    const name = resolveAccountDisplayName({
+      loggedIn: true,
+      cloudName: me.user?.displayName,
+      identities: ids,
+      localName: readStoredName(),
+      fallback: t('auth.userFallback'),
+    })
     const phone = ids.find((i) => i.provider === 'phone')
     const email = ids.find((i) => i.provider === 'email')
     // 至少保留一个登录方式：只有绑了 2 种时才允许解绑（否则解绑必被云端拦）
     const canUnbind = ids.length > 1
+    const saveLocalNickname = () => {
+      const next = displayName.trim()
+      if (!next || isIdentityLikeDisplayName(next, ids)) {
+        setError(t('auth.nicknameInvalid'))
+        return
+      }
+      writeStoredProfile(next, readStoredAvatar())
+      setError('')
+      onToast?.(t('auth.nicknameSaved'))
+    }
     return (
       <>
         <div className="hub-me">
@@ -644,6 +680,25 @@ export default function HubLoginPanel({
             <p>{phone ? maskAccount('phone', phone.identifier) : email?.identifier}</p>
           </div>
         </div>
+        <div className="hub-field" style={{ marginTop: 12 }}>
+          <span>{t('auth.nickname')}</span>
+          <input
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder={t('auth.nicknamePlaceholder')}
+            disabled={busy}
+            aria-label={t('auth.nickname')}
+          />
+        </div>
+        <button
+          type="button"
+          className="hub-btn primary soft"
+          style={{ marginTop: 8 }}
+          onClick={saveLocalNickname}
+          disabled={busy}
+        >
+          {t('auth.saveNickname')}
+        </button>
         <div className="hub-sec-title">{t('auth.loginMethods')}</div>
         <div className="hub-rows">
           <div className="hub-row">

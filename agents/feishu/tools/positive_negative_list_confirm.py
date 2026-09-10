@@ -16,9 +16,8 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 import _feishu_impl as _f
-from _positive_negative_list import reviews, runtime
 from _positive_negative_list.drafts import delete_draft_body, save_draft
-from _positive_negative_list.models import CaseDraft, LedgerRecord
+from _positive_negative_list.models import CaseDraft
 from _positive_negative_list.notifications import (
     NotificationResult,
     NotificationSender,
@@ -117,84 +116,6 @@ async def _send_subject_notice(
     return await NotificationSender(root).send_subject_notice(case, public_record_id)
 
 
-def _start_private_reviews(case: CaseDraft, public_record_id: str, root: str | Path) -> int:
-    """Create one private review draft for every negative subject.
-
-    A self-report skips the duplicate record notice, but it still needs a
-    private review draft so the same conversation can guide the writer through
-    the three reflection questions.
-    """
-    if case.nature != "negative":
-        return 0
-    subjects = [
-        identity.strip()
-        for identity in case.subject_user_key.replace("\N{FULLWIDTH COMMA}", ",").split(",")
-        if identity.strip()
-    ]
-    count = 0
-    for subject in dict.fromkeys(subjects):
-        record = LedgerRecord.from_mapping(
-            {
-                "record_id": public_record_id,
-                "reporter_user_key": case.reporter_user_key,
-                "subject_user_key": subject,
-                "occurred_at": case.occurred_at,
-                "nature": case.nature,
-                "category": case.category,
-                "fact_summary": case.fact_summary,
-                "correct_behavior": case.correct_behavior,
-                "immediate_remedy": case.immediate_remedy,
-                "prevention": case.prevention,
-            }
-        )
-        review_id = "review_" + hashlib.sha256(f"{case.case_id}\0{subject}".encode()).hexdigest()[:24]
-        reviews.save_review(root, reviews.new_review(record, subject, review_id))
-        count += 1
-    return count
-
-
-async def _send_self_review_prompts(case: CaseDraft, public_record_id: str) -> str:
-    """Prompt self-reporting subjects without sending a duplicate record notice."""
-    reporters = {
-        identity.strip()
-        for identity in case.reporter_user_key.replace("\N{FULLWIDTH COMMA}", ",").split(",")
-        if identity.strip()
-    }
-    subjects = [
-        identity.strip()
-        for identity in case.subject_user_key.replace("\N{FULLWIDTH COMMA}", ",").split(",")
-        if identity.strip() and identity.strip() in reporters
-    ]
-    if not subjects:
-        return "not_applicable"
-    record = LedgerRecord.from_mapping(
-        {
-            "record_id": public_record_id,
-            "reporter_user_key": case.reporter_user_key,
-            "subject_user_key": case.subject_user_key,
-            "occurred_at": case.occurred_at,
-            "nature": case.nature,
-            "category": case.category,
-            "fact_summary": case.fact_summary,
-            "correct_behavior": case.correct_behavior,
-            "immediate_remedy": case.immediate_remedy,
-            "prevention": case.prevention,
-        }
-    )
-    for subject in dict.fromkeys(subjects):
-        try:
-            response = await reviews.send_message_impl(
-                subject,
-                reviews.review_prompt(LedgerRecord.from_mapping(record.to_mapping() | {"subject_user_key": subject})),
-                "open_id",
-            )
-        except Exception:
-            return "notification_pending_retry"
-        if not isinstance(response, dict) or not response.get("ok"):
-            return "notification_pending_retry"
-    return "notification_sent"
-
-
 async def _confirm_unlocked(card_action_json: str = "", user_key: str = "") -> str:
     """Confirm one card snapshot and create at most one public record."""
     try:
@@ -258,14 +179,10 @@ async def _confirm_unlocked(card_action_json: str = "", user_key: str = "") -> s
     if case.red_line_candidate:
         return _f.dumps_result({"ok": False, "status": "red_line_manual_review"})
 
-    # The production writer is a robot-owned isolated test table.  Its
-    # coordinates are created once in AppData; no new environment variable or
-    # config field is required.  Tests may still inject an adapter directly.
-    if TABLE_ADAPTER is None and table_adapter is None:
-        try:
-            await runtime.ensure_test_table(user_key)
-        except Exception as exc:
-            return _f.dumps_result({"ok": False, "status": "test_table_init_failed", "error": str(exc)})
+    # The production writer is the existing public ledger itself.  There is no
+    # robot-provisioned test table and no AppData target file to initialize;
+    # the preflight below validates the real table before any write happens.
+    # Tests may still inject an adapter directly.
     adapter = _adapter()
     try:
         preflight = await adapter.preflight(user_key)
@@ -319,19 +236,20 @@ async def _confirm_unlocked(card_action_json: str = "", user_key: str = "") -> s
         public_record_link,
         NotificationResult(False, "notification_pending_retry", error="notification delivery pending"),
     )
-    review_count = _start_private_reviews(case, public_record_id, root)
     # The body is removed only after a durable receipt exists; the receipt keeps
-    # enough data to retry the private notice after a process interruption.
+    # enough data to retry the notice card after a process interruption.  A
+    # review is deliberately not started here: the subject starts it from the
+    # "开始复盘" button on the notice card.
     delete_draft_body(root, user_key, case_id)
     try:
-        notice_result = await _send_subject_notice(case, public_record_link, root)
+        # Keep the row ID in the card action payload so the callback can read
+        # the test-table record; the human-facing receipt still stores the
+        # clickable link separately.
+        notice_result = await _send_subject_notice(case, public_record_id, root)
     except Exception as exc:
         notice_result = NotificationResult(False, "notification_pending_retry", error=f"{type(exc).__name__}: {exc}")
     if not isinstance(notice_result, NotificationResult):
         notice_result = NotificationResult(True, "notification_sent")
-    self_review_notification = "not_applicable"
-    if review_count:
-        self_review_notification = await _send_self_review_prompts(case, public_record_id)
     sender.save_receipt(case, public_record_link, notice_result)
     return _f.dumps_result(
         {
@@ -340,8 +258,8 @@ async def _confirm_unlocked(card_action_json: str = "", user_key: str = "") -> s
             "case_id": case_id,
             "public_record_id": public_record_id,
             "notification_status": notice_result.status,
-            "private_review_status": "started" if review_count else "not_applicable",
-            "private_review_notification": self_review_notification,
+            "private_review_status": "not_started",
+            "private_review_notification": "not_applicable",
         }
     )
 

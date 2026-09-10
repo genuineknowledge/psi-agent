@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent 组 · 工程与通用能力</title>
+<style>
+  :root{
+    --bg:#fbfbfc; --line:#c9d2e0; --txt:#1f2733; --dim:#6b7684;
+    --a:#1f9d5c; --b:#2f6fd0; --c:#d98b12; --d:#d94b40; --hi:#2f6fd0;
+    --ext:#8b7355;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.55}
+  header{padding:20px 26px 10px}
+  h1{margin:0 0 4px;font-size:19px;font-weight:600}
+  .sub{color:var(--dim);font-size:12.5px}
+  .box{margin:12px 26px;padding:12px 16px;background:#fff;border:1px solid var(--line);
+    border-left:3px solid var(--hi);border-radius:4px;font-size:13px}
+  .box b{color:var(--hi)}
+  .box table{border-collapse:collapse;margin-top:6px;font-size:12.5px}
+  .box td{padding:2px 14px 2px 0;vertical-align:top}
+  .box td:first-child{white-space:nowrap;font-weight:600}
+  .box.bd{border-left-color:var(--ext)}
+  .box.bd b{color:#6d5a42}
+  .legend{display:flex;gap:13px;flex-wrap:wrap;padding:6px 26px 12px;
+    color:var(--dim);font-size:12px;align-items:center}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:4px}
+  .tools{padding:0 26px 8px;display:flex;gap:8px;flex-wrap:wrap}
+  button{background:#fff;color:var(--txt);border:1px solid var(--line);border-radius:4px;
+    padding:5px 11px;font-size:12px;cursor:pointer;font-family:inherit}
+  button:hover{border-color:var(--hi);color:var(--hi)}
+  button.on{background:var(--hi);color:#fff;border-color:var(--hi)}
+  .map{padding:8px 26px 60px;overflow-x:auto}
+
+  ul{list-style:none;margin:0;padding-left:22px;position:relative}
+  ul ul{padding-left:26px}
+  li{position:relative;padding:2px 0}
+  ul ul::before{content:"";position:absolute;left:0;top:-2px;bottom:15px;
+    border-left:1.5px solid var(--line)}
+  ul ul>li::before{content:"";position:absolute;left:-26px;top:16px;
+    width:22px;border-top:1.5px solid var(--line)}
+  ul ul>li:last-child::after{content:"";position:absolute;left:-26.5px;top:17px;bottom:0;
+    border-left:2px solid var(--bg)}
+
+  .node{display:inline-flex;align-items:baseline;gap:7px;padding:4px 2px;max-width:min(880px,94vw)}
+  .node.root{background:var(--hi);color:#fff;border-radius:6px;padding:10px 18px;
+    font-size:16px;font-weight:600}
+  .node.l1{background:#e9eef7;border:1px solid #cfdaec;border-radius:5px;padding:7px 13px;
+    font-weight:600;font-size:14.5px}
+  .node.l2{background:#fff;border:1px solid var(--line);border-radius:4px;padding:5px 11px;
+    font-weight:600}
+  .node.ext{background:#f7f4ef;border:1px dashed #cbbba4;border-radius:4px;padding:4px 10px}
+  .node.ext .name{color:#6d5a42}
+  .lv{font-size:10px;color:#8b96a5;border:1px solid #dde3ec;border-radius:3px;
+    padding:1px 4px;flex:none;background:#fff}
+  .grade{font-weight:700;font-size:10.5px;padding:1.5px 5px;border-radius:3px;color:#fff;flex:none}
+  .g-A{background:var(--a)} .g-B{background:var(--b)}
+  .g-C{background:var(--c)} .g-D{background:var(--d)}
+  .name{flex:none;font-weight:500}
+  .own{font-size:10.5px;font-weight:700;padding:1px 5px;border-radius:3px;flex:none;
+    color:#6d5a42;border:1px dashed #cbbba4;background:#faf7f2}
+  .drv{color:#8a6d1f;font-size:11.5px;background:#fdf8e8;border:1px solid #ecdfb8;
+    border-radius:3px;padding:1px 6px;flex:none}
+  .meta{color:var(--dim);font-size:12.5px}
+  .meta em{color:var(--txt);font-style:normal;font-weight:500}
+  .caret{cursor:pointer;user-select:none;color:#9aa5b4;flex:none;width:11px;
+    display:inline-block;text-align:center;font-size:11px}
+  .caret:hover{color:var(--hi)}
+  li.collapsed>ul{display:none}
+  li.collapsed>.node .caret::after{content:"▸"}
+  li>.node .caret::after{content:"▾"}
+  .leaf>.node .caret{visibility:hidden}
+  li.dim{opacity:.2}
+  footer{padding:0 26px 40px;color:var(--dim);font-size:12px;max-width:920px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Agent 组 · 工程与通用能力</h1>
+  <div class="sub">2026-08-14 · 6 域 / 31 模块 / 117 能力项 · A 14 · B 36 · C 37 · D 59 · 灰字数字为代码实测值</div>
+</header>
+
+<div class="box">
+  <b>划分原则：一层只用一个维度。</b>
+  <table>
+    <tr><td>L1 域</td><td>按<b>变更驱动力</b>切 —— 什么东西变会导致这个域动。域间接口稳定，可独立分工</td></tr>
+    <tr><td>L2 模块</td><td>按<b>可主责的交付物</b>切 —— 一个人能主责，有明确产出</td></tr>
+    <tr><td>L3 能力项</td><td>可排期的具体条目，带现状评级</td></tr>
+  </table>
+</div>
+
+<div class="box bd">
+  <b>边界声明（这张图只画 Agent 组主责的东西）。</b>
+  <table>
+    <tr><td>不画</td><td><b>本体组</b>的 LOM 本体 —— 知识方程、遗忘公理、知识表示与推理。我们这侧只画<b>对接层</b>：怎么查、怎么供信号、怎么注入上下文</td></tr>
+    <tr><td>不画</td><td><b>业务</b>内容 —— 海豚的 tools / skills / 管理 SOP 属于业务分支。我们只画<b>承载业务的机制</b>（workspace 定制、脚手架、隔离）</td></tr>
+    <tr><td>棕色虚线</td><td>标注为外部主责的节点，画出来是为了<b>说清接口</b>，不是我们的工作量</td></tr>
+    <tr><td>待确认</td><td><b>入口组</b>的边界我不清楚 —— 域 4「接入与协议」里可能有一部分是他们的，需要你划</td></tr>
+  </table>
+</div>
+
+<div class="box">
+  <b>「越用越聪明」在这张图里的落点。</b>
+  差异化拆开是三条自进化回路：知识增长淘汰 / 策略优化 / 意图校准。
+  每条回路要三件东西：<b>算法规则</b>（本体组）、<b>信号与执行</b>（我们）、<b>度量基线</b>（我们）。
+  当前我们这侧<b>只有执行通道</b>（热加载），<b>信号采集和度量基线全缺</b> —— 所以回路目前是开环的，
+  本体组给出算法也跑不起来。这是 2.3 / 2.4 / 6.1 三个模块的由来。
+</div>
+
+<div class="legend">
+  <span><i class="dot" style="background:var(--a)"></i>A 可依赖</span>
+  <span><i class="dot" style="background:var(--b)"></i>B 能用有短板</span>
+  <span><i class="dot" style="background:var(--c)"></i>C 有雏形</span>
+  <span><i class="dot" style="background:var(--d)"></i>D 基本为零</span>
+  <span style="margin-left:8px">棕色虚线 = 外部主责，只画接口</span>
+</div>
+
+<div class="tools">
+  <button onclick="setLv(1)">只看域</button>
+  <button onclick="setLv(2)">看到模块</button>
+  <button onclick="setLv(3)">全展开</button>
+  <span style="width:14px"></span>
+  <button id="f0" class="on" onclick="filt(0)">全部</button>
+  <button id="f1" onclick="filt(1)">只看我们主责</button>
+  <button id="f2" onclick="filt(2)">只看组间接口</button>
+</div>
+
+<div class="map" id="map"></div>
+<script>
+const X="本体组", E="入口组?";
+const TREE={n:"工程与通用能力",lv:"root",c:[
+{n:"1 智能内核与知识对接",lv:"l1",d:"模型生态变 / LOM 演进",c:[
+ {n:"1.1 模型接入层",lv:"l2",g:"B",m:"any-llm-sdk 之上的一层，<em>多 provider 已通</em>",c:[
+  {n:"多 provider 适配",g:"A",m:"OpenAI / Anthropic / 国内模型，配置切换"},
+  {n:"流式与工具调用归一",g:"B",m:"差异被 ai/server.py 吃掉了，但没有一致性测试"},
+  {n:"上下文窗口与压缩",g:"B",m:"触发式压缩已有，<em>压缩质量无度量</em>"},
+  {n:"模型能力探测与降级",g:"C",m:"换模型靠人工试，不支持工具调用时无自动降级"}]},
+ {n:"1.2 LLM Router",lv:"l2",g:"C",m:"现在只是「能选到模型」，不是「会选模型」",c:[
+  {n:"路由策略配置化",g:"C",m:"配置能改，策略是静态的"},
+  {n:"按成本 / 延迟 / 能力选路",g:"D",m:"三个维度的数据都没采，无从选"},
+  {n:"失败切换与重试",g:"C",m:"重试有，跨 provider 兜底没有"},
+  {n:"路由决策可观测",g:"D",m:"为什么走了这条路，事后查不出来"}]},
+ {n:"1.3 LOM 对接层",lv:"l2",g:"D",m:"<em>我们这侧的活</em>：让 LOM 能被查、能拿到信号、能进上下文",c:[
+  {n:"知识检索客户端",g:"D",m:"接口形态未定，先要和本体组对齐协议"},
+  {n:"上下文注入",g:"D",m:"检索结果怎么进提示词、占多少预算，与 1.4 联动"},
+  {n:"信号回传通道",g:"D",m:"知识被用了 / 命中了 / 被纠错了 —— 遗忘公理的输入靠这个"},
+  {n:"记忆与 LOM 的归属边界",g:"D",m:"<em>先答存在性</em>：3.2 记忆和 LOM 是两套还是一套，答不清后面全是重复建设"},
+  {n:"知识方程 / 遗忘公理 / 知识表示",lv:"ext",own:X,m:"算法与本体在本体组，我们只消费"}]},
+ {n:"1.4 提示词与上下文装配",lv:"l2",g:"B",m:"能跑，但改动成本高、无版本",c:[
+  {n:"系统提示词分层",g:"B",m:"内核 / workspace / 会话三层已分开"},
+  {n:"上下文预算分配",g:"C",m:"谁挤掉谁没有规则，接 LOM 后会立刻炸"},
+  {n:"提示词版本化",g:"D",m:"改了提示词无法回退、无法 A/B —— 也是策略自进化的前提"}]}]},
+{n:"2 Agent 运行时",lv:"l1",d:"Agent 能力边界变 / 自进化程度加深",c:[
+ {n:"2.1 会话与上下文",lv:"l2",g:"B",m:"骨架成熟，缺主动性",c:[
+  {n:"会话生命周期",g:"B",m:"创建 / 恢复 / 落盘齐了"},
+  {n:"多轮状态维护",g:"B",m:""},
+  {n:"压缩与摘要",g:"B",m:"有实现，无质量基线"},
+  {n:"中断与恢复",g:"C",m:"长任务被打断后的续跑不可靠"},
+  {n:"主动开口",g:"D",m:"<em>结构性约束</em>：Session 只能被动应答，定时 / 提醒 / 主动汇报三类需求撞同一堵墙"}]},
+ {n:"2.2 能力注册与装载",lv:"l2",g:"B",m:"热加载是自进化唯一已通的那一段",c:[
+  {n:"tools 注册",g:"A",m:"ToolRegistry 扫描 + 导入，稳定"},
+  {n:"skills 装载",g:"B",m:""},
+  {n:"热加载",g:"B",m:"refresh() 返回 added/updated/removed/skipped，<em>异常被吞成空 dict</em>"},
+  {n:"MCP 接入",g:"B",m:"外部工具生态已通"},
+  {n:"能力冲突与命名空间",g:"C",m:"同名工具靠约定，规模上去会撞"}]},
+ {n:"2.3 信号采集",lv:"l2",g:"D",m:"<em>三条自进化回路的共同输入，现在全缺</em>",c:[
+  {n:"执行轨迹结构化",g:"D",m:"现在只有日志文本，机器读不了"},
+  {n:"成败判定信号",g:"D",m:"这一轮到底做成没做成，系统自己不知道"},
+  {n:"用户纠错捕获",g:"D",m:"用户说「不对，应该是」时那个信息直接丢了 —— 意图校准的唯一真实信号"},
+  {n:"信号存储与回放",g:"D",m:"要能重放历史会话，否则改了策略无法对比"}]},
+ {n:"2.4 自进化承载",lv:"l2",g:"D",m:"我们负责<em>让算法能落地</em>，算法本身在本体组",c:[
+  {n:"可变面定义",g:"D",m:"<em>建议提到第 0 步</em>：到底允许机器改什么（提示词段？工具选择？路由策略？）不定，闸门无从设计"},
+  {n:"变更执行通道",g:"C",m:"热加载可以复用，但只覆盖工具，不覆盖策略与提示词"},
+  {n:"回滚与灰度",g:"D",m:"机器改坏了没有撤回动作"},
+  {n:"效果归因",g:"D",m:"依赖 6.1，否则「越用越聪明」无法证明"},
+  {n:"知识增长淘汰算法",lv:"ext",own:X,m:"知识方程 / 遗忘公理的规则由本体组给"}]},
+ {n:"2.5 机器产物准入",lv:"l2",g:"D",m:"<em>系统能往仓库里写东西，但仓库没有「接收」这个动作的概念</em>",c:[
+  {n:"写入闸门",g:"D",m:"写之前不检查"},
+  {n:"生成物验证",g:"D",m:"写之后不测试，依赖 6.2"},
+  {n:"权限沙箱",g:"D",m:"机器写的代码以内核权限运行，无隔离"},
+  {n:"审计与溯源",g:"D",m:"哪次改动是谁（人 / 机）做的、为什么，查不出来"}]},
+ {n:"2.6 Agent 自监督",lv:"l2",g:"C",m:"haitun 里跑出了雏形，没沉进内核",c:[
+  {n:"supervisor 通用化",g:"C",m:"现在是业务侧脚本，应下沉为通用能力"},
+  {n:"长跑稳定性",g:"C",m:"有场景脚本，无量化门槛"},
+  {n:"异常自恢复",g:"D",m:""}]}]},
+{n:"3 数据与状态",lv:"l1",d:"数据模型变 / 多端与多租户需求变",c:[
+ {n:"3.1 本地状态持久化",lv:"l2",g:"B",m:"单机可靠，仅此而已",c:[
+  {n:"状态落盘与快照",g:"B",m:"latest.json + 时间戳快照，读旧路径兼容"},
+  {n:"schema 演进",g:"C",m:"字段加减靠兼容代码，无迁移机制"},
+  {n:"并发写保护",g:"C",m:""}]},
+ {n:"3.2 记忆系统",lv:"l2",g:"C",m:"存在，但与 LOM 的关系未定 —— 见 1.3",c:[
+  {n:"会话内记忆",g:"B",m:""},
+  {n:"跨会话长期记忆",g:"C",m:"有落盘，无检索质量保障"},
+  {n:"记忆淘汰",g:"D",m:"<em>本体组的遗忘公理正对着这个位置</em>，别自己另造一套"}]},
+ {n:"3.3 凭据与密钥",lv:"l2",g:"B",m:"有正确实现，但降级路径不安全",c:[
+  {n:"keyring 托管",g:"B",m:"密钥进系统钥匙串"},
+  {n:"降级为明文",g:"C",m:"<em>缺 keyring 时落明文到磁盘只给个 warning，不该是默认状态</em>"},
+  {n:"api_key 泄漏面",g:"C",m:"state 快照含明文 key，靠 .gitignore 挡住"}]},
+ {n:"3.4 跨端状态层",lv:"l2",g:"D",m:"<em>移动端的真正前置</em>，不是客户端问题",c:[
+  {n:"服务端状态存储",g:"D",m:"现在状态只在本机 AppData"},
+  {n:"多设备同步与冲突",g:"D",m:""},
+  {n:"离线与断线续传",g:"D",m:""}]},
+ {n:"3.5 多租户隔离",lv:"l2",g:"D",m:"B 端定制的地基，一个客户一套的话早晚要",c:[
+  {n:"workspace 级数据隔离",g:"C",m:"目录级隔离有，无强边界"},
+  {n:"用户与租户模型",g:"D",m:""},
+  {n:"配额与限流",g:"D",m:""}]}]},
+{n:"4 接入与协议",lv:"l1",d:"新渠道 / 新客户端接入",c:[
+ {n:"4.1 事件协议",lv:"l2",g:"A",m:"<em>做得最好的一块</em>，181 行的平台中立契约",c:[
+  {n:"SSE 事件契约",g:"A",m:"副本从 5 份收敛到 1 份"},
+  {n:"OpenAI 兼容",g:"A",m:"外部客户端可直连"},
+  {n:"协议版本兼容",g:"C",m:"加字段可以，破坏性变更无策略"}]},
+ {n:"4.2 传输层",lv:"l2",g:"A",m:"三种传输一个抽象，默认不出网",c:[
+  {n:"Unix socket / 命名管道",g:"A",m:""},
+  {n:"TCP",g:"A",m:"能力在，默认关"},
+  {n:"传输层安全",g:"D",m:"<em>一旦出网就缺 TLS 与鉴权</em>"}]},
+ {n:"4.3 渠道适配",lv:"l2",g:"B",m:"<em>与入口组边界待划</em>",own:E,c:[
+  {n:"channel 抽象",g:"B",m:"新渠道有接入位置"},
+  {n:"具体渠道实现",g:"C",m:"哪些渠道由谁做，要和入口组对"}]},
+ {n:"4.4 Gateway API",lv:"l2",g:"B",m:"40+ 路由 / 20+ manager，缺一层横切",c:[
+  {n:"路由与 manager 组织",g:"B",m:"能加，但没有分组约定，继续长会乱"},
+  {n:"请求级鉴权",g:"D",m:"<em>Gateway 自身无鉴权中间件</em>，出网即裸奔"},
+  {n:"远程访问形态",g:"D",m:"移动端第一前置"},
+  {n:"API 契约与版本",g:"C",m:"前后端靠默契，无契约测试"}]},
+ {n:"4.5 账号与身份",lv:"l2",g:"C",m:"代理给外部账号服务，<em>可能属入口组</em>",own:E,c:[
+  {n:"登录态代理",g:"B",m:"/auth/* 十条路由转发到公司账号服务"},
+  {n:"优雅降级",g:"A",m:"无 authm 时零鉴权路由注册，降级干净"},
+  {n:"用户与权限模型",g:"D",m:"「用户管理」这个桶的实际内容，归属待定"}]}]},
+{n:"5 承载框架",lv:"l1",d:"终端形态变 / 客户定制方式变",m:"<em>只画承载机制，不画具体业务</em>",c:[
+ {n:"5.1 PC Web 前端",lv:"l2",g:"B",m:"spa-v2 是当前主入口",c:[
+  {n:"前端框架与状态",g:"B",m:""},
+  {n:"事件流渲染",g:"B",m:"消费 4.1 的 SSE"},
+  {n:"前端工程化",g:"C",m:"<em>10 个 vitest 文件配了却从不在 CI 跑；前端只在打 tag 时构建，PR 不编译</em>"},
+  {n:"UI 组件复用",g:"C",m:""}]},
+ {n:"5.2 桌面壳",lv:"l2",g:"C",m:"编译已通，包装只做了一个平台",c:[
+  {n:"Windows 安装包",g:"B",m:"Inno Setup，当前 1.0.2"},
+  {n:"macOS / Linux 包",g:"D",m:"<em>PyInstaller 三平台都在编，只差包装，不是编译问题</em>"},
+  {n:"自动更新",g:"D",m:""}]},
+ {n:"5.3 业务定制机制",lv:"l2",g:"C",m:"B 端「一客一套」要靠这层撑住，<em>不含任何具体业务</em>",c:[
+  {n:"workspace 定制约定",g:"C",m:"目录约定能跑通，未文档化为对外契约"},
+  {n:"定制脚手架",g:"D",m:"新客户从零起步，无模板无生成器"},
+  {n:"配置与开关",g:"C",m:""},
+  {n:"扩展点契约",g:"D",m:"哪些点允许客户改、改了升级会不会碎，无声明"}]},
+ {n:"5.4 移动端承载",lv:"l2",g:"D",m:"<em>被 4.4 + 3.4 硬卡</em>，客户端本身反而不是难点",c:[
+  {n:"远程接入形态",g:"D",m:"依赖 4.4"},
+  {n:"小程序",g:"D",m:""},
+  {n:"原生 APP",g:"D",m:""},
+  {n:"多端会话互通",g:"D",m:"依赖 3.4"}]}]},
+{n:"6 工程基础设施",lv:"l1",d:"团队规模 / 交付频率 / 自进化程度",m:"<em>斜率的直接抓手</em>",c:[
+ {n:"6.1 评测底座",lv:"l2",g:"D",m:"<em>全图第一优先级</em>：没有它，「闭环跑通」只能靠人读日志下判断",c:[
+  {n:"场景集",g:"C",m:"haitun 侧约 570 行场景脚本，是素材不是评测"},
+  {n:"自动打分",g:"D",m:"脚本产出 live-evidence.json，<em>无分数、无基线、写完没人读</em>"},
+  {n:"基线与回归对比",g:"D",m:"改动前后好没好，无从回答"},
+  {n:"evals 目录",g:"D",m:"<em>只存在于 .gitignore，目录和引用都没有</em>"}]},
+ {n:"6.2 质量门禁",lv:"l2",g:"C",m:"静态检查扎实，动态检查有大洞",c:[
+  {n:"lint + 类型检查",g:"A",m:"ruff check / format / ty，稳定"},
+  {n:"内核测试入门禁",g:"B",m:"tests/ 进 CI"},
+  {n:"业务侧测试盲区",g:"D",m:"<em>testpaths=[\"tests\"] 导致 haitun 的 66 个测试文件 / 29.7k 行只有 491 行(1.6%)进门禁</em>"},
+  {n:"前端测试入门禁",g:"D",m:"配置齐但零调用"},
+  {n:"覆盖率阈值",g:"D",m:"--cov 开了，无阈值无报告，等于没开"},
+  {n:"生成物一致性校验",g:"B",m:"<em>ANTLR 那条 workflow 就是机器产物准入的现成范式，可复制给 2.5</em>"}]},
+ {n:"6.3 构建与发布",lv:"l2",g:"B",m:"近期提升明显",c:[
+  {n:"三平台编译",g:"A",m:"PyInstaller，ubuntu / windows / macos"},
+  {n:"发布链路耗时",g:"A",m:"<em>2h → 17min</em>"},
+  {n:"版本与变更记录",g:"C",m:"版本号手改，无自动 changelog"},
+  {n:"发布回滚",g:"D",m:""}]},
+ {n:"6.4 产物与依赖",lv:"l2",g:"B",m:"「包管理」这个桶的实际内容",c:[
+  {n:"Python 依赖锁定",g:"A",m:"uv，可复现"},
+  {n:"前端依赖",g:"B",m:"npm ci"},
+  {n:"内部包边界",g:"C",m:"内核 16.8k 行 vs 业务 95.4k 行(5.7 倍)，<em>没有强制的依赖方向</em>"},
+  {n:"供应链检查",g:"D",m:"无 SCA、无版本收敛策略"}]},
+ {n:"6.5 可观测性",lv:"l2",g:"C",m:"能看，不能量",c:[
+  {n:"结构化日志",g:"B",m:"loguru，格式统一"},
+  {n:"异常治理",g:"C",m:"<em>src 内 147 处 except Exception，65 处只 warning/debug/pass</em>"},
+  {n:"运行指标",g:"D",m:"耗时 / 成功率 / 轮次都不成指标"},
+  {n:"端到端追踪",g:"D",m:"一次请求跨模块无 trace id"}]},
+ {n:"6.6 成本与资源",lv:"l2",g:"D",m:"数据在手边但没用起来",c:[
+  {n:"token 计量",g:"C",m:"<em>usage 采了，只用来触发压缩</em>"},
+  {n:"成本归因",g:"D",m:"按会话 / 客户 / 工具算不出来"},
+  {n:"预算与限额",g:"D",m:"To B 收费和 To C 放量都要"}]},
+ {n:"6.7 规范与知识沉淀",lv:"l2",g:"B",m:"文档优先这条已经在做",c:[
+  {n:"AGENTS.md",g:"B",m:"根目录有，子模块覆盖不全"},
+  {n:"设计文档制度",g:"B",m:"设计目标 + 实现方案必写"},
+  {n:"三向同步",g:"C",m:"AGENTS.md ←→ 文档 ←→ 代码，无检查手段"},
+  {n:"PR 规范",g:"A",m:"标题带结果数字，正文问题/改法/验证三段"},
+  {n:"新人上手路径",g:"C",m:""}]}]}
+]};
+
+function render(node,isRoot){
+  const li=document.createElement("li");
+  const kids=node.c||[];
+  if(!kids.length)li.className="leaf";
+  const cls=["node"];
+  if(isRoot)cls.push("root"); else if(node.lv)cls.push(node.lv);
+  const d=document.createElement("div");
+  d.className=cls.join(" ");
+  let h='<span class="caret"></span>';
+  if(node.lv==="l1"||node.lv==="l2")h+='<span class="lv">'+(node.lv==="l1"?"L1 域":"L2 模块")+'</span>';
+  if(node.g)h+='<span class="grade g-'+node.g+'">'+node.g+'</span>';
+  h+='<span class="name">'+node.n+'</span>';
+  if(node.own)h+='<span class="own">'+node.own+'</span>';
+  if(node.d)h+='<span class="drv">驱动：'+node.d+'</span>';
+  if(node.m)h+='<span class="meta">'+node.m+'</span>';
+  d.innerHTML=h;
+  if(node.own)li.dataset.own="ext"; else li.dataset.own="us";
+  d.querySelector(".caret").onclick=e=>{e.stopPropagation();li.classList.toggle("collapsed")};
+  li.appendChild(d);
+  if(kids.length){
+    const ul=document.createElement("ul");
+    kids.forEach(k=>ul.appendChild(render(k,false)));
+    li.appendChild(ul);
+  }
+  return li;
+}
+const root=document.createElement("ul");
+root.appendChild(render(TREE,true));
+document.getElementById("map").appendChild(root);
+
+function setLv(n){
+  document.querySelectorAll("#map li").forEach(li=>{
+    let d=0,p=li;
+    while(p=p.parentElement.closest("li"))d++;
+    li.classList.toggle("collapsed",d>=n&&li.querySelector("ul"));
+  });
+}
+function filt(m){
+  ["f0","f1","f2"].forEach((id,i)=>document.getElementById(id).classList.toggle("on",i===m));
+  document.querySelectorAll("#map li").forEach(li=>{
+    if(m===0){li.classList.remove("dim");return}
+    const want=m===2?"ext":"us";
+    const self=li.dataset.own===want;
+    const has=!!li.querySelector('li[data-own="'+want+'"]');
+    li.classList.toggle("dim",!(self||has));
+  });
+}
+setLv(2);
+</script>
+
+<footer>
+  <b>三条硬依赖链</b>（决定排期顺序，不可倒置）：<br>
+  ① <b>6.1 评测底座</b> → 2.3 信号采集 → 2.4 自进化承载 —— 没有度量，本体组的算法给了也验不出效果<br>
+  ② <b>6.2 质量门禁</b> → 2.5 机器产物准入 —— 没有能跑的测试，闸门无从判断「合格」<br>
+  ③ <b>4.4 远程 API + 鉴权</b> + <b>3.4 跨端状态层</b> → 5.4 移动端承载 —— 客户端不是第一步
+</footer>
+</body>
+</html>

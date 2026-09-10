@@ -424,6 +424,9 @@ class Gateway:
             want_desktop = "desktop" in gateways
             want_feishu = "feishu" in gateways
             logger.info(f"Gateways: {' '.join(gateways)} (desktop={want_desktop}, feishu={want_feishu})")
+            # 公司级种子任务 (含会议自动化) 走 SchedulerManager 的 seed 机制: agent 包
+            # 自带 schedules/*/TASK.md, watch_loop 幂等补种并拉起隐藏/组织可见的调度
+            # Session —— Gateway 不再内置任何会议专用启动钩子。
             app = await create_core_app(
                 aim,
                 sm,

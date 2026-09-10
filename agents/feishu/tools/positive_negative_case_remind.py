@@ -8,15 +8,18 @@ import json
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 import _feishu_impl as _f
+from _assignment_display import resolve_people_display
 from _positive_negative_list import notifications
 from _positive_negative_list.models import LedgerRecord
 from _positive_negative_list.runtime import configured_read_table_adapter as configured_table_adapter
+from positive_negative_case_review import positive_negative_case_review_start
 
 from psi_agent._appdata import resolve_appdata_root as _resolve_appdata_root
 
@@ -37,6 +40,7 @@ async def positive_negative_case_remind(
     subject_user_key: str = "",
     force: bool = False,
     user_key: str = "",
+    card_action_json: str = "",
 ) -> str:
     """Privately remind the subject of an existing ledger record.
 
@@ -51,6 +55,54 @@ async def positive_negative_case_remind(
         JSON delivery status; failures remain retryable and do not modify the table.
     """
     try:
+        if card_action_json.strip():
+            try:
+                envelope = json.loads(card_action_json)
+            except json.JSONDecodeError as exc:
+                return _f.dumps_result({"ok": False, "status": "invalid_callback", "error": str(exc)})
+            if not isinstance(envelope, dict):
+                return _f.dumps_result({"ok": False, "status": "invalid_callback"})
+            action_raw = envelope.get("action")
+            action: dict[str, Any] = action_raw if isinstance(action_raw, dict) else {}
+            value_raw = action.get("value")
+            value: dict[str, Any] = value_raw if isinstance(value_raw, dict) else {}
+            action_name = str(value.get("action") or action.get("action_id") or "").strip()
+            if action_name != "pn_record_review_start":
+                return _f.dumps_result({"ok": False, "status": "invalid_callback"})
+            source = envelope.get("source") if isinstance(envelope.get("source"), dict) else {}
+            operator_payload = envelope.get("operator") if isinstance(envelope.get("operator"), dict) else {}
+            operator = str(
+                source.get("operator_open_id") or source.get("open_id") or operator_payload.get("open_id") or ""
+            ).strip()
+            if operator and user_key.strip() and operator != user_key.strip():
+                return _f.dumps_result({"ok": False, "status": "unauthorized"})
+            operator = operator or user_key.strip()
+            context_raw = envelope.get("business_context")
+            context: dict[str, Any] = context_raw if isinstance(context_raw, dict) else {}
+            record_id = str(value.get("record_id") or context.get("record_id") or "").strip()
+            subject = str(value.get("subject_user_key") or context.get("subject_user_key") or "").strip()
+            if not record_id or not subject or not operator or operator != subject:
+                return _f.dumps_result({"ok": False, "status": "unauthorized"})
+            inline_record = value.get("record") or context.get("record")
+            if isinstance(inline_record, dict):
+                return await positive_negative_case_review_start(
+                    record_json=json.dumps(inline_record, ensure_ascii=False),
+                    subject_user_key=subject,
+                    user_key=operator,
+                )
+            root = await _resolve_appdata_root()
+            receipt_record = notifications.NotificationSender(root).load_record_receipt(record_id, subject)
+            if receipt_record is not None:
+                return await positive_negative_case_review_start(
+                    record_json=json.dumps(receipt_record.to_mapping(), ensure_ascii=False),
+                    subject_user_key=subject,
+                    user_key=operator,
+                )
+            return await positive_negative_case_review_start(
+                record_id=record_id,
+                subject_user_key=subject,
+                user_key=operator,
+            )
         if record_json.strip():
             record = _parse_record(record_json)
         elif record_id.strip():
@@ -73,12 +125,13 @@ async def positive_negative_case_remind(
             record = replace(record, subject_user_key=subject_user_key.strip())
         root = await _resolve_appdata_root()
         result = await notifications.NotificationSender(root).send_record_notice(record, force=force)
+        subject_display = await resolve_people_display(record.subject_user_key, _f.get_users_batch_impl)
         return _f.dumps_result(
             {
                 "ok": result.ok,
                 "status": result.status,
                 "record_id": record.record_id,
-                "subject_user_key": record.subject_user_key,
+                "涉事人": subject_display,
                 **({"message_id": result.message_id} if result.message_id else {}),
                 **({"error": result.error} if result.error else {}),
             }
