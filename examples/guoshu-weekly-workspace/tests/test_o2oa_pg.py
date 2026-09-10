@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mock-mcp"))
 # mock-mcp is a sys.path tool dir, not a package: ty cannot resolve these
 # statically, pytest can (path inserted above).  Same pattern as the tools.
 import _admission as adm  # ty: ignore
+import _formal  # ty: ignore
 import _o2oa_templates as o2  # ty: ignore
 
 # Every builder must carry rule 1; a template that forgets it would answer
@@ -462,3 +463,43 @@ class TestTextCheckRules:
         sql, params = o2.text_check("number_conflict", task_id=103)
         assert sql.count("t.id = %s") == 2  # 两支各自过滤
         assert params == (103, 103, 200)
+
+
+class TestFormalBackend:
+    """正式源适配层(_formal):只测不连库的判定与回落,连库部分由端到端 harness 覆盖。"""
+
+    def test_disabled_by_default(self, monkeypatch):
+        monkeypatch.delenv("TASK_BOARD_DATA_SOURCE", raising=False)
+        assert _formal.enabled() is False
+        assert _formal.dispatch("weekly_task_query", board="tech") is None
+
+    def test_unknown_tool_falls_back(self, monkeypatch):
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _formal.enabled() is True
+        assert _formal.dispatch("weekly_schema", board="tech") is None
+        assert _formal.dispatch("weekly_attachment_stats") is None
+
+    def test_unmigrated_arguments_fall_back_instead_of_narrowing(self, monkeypatch):
+        """未迁移的参数组合必须回落演示路径,绝不能返回一个范围更小的答案。"""
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _formal.dispatch("weekly_freshness_distribution", by="board") is None
+        assert _formal.dispatch("weekly_freshness_distribution", lag_bands=True) is None
+        assert _formal.dispatch("weekly_freshness_distribution", reported_only=True) is None
+        assert _formal.dispatch("weekly_freshness_distribution", recent_days=7) is None
+        assert _formal.dispatch("weekly_freshness_distribution", task="1") is None
+        assert _formal.dispatch("weekly_progress_coverage", scope="latest_status") is None
+        assert _formal.dispatch("weekly_task_query", status="9") is None  # 非法状态交给演示路径报错
+
+    def test_source_tables_extraction(self):
+        tables = _formal.source_tables("SELECT 1 FROM task t JOIN task_progress p ON p.task_id = t.id")
+        assert tables == ["task", "task_progress"]
+
+    def test_as_of_prefers_explicit_env(self, monkeypatch):
+        monkeypatch.setenv("GUOSHU_AS_OF", "2026-08-15")
+        assert _formal.as_of() == "2026-08-15"
+        monkeypatch.delenv("GUOSHU_AS_OF")
+        assert _formal.as_of()  # 正式活库默认取当天
+
+    def test_formal_snapshot_note_is_not_the_demo_one(self):
+        assert "正式只读源" in _formal.FORMAL_SNAPSHOT_NOTE
+        assert "演示" in _formal.FORMAL_SNAPSHOT_NOTE  # 明确写出"非演示数据"

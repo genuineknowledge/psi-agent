@@ -231,10 +231,12 @@ LIMIT %s
 
 
 def task_search(
-    board_code: str,
+    board_code: str | None,
     keyword: str | None = None,
     category_name: str | None = None,
     person: str | None = None,
+    status: int | None = None,
+    project_group: str | None = None,
     limit: int = 200,
 ) -> tuple[str, tuple]:
     """已发布任务检索:按任务名关键词、分类名、责任人(负责人或牵头领导)过滤。
@@ -243,11 +245,26 @@ def task_search(
     因此用 ILIKE 子串)或精确命中 ``owner_user_id``;三者都为 "谁负责什么" 这类问法服务,
     且一律锚在已发布主集上(rule 1)。
     """
-    code, hint = adm.check_board_code(board_code)
+    code, hint = adm.check_board_code(board_code) if board_code else (None, None)
     if hint:
         raise ValueError(hint)
-    where = [adm.sql_task_admission("pg", "t"), "b.code = %s"]
-    params: list[object] = [code]
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    board_join = f"JOIN task_board    b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+    if code:
+        where.append("b.code = %s")
+        params.append(code)
+    elif board_code is None:
+        # 未指定看板:仍要连看板表以排除软删看板,但不加 code 过滤
+        where.append("TRUE")
+    if status is not None:
+        if int(status) not in (0, 1, 2, 3):
+            raise ValueError("status 只能是 0/1/2/3")
+        where.append("t.status = %s")
+        params.append(int(status))
+    if project_group:
+        where.append("trim(t.project_group) = %s")
+        params.append(project_group.strip())
     if keyword:
         where.append("t.task_name ILIKE %s")
         params.append(f"%{keyword}%")
@@ -264,7 +281,7 @@ SELECT t.id, t.task_no, t.task_name,
        {adm.normalize_ts_sql("t.latest_progress_time")} AS latest_progress_time,
        {adm.normalize_ts_sql("t.published_at")}         AS published_at
 FROM task t
-JOIN task_board    b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
+{board_join}
 JOIN task_category c ON c.id = t.category_id AND {adm.sql_soft_delete("c")}
 WHERE {"\n  AND ".join(where)}
 ORDER BY t.sort_order, t.id
@@ -1092,6 +1109,7 @@ def text_check(
     rule: str,
     board_code: str | None = None,
     task_id: int | None = None,
+    task_name: str | None = None,
     keyword: str | None = None,
     all_versions: bool = False,
     group_history_granted: bool = True,
@@ -1129,6 +1147,9 @@ def text_check(
         if task_id is not None:
             where.append("t.id = %s")
             params.append(int(task_id))
+        if task_name:
+            where.append("t.task_name = %s")
+            params.append(task_name)
         sql = f"""SELECT t.id AS task_id, t.task_name, {alias}.version_no AS version_no,
        {text_expr} AS progress_text, {next_expr} AS next_work, '{table}' AS source
 FROM {table} {alias}

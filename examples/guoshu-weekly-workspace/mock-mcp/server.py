@@ -24,6 +24,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _db
+import _formal
 import _store as store
 from mcp.server.fastmcp import Context, FastMCP
 
@@ -252,6 +253,19 @@ def weekly_task_query(
             ``keyword`` silently returns the wrong set.
         limit: Max rows, capped at 200.
     """
+
+    formal = _formal.dispatch(
+        "weekly_task_query",
+        board=board,
+        category=category,
+        status=status,
+        owner=owner,
+        keyword=keyword,
+        project_group=project_group,
+        limit=limit,
+    )
+    if formal is not None:
+        return _dump(formal)
 
     def work() -> dict[str, Any]:
         where = [store.formal_task_clause()]
@@ -3529,6 +3543,19 @@ def weekly_progress_coverage(
         keyword: For scope=text_check with rule=keyword: custom search term.
     """
 
+    formal = _formal.dispatch(
+        "weekly_progress_coverage",
+        scope=scope,
+        project_group=project_group,
+        limit=limit,
+        rule=rule,
+        keyword=keyword,
+        task=task,
+        all_versions=all_versions,
+    )
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         key = (scope or "summary").strip().lower()
         if key not in _COVERAGE_SCOPES:
@@ -4490,6 +4517,22 @@ def weekly_freshness_distribution(
             (9 of them sort first), answering a different question entirely.
         limit: Max rows for the listing branches, capped at 200.
     """
+
+    formal = _formal.dispatch(
+        "weekly_freshness_distribution",
+        task=task,
+        within_days=within_days,
+        drift=drift,
+        stale_days=stale_days,
+        recent_days=recent_days,
+        in_flight=in_flight,
+        by=by,
+        reported_only=reported_only,
+        lag_bands=lag_bands,
+        limit=limit,
+    )
+    if formal is not None:
+        return _dump(formal)
 
     def work() -> dict[str, Any]:
         if lag_bands:

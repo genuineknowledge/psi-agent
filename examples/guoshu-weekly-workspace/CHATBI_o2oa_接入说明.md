@@ -31,7 +31,8 @@
 | `mock-mcp/_pg.py` | PG 只读连接(psycopg 3 延迟导入;read-only 会话 + 固定 schema) |
 | `mock-mcp/_admission.py` | 硬约束与值域:发布准入、进展正式版、历史版本(status=3)、submission published 轮、枚举校验、year 显式、时间归一化与比较片段、可选表降级文案 |
 | `mock-mcp/_o2oa_templates.py` | PG 查询模板(16 个):①已发布任务清单(5.1)②最新正式进展(5.2,`DISTINCT ON` 单次扫描,定序键 `version_no DESC, id DESC`)③任务详情+年度目标+里程碑+集团扩展(5.3)④历史版本进展(rule 2 例外)⑤分类路径(`WITH RECURSIVE`)⑥附件元数据(仅元数据,未授权时降级)⑦任务检索 ⑧进展窗口 ⑨覆盖率四 scope ⑩年度目标清单 ⑪里程碑清单 ⑫新鲜度分档/总览/任意窗口/滞后清单 ⑬漂移检查 |
-| `tests/test_o2oa_pg.py` | 37 项纯单元测试(不连库):规则、域值、模板形状、参数与占位符一致、每个模板必带准入守卫 |
+| `mock-mcp/_formal.py` | **正式源后端**:把工具调用映射到 PG 模板并包成与演示源同构的信封;未迁移的组合返回 `None` 回落演示路径 |
+| `tests/test_o2oa_pg.py` | 69 项纯单元测试(不连库):规则、域值、模板形状、参数与占位符一致、每个模板必带准入守卫、正式源后端的回落判定 |
 
 ### 3.0 批次 2:口径移植以"契约数字"为验收标准(2026-09-10)
 
@@ -122,6 +123,31 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 3. **不预热直接取单次读数** → 把首次规划与冷缓存算进去(同一模板能读到 62ms)。
 
 正确做法:载入 → 建索引 → `ANALYZE` → 预热一次 → 取 N 次中位。
+
+### 3.0.2 正式源后端与工具接线(2026-09-10)
+
+`TASK_BOARD_DATA_SOURCE=o2oa` 时,已迁移的工具走正式源;其余仍走演示路径,**半迁移状态下服务仍然自洽**。
+
+| 工具 | 状态 | 说明 |
+|---|---|---|
+| `weekly_task_query` | ✅ 已接线 | 关键词 / 分类 / 负责人 / 状态 / 项目组 / 看板;不指定看板也可用 |
+| `weekly_progress_coverage` | ✅ 已接线 | 8 个具名 scope + `scope=text_check` 的三条文本规则(含 `task=` 按 id 或名字过滤) |
+| `weekly_freshness_distribution` | ✅ 已接线 | 分档 + 总览**合并进同一个信封**(rows = 分档,另给最新进展/滞后天数/任务总数/分档合计) |
+| 其余 28 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
+
+三条硬规则:
+
+1. **信封与演示源逐字段同构**(`ok` / `caliber` / `snapshot_note` / `snapshot_date` / `source_tables` / `columns` / `rows` / `row_count` / `has_more`),agent 侧无需改动;
+2. **未迁移的 scope 或参数一律返回 `None` 回落**,绝不返回一个范围更小的答案(例如新鲜度的 `by=` / `lag_bands=` / `recent_days=` 仍是演示路径);
+3. `snapshot_note` 换成正式口径(「国数正式只读源…非演示数据」),`snapshot_date` 用基准日(`GUOSHU_AS_OF` 可固定,便于与演示快照日对齐)。
+
+**端到端验证**(真 PG + 正式源模式,20 项断言全通过):信封 9 字段齐全、`source_tables` 指向正式表、
+publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 103 的 V8 冲突(来自集团历史表)、
+新鲜度分档 63/44/8/9/4 且合计 = 任务总数、在办「从未报进展」8、漂移 73,未迁移参数全部回落。
+
+> 依赖提醒:本工作区的 mock 服务用 **mcp 1.x 的 FastMCP API**;PyPI 上 mcp 2.x 已把它改名为 `MCPServer`,
+> 未钉版本的新环境会直接导入失败。仓库已声明 `mcp>=1.28.1,<2.0.0`(mock 服务运行时沿用同一环境),
+> 部署新机时不要放宽这个上界。
 
 ### 3.1 第一批迭代要点(2026-09-10)
 
