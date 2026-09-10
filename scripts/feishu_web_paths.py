@@ -49,9 +49,9 @@ _FEISHU_WEB = _REPO_ROOT / "src" / "psi_agent" / "gateway" / "feishu" / "feishu-
 #: 清单落在前端目录里 —— 它描述的是前端的行为, 跟着前端源码一起被 review。
 MANIFEST = _FEISHU_WEB / "api-paths.json"
 
-#: 发 HTTP 的两个文件。**不是**「所有 ts 文件」: 见 `http_call_sites()`, 那条守着
-#: 「有没有第三个文件开始发请求」, 比在这里放宽范围更抓得住漂移。
-SOURCE_FILES = ("src/api.ts", "src/services/chatStream.ts")
+#: 发 HTTP 的文件。**不是**「所有 ts 文件」: 见 `http_call_sites()`, 那条守着
+#: 「有没有未包含的文件开始发请求」, 比在这里放宽范围更抓得住漂移。
+SOURCE_FILES = ("src/api.ts", "src/services/chatStream.ts", "src/services/turnProgress.ts")
 
 #: 探测参数化路径时替换 `{param}` 的哨兵值。取一个真实 session 绝不会用的形状 ——
 #: 命中真实会话会改动状态(`DELETE /sessions/{id}`), 那不是核对该干的事。
