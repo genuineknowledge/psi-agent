@@ -187,8 +187,13 @@ before / after 有内核默认值，`turn_context_fn` 和 `compaction_fn` 的 `N
 - AI 连接超时：`ClientTimeout(total=None)` — 语义：不超时，与 channel 一致（由 `AiClient.stream()` 管理）
 - 流式 `delta` 字段可能为 `null`（非缺失 key），`AiClient` 用 `isinstance(delta_data, dict)` 校验后产出 `AiDelta`
 - Tool 模块在 `sys.modules` 中以 `psi_tool_{name}_{session_id}_{file_hash}` 注册（完整 64 位 SHA-256 hash，不截断）。这个名字**只是注册键，不参与复用判定**——`session_id` 在里面不影响是否重编
-- Tool 文件的 **exec 顺序按文件名排序**，不跟 `glob`。加载顺序是**隐藏输入**而非整洁问题：自带 `sys.path` 前言的文件必须先于依赖它的文件（59 个工具文件曾因此全部加载失败），且第一个 import 带点私有模块的文件会把子模块**绑成父包的属性**给后面的人读——后者于是永远不走包解析。`glob` 给的是文件系统顺序，实测 NTFS 今天就偏离字母序（feishu 130 个文件里 16 个错位，desktop 65 里 13 个）。排序键是纯文件名，所以这是**层内**顺序：分层后每层各 glob 自己的目录，层间由层优先级排、层内由这里排。同名工具当前是 0 个，所以 last-wins 现在不裁决任何东西——排序只是给"谁是最后一个"一个定义
-- 编译复用由**进程级模块缓存** `_module_cache` 决定，键是 `(layer_id, file_hash)`：`load()` 每次新建实例并传 `old_files=None`，实例内的 hash 比对只在 `refresh()` 路径上生效，所以跨 session 的复用必须落在进程级。`layer_id` 当前是 tools 目录的 resolve 后绝对路径（分层落地后换成真正的 layer id）——**键里必须有它**，否则两个 workspace 里同名同内容的文件会共享模块、连带共享对方的 `_priv_helper` 绑定。文件内容变了则 hash 变、必然重编。缓存不淘汰
+- 工具**私有模块**（`_` 前缀）的隔离分两条路径，见 `tool_layers.py` 模块 docstring：
+  - **单目录顺序加载**走 `_stash_private_modules()`：一个 tools 目录的作用域退出时，把它加载进 `sys.modules` 的私有模块搬进 stash。带点名（`_feishu.auth`）**同样入 stash**，判定用「文件是否落在该私有包目录下」而不是「文件是否落在 tools 目录下」。此前带点名被整类跳过，于是 `agents/feishu/tools/_feishu/` 的 15 个模块在作用域退出后仍留在 `sys.modules`——第二个自带 `_feishu` 的目录会绑到第一个目录的子模块上，**顺序加载也会串**，与分层无关
+  - **多层同时在场**走 `layers_open()` 装的 `sys.meta_path` 钩子：私有模块按 `psi_layer_<token>._xxx` 注册，裸名别名**只在提问工具文件 exec 期间**绑（CPython 解析带点子模块的父包用的是**裸名**，只改名会 `KeyError`；常驻绑定则毁掉隔离）。`_module_cache` 命中会跳过 exec，**命中路径必须补绑裸名**，否则"同层第二个带点导入者失败而第一个成功"、且只在缓存热了以后才出现
+- Tool 文件的 **exec 顺序按文件名排序**，不跟 `glob`。加载顺序是**隐藏输入**而非整洁问题：自带 `sys.path` 前言的文件必须先于依赖它的文件（59 个工具文件曾因此全部加载失败），且第一个 import 带点私有模块的文件会把子模块**绑成父包的属性**给后面的人读——后者于是永远不走包解析。`glob` 给的是文件系统顺序，实测 NTFS 今天就偏离字母序（feishu 130 个文件里 16 个错位，desktop 65 里 13 个）。排序键是纯文件名，所以这是**层内**顺序：`load_layers()` 按 `Layer.priority` **升序**逐层加载，每层各 glob 自己的目录，层间由层优先级排、层内由这里排。同名工具当前是 0 个，所以 last-wins 现在不裁决任何东西——排序只是给"谁是最后一个"一个定义
+- **私有模块的解析顺序不是层优先级，而是「提问层优先」**：某层的工具 `import _shared` 时先看**它自己那层**有没有，没有才按层优先级**降序**跨层兜底。理由：`_` 前缀私有帮手是一层的**实现**，不是它可被寻址的**表面**；表面是公开工具名，那里才用层优先级 last-wins。反过来（优先级压过提问层）会让高优先级层的 `_shared` 劫持低优先级层自己的实现，实测使 P1/P2/P3/P6 与 R3/R7 同时转红。层优先级**只**用于跨层兜底的排序
+- `Layer` 的优先级是**显式字段** `priority: int`，不从列表顺序推、也不从 `layer_id` 推。列表顺序就是 glob 给的打开顺序（生产里没有任何一层控制得了它），而 `layer_id` 生产里是 tools 目录路径；留任何一个当兜底只是把 bug 搬个地方。**这一条只有三层才看得见**，两层永远测不出打开顺序与优先级的区别
+- 编译复用由**进程级模块缓存** `_module_cache` 决定，键是 `(layer_id, file_hash)`：`load()` 每次新建实例并传 `old_files=None`，实例内的 hash 比对只在 `refresh()` 路径上生效，所以跨 session 的复用必须落在进程级。`layer_id` 走 `load()` 时仍是 tools 目录的 resolve 后绝对路径，走 `load_layers()` 时是 `Layer.layer_id`——**键里必须有它**，否则两个 workspace 里同名同内容的文件会共享模块、连带共享对方的 `_priv_helper` 绑定。文件内容变了则 hash 变、必然重编。缓存不淘汰
 - Schedule 加载时捕获各种 per-task 错误（IO、YAML 解析、cron 验证），单个 schedule 失败不影响整体加载
 
 ## 协议适配层
