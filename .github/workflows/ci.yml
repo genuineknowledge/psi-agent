@@ -24,6 +24,37 @@ jobs:
       # 重新生成, 下一次 dmg 的图标就是旧的。与 gen_legal_html.py 同一套模式。
       - run: uv run python scripts/gen_haitun_icon_png.py --check
 
+  # 工具文件加载顺序是**跨文件系统**的判据: `tool_registry` 排序 `glob("*.py")` 正是为了消掉
+  # 文件系统顺序差异(59 个工具文件曾因加载顺序全部加载失败)。这条修法此前只在 Windows/NTFS 上
+  # 量过, ext4 上从未复量 —— 本地开发机再怎么绿都覆盖不到, 只有 ubuntu runner 能。
+  #
+  # 单独一个 job 而不是塞进 lint: lint 是 publish 的门(`needs: lint`), 把测试挂进去会让发版
+  # 连带依赖测试, 而 lint 现在五步全是静态检查、语义单一。单独 job 还能并行跑, 红的时候标题
+  # 直接说明是加载顺序而不是"lint 挂了"。
+  #
+  # 范围只有这两个文件 (126 条判据, 约 11s): session 子树全量在本地要 5 分半, 且当前在
+  # Windows 上有 13 条 asyncio 环境失败 —— 把全量搬上 CI 会把「看住加载顺序」变成「修全量红」。
+  tool-load-order:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+      - run: uv sync
+      # 先量再测: 判据是「排序后与文件系统无关」, 这一步单独把 ext4 的原始 glob 顺序
+      # 偏离字母序多少个位置打进日志。它只报数不判定 —— 偏离 0 是关于文件系统的事实,
+      # 不是本仓库的失败。
+      - name: Measure ext4 glob order skew
+        run: uv run python scripts/check_tool_glob_order.py
+      # -o testpaths= 是必须的: 命令行路径参数在 testpaths 存在时会被静默忽略, 且它必须
+      # 写在路径**之前**。--no-cov: 这里判的是加载顺序, 覆盖率插桩只会拖慢。
+      - name: Tool load order + A1 layer isolation criteria
+        run: >
+          uv run pytest -o testpaths= --no-cov -q
+          tests/psi_agent/session/test_tool_registry.py
+          tests/psi_agent/session/test_layer_isolation_a1_probe.py
+
   # ToB 前端脚手架的可构建性。单独一个 job 而不是塞进 publish: publish 只在打 tag 时
   # 跑, 那样脚手架坏掉要到发版才发现 —— 方案 3.6 要的是「不会悄悄坏掉」。
   # 这里只验证「能构建」, 不产出也不下发任何东西 (产物下发不在本轮范围)。
