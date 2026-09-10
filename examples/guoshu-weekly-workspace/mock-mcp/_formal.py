@@ -504,10 +504,15 @@ _NEW_HANDLERS = {
 
 
 def _owner_roles(args: dict[str, Any]) -> dict[str, Any] | None:
-    """weekly_owner_roles:某人的主责 / 项目负责人 / 牵头领导 / 去重并集。"""
+    """weekly_owner_roles:某人的主责 / 项目负责人 / 牵头领导 / 去重并集。
+
+    缺 ``person`` 时按契约报 ``invalid_argument``(**不回落演示路径**):参考实现
+    就是报 ``invalid_argument: person 不能为空``,回落反而会把一个参数错误变成
+    "另一个数据源的答案"(正式源模式下还会先去连一台不存在的演示库)。
+    """
     person = (args.get("person") or "").strip()
     if not person:
-        return None  # 演示路径会给出 invalid_argument
+        raise ValueError("person 不能为空")
     sql, params = tpl.owner_roles(person)
     return envelope(
         sql=sql,
@@ -580,21 +585,73 @@ _NEW_HANDLERS_6 = {
 
 
 def _submission(args: dict[str, Any]) -> dict[str, Any] | None:
-    """weekly_submission_query:提交单聚合各 scope。
+    """weekly_submission_query:提交单聚合各 scope + **默认明细清单**。
 
-    只迁移**纯聚合**请求:带 task / reporter / status / exclude_status / status_mismatch
-    的是明细筛选,语义与聚合不同,交给演示路径处理(返回 None),不猜。
+    具名 scope 只迁移**纯聚合**请求:带 task / reporter / status / exclude_status
+    的是明细筛选,语义与聚合不同,交给演示路径(返回 None),不猜。
+
+    ``scope`` 为空即**默认清单档**:参考实现是"一张单一行"的明细(带状态分档、
+    状态值域与命中总数),此前没迁 —— 于是 ``weekly_submission_query()`` 在正式源
+    模式下回落演示库,生产上等于 ``store_unreachable``。现在按参考实现的列集合
+    (``SUBMISSION_ROW_COLUMNS``)与筛选全部迁移;``status_mismatch`` 是另一条形状
+    (一任务一行、比对两套码值),仍回落。
     """
     scope = (args.get("scope") or "").strip().lower()
-    if scope not in tpl.SUBMISSION_SCOPES:
+    limit = int(args.get("limit") or MAX_ROWS)
+    board = (args.get("board") or "").strip() or None
+    raw_task = (args.get("task") or "").strip()
+    task_id, task_name = _resolve_task(raw_task)
+    reporter = (args.get("reporter") or "").strip() or None
+    raw_status = (args.get("status") or "").strip() or None
+    raw_exclude = (args.get("exclude_status") or "").strip() or None
+
+    if not scope:
+        if args.get("status_mismatch"):
+            return None  # 一任务一行的口径比对,另一条形状,交给演示路径
+        sql, params = tpl.submission_rows(
+            board_code=board,
+            task_id=task_id,
+            task_name=task_name,
+            reporter=reporter,
+            status=raw_status,
+            exclude_status=raw_exclude,
+            limit=limit,
+        )
+        result = envelope(
+            sql=sql,
+            params=params,
+            caliber=(
+                "提交单域只加 t.is_deleted = 0(**不加任务发布门**:在途任务的单同样是单);"
+                "一行一张单,task_id + round_no 唯一;"
+                "按提交时间倒序(最新一轮在最前),时间相同按 id 倒序;"
+                "submission_kind 区分 initial / progress;"
+                "payload 草稿快照默认不并入正式数据,不返回"
+            ),
+            limit=limit,
+            cap_last_param=True,
+        )
+        submission_listing_extras(
+            result,
+            board=board,
+            task_id=task_id,
+            task_name=task_name,
+            reporter=reporter,
+            status=raw_status,
+            exclude_status=raw_exclude,
+        )
+        if reporter:
+            result["caliber"] += f";仅填报人 {reporter}(id 或姓名去空格后精确匹配)"
+        if raw_status or raw_exclude:
+            result["caliber"] += status_filter_note(raw_status, raw_exclude, result)
+        return result
+
+    if scope not in tpl.SUBMISSION_SCOPES or scope == "rows":
         return None
     for key in ("task", "reporter", "status", "exclude_status"):
         if (args.get(key) or "").strip():
             return None
     if args.get("status_mismatch"):
         return None
-    limit = int(args.get("limit") or MAX_ROWS)
-    board = (args.get("board") or "").strip() or None
     sql, params = tpl.submission_stats(scope, board_code=board, limit=limit)
     listing = scope in ("pending_review", "unpublished_by_task")
     return envelope(
@@ -610,22 +667,129 @@ def _submission(args: dict[str, Any]) -> dict[str, Any] | None:
     )
 
 
+def submission_listing_extras(
+    result: dict[str, Any],
+    *,
+    board: str | None,
+    task_id: int | None,
+    task_name: str | None,
+    reporter: str | None,
+    status: str | None,
+    exclude_status: str | None,
+) -> None:
+    """默认清单档的三个配套项:命中总数、状态分档、状态值域。
+
+    与参考实现同一组附加字段(``total_count`` / ``status_breakdown`` / ``status_domain``):
+    清单封顶 200 行,"一共几张单"与"各状态各几张"必须由服务端算完再回,否则调用方只能
+    拿第一页去数。
+
+    三个配套项必须与清单**同一个范围**(所有筛选条件都传进来):只按任务/看板收窄而漏掉
+    ``status``,就会出现"清单 12 行、``total_count`` 28"这种自相矛盾的回包,而调用方
+    只会相信自己看到的那个数。实测正是这么踩出来的。
+
+    ``status_domain`` 还兼一个作用:提交单状态值域不含 ``approved``(已发布是 ``published``),
+    用 ``approved`` 过滤筛不掉任何行 —— 值域在手上,调用方才分得清"筛完是 0 条"与
+    "这个词根本不在值域里"。
+    """
+    scoped = tpl.submission_scope_where(
+        board_code=board,
+        task_id=task_id,
+        task_name=task_name,
+        reporter=reporter,
+        status=status,
+        exclude_status=exclude_status,
+    )
+    where_sql, board_join, params = scoped
+    scope_sql = tpl.submission_scoped_count_sql(where_sql, board_join)
+    total = envelope(sql=f"SELECT count(*) AS n {scope_sql}", params=params, caliber="本档命中的提交单总数", limit=1)
+    result["total_count"] = (total.get("rows") or [{}])[0].get("n")
+    breakdown = envelope(
+        sql=f"SELECT s.status, count(*) AS cnt {scope_sql} GROUP BY s.status ORDER BY cnt DESC, s.status",
+        params=params,
+        caliber="按提交单状态分档计数(与清单同一范围)",
+        limit=MAX_ROWS,
+    )
+    result["status_breakdown"] = breakdown["rows"]
+    domain = envelope(
+        sql="SELECT DISTINCT s.status FROM task_workflow_submission s ORDER BY s.status",
+        params=(),
+        caliber="提交单状态值域(全表,与上面的筛选无关)",
+        limit=MAX_ROWS,
+    )
+    result["status_domain"] = sorted(
+        str(row["status"]).strip() for row in domain["rows"] if row.get("status") is not None
+    )
+
+
+def status_filter_note(raw_status: str | None, raw_exclude: str | None, result: dict[str, Any]) -> str:
+    """状态过滤的口径提示:给的词不在值域内时**必须显式说明它没筛掉任何行**。
+
+    提交单状态与任务 ``workflow_status`` 不是一套码值,``approved`` 这类词若不在值域内,
+    过滤会静默失效(等价于没过滤),不说就会把全量当成筛后结果。
+    """
+    domain = result.get("status_domain") or []
+    unknown = [token for token in (raw_status, raw_exclude) if token and token not in domain]
+    if not unknown:
+        return ""
+    return (
+        f";注意 {'、'.join(unknown)} 不在提交单状态值域 {domain} 内,"
+        "该过滤条件未筛掉任何行,结果等于未过滤,回答时不要说成「已排除」"
+    )
+
+
 def _workflow(args: dict[str, Any]) -> dict[str, Any] | None:
-    """weekly_workflow_query:审批动作流水(可选表)。意见列按权限返回。"""
+    """weekly_workflow_query:审批动作流水(可选表)。意见列按权限返回。
+
+    ``scope`` 为空即**默认明细清单**档:一行一条动作,按 ``task_id, created_at, id``
+    排序(某任务的审批轨迹),列集合见 ``tpl.WORKFLOW_ROW_COLUMNS``。它与 ``recent``
+    是两道桥:``recent`` 按动作自身时间倒序、答"最近谁被驳回"。
+    只有 ``by_task``(逐任务聚合)仍交给演示路径 —— 那是另一条形状。
+    """
     scope = (args.get("scope") or "").strip().lower()
-    if scope not in tpl.WORKFLOW_SCOPES:
-        # 默认清单按 task id 排序、by_task 是逐任务聚合:都不迁移,交给演示路径
-        return None
     limit = int(args.get("limit") or MAX_ROWS)
     board = (args.get("board") or "").strip() or None
-    task_id, _task_name = _resolve_task(args.get("task") or "")
+    task_id, task_name = _resolve_task(args.get("task") or "")
     raw_action = (args.get("action") or "").strip() or None
+    granted = optional_granted("task_workflow_action")
+
+    if scope not in tpl.WORKFLOW_SCOPES:
+        if scope or args.get("by_task"):
+            return None  # by_task 是逐任务聚合,另一条形状,交给演示路径
+        sql, params = tpl.workflow_action_rows(
+            board_code=board,
+            task_id=task_id,
+            task_name=task_name,
+            action=raw_action,
+            granted=granted,
+            limit=limit,
+        )
+        result = envelope(
+            sql=sql,
+            params=params,
+            caliber=(
+                "流水带 t.is_deleted = 0 是正确闸门(1,578 行);再加任务发布门会掉到 1,519;"
+                "本档一行一条动作,按 task_id + 动作时间升序(某任务的审批轨迹);"
+                "**不按 round_no 排**:轮次号不等于时间序(存在第 3 轮早于第 2 轮的任务),"
+                "按轮次读会把轨迹读反;要「最近谁被驳回」请用 scope=recent(按动作时间倒序);"
+                "opinion(审批意见)始终在列里,无权限时值打码成「[按权限不展示]」"
+                "(与参考实现的 _scrub 同一语义:藏列会让调用方分不清「没有意见」与「没权限看」)"
+            ),
+            limit=limit,
+            cap_last_param=True,
+        )
+        if not bool(args.get("can_read_sensitive")):
+            # 敏感字段打码而不是删列,列集合在两种权限下保持一致
+            for row in result["rows"]:
+                if "opinion" in row:
+                    row["opinion"] = "[按权限不展示]"
+        return result
+
     sql, params = tpl.workflow_actions(
         scope,
         board_code=board,
         task_id=task_id,
         action=raw_action,
-        granted=optional_granted("task_workflow_action"),
+        granted=granted,
         limit=limit,
     )
     result = envelope(
@@ -1927,6 +2091,11 @@ def _aggregate(args: dict[str, Any]) -> dict[str, Any] | None:
     if (args.get("metric") or "count").strip().lower() != "count":
         return None  # 演示版只支持 metric=count,由演示路径报 unsupported_metric
     group_by = (args.get("group_by") or "").strip().lower()
+    if not group_by:
+        # 缺 group_by 不能回落:演示源会报 unsupported_group_by(**它也不是"任何参数
+        # 都不可用"**,只是没有任何默认轴可猜)。报 invalid_argument 而不是去猜一个轴,
+        # 是为了不把一个少参数的错误答成"某一根轴的分布"。
+        raise ValueError("group_by 不能为空;支持 " + " / ".join(tpl.AGGREGATE_GROUP_BYS))
     if group_by not in tpl.AGGREGATE_GROUP_BYS:
         return None  # 演示路径会报 unsupported_group_by
     board = (args.get("board") or "").strip()

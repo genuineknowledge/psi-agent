@@ -1,15 +1,22 @@
 # ChatBI 正式数据接入说明(o2oa / O2OA PostgreSQL)
 
-> **进度快照(2026-09-10,第 34 轮)**
+> **进度快照(2026-09-10,第 35 轮)**
 >
-> - **工具接线:31 / 31 —— 全部完成**。31 个 MCP 工具都已走正式源(逐名核对过:无遗漏、
->   无多余);仍未迁移的只剩**参数组合**(如 `weekly_freshness_distribution task=`、
->   `byteam` 名字解析),它们照旧回落演示路径,行为不变。
+> - **工具接线:31 / 31**,且**四个默认分支已补齐** —— 此前 `weekly_submission_query()`、
+>   `weekly_workflow_query()`、`weekly_owner_roles()`、`weekly_aggregate()` 在**空/默认参数**
+>   下会回落演示路径(生产上没有那台 MySQL ⇒ `store_unreachable`,错误信息还指向一个与国数
+>   无关的库)。现在这四处都走正式源:两个默认**明细清单**档补了模板,缺必填参数的按契约报
+>   `invalid_argument`;剩余未迁移的只剩**具名参数组合**(如 `status_mismatch`、`by_task`、
+>   `weekly_freshness_distribution task=`、看板**名字**),它们仍回落演示路径。
+> - **回落不再等于 `store_unreachable`**:正式源模式下,未迁移组合的兜底错误码改为
+>   `not_migrated` 并附"请改用已迁移的 scope / 参数(见本说明的调用建议)"。
+>   演示模式(未开正式源)保持原样 —— 那时连不上演示库就是真的连不上。
 > - **三套真库验收(同构 PG 实例 + 演示库数据)**:
 >   - 端到端 `verify_end_to_end.py`:**408 / 408** 断言通过;
 >   - 口径验收 `verify_numbers_v2.py`:**38 / 38** 通过(mock docstring 里写死的契约数字逐条复现);
->   - 列集合对照 `column_parity.py`:**123 / 123** 一致(原先剩的 3 处已查清:全是**对照器侧**的
->     解析与桩问题,不是正式源的列对不上 —— 详见 3.0.6 与 3.1.5)。
+>   - 列集合对照 `column_parity.py`:**127 / 127** 一致(新增 4 个默认清单档用例)。
+> - **真库三套验收(活库 o2oa)**:冒烟 `verify_real_smoke.py` **31 / 31 活着**(此前 27/31);
+>   验收 `verify_real_o2oa.py` **14 / 14**;基线交叉核对 `verify_real_baseline.py` **31 / 31**。
 > - **交付形式**:服务 / Docker(`Dockerfile`,streamable-http,默认 18900);不含前端,由主 Agent 经 MCP 调用。
 > - **真库已打通(2026-09-10,本条已取代原先"直连尚未打通")**:物理库名是 **`o2oa`**
 >   (字段说明里的 `O2OA-DB` 是业务叫法,集群 `pg_database` 里没有该 database;`oa_biz` 是
@@ -19,31 +26,30 @@
 >   只读账号 `task_board_readonly` 已可连,**12 张 `task_*` 表全部可见**。
 > - **真库首次核对:31 / 31 个出口正常返回**,列集合与参考一致(脚本 `verify_real_o2oa.py`;
 >   连法:本机 → H100 → opl 建 `chain.py forward` 端口转发,用本机 Python 3.14 跑)。
-> - **真库基线交叉核对:21 / 21 通过**(`verify_real_baseline.py`)—— 每个关键数字都拿一条
+> - **真库基线交叉核对:31 / 31 通过**(`verify_real_baseline.py`)—— 每个关键数字都拿一条
 >   **直接 SQL** 去对。这类断言的价值是**不依赖具体数字**:活库每天在变,「工具口径 == 直连口径」
 >   这条关系不变量始终成立。据此补齐的真值:`never_reported` **35**;`task_query` tech **48** /
 >   group 40(合计 = 已发布 88);`year_goal(2026)` **54**;审批动作(软删闸门)**91**;
 >   提交单(软删闸门)**28**;近 120 天正式进展 **9** 行;近 30 天有更新 **7** 条;
 >   `task_ranking(progress)` 榜首仅 **1 期** —— 真库里多数任务只有一期正式进展,
 >   所以"谁进展最多"类问题在真库上几乎全是并列(`rank` 的 `tied_at_top` 达 53)。
-> - ⚠️ **真库冒烟(31 个工具各调一次):活着 27 / 31**。四个出口在**默认/空参数**下仍会回落
->   演示路径 —— `weekly_aggregate()`、`weekly_owner_roles()`、`weekly_submission_query()`、
->   `weekly_workflow_query()`:它们的**具名 scope 已迁移**(31/31 与 21/21 的核对都覆盖了那些
->   scope),但**默认清单分支没迁**。生产环境没有演示 MySQL,**回落就等于 `store_unreachable`
->   报错**,所以这四处必须补迁移,或让默认分支明确报"该参数组合未迁移"而不是去连一个不存在的库。
 > - 另:`weekly_task_detail` / `weekly_schema` / `weekly_field_completeness` 返回的是**结构化多块
 >   信封**(`task` / `year_goals` / `group_detail`、`table_columns`、`supported_fields`),本就没有
 >   `rows` —— 这不是缺陷,但 agent 侧读法与 rows 类工具不同,应在工具说明里点明。
 >
-> **给主 Agent / 入口组的调用建议(按真库实测整理,避开会报错的组合)**:
-> 1. `weekly_submission_query`、`weekly_workflow_query` **必须带 `scope`**(默认清单分支未迁移);
-> 2. `weekly_owner_roles` **必须带 `person`**;
-> 3. `weekly_aggregate` 目前**任何参数都不可用**(未迁移)—— 需要分组聚合请用 `weekly_scale`(三种
->    mode × 三种轴)或 `weekly_group_stats`;
-> 4. `weekly_task_detail` / `weekly_schema` / `weekly_field_completeness` **没有 `rows`/`row_count`**,
+> **给主 Agent / 入口组的调用建议(按真库实测整理)**:
+> 1. `weekly_submission_query` / `weekly_workflow_query` **不传 `scope` 也能用了**(走默认明细
+>    清单档),要聚合分布再传具名 scope;两者默认档的清单封顶 200 行,先看 `has_more` /
+>    `total_count`(`weekly_submission_query` 另有 `status_breakdown` 与 `status_domain`);
+> 2. `weekly_owner_roles` **必须带 `person`**(缺了报 `invalid_argument`,这是契约不是故障);
+> 3. `weekly_aggregate` **必须带 `group_by`**(9 个轴,缺了报 `invalid_argument` 并列出可用轴);
+>    需要"规模 × 分组"的横截面请用 `weekly_scale`,集团专表统计用 `weekly_group_stats`;
+> 4. 报 `not_migrated` = **这组参数还没迁到正式源**(不是数据库故障),照错误信息里的提示换
+>    scope / 参数;报 `table_not_granted` = 那张可选表不在本次授权范围内;
+> 5. `weekly_task_detail` / `weekly_schema` / `weekly_field_completeness` **没有 `rows`/`row_count`**,
 >    读它们的结构化字段(`task`+`year_goals`+`group_detail`、`table_columns`、`supported_fields`);
-> 5. 相对时间窗锚**数据基准日**(活库即当天),要可复现就显式传 `date_from/date_to`;
-> 6. 真库当前**多数任务只有一期正式进展**,"谁进展最多"类问题请先看 `tied_at_top`,
+> 6. 相对时间窗锚**数据基准日**(活库即当天),要可复现就显式传 `date_from/date_to`;
+> 7. 真库当前**多数任务只有一期正式进展**,"谁进展最多"类问题请先看 `tied_at_top`,
 >    并列数大时如实报"并列",不要报成唯一第一名。
 > - **真值快照(2026-09-10;活库会变,数字带日期,形状与口径才是不变量)**:`task` 105 行 /
 >   已发布 **88**;`task_progress` 197 行 / `is_published=1` 仅 **56**;`task_milestone` 20(状态
@@ -115,7 +121,8 @@ docker run --rm -p 18900:18900 --env-file o2oa.env guoshu-weekly-mcp:latest
 | `mock-mcp/_admission.py` | 硬约束与值域:发布准入、进展正式版、历史版本(status=3)、submission published 轮、枚举校验、year 显式、时间归一化与比较片段、可选表降级文案 |
 | `mock-mcp/_o2oa_templates.py` | PG 查询模板(16 个):①已发布任务清单(5.1)②最新正式进展(5.2,`DISTINCT ON` 单次扫描,定序键 `version_no DESC, id DESC`)③任务详情+年度目标+里程碑+集团扩展(5.3)④历史版本进展(rule 2 例外)⑤分类路径(`WITH RECURSIVE`)⑥附件元数据(仅元数据,未授权时降级)⑦任务检索 ⑧进展窗口 ⑨覆盖率四 scope ⑩年度目标清单 ⑪里程碑清单 ⑫新鲜度分档/总览/任意窗口/滞后清单 ⑬漂移检查 |
 | `mock-mcp/_formal.py` | **正式源后端**:把工具调用映射到 PG 模板并包成与演示源同构的信封;未迁移的组合返回 `None` 回落演示路径 |
-| `tests/test_o2oa_pg.py` | 69 项纯单元测试(不连库):规则、域值、模板形状、参数与占位符一致、每个模板必带准入守卫、正式源后端的回落判定 |
+| `mock-mcp/_fallback.py` | **未迁移组合的可操作报错**:正式源模式下把"连不上演示库"翻译成 `not_migrated` + 调用建议;演示模式保持原样。独立成模块是为了让单测不拉 `mcp` 包就能钉住它 |
+| `tests/test_o2oa_pg.py` | 纯单元测试(不连库):规则、域值、模板形状、参数与占位符一致、每个模板必带准入守卫、正式源后端的回落判定 |
 
 ### 3.0 批次 2:口径移植以"契约数字"为验收标准(2026-09-10)
 
@@ -233,11 +240,11 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 | `weekly_year_goal_query` | ✅ 已接线 | 年度目标**行**清单(year=0 表示所有年度);集团板 109 行 / 46 任务、全看板 313 行 / 128 任务 |
 | `weekly_milestone_query` | ✅ 已接线 | 支持按任务收窄(不带 `task=` 会答成整个看板第一页);任务 19 → 2 行 |
 | `weekly_attachment_query` | ✅ 已接线 | 仅元数据(无 `storage_path`);集团板 52 条 / 28 任务;可选表未授权时报 `table_not_granted` |
-| `weekly_owner_roles` | ✅ 已接线 | 角色拆分(主责/项目负责人/牵头领导/去重并集);孙立群 → 0/2/12/14,u3118 → 2/2/12/14 |
+| `weekly_owner_roles` | ✅ 已接线 | 角色拆分(主责/项目负责人/牵头领导/去重并集);孙立群 → 0/2/12/14,u3118 → 2/2/12/14;**缺 `person` 报 `invalid_argument: person 不能为空`**(与参考实现同一契约,不回落) |
 | `weekly_group_detail_query` | ✅ 已接线 | 集团板扩展表(目标成果/落实举措/完成时间/进度成效/多值负责人);46 行;`status=0 + non_empty=progress_effect` → 6 行矛盾;`completion_time` **按文本**匹配 2026 → 31 行 |
 | `weekly_health` | ✅ 已接线 | 逐表精确行数(可选表不存在时返回 NULL 而非报错);12 张表 / 5,369 行 |
-| `weekly_submission_query` | ✅ 已接线 | 9 个聚合 scope:提交单 462 张、外部标识 460/460/60(缺 402 行 = 87.0%)、驳回率 技术组 9/293 = 3.07% > 集团组 4/169 = 2.37%、按类型 progress 312 / initial 150、在途带进程号 59;带明细筛选的请求不迁移(回落演示路径) |
-| `weekly_workflow_query` | ✅ 已接线 | 审批动作流水(可选表):分布 955/460/150/**13**、日志 **1,578** 行 / 150 任务 / 10.52、node×action **6 档**、`scope=recent` 按动作时间倒序;**`opinion` 按权限才出列** |
+| `weekly_submission_query` | ✅ 已接线(9 个聚合 scope **+ 默认明细清单**) | 9 个聚合 scope:提交单 462 张、外部标识 460/460/60(缺 402 行 = 87.0%)、驳回率 技术组 9/293 = 3.07% > 集团组 4/169 = 2.37%、按类型 progress 312 / initial 150、在途带进程号 59;**`scope` 为空走默认明细清单**(列集合 `id / task_id / task_name / round_no / status / submission_kind / reporter_id / reporter_name / signer_name / need_sign / submitted_at / completed_at`,一行一张单,附 `total_count` / `status_breakdown` / `status_domain`),`task` / `board` / `reporter` / `status` / `exclude_status` 筛选都在这一档下推;仅 `status_mismatch` 仍回落(一任务一行的口径比对,另一条形状) |
+| `weekly_workflow_query` | ✅ 已接线(**+ 默认明细清单**) | 审批动作流水(可选表):分布 955/460/150/**13**、日志 **1,578** 行 / 150 任务 / 10.52、node×action **6 档**、`scope=recent` 按动作时间倒序;**`scope` 为空走默认明细清单**(列集合 `id / submission_id / task_id / round_no / node_type / action / operator_name / opinion / created_at`,按 `task_id + created_at` 升序 = 某任务的审批轨迹,`LEFT JOIN` 提交单不少行);`by_task` 仍回落;`opinion` **始终在列**,无权限打码不删列 |
 | `weekly_scale` | ✅ 已接线 | 三种 mode × 三种分组轴;技术组 totals 82/77/294/402、集团组 46/40/180/52(各组里程碑相加 = 全库 474,自校验未被 JOIN 放大);completeness 82/77/80/73;intensity 82 任务 / 943 行 / 11.5 |
 | `weekly_rank` | ✅ 已接线 | 三种并列语义 × 六种子表度量:**cut 前 3 名 = 3 行**、**keep_ties 前 3 名 = 12 行**(第 3 名并列)、per_group 每组一行;附件第一名任务 73(20 个);未授权表(附件/集团历史)报 `table_not_granted` |
 | `weekly_person_stats` | ✅ 已接线(9/14 scope) | 牵头人任务量首位 吴晓东 **14** 个且 **tied_at_top=3**;workload_top 保留三名并列;汇总 128 任务 / 16 人 / 全局均值 8.0;只带 1 个任务 4 人;标准安全组 **9 位牵头人 / 19 条任务**;跨组 12 人;双重角色 6 人;工号写法 69/50/9;填报首位 10515(63 轮 / 4 任务)。未迁移的 4 个 scope 仍走演示路径 |
@@ -256,13 +263,15 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 | `weekly_task_lifecycle` | ✅ 已接线 | 建立/发布这**另一个钟**(不是"报进展"那个):128 项、均值 **30.3 天**到发布、最长 60 天;`by=year` 各档 `currently_finished` 相加 = 全库已完成 **31**(2025 年 26 + 2026 年 5);口径写明这是"按建单档看当前状态",任务表**没有完成时间列** |
 | `weekly_task_detail` | ✅ 已接线 | 复合信封(task 22 列 / group_detail / recent_progress 最近 3 期 / year_goals):任务 3 有 3 期进展、3 条年度目标;任务 101 有 1 行明细、0 期进展 → 口径指路 `group_detail.progress_effect`;两套负责人列打架时**点名**(task 行「陈志远」vs 明细「刘海涛,韩雪峰」)并说明集团板 46 条全不一致;**R-12 无条件在场**(挂子查询会让技术组任务看不到);纯数字 token 只当 id,不拿 LIKE 匹配到的别的任务顶替 |
 | `weekly_approval_turnaround` | ✅ 已接线(4 scope) | 已完成轮次 **400**、均值 **14.7 天**、最长 **59 天**;按看板 技术组 257/14.5 + 集团组 143/14.9(= 400,自校验);`slowest` 最慢那档是**并列 2 轮**(任务 **76** 与 **143**,都是 59 天)→ `top_tie_count` 提到顶层并写进口径;`pending` **刻意不套发布闸门**(待审单本就未发布,加 R-01 会得到空队列),积压榜首已等 **583 天**,天数锚数据基准日 |
-| `weekly_aggregate` | ✅ 已接线(9 个分组轴) | `board` 82/46 = 128;`category` 不带看板 47 条、`board=tech` **28 条**(7 一级 + 21 二级 —— 过滤**同时**落在分类树上)、`board=group` 19 条,且保留 cnt=0 空分类;`primary_category` 11 档 + `order_by=finish_rate` 首行换成完成率最高的档;`top_sub_per_primary` 一组一行;`status` 14/78/31/5 = 128;`workflow_status` **七档、唯一不加发布闸门**(published 128 + 未发布 22);`project_group` **前 4 组累计 49.22% 未过半、第 5 组才 58.59%**(小数位取 2 的理由)、`top=4` 是硬切且口径写明"共 11 组、不要补列";`owner` 16 档(空值归「(未填)」);`name_series` 64 个家族 / **33 个多期家族** / 涉及 **97** 条任务 |
+| `weekly_aggregate` | ✅ 已接线(9 个分组轴) | `board` 82/46 = 128;`category` 不带看板 47 条、`board=tech` **28 条**(7 一级 + 21 二级 —— 过滤**同时**落在分类树上)、`board=group` 19 条,且保留 cnt=0 空分类;`primary_category` 11 档 + `order_by=finish_rate` 首行换成完成率最高的档;`top_sub_per_primary` 一组一行;`status` 14/78/31/5 = 128;`workflow_status` **七档、唯一不加发布闸门**(published 128 + 未发布 22);`project_group` **前 4 组累计 49.22% 未过半、第 5 组才 58.59%**(小数位取 2 的理由)、`top=4` 是硬切且口径写明"共 11 组、不要补列";`owner` 16 档(空值归「(未填)」);`name_series` 64 个家族 / **33 个多期家族** / 涉及 **97** 条任务;**缺 `group_by` 报 `invalid_argument` 并列出 9 个轴**(它是必填参数,没有任何默认轴可猜) |
 | `weekly_group_stats` | ✅ 已接线(14 个 scope) | 集团板专表统计:`owners` 46 条(多值牵头 19 / 单人 27 / 未填 0)、**去重 23 位牵头人**(逐元素切,不用 LIKE);`separators` 半角逗号 26 / 单人无分隔符 18 / 全角顿号 2;`completion_time` 6 条标准日期 + 40 条自由文本;`completion_time_values` 去重 **28** 种原样取值 → `completion_time_formats` 归成 **6 档**(含「底」11 档按优先级);`overdue` 只露任务 **123**(2026Q2 → 2026-06-30,超 **46** 天),判不了的 **34** 条单独计数;`attachments` 零附件留在清单里(46 条里 **18** 条没有)、`attachment_distribution` 真值 0/1/2/3 = 18/**17/3/5**(拿 8 行清单手数会得 21/4/4);`history_rounds` 46 条都在、至少 10 期 **13** 条;`status_effect_conflict` **6** 条;`project_group_raw` 两个分母 **55 / 46**;`effect_consistency` 的 `same` 按参考给 **1/0** |
 
 三条硬规则:
 
 1. **信封与演示源逐字段同构**(`ok` / `caliber` / `snapshot_note` / `snapshot_date` / `source_tables` / `columns` / `rows` / `row_count` / `has_more`),agent 侧无需改动;
-2. **未迁移的 scope 或参数一律返回 `None` 回落**,绝不返回一个范围更小的答案(例如新鲜度的 `by=` / `lag_bands=` / `recent_days=` 仍是演示路径);
+2. **未迁移的 scope 或参数一律返回 `None` 回落**,绝不返回一个范围更小的答案(例如新鲜度的 `by=` / `lag_bands=` 里仍未迁的组合、`status_mismatch`、`by_task`、看板**名字**解析)。
+   正式源模式下这条回落**不会**变成 `store_unreachable`:兜底会改报 `not_migrated` 并指路(见 3.1.6);
+   演示模式(未开正式源)才按原样报演示库的真实错误;
 3. **截断判定不能靠 SQL 里的 `LIMIT`**:模板把行数上限写在 SQL 里(性能上正确),但这样"刚好取满 200 行"与"被截断"长得一模一样 —— 信封因此按 `limit + 1` 去查再截回 `limit`,约定"清单类模板把行数上限放在最后一个参数"(`cap_last_param`)。实测踩过:313 行的年度目标被报成 200 行且 `has_more=false`;
 4. **四张可选表默认视为未授权**(说明里必开的是 8 张):`_formal.optional_granted()` 读 `TASK_BOARD_GRANTED_OPTIONAL_TABLES`,未授权时返回 `table_not_granted` 错误,**不回落演示路径**(回落会去连演示源,把"没权限"变成"另一个数据源的答案");
 5. `snapshot_note` 换成正式口径(「国数正式只读源…非演示数据」),`snapshot_date` 用基准日(`GUOSHU_AS_OF` 可固定,便于与演示快照日对齐)。
@@ -776,6 +785,78 @@ publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 1
 - **`effect_consistency` 的 `same` 按参考查询给 1/0**(不是布尔):口径句里写的就是
   "same = 1 一致、0 不一致",列的形状跟参考走。
 
+### 3.1.6 四个默认分支补迁 + 回落改报 `not_migrated`(2026-09-10 第 35 轮)
+
+第 34 轮把 31 个工具**全部接线**,但真库冒烟发现活着 **27/31**:四个出口在**空 / 默认参数**下
+仍然回落 —— `weekly_submission_query()`、`weekly_workflow_query()`、`weekly_owner_roles()`、
+`weekly_aggregate()`。它们的**具名 scope 早已迁移**(31/31 与基线核对覆盖的都是那些 scope),
+缺的是"不传 scope 时走的那一档"。生产环境没有演示 MySQL,**回落就等于 `store_unreachable`**,
+而且错误信息指向一个与国数无关的库 —— 主 Agent 会把"参数没迁"读成"数据库挂了"。
+
+这一轮按工单做了 **A(补迁移)+ B(让回落可操作)两件事**。
+
+**A. 补的两条默认清单档(模板层)**
+
+| 档 | 模板 | 列集合(照抄参考实现的兜底清单,同名同序) | 闸门 / 排序 |
+|---|---|---|---|
+| `weekly_submission_query()` | `submission_rows()` | `id / task_id / task_name / round_no / status / submission_kind / reporter_id / reporter_name / signer_name / need_sign / submitted_at / completed_at` | 只 `t.is_deleted = 0`(**不加**任务发布门);按 `submitted_at` 倒序 |
+| `weekly_workflow_query()` | `workflow_action_rows()` | `id / submission_id / task_id / round_no / node_type / action / operator_name / opinion / created_at` | 只 `t.is_deleted = 0`;`LEFT JOIN` 提交单;按 `task_id, created_at, id` 升序 |
+
+四条判断值得留痕:
+
+1. **两档都是"只加软删闸门"**。提交单域加任务发布门会把**在途任务的单一起吞掉** —— 而
+   "我提交过、还没发布的单"正是最常见的问法(参考实现 R3-05 踩过:18 条被答成 1 条)。
+   审批流水同理:待审的单本来就没发布。
+2. **默认清单的排序不等于 `recent` 的排序**。参考实现的兜底清单按 `task_id, created_at` 排
+   (那是"某任务的审批轨迹"),`recent` 按动作自身时间倒序(答"最近谁被驳回")。
+   两边都保留:**能按轨迹读的也能自己排成时间序,反过来做不到**(第一页里根本没有最新的动作)。
+   **不能按 `round_no` 排** —— 轮次号不等于时间序(存在第 3 轮早于第 2 轮的任务),按轮次读会把轨迹读反。
+3. **明细清单对提交单用 `LEFT JOIN`、`recent` 用 `INNER JOIN`**。清单一列只取 `s.round_no`,
+   而动作可能挂在清单里没有的提交单上,`INNER JOIN` 会静默少行;`recent` 要 `reporter_name`
+   与 `s.status`,缺了那两列它就没有意义,故沿用参考实现的 `INNER JOIN`。**这是刻意的不一致。**
+4. **清单的配套聚合必须与清单同一范围**。参考实现的默认档会额外回 `total_count` /
+   `status_breakdown` / `status_domain`;第一版实现只按"看板 / 任务"收窄,漏了 `status` ——
+   于是带 `status=published` 时清单 12 行、`total_count` 却是未过滤的 28。
+   **调用方只会相信自己看到的那个数**,所以判定范围收进了一个 `submission_scope_where()`,
+   清单与三个配套聚合共用它(已写成回归断言)。`status_domain` 另有一层用处:提交单状态值域
+   **不含 `approved`**(已发布是 `published`),用它过滤筛不掉任何行,值域在手上调用方
+   才分得清"筛完是 0 条"与"这个词根本不在值域里"。
+
+**两个"缺参数"的出口改成按契约报错(不再回落)**
+
+- `weekly_owner_roles` 缺 `person` → `invalid_argument: person 不能为空`(参考实现就是报错);
+- `weekly_aggregate` 缺 `group_by`(它是**必填参数**)→ `invalid_argument` 并列出 9 个轴。
+  **不猜任何默认轴**:猜一根轴会把"少参数"答成"某一根轴的分布"。
+
+**B. 兜底:正式源模式下报 `not_migrated`**
+
+判定与文案在独立模块 `mock-mcp/_fallback.py`(`server.py` 一 import 就拉起 `mcp` 包,
+单测要能不连库、不拉 mcp 地钉住它;`server._guard` 只负责接住异常并转成工具出口的信封)。
+
+- 正式源模式下,**演示库连不上**一律改报 `not_migrated`,并附
+  "请改用已迁移的 scope / 参数(见 CHATBI_o2oa_接入说明.md 的调用建议)";
+- 文案分两种:工具**有**正式源接线 ⇒ "**这组参数**未迁移";工具没有 ⇒ "**工具**未迁移"。
+  两者给调用方的下一步动作不同(换参数 vs 换工具),不合并成一句话;
+- **演示模式(未开正式源)保持原样**:那时连不上演示库就是真的连不上,照实报 `store_unreachable`。
+
+**验收(本轮实跑)**
+
+| 验收 | 结果 |
+|---|---|
+| 真库冒烟 `verify_real_smoke.py` | **31 / 31 活着**(此前 27/31);并新增「默认清单档」与「未迁移组合必须报 `not_migrated`」两节 |
+| 真库验收 `verify_real_o2oa.py` | **14 / 14**(新增默认清单档列集合、配套聚合同范围、值域提示、两个缺参数报错) |
+| 真库基线交叉核对 `verify_real_baseline.py` | **31 / 31**(21 → 31:每个新数字都拿直连 SQL 对) |
+| 列集合对照 `column_parity.py` | **127 / 127 一致**(新增 4 个默认清单档用例 —— 排序两边不同,但列集合逐列相同) |
+| 单测 `test_o2oa_pg.py` | **241 通过**(216 → 241) |
+| `ruff` / `ty` | 干净 / 干净 |
+
+真库实测形状(2026-09-10,活库会变):提交单默认清单 **28** 行(状态分档 14 待填 / 12 已发布 /
+1 待审核 / 1 待领导),`board=group` 25 行,`status=published` 12 行;审批动作默认清单 **91** 行、
+`action=rejected` 10 行;`status_mismatch` 与 `by_task` 仍回落(另一条形状,未迁)。
+**冒烟脚本自己也有一个坑**:它早先给 `weekly_aggregate` 传的是**空参数**,于是把
+"`group_by` 是必填参数"误报成了"任何参数都回落" —— 冒烟脚本的参数就是一次真实调用,
+必须与工具的 MCP 签名一致(已修,并在脚本里写明)。
+
 ## 5. 能力边界(未授权表时)
 - `task_attachment` 只读元数据:问答只能答“存在附件《文件名》”,文件体在
   O2OA/对象存储,SQL 读不到;
@@ -836,6 +917,23 @@ python <核对目录>/reset_pg.py
 # 7) 列集合对照:演示路径 vs 正式源,逐个出口比对 columns(改任何出口后必跑)
 python <核对目录>/column_parity.py
 ```
+
+**真库(o2oa)三套验收**(活库,需先建端口转发;脚本在本说明之外的核对目录里):
+
+```powershell
+# 0) 本机 → H100 → opl 建转发(保持该进程运行)
+uv run --no-project --with paramiko python chain.py forward opl 15432 <pg 主机> 5432
+# 1) 冒烟:31 个工具各调一次(空/默认参数必须也是活的),并断言未迁移组合报 not_migrated
+uv run --no-project --with "psycopg[binary]" python verify_real_smoke.py
+# 2) 列集合与"当前无数据"分支
+uv run --no-project --with "psycopg[binary]" python verify_real_o2oa.py
+# 3) 基线交叉核对:每个数字都拿一条直连 SQL 去对(不依赖具体数字,活库天天变也成立)
+uv run --no-project --with "psycopg[binary]" python verify_real_baseline.py
+```
+
+> 冒烟脚本的参数**必须与工具的 MCP 签名一致**:它调用 `_formal.dispatch` 就是一次真实调用。
+> 第 35 轮踩过——给 `weekly_aggregate` 传空参数,把"`group_by` 是必填参数"误报成了
+> "任何参数都回落"。新增工具或改签名时,同步 `ARGS` 表。
 
 > 注意:仓库要求 Python ≥ 3.14;3.13 的解析器不接受本仓既有的 `except A, B:` 写法,
 > harness 也必须用 3.14 运行。

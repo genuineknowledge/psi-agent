@@ -24,6 +24,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _db
+import _fallback
 import _formal
 import _store as store
 from mcp.server.fastmcp import Context, FastMCP
@@ -156,12 +157,29 @@ def _error(code: str, message: str) -> str:
     return _dump({"ok": False, "error": {"code": code, "message": message}})
 
 
+def _not_migrated_error(func_name: str, cause: str) -> str:
+    """正式源模式下的兜底报错:把"连不上演示库"翻译成"这个参数组合没迁"。
+
+    判定与文案都在 ``_fallback``(独立模块,便于单测不拉 mcp 包直接钉住)。
+    这里只负责接住异常、把它转成工具出口的信封。
+    """
+    if not _fallback.should_translate():
+        return _error(_fallback.STORE_CODE, cause)
+    return _error(_fallback.CODE, _fallback.not_migrated_message(func_name, cause))
+
+
 def _guard(func_name: str, work) -> str:
     try:
         return _dump(work())
     except store.QueryError as exc:
+        if exc.code == _fallback.STORE_CODE:
+            return _not_migrated_error(func_name, str(exc))
         return _error(exc.code, str(exc))
     except Exception as exc:
+        if _fallback.should_translate() and type(exc).__module__.split(".")[0] == "pymysql":
+            # 驱动异常在少数路径上会绕过 _store 的包装(没抛 QueryError)直接冒到顶层;
+            # 正式源模式下同样是"没迁",不能让它以 internal_error 的面孔出现。
+            return _not_migrated_error(func_name, f"{type(exc).__name__}: {exc}")
         return _error("internal_error", f"{func_name}: {type(exc).__name__}")
 
 

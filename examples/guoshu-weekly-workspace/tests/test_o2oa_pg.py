@@ -15,8 +15,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mock-mcp"))
 # mock-mcp is a sys.path tool dir, not a package: ty cannot resolve these
 # statically, pytest can (path inserted above).  Same pattern as the tools.
 import _admission as adm  # ty: ignore
+import _fallback  # ty: ignore
 import _formal  # ty: ignore
 import _o2oa_templates as o2  # ty: ignore
+import _store  # ty: ignore
 
 # Every builder must carry rule 1; a template that forgets it would answer
 # drafts / in-flight tasks, which is the one failure the note calls out twice.
@@ -1852,3 +1854,234 @@ class TestGroupStatsRouting:
         got = _formal._group_stats({"scope": "project_group_raw"})
         assert got is not None and got["caliber_tiers"] == {"raw_table": 55, "formal_task_gate": 46}
         assert "裸表 55 行、过闸 46 行" in got["caliber"]
+
+
+class TestDefaultListingTemplates:
+    """两个"不传 scope"的默认清单档:列集合照抄参考实现,闸门与排序各有一条纪律。
+
+    这两档此前**没迁**,于是 ``weekly_submission_query()`` / ``weekly_workflow_query()``
+    在空参数下回落演示库 —— 生产上没有那台 MySQL,agent 一用默认参数就拿到
+    ``store_unreachable``,错误信息还指向一个与国数无关的库。
+    """
+
+    def test_submission_rows_keeps_the_reference_column_order(self):
+        """列集合必须同名同序:换一次序,同一个问题换数据源就要换字段读。"""
+        sql, _params = o2.submission_rows()
+        assert o2.SUBMISSION_ROW_COLUMNS == (
+            "id", "task_id", "task_name", "round_no", "status", "submission_kind",
+            "reporter_id", "reporter_name", "signer_name", "need_sign",
+            "submitted_at", "completed_at",
+        )
+        expected = (
+            "s.id, s.task_id, t.task_name, s.round_no, s.status, s.submission_kind, "
+            "s.reporter_id, s.reporter_name, s.signer_name, s.need_sign, "
+            "s.submitted_at, s.completed_at"
+        )
+        assert expected in " ".join(sql.split())
+
+    def test_submission_rows_has_only_the_soft_delete_gate(self):
+        """提交单域**不加**任务发布门:在途任务的单同样是单(R3-05 踩过)。"""
+        sql, _params = o2.submission_rows()
+        assert "t.is_deleted = 0" in sql
+        assert "workflow_status" not in sql
+
+    def test_submission_rows_filters_are_bound_not_interpolated(self):
+        sql, params = o2.submission_rows(reporter="刘玮", status="published", exclude_status="cancelled", limit=7)
+        assert "btrim(coalesce(s.reporter_id" in sql and "btrim(coalesce(s.reporter_name" in sql
+        assert "s.status = %s" in sql and "s.status <> %s" in sql
+        assert "刘玮" not in sql  # 值一律绑定,不拼进 SQL
+        assert params == ("刘玮", "刘玮", "published", "cancelled", 7)
+
+    def test_submission_rows_orders_newest_first(self):
+        """默认清单要能答"最近提交了哪些":最近一轮必须在第一页。"""
+        sql, _params = o2.submission_rows()
+        assert "ORDER BY s.submitted_at DESC" in sql
+
+    def test_submission_board_filter_rides_its_own_join(self):
+        """看板在 task 上:过滤走 board JOIN,不能又被拼进 WHERE(会拼出第二个 b.code)。"""
+        sql, params = o2.submission_rows(board_code="group")
+        assert sql.count("b.code = %s") == 1
+        assert params == ("group", 200)
+
+    def test_listing_and_its_extras_share_one_scope(self):
+        """清单与配套聚合必须同一范围:一次实测里清单 12 行而 total_count 是未过滤的 28。"""
+        listing_sql, listing_params = o2.submission_rows(status="published", exclude_status="cancelled", limit=50)
+        where_sql, board_join, extra_params = o2.submission_scope_where(
+            status="published", exclude_status="cancelled"
+        )
+        assert where_sql in listing_sql
+        assert listing_params[:-1] == extra_params
+        assert o2.submission_scoped_count_sql(where_sql, board_join).endswith(f"WHERE {where_sql}")
+
+    def test_workflow_action_rows_keeps_the_reference_column_order(self):
+        sql, _params = o2.workflow_action_rows()
+        assert o2.WORKFLOW_ROW_COLUMNS == (
+            "id", "submission_id", "task_id", "round_no",
+            "node_type", "action", "operator_name", "opinion", "created_at",
+        )
+        for ref in ("a.id", "a.submission_id", "a.task_id", "s.round_no", "a.node_type",
+                    "a.action", "a.operator_name", "a.opinion", "a.created_at"):
+            assert ref in sql
+
+    def test_workflow_action_rows_sorts_by_task_then_time_not_round_no(self):
+        """轮次号不等于时间序(任务 3 的第 3 轮早于第 2 轮),按 round_no 排会把轨迹读反。"""
+        sql, _params = o2.workflow_action_rows()
+        assert "ORDER BY a.task_id, a.created_at, a.id" in sql
+        assert "ORDER BY" in sql and "round_no" not in sql.split("ORDER BY")[1]
+
+    def test_workflow_action_rows_left_joins_the_submission(self):
+        """动作可能挂在提交单清单外的单上:INNER JOIN 会静默少行。"""
+        sql, _params = o2.workflow_action_rows()
+        assert "LEFT JOIN task_workflow_submission s" in sql
+        assert "t.is_deleted = 0" in sql and "workflow_status" not in sql
+
+    def test_workflow_action_rows_needs_the_grant(self):
+        with pytest.raises(PermissionError):
+            o2.workflow_action_rows(granted=False)
+
+    def test_workflow_action_rows_binds_task_and_action(self):
+        sql, params = o2.workflow_action_rows(task_id=50, action="rejected", limit=9)
+        assert "a.task_id = %s" in sql and "a.action = %s" in sql
+        assert params == (50, "rejected", 9)
+        sql, params = o2.workflow_action_rows(task_name="某任务", limit=9)
+        assert "t.task_name = %s" in sql and params == ("某任务", 9)
+
+    def test_aggregate_rows_scope_is_gone_from_stats(self):
+        """``rows`` 归到 submission_rows:聚合函数拿到它要显式报错,不能静默返回聚合。"""
+        assert "rows" in o2.SUBMISSION_SCOPES
+        with pytest.raises(ValueError):
+            o2.submission_stats("rows")
+
+
+class TestDefaultListingRouting:
+    """正式源侧:默认档必须路由到 PG,而不是回落(回落=去连一台不存在的演示库)。"""
+
+    @staticmethod
+    def _capture(monkeypatch) -> list[dict]:
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            return {"ok": True, "columns": ["c"], "rows": [{"n": 28}], "row_count": 1, "caliber": "口径",
+                    **(kwargs.get("extra") or {})}
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        # 审批动作表属四张可选表之一:真库侧已补开,这里同样按已开跑(否则先报 table_not_granted)
+        monkeypatch.setenv("TASK_BOARD_GRANTED_OPTIONAL_TABLES", "task_workflow_action")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        return seen
+
+    def test_submission_default_routes_to_the_listing(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        got = _formal._submission({"limit": 50})
+        # 清单 + 命中总数 + 状态分档(同一范围)+ 全表状态值域
+        assert got is not None and len(seen) == 4
+        assert "task_workflow_submission s" in seen[0]["sql"]
+        assert "s.status = %s" not in seen[0]["sql"]  # 未给状态筛选 → 清单里不该有状态条件
+        assert got["total_count"] == 28
+
+    def test_submission_extras_reuse_every_filter(self, monkeypatch):
+        """配套聚合漏掉任何一个筛选,回包就会自相矛盾(清单 12 行 / 总数 28)。"""
+        seen = self._capture(monkeypatch)
+        _formal._submission({"status": "published", "reporter": "刘玮", "limit": 50})
+        assert "s.status = %s" in seen[0]["sql"] and "s.status = %s" in seen[1]["sql"]
+        assert seen[0]["params"][:-1] == seen[1]["params"]
+
+    def test_submission_unknown_status_is_flagged_in_the_caliber(self, monkeypatch):
+        self._capture(monkeypatch)
+        got = _formal._submission({"status": "approved"})
+        assert got is not None and "approved" in got["caliber"] and "未筛掉任何行" in got["caliber"]
+
+    def test_submission_status_mismatch_still_falls_back(self, monkeypatch):
+        """一任务一行的口径比对是另一条形状,不猜。"""
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _formal._submission({"status_mismatch": True}) is None
+
+    def test_submission_named_scopes_still_reject_listing_filters(self, monkeypatch):
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _formal._submission({"scope": "by_kind", "task": "1"}) is None
+        assert _formal._submission({"scope": "rows"}) is None
+
+    def test_workflow_default_routes_to_the_listing(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        got = _formal._workflow({"limit": 50})
+        assert got is not None and len(seen) == 1
+        assert "LEFT JOIN task_workflow_submission s" in seen[0]["sql"]
+        assert "ORDER BY a.task_id, a.created_at, a.id" in seen[0]["sql"]
+
+    def test_workflow_default_masks_the_opinion_without_permission(self, monkeypatch):
+        """打码而不是删列:列没了就分不清「没有意见」与「没权限看」。"""
+        self._capture(monkeypatch)
+
+        def fake(**kwargs):
+            return {"ok": True, "columns": ["opinion"], "rows": [{"opinion": "同意"}],
+                    "row_count": 1, "caliber": "口径"}
+
+        monkeypatch.setattr(_formal, "envelope", fake)
+        masked = _formal._workflow({"limit": 10})
+        assert masked is not None and masked["rows"][0]["opinion"] == "[按权限不展示]"
+        assert masked["columns"] == ["opinion"]
+        allowed = _formal._workflow({"limit": 10, "can_read_sensitive": True})
+        assert allowed is not None and allowed["rows"][0]["opinion"] == "同意"
+
+    def test_workflow_by_task_still_falls_back(self, monkeypatch):
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _formal._workflow({"by_task": True}) is None
+        assert _formal._workflow({"scope": "nope"}) is None
+
+    def test_owner_roles_without_person_reports_invalid_argument(self, monkeypatch):
+        """缺 person 报错而**不回落**:回落会把参数错误变成"另一个数据源的答案"。"""
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        for kwargs in ({}, {"person": ""}, {"person": "   "}):
+            got = _formal.dispatch("weekly_owner_roles", **kwargs)
+            assert got is not None and got["ok"] is False, kwargs
+            assert got["error"]["code"] == "invalid_argument"
+
+    def test_aggregate_without_group_by_reports_invalid_argument(self, monkeypatch):
+        """缺 group_by 不能猜一根轴返回:**那会把少参数答成"某一根轴的分布"**。"""
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        for kwargs in ({}, {"group_by": ""}):
+            got = _formal.dispatch("weekly_aggregate", **kwargs)
+            assert got is not None and got["ok"] is False, kwargs
+            assert got["error"]["code"] == "invalid_argument"
+            for axis in o2.AGGREGATE_GROUP_BYS:
+                assert axis in got["error"]["message"]
+        # 非法轴仍走演示路径(它有自己的 unsupported_group_by 文案与值域提示)
+        assert _formal.dispatch("weekly_aggregate", group_by="nope") is None
+
+
+class TestNotMigratedFallback:
+    """兜底:正式源模式下「连不上演示库」必须报 not_migrated,而不是 store_unreachable。
+
+    这条兜底的价值在**错误信息可操作**:``store_unreachable`` 指向一个与国数无关的
+    MySQL(``weekly_mock``),主 Agent 会把它读成"数据库挂了";``not_migrated`` 则直接
+    说明是参数组合没迁、并指向接入说明的调用建议。演示模式(未开正式源)保持原样 ——
+    那时连不上演示库就是真的连不上。
+    """
+
+    def test_demo_mode_keeps_the_original_store_error(self, monkeypatch):
+        monkeypatch.delenv("TASK_BOARD_DATA_SOURCE", raising=False)
+        assert _fallback.should_translate() is False
+        with pytest.raises(_store.QueryError) as exc:
+            _store.connect()
+        assert exc.value.code == _fallback.STORE_CODE
+        assert "cannot reach" in str(exc.value)
+
+    def test_formal_mode_translates(self, monkeypatch):
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _fallback.should_translate() is True
+        assert _fallback.CODE == "not_migrated"
+        assert _fallback.STORE_CODE == "store_unreachable"
+
+    def test_message_distinguishes_tool_from_parameter(self, monkeypatch):
+        """「工具没迁」与「这组参数没迁」给调用方的下一步动作不同,不能合并成一句话。"""
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        wired = _fallback.not_migrated_message("weekly_task_query", "cause")
+        assert "这组参数未迁移" in wired and "weekly_task_query" in wired
+        unwired = _fallback.not_migrated_message("weekly_not_a_tool", "cause")
+        assert "这组参数" not in unwired and "未迁移到正式源" in unwired
+        for text in (wired, unwired):
+            assert "演示库不可用" in text
+            assert "CHATBI_o2oa_接入说明.md" in text  # 指路,否则 agent 只能盲试
+            assert "store_unreachable" not in text
+

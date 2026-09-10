@@ -1303,6 +1303,7 @@ WHERE {"\n  AND ".join(where)}
 # ---- batch 3: 提交单 / 审批域 -------------------------------------------------
 
 SUBMISSION_SCOPES = (
+    "rows",
     "by_kind",
     "by_status",
     "external_ids",
@@ -1312,6 +1313,24 @@ SUBMISSION_SCOPES = (
     "inflight_external",
     "rejected_by_board",
     "rounds_per_task",
+)
+
+# 明细清单档的列集合:与参考实现 ``weekly_submission_query`` 的默认清单**同名同序**。
+# 少一列或换一次序,同一个问题换数据源就得换字段读,而模型只会读它在演示源下学会的
+# 那个键(这条纪律在 weekly_rank 的 total_count 上已经踩过一次)。
+SUBMISSION_ROW_COLUMNS = (
+    "id",
+    "task_id",
+    "task_name",
+    "round_no",
+    "status",
+    "submission_kind",
+    "reporter_id",
+    "reporter_name",
+    "signer_name",
+    "need_sign",
+    "submitted_at",
+    "completed_at",
 )
 
 # 「在途」必须按成员枚举,不能写成 status <> 'published':
@@ -1345,6 +1364,8 @@ def submission_stats(
 ) -> tuple[str, tuple]:
     """提交单 / 审批域的服务端聚合,对齐 mock 的 ``weekly_submission_query`` 各 scope。
 
+    明细清单档(``scope=rows`` / 默认档)是 ``submission_rows``;本函数只做聚合。
+
     口径要点:
 
     * 提交单**没有** ``board_id``,看板在 ``task`` 上:按看板提问必须从任务侧下推
@@ -1359,6 +1380,8 @@ def submission_stats(
     """
     if scope not in SUBMISSION_SCOPES:
         raise ValueError(f"未知 scope:{scope};可选 {', '.join(SUBMISSION_SCOPES)}")
+    if scope == "rows":
+        raise ValueError("rows 是明细清单档,请用 submission_rows()")
     where_sql, board_join, params = _submission_where(board_code)
     inflight_list = ", ".join(f"'{s}'" for s in SUBMISSION_INFLIGHT)
 
@@ -1487,6 +1510,95 @@ JOIN task t ON t.id = s.task_id
 WHERE {where_sql}
 """
     return sql, tuple(params)
+
+
+def submission_scope_where(
+    *,
+    board_code: str | None = None,
+    task_id: int | None = None,
+    task_name: str | None = None,
+    reporter: str | None = None,
+    status: str | None = None,
+    exclude_status: str | None = None,
+) -> tuple[str, str, tuple]:
+    """默认清单档的公共范围:``(where_sql, board_join, params)``。
+
+    抽出来是为了让"清单本身"与它的三个配套聚合(命中总数 / 状态分档 / 值域)用**同一个**
+    范围 —— 两边各拼一遍 WHERE,迟早会出现"清单 18 行、配套计数 21"这种自相矛盾的回包,
+    而调用方只会相信自己看到的那个数(实测踩过一次:带 ``status=published`` 的清单 12 行,
+    ``total_count`` 却是未过滤的 28)。
+    """
+    where_sql, board_join, params = _submission_where(board_code)
+    conditions = [where_sql]
+    if task_id is not None:
+        conditions.append("s.task_id = %s")
+        params.append(int(task_id))
+    elif task_name:
+        conditions.append("t.task_name = %s")
+        params.append(task_name)
+    if reporter:
+        conditions.append("(btrim(coalesce(s.reporter_id, '')) = %s OR btrim(coalesce(s.reporter_name, '')) = %s)")
+        params.extend([reporter, reporter])
+    if status:
+        conditions.append("s.status = %s")
+        params.append(status)
+    if exclude_status:
+        conditions.append("s.status <> %s")
+        params.append(exclude_status)
+    return "\n  AND ".join(conditions), board_join, tuple(params)
+
+
+def submission_rows(
+    *,
+    board_code: str | None = None,
+    task_id: int | None = None,
+    task_name: str | None = None,
+    reporter: str | None = None,
+    status: str | None = None,
+    exclude_status: str | None = None,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """提交单**明细清单**(参考实现 ``weekly_submission_query`` 的默认档)。
+
+    列集合照抄参考实现(``SUBMISSION_ROW_COLUMNS``:``id / task_id / task_name /
+    round_no / status / submission_kind / reporter_id / reporter_name / signer_name /
+    need_sign / submitted_at / completed_at``),一行一张单,``task_id + round_no`` 唯一。
+
+    两处"照抄"要留意,它们是这条桥的全部价值:
+
+    * **闸门只有软删**:提交单域只加 ``t.is_deleted = 0``。加任务发布门会把在途任务的单
+      一起吞掉 —— 而"我提交过、还没发布的单"正是最常见的问法(参考实现 R3-05 就踩过);
+    * **排序按提交时间倒序**(不是 task id 升序):参考实现的兜底清单按 ``task_id,
+      round_no`` 排,那是"按任务翻账本"的顺序;这里的调用方问的通常是"最近提交了哪些"
+      /"这一轮交了没",所以最近一轮必须在最前。``task_id`` / ``round_no`` 都在列里,
+      要按任务读的调用方自己排一遍即可,反过来则做不到(第一页里根本没有最新的单)。
+    """
+    where_sql, board_join, params = submission_scope_where(
+        board_code=board_code,
+        task_id=task_id,
+        task_name=task_name,
+        reporter=reporter,
+        status=status,
+        exclude_status=exclude_status,
+    )
+    refs = {name: f"s.{name}" for name in SUBMISSION_ROW_COLUMNS}
+    refs["task_name"] = "t.task_name"
+    select = ", ".join(refs[name] for name in SUBMISSION_ROW_COLUMNS)
+    sql = f"""
+SELECT {select}
+FROM task_workflow_submission s
+JOIN task t ON t.id = s.task_id
+{board_join}
+WHERE {where_sql}
+ORDER BY s.submitted_at DESC NULLS LAST, s.id DESC
+LIMIT %s
+"""
+    return sql, (*params, int(limit))
+
+
+def submission_scoped_count_sql(where_sql: str, board_join: str) -> str:
+    """清单配套聚合的 FROM/WHERE 片段(与 ``submission_rows`` 同一范围)。"""
+    return f"FROM task_workflow_submission s JOIN task t ON t.id = s.task_id {board_join} WHERE {where_sql}"
 
 
 # ---- batch 4: 文本规则域(服务端固化正则,模型照抄结果)------------------------
@@ -2093,6 +2205,99 @@ JOIN task_workflow_submission s ON s.id = a.submission_id
 {joins}
 WHERE {where_sql}
 ORDER BY a.created_at DESC, t.id
+LIMIT %s
+"""
+    params.append(int(limit))
+    return sql, tuple(params)
+
+
+# ---- batch 15: 两个默认清单档(「不传 scope」时走的那一档)---------------------
+#
+# 这两档此前是**唯一**没迁的分支:31 个工具虽然都接了线,但 ``weekly_submission_query()``
+# 与 ``weekly_workflow_query()`` 在**空参数**下返回 ``None`` 回落演示路径 —— 生产环境没有
+# 那台演示 MySQL,于是 agent 一用默认参数就拿到 ``store_unreachable``,而错误信息指向一个
+# 与国数无关的库(容易被读成"数据库挂了")。补这两档是为了让"默认参数"也是一条正式桥。
+
+# 审批流水的默认清单列集合:与参考实现 ``weekly_workflow_query`` 的兜底清单**同名同序**
+# (``a.submission_id`` 与 ``a.created_at`` 都在其中;``recent`` 档另走一条形状)。
+WORKFLOW_ROW_COLUMNS = (
+    "id",
+    "submission_id",
+    "task_id",
+    "round_no",
+    "node_type",
+    "action",
+    "operator_name",
+    "opinion",
+    "created_at",
+)
+
+
+def workflow_action_rows(
+    *,
+    board_code: str | None = None,
+    task_id: int | None = None,
+    task_name: str | None = None,
+    action: str | None = None,
+    granted: bool = True,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """审批动作流水的**默认清单**(一行一条动作,按任务与动作时间排序)。
+
+    与 ``workflow_actions(scope="recent")`` 是两道不同的桥,差异必须保持:
+
+    * **排序**:本档按 ``a.task_id, a.created_at, a.id`` —— 与参考实现的兜底清单一致
+      (那是"某个任务的审批轨迹",按任务聚拢才好读);``recent`` 按动作自身时间倒序,
+      答的是"最近谁被驳回"。**不能按 round_no 排**:轮次号不等于时间序,任务 3 的第 3 轮
+      实际早于第 2 轮,按 round_no 排会把轨迹读反(参考实现里写死了这条注释)。
+    * **JOIN**:本档对 ``task_workflow_submission`` 用 ``LEFT JOIN``、只取 ``round_no`` ——
+      动作可能挂在已不在提交单清单里的单上,``INNER JOIN`` 会静默少行;``recent`` 要
+      ``reporter_name`` 与 ``s.status``,缺了这两列那一档就没有意义,故沿用 ``INNER JOIN``。
+    * **列**:``submission_id`` 与 ``created_at`` 只在明细清单里出现(见
+      ``WORKFLOW_ROW_COLUMNS``),``recent`` 的时间列叫 ``acted_at``。
+    """
+    hint = adm.require_optional_table("task_workflow_action", granted)
+    if hint:
+        raise PermissionError(hint)
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_soft_delete("t")]
+    params: list[object] = []
+    joins = ""
+    if board:
+        joins = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    if task_id is not None:
+        where.append("a.task_id = %s")
+        params.append(int(task_id))
+    elif task_name:
+        where.append("t.task_name = %s")
+        params.append(task_name)
+    if action:
+        where.append("a.action = %s")
+        params.append(action)
+    refs = {
+        "id": "a.id",
+        "submission_id": "a.submission_id",
+        "task_id": "a.task_id",
+        "round_no": "s.round_no",
+        "node_type": "a.node_type",
+        "action": "a.action",
+        "operator_name": "a.operator_name",
+        "opinion": "a.opinion",
+        "created_at": "a.created_at",
+    }
+    select = ", ".join(refs[name] for name in WORKFLOW_ROW_COLUMNS)
+    sql = f"""
+SELECT {select}
+FROM task_workflow_action a
+JOIN task t ON t.id = a.task_id
+LEFT JOIN task_workflow_submission s ON s.id = a.submission_id
+{joins}
+WHERE {"\n  AND ".join(where)}
+ORDER BY a.task_id, a.created_at, a.id
 LIMIT %s
 """
     params.append(int(limit))
