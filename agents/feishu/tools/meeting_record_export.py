@@ -44,7 +44,7 @@ from _meeting_automation import (
     meeting_credential_env,
     read_meeting_manifest,
 )
-from tencent_meeting import _tencent_meeting_call_with_token_env
+from meeting_transcript_prepare import _call as _tencent_call
 
 from psi_agent._appdata import resolve_appdata_root
 
@@ -83,13 +83,102 @@ def _job_by_name(meeting_name: str) -> Any | None:
     return None
 
 
-def _record_meta(payload: Any, record_file_id: str) -> dict[str, Any]:
-    """挑出目标录制的展示字段; 找不到返回 ``{}``(调用方按"未取到"处理)。"""
-    for record in _record_candidates(payload):
-        if str(record.get("record_file_id") or record.get("file_id") or "").strip() != record_file_id:
+def _unwrap_payload(payload: Any) -> Any:
+    """逐层拆 JSON-RPC / MCP content 信封, 直到拿到工具结果对象。
+
+    Tencent skill 会把结果套在 ``{"jsonrpc":…,"result":…}`` 里, 工具结果又可能再套一层
+    ``content:[{type:text,text:"<json>"}]``; 直接对原始串做 ``_record_candidates`` 会
+    一个 record 都找不到 (实测)。
+    """
+    current = payload
+    for _ in range(4):
+        if isinstance(current, dict) and "result" in current and isinstance(current["result"], (dict, list)):
+            current = current["result"]
             continue
-        return {key: record[key] for key in _META_KEYS if record.get(key) not in (None, "", [], {})}
-    return {}
+        break
+    if isinstance(current, dict) and isinstance(current.get("content"), list):
+        texts = [
+            item["text"].strip()
+            for item in current["content"]
+            if isinstance(item, dict) and isinstance(item.get("text"), str) and item["text"].strip()
+        ]
+        for text in texts:
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                continue
+        if texts:
+            return {"content_text": "\n".join(texts)}
+    return current
+
+
+def _pick_record(payload: Any, record_file_id: str) -> tuple[dict[str, Any], bool]:
+    """挑出与本次导出对应的录制场次。
+
+    转写 record_file_id 与**云录制文件** record_file_id 不是同一个值(实测 9/9 场:
+    转写 2097519504906416129 / 录制 2097519494798155777), 所以先按 id 精确匹配,
+    匹配不到时按"最新场次优先"取一个, 并由调用方在信息页如实标注这是近似匹配。
+    """
+    records = _record_candidates(payload)
+    if not records:
+        return {}, False
+    if record_file_id:
+        for record in records:
+            ids = {str(record.get(key) or "").strip() for key in ("record_file_id", "file_id", "meeting_record_id")}
+            if record_file_id in ids:
+                return record, True
+    newest = max(records, key=lambda item: str(item.get("record_start_time") or item.get("meeting_start_time") or ""))
+    return newest, False
+
+
+def _record_meta(record: dict[str, Any]) -> dict[str, Any]:
+    """把一条录制记录压成展示字段(空值剔除)。"""
+    return {key: record[key] for key in _META_KEYS if record.get(key) not in (None, "", [], {})}
+
+
+def _find_address(value: Any) -> str:
+    """从任意嵌套结果里找第一个 http(s) 地址(地址字段名各家不一, 只认值)。"""
+    if isinstance(value, str):
+        return value if value.startswith("http") else ""
+    if isinstance(value, dict):
+        for child in value.values():
+            found = _find_address(child)
+            if found:
+                return found
+    if isinstance(value, list):
+        for child in value:
+            found = _find_address(child)
+            if found:
+                return found
+    return ""
+
+
+async def _fetch_record_meta(job: Any, record_file_id: str, token_env: str) -> tuple[dict[str, Any], bool, str]:
+    """取该场次的云录制定位信息; 返回 (meta, 是否精确匹配, 错误说明)。"""
+    try:
+        payload = _unwrap_payload(
+            await _tencent_call("get_records_list", {"meeting_code": job.meeting_code}, token_env=token_env)
+        )
+    except Exception as exc:
+        return {}, False, f"{type(exc).__name__}: {exc}"
+    record, exact = _pick_record(payload, record_file_id)
+    if not record:
+        return {}, False, "腾讯返回里没有该会议号的录制记录"
+    meta = _record_meta(record)
+    if exact and not (meta.get("view_address") or meta.get("download_address")):
+        # 列表不带地址时, 按云录制文件 id 单独取一次下载/观看地址(短时效, 每次现取)。
+        recording_id = str(meta.get("record_file_id") or "").strip()
+        if recording_id:
+            try:
+                address_payload = _unwrap_payload(
+                    await _tencent_call("get_record_addresses", {"record_file_id": recording_id}, token_env=token_env)
+                )
+                address = _find_address(address_payload)
+                if address:
+                    meta["view_address"] = address
+            except Exception as exc:
+                meta["address_error"] = f"{type(exc).__name__}: {exc}"
+    return meta, exact, ""
 
 
 def _date_part(value: Any, fallback: str) -> str:
@@ -115,6 +204,7 @@ def _render_info_md(
     meta_error: str,
     source_label: str,
     token_env: str,
+    match_note: str = "",
 ) -> str:
     lines = [
         f"# {job.title}（{job.meeting_code}）会议资料包",
@@ -143,6 +233,10 @@ def _render_info_md(
             f"- 在线观看地址：{meta.get('view_address') or '未获取'}",
             "- 说明：腾讯开放接口只返回在线观看地址，且为短时效链接；需要文件本体时用有录制权限的账号打开该页。",
         ]
+        if match_note:
+            lines.append(f"- 注意：{match_note}")
+        if meta.get("address_error"):
+            lines.append(f"- 地址补充获取失败：{meta['address_error']}")
     lines += [
         "",
         "## 来源与生成",
@@ -212,21 +306,16 @@ async def meeting_record_export(
         token_env = meeting_credential_env(job.name, job.meeting_code)
         meta: dict[str, Any] = {}
         meta_error = ""
+        match_note = ""
         if include_record_links:
-            raw = await _tencent_meeting_call_with_token_env(
-                "get_records_list",
-                json.dumps({"meeting_code": job.meeting_code}, ensure_ascii=False),
-                token_env=token_env,
-            )
-            if raw.startswith("Error:"):
-                meta_error = raw.strip()
-            else:
-                try:
-                    meta = _record_meta(json.loads(raw), requested_id)
-                except json.JSONDecodeError as exc:
-                    meta_error = f"get_records_list 返回非 JSON：{exc}"
-                if not meta_error and not meta:
-                    meta_error = f"腾讯返回里没有 record_file_id={requested_id} 这一场"
+            meta, exact, meta_error = await _fetch_record_meta(job, requested_id, token_env)
+            if meta and not exact:
+                match_note = (
+                    "腾讯列表里没有与该转写 record_file_id 完全对应的场次，"
+                    "上面的云端信息取自最新一场（近似匹配，请人工核对）"
+                )
+            elif not meta and not meta_error:
+                meta_error = "腾讯返回里没有该会议的录制记录"
 
         fallback_date = datetime.now().astimezone().date().isoformat()
         meeting_date = (
@@ -276,6 +365,7 @@ async def meeting_record_export(
             meta_error=meta_error,
             source_label=source_label,
             token_env=token_env,
+            match_note=match_note,
         )
         await atomic_write_text(dest / "录制与转写信息.md", info_md)
         return json.dumps(

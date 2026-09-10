@@ -1,6 +1,6 @@
 """Contract tests for the meeting record export tool (read-only packaging)."""
 
-# ruff: noqa: RUF002
+# ruff: noqa: RUF002, RUF003
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import importlib
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,8 +19,12 @@ if str(TOOLS_DIR) not in sys.path:
 
 export = importlib.import_module("meeting_record_export")  # ty: ignore[unresolved-import]
 
+#: 转写 record_file_id（管道 manifest 里的那个）
 RECORD_ID = "2097519504906416129"
+#: 云录制文件 record_file_id（腾讯录制列表里的那个 —— 与转写 id 不同，实测）
+RECORDING_ID = "2097519494798155777"
 MEETING = "weekday-alignment-1100"
+ADDRESS = "https://meeting.tencent.com/crw/abc"
 
 
 def _seed_store(tmp_path: Path, *, archived: bool = False) -> Path:
@@ -50,55 +55,73 @@ def _seed_store(tmp_path: Path, *, archived: bool = False) -> Path:
     return root
 
 
-def _patch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tencent_result: str | None) -> None:
+def _envelope(tool_result: dict[str, Any]) -> dict[str, Any]:
+    """真实响应形状: jsonrpc 双层 + content[0].text 里再套一层 JSON 字符串。"""
+    inner = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {"content": [{"type": "text", "text": json.dumps(tool_result, ensure_ascii=False)}]},
+    }
+    return {"jsonrpc": "2.0", "id": 1, "result": inner}
+
+
+def _records_payload(*, include_transcript_id: bool = False, with_address: bool = True) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "meeting_record_id": "2097519494798155776",
+        "record_file_id": RECORD_ID if include_transcript_id else RECORDING_ID,
+        "state": "转码完成",
+        "record_start_time": "2026-09-09 10:56:32",
+        "record_end_time": "2026-09-09 13:08:23",
+    }
+    if with_address:
+        record["view_address"] = ADDRESS
+    return _envelope({"record_meetings": [{"record_files": [record]}]})
+
+
+def _patch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    records_payload: dict[str, Any] | None,
+    *,
+    addresses_payload: dict[str, Any] | None = None,
+    raise_error: bool = False,
+) -> list[tuple[str, dict[str, Any], str]]:
     async def fake_root(appdata_root: str = "") -> str:
         return str(tmp_path)
 
     monkeypatch.setattr(export, "resolve_appdata_root", fake_root)
-    if tencent_result is not None:
+    calls: list[tuple[str, dict[str, Any], str]] = []
+    if records_payload is None and addresses_payload is None:
+        return calls
 
-        async def fake_call(
-            method: str, params_json: str = "", *, token_env: str = "", call_timeout: float = 60.0
-        ) -> str:
-            assert method == "get_records_list"
-            assert token_env == "TENCENT_MEETING_TOKEN_42654699903"
-            return tencent_result
+    async def fake_call(name: str, arguments: dict[str, Any], *, token_env: str = "") -> Any:
+        calls.append((name, arguments, token_env))
+        if raise_error:
+            raise RuntimeError("Tencent Meeting RPC error: upstream down")
+        if name == "get_records_list":
+            return records_payload
+        if name == "get_record_addresses":
+            return addresses_payload or _envelope({"download_address": ADDRESS})
+        raise AssertionError(f"unexpected tool {name}")
 
-        monkeypatch.setattr(export, "_tencent_meeting_call_with_token_env", fake_call)
-
-
-def _records_payload() -> str:
-    return json.dumps(
-        {
-            "data": {
-                "record_files": [
-                    {
-                        "record_file_id": RECORD_ID,
-                        "meeting_record_id": "2097519494798155776",
-                        "state": "转码完成",
-                        "view_address": "https://meeting.tencent.com/crw/abc",
-                        "record_start_time": "2026-09-09 10:56:32",
-                        "record_end_time": "2026-09-09 13:08:23",
-                    }
-                ]
-            }
-        },
-        ensure_ascii=False,
-    )
+    monkeypatch.setattr(export, "_tencent_call", fake_call)
+    return calls
 
 
 def test_export_latest_packages_content_and_omits_internal_state(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """导出最新一场: 内容齐、内部状态不导出、场次信息含会议号/record/录制链接。"""
+    """最新一场: 内容齐、内部状态不导出、云端信息进信息页并标注近似匹配。"""
     _seed_store(tmp_path)
-    _patch(monkeypatch, tmp_path, _records_payload())
+    calls = _patch(monkeypatch, tmp_path, _records_payload())
 
     result = json.loads(asyncio.run(export.meeting_record_export(MEETING, appdata_root=str(tmp_path))))
 
     assert result["ok"] is True and result["status"] == "exported"
     assert result["record_file_id"] == RECORD_ID
     assert result["meeting_date"] == "2026-09-09"
+    assert calls and calls[0][0] == "get_records_list"
+    assert calls[0][2] == "TENCENT_MEETING_TOKEN_42654699903"
     dest = Path(result["output_dir"])
     names = {item.name for item in dest.iterdir()}
     assert {"transcript.md", "analysis.md", "manifest.json", "录制与转写信息.md"} <= names
@@ -106,9 +129,41 @@ def test_export_latest_packages_content_and_omits_internal_state(
     assert "pipeline_state.json" not in names
     md = (dest / "录制与转写信息.md").read_text(encoding="utf-8")
     assert "42654699903" in md and RECORD_ID in md
-    assert "https://meeting.tencent.com/crw/abc" in md
+    assert ADDRESS in md
     assert "TENCENT_MEETING_TOKEN_42654699903" in md
-    assert result["record_links"]["view_address"] == "https://meeting.tencent.com/crw/abc"
+    assert "近似匹配" in md  # 转写 id 与录制 id 不同值, 必须如实标注
+    assert result["record_links"]["view_address"] == ADDRESS
+
+
+def test_export_fetches_address_by_recording_id_when_list_has_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """列表不带地址时按云录制文件 id 现取一次地址(短时效链接)。"""
+    _seed_store(tmp_path)
+    calls = _patch(monkeypatch, tmp_path, _records_payload(include_transcript_id=True, with_address=False))
+
+    result = json.loads(asyncio.run(export.meeting_record_export(MEETING, appdata_root=str(tmp_path))))
+
+    assert result["ok"] is True
+    assert [name for name, _, _ in calls] == ["get_records_list", "get_record_addresses"]
+    assert result["record_links"]["view_address"] == ADDRESS
+    md = (Path(result["output_dir"]) / "录制与转写信息.md").read_text(encoding="utf-8")
+    assert ADDRESS in md and "近似匹配" not in md
+
+
+def test_export_reports_tencent_failure_without_blocking_package(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """腾讯接口失败时资料包照常导出, 但明确标出录制链接缺失。"""
+    _seed_store(tmp_path)
+    _patch(monkeypatch, tmp_path, _records_payload(), raise_error=True)
+
+    result = json.loads(asyncio.run(export.meeting_record_export(MEETING, appdata_root=str(tmp_path))))
+
+    assert result["ok"] is True and result["status"] == "exported"
+    assert "RuntimeError" in result["record_error"]
+    md = (Path(result["output_dir"]) / "录制与转写信息.md").read_text(encoding="utf-8")
+    assert "录制元信息未取到" in md
 
 
 def test_export_named_archive_record(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -129,21 +184,6 @@ def test_export_named_archive_record(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     exported = (Path(result["output_dir"]) / "transcript.md").read_text(encoding="utf-8")
     assert "测试发言" in exported and "最新一场的转写" not in exported
     assert "record_error" not in result
-
-
-def test_export_reports_tencent_failure_without_blocking_package(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """腾讯接口失败时资料包照常导出, 但明确标出录制链接缺失。"""
-    _seed_store(tmp_path)
-    _patch(monkeypatch, tmp_path, "Error: TENCENT_MEETING_TOKEN_42654699903 is not configured in the HaiTun process.")
-
-    result = json.loads(asyncio.run(export.meeting_record_export(MEETING, appdata_root=str(tmp_path))))
-
-    assert result["ok"] is True and result["status"] == "exported"
-    assert "not configured" in result["record_error"]
-    md = (Path(result["output_dir"]) / "录制与转写信息.md").read_text(encoding="utf-8")
-    assert "录制元信息未取到" in md
 
 
 def test_export_rejects_unknown_meeting_and_missing_record(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
