@@ -4249,3 +4249,117 @@ ORDER BY length(t.task_name), t.id
 LIMIT 1
 """
     return sql, (token, f"%{token}%")
+
+
+# ---- batch 18: 审批时长(approval_turnaround 的 4 个 scope)--------------------
+#
+# 一条与其余出口**正好相反**的口径:``pending`` 档**刻意不套发布闸门**。
+# 卡在审批里的提交单按定义就还没发布,套上 R-01 会得到一个空的积压队列 ——
+# 那不是"没有积压",是把问题问没了。其余三档(已完成轮次)照常带正式任务门。
+
+TURNAROUND_SCOPES = ("summary", "board", "slowest", "pending")
+
+# 审批耗时 = 完成时刻 - 提交时刻,按**两个日期**相减(写成 timestamp 相减得到的是
+# interval,date_part 会少一天,与 DATEDIFF 语义不符)。
+_TURNAROUND_DAYS = (
+    "((s.completed_at)::timestamp::date - (s.submitted_at)::timestamp::date)::int"
+)
+# 只有两端都非空才是"已完成轮次"。
+_TURNAROUND_DONE = "s.completed_at IS NOT NULL AND s.submitted_at IS NOT NULL"
+
+
+def turnaround_summary() -> tuple[str, tuple]:
+    """已完成轮次的耗时汇总(轮次数 / 均值 / 最长)。"""
+    sql = f"""
+SELECT count(*) AS completed_rounds,
+       round(avg({_TURNAROUND_DAYS})::numeric, 1) AS avg_days,
+       max({_TURNAROUND_DAYS}) AS max_days
+FROM task_workflow_submission s
+JOIN task t ON t.id = s.task_id
+WHERE {adm.sql_task_admission("pg", "t")}
+  AND {_TURNAROUND_DONE}
+"""
+    return sql, ()
+
+
+def turnaround_by_board() -> tuple[str, tuple]:
+    """按看板的耗时(看板名 / 轮次数 / 均值)。"""
+    sql = f"""
+SELECT b.name AS board_name, count(*) AS n,
+       round(avg({_TURNAROUND_DAYS})::numeric, 1) AS avg_days
+FROM task_workflow_submission s
+JOIN task t ON t.id = s.task_id
+JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
+WHERE {adm.sql_task_admission("pg", "t")}
+  AND {_TURNAROUND_DONE}
+GROUP BY b.id, b.name, b.sort_order
+ORDER BY b.sort_order
+"""
+    return sql, ()
+
+
+def turnaround_slowest(limit: int = 8) -> tuple[str, tuple]:
+    """最慢的几轮(按耗时降序、并列按 task id 升序)。"""
+    sql = f"""
+SELECT t.id AS task_id, t.task_name, s.round_no,
+       {adm.normalize_ts_sql("s.submitted_at")} AS submitted_at,
+       {adm.normalize_ts_sql("s.completed_at")} AS completed_at,
+       {_TURNAROUND_DAYS} AS days
+FROM task_workflow_submission s
+JOIN task t ON t.id = s.task_id
+WHERE {adm.sql_task_admission("pg", "t")}
+  AND {_TURNAROUND_DONE}
+ORDER BY days DESC, t.id
+LIMIT %s
+"""
+    return sql, (max(1, min(50, int(limit))),)
+
+
+def turnaround_slowest_ties() -> tuple[str, tuple]:
+    """最慢那档并列了几轮。
+
+    只回榜单时榜首看着是唯一第一名:实测最慢那档是 **59 天两轮**(任务 76 与 143)。
+    并列数交给服务端数,取舍写进口径。
+    """
+    sql = f"""
+SELECT count(*) AS tied_at_top
+FROM (
+    SELECT {_TURNAROUND_DAYS} AS days
+    FROM task_workflow_submission s
+    JOIN task t ON t.id = s.task_id
+    WHERE {adm.sql_task_admission("pg", "t")}
+      AND {_TURNAROUND_DONE}
+) r
+WHERE r.days = (
+    SELECT max(r2.days) FROM (
+        SELECT {_TURNAROUND_DAYS} AS days
+        FROM task_workflow_submission s
+        JOIN task t ON t.id = s.task_id
+        WHERE {adm.sql_task_admission("pg", "t")}
+          AND {_TURNAROUND_DONE}
+    ) r2
+)
+"""
+    return sql, ()
+
+
+def turnaround_pending(as_of: str, limit: int = 8) -> tuple[str, tuple]:
+    """积压队列:未完成(``completed_at`` 为空)的提交单,按已等天数降序。
+
+    **刻意不套发布闸门**:待审提交单本就尚未发布,加上 R-01 会得到空队列。
+    只保留 ``t.is_deleted = 0``(软删任务下的单不该出现在队列里)。
+    """
+    _check_as_of(as_of)
+    sql = f"""
+SELECT t.task_name, s.round_no, s.status,
+       {adm.normalize_ts_sql("s.submitted_at")} AS submitted_at,
+       (%s::date - (s.submitted_at)::timestamp::date)::int AS pending_days
+FROM task_workflow_submission s
+JOIN task t ON t.id = s.task_id
+WHERE {adm.sql_soft_delete("t")}
+  AND s.completed_at IS NULL
+  AND s.submitted_at IS NOT NULL
+ORDER BY pending_days DESC, t.id
+LIMIT %s
+"""
+    return sql, (as_of, max(1, min(50, int(limit))))

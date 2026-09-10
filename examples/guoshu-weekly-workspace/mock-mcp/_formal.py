@@ -1840,6 +1840,79 @@ def _task_detail(args: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _approval_turnaround(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_approval_turnaround:审批时长(汇总 / 按看板 / 最慢 / 积压)。
+
+    这一档与其余出口**正好相反**:``pending`` **刻意不套发布闸门** —— 卡在审批里的
+    提交单按定义就还没发布,套上 R-01 会得到一个空的积压队列,那不是"没有积压",
+    是把问题问没了。其余三档(已完成轮次)照常带正式任务门。
+    """
+    scope = (args.get("scope") or "summary").strip().lower()
+    if scope not in tpl.TURNAROUND_SCOPES:
+        return None  # 演示路径会报 unsupported_scope
+    top = max(1, min(50, int(args.get("top") or 8)))
+    done_note = "is_deleted = 0 AND workflow_status = 'published';仅已完成轮次(completed_at 非空)"
+
+    if scope == "summary":
+        sql, params = tpl.turnaround_summary()
+        return envelope(
+            sql=sql,
+            params=params,
+            caliber=done_note,
+            limit=1,
+            extra={"scope": scope},
+        )
+    if scope == "board":
+        sql, params = tpl.turnaround_by_board()
+        return envelope(
+            sql=sql,
+            params=params,
+            caliber=done_note + ";按看板分组,按 sort_order 定序",
+            limit=MAX_ROWS,
+            extra={"scope": scope},
+        )
+    if scope == "slowest":
+        tsql, tparams = tpl.turnaround_slowest_ties()
+        ties = envelope(sql=tsql, params=tparams, caliber="最慢那档并列数", limit=1)
+        tied = (ties.get("rows") or [{}])[0].get("tied_at_top")
+        sql, params = tpl.turnaround_slowest(limit=top)
+        result = envelope(
+            sql=sql,
+            params=params,
+            caliber=(
+                done_note + ";按耗时降序,并列按 task id 升序(与其他榜单同一套定序键);"
+                f"最慢那档有 {tied} 轮并列,问「最慢的一轮是哪条任务」就取首行一条,"
+                "要把并列都报出来请说明是并列,不要当成几个独立答案"
+            ),
+            limit=top,
+            cap_last_param=True,
+            extra={"scope": scope},
+        )
+        head = (result.get("rows") or [{}])[0]
+        if head:
+            result["caliber"] += (
+                f"(实测:{head.get('days')} 天 —— "
+                f"任务 {head.get('task_id')} 第 {head.get('round_no')} 轮,共 {tied} 轮并列)"
+            )
+        result["top_tie_count"] = tied
+        return result
+
+    # pending:唯一不带发布闸门的一档
+    sql, params = tpl.turnaround_pending(as_of(), limit=top)
+    return envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            "仅 is_deleted = 0(**不加发布闸门**:待审提交单本就尚未发布,加 R-01 会得到空队列);"
+            "未完成即 completed_at 为空;"
+            f"相对时间窗以数据快照日 {as_of()} 为基准(非当前系统时间)"
+        ),
+        limit=top,
+        cap_last_param=True,
+        extra={"scope": scope, "as_of": as_of()},
+    )
+
+
 def _task_lifecycle(args: dict[str, Any]) -> dict[str, Any] | None:
     """weekly_task_lifecycle:任务建立与发布的**另一个钟**(不是"报进展"那个)。"""
     grouping = (args.get("by") or "").strip().lower()
@@ -1902,6 +1975,7 @@ _HANDLERS = {
     "weekly_import_audit": _import_audit,
     "weekly_task_lifecycle": _task_lifecycle,
     "weekly_task_detail": _task_detail,
+    "weekly_approval_turnaround": _approval_turnaround,
 }
 
 # _NEW_HANDLERS 只是构建期的清单,避免手工漏接线

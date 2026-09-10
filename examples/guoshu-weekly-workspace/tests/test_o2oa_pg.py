@@ -527,11 +527,11 @@ class TestFormalBackend:
         monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
         assert _formal.enabled() is True
         # 用真正未接线的工具做断言:已接线的工具会去连库,不能拿来当反例
-        # (weekly_schema / weekly_task_lifecycle / weekly_task_detail 接线后,
-        #  断言逐批挪到仍未迁移的工具上)
+        # (schema / task_lifecycle / task_detail / approval_turnaround 接线后,
+        #  断言逐批挪到仍未迁移的工具上 —— 现在只剩这三个)
         assert _formal.dispatch("weekly_aggregate", group_by="board") is None
         assert _formal.dispatch("weekly_group_stats") is None
-        assert _formal.dispatch("weekly_approval_turnaround") is None
+        assert _formal.dispatch("weekly_schema", board="技术看板") is None  # 看板名走演示侧解析
 
     def test_wired_schema_routes_to_the_formal_source(self, monkeypatch):
         """weekly_schema 已接线:路由判定不连库(靠 board= 的取值域判定)。"""
@@ -1493,3 +1493,80 @@ class TestTaskDetailRouting:
         assert raw is not None and raw["recent_progress"][0]["review_comment"] == "原文"
         # R-12 无条件在场 —— 不能挂在 group_detail 那个子查询上(技术组任务就看不到)
         assert "completion_time 为展示文本" in masked["caliber"]
+
+
+class TestApprovalTurnaroundTemplates:
+    """审批时长:pending 刻意不带发布闸门;天数按两个日期相减。"""
+
+    def test_pending_drops_the_publish_gate(self):
+        """待审提交单本就尚未发布,加 R-01 会得到空队列 —— 那不是"没有积压"。"""
+        sql, params = o2.turnaround_pending("2026-08-15", limit=8)
+        assert "workflow_status" not in sql
+        assert "t.is_deleted = 0" in sql
+        assert "s.completed_at IS NULL" in sql and "s.submitted_at IS NOT NULL" in sql
+        assert params == ("2026-08-15", 8)
+
+    def test_completed_scopes_keep_the_publish_gate(self):
+        for sql, _params in (o2.turnaround_summary(), o2.turnaround_by_board(), o2.turnaround_slowest()):
+            assert "workflow_status = 'published'" in sql
+            assert "s.completed_at IS NOT NULL AND s.submitted_at IS NOT NULL" in sql
+
+    def test_days_are_two_dates_subtracted(self):
+        sql, _params = o2.turnaround_summary()
+        assert "::timestamp::date - (s.submitted_at)::timestamp::date" in sql
+        assert "date_part" not in sql and "extract(" not in sql
+
+    def test_slowest_ties_query_uses_the_same_expression_twice(self):
+        sql, params = o2.turnaround_slowest_ties()
+        assert sql.count("AS days") == 2
+        assert params == ()
+        sql, params = o2.turnaround_slowest(limit=99)
+        assert params == (50,)  # top 硬顶在 50
+        assert "ORDER BY days DESC, t.id" in sql
+
+
+class TestApprovalTurnaroundRouting:
+    @staticmethod
+    def _capture(monkeypatch) -> list[dict]:
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            row = {"completed_rounds": 400, "avg_days": 14.7, "max_days": 59, "tied_at_top": 2,
+                   "task_id": 76, "round_no": 1, "days": 59}
+            result = {"ok": True, "columns": ["c"], "rows": [row], "row_count": 1, "caliber": "口径"}
+            # 真信封会把 extra 合进结果(scope / as_of / date_from 这些),假信封也要合,
+            # 否则调用处读 result["as_of"] 的断言会假失败。
+            result.update(kwargs.get("extra") or {})
+            return result
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setenv("GUOSHU_AS_OF", "2026-08-15")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        return seen
+
+    def test_unknown_scope_falls_back(self, monkeypatch):
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _formal.dispatch("weekly_approval_turnaround", scope="nope") is None
+
+    def test_slowest_merges_the_tie_count_and_names_the_tie(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        got = _formal._approval_turnaround({"scope": "slowest", "top": 8})
+        assert got is not None and len(seen) == 2  # 并列数 + 榜单
+        assert got["top_tie_count"] == 2
+        assert "2 轮并列" in got["caliber"] and "任务 76" in got["caliber"]
+
+    def test_pending_carries_the_caliber_about_the_missing_gate(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        got = _formal._approval_turnaround({"scope": "pending", "top": 8})
+        assert got is not None and len(seen) == 1
+        assert "不加发布闸门" in seen[0]["caliber"] and "空队列" in seen[0]["caliber"]
+        assert got["as_of"] == "2026-08-15"
+        assert seen[0].get("cap_last_param") is True
+
+    def test_summary_is_a_single_row(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        got = _formal._approval_turnaround({"scope": "summary"})
+        assert got is not None and len(seen) == 1 and seen[0]["limit"] == 1
+        # 单行汇总没有行数上限参数,信封不该按 limit+1 去查
+        assert seen[0].get("cap_last_param", False) is False

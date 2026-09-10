@@ -4983,6 +4983,10 @@ def weekly_approval_turnaround(scope: str = "summary", top: int = 8) -> str:
         top: Row cap for slowest and pending, 1..50.
     """
 
+    formal = _formal.dispatch("weekly_approval_turnaround", scope=scope, top=top)
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         key = (scope or "summary").strip().lower()
         if key not in _TURNAROUND_SCOPES:
