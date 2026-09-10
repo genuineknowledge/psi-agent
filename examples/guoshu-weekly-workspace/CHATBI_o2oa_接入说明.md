@@ -26,6 +26,14 @@
 >   提交单(软删闸门)**28**;近 120 天正式进展 **9** 行;近 30 天有更新 **7** 条;
 >   `task_ranking(progress)` 榜首仅 **1 期** —— 真库里多数任务只有一期正式进展,
 >   所以"谁进展最多"类问题在真库上几乎全是并列(`rank` 的 `tied_at_top` 达 53)。
+> - ⚠️ **真库冒烟(31 个工具各调一次):活着 27 / 31**。四个出口在**默认/空参数**下仍会回落
+>   演示路径 —— `weekly_aggregate()`、`weekly_owner_roles()`、`weekly_submission_query()`、
+>   `weekly_workflow_query()`:它们的**具名 scope 已迁移**(31/31 与 21/21 的核对都覆盖了那些
+>   scope),但**默认清单分支没迁**。生产环境没有演示 MySQL,**回落就等于 `store_unreachable`
+>   报错**,所以这四处必须补迁移,或让默认分支明确报"该参数组合未迁移"而不是去连一个不存在的库。
+> - 另:`weekly_task_detail` / `weekly_schema` / `weekly_field_completeness` 返回的是**结构化多块
+>   信封**(`task` / `year_goals` / `group_detail`、`table_columns`、`supported_fields`),本就没有
+>   `rows` —— 这不是缺陷,但 agent 侧读法与 rows 类工具不同,应在工具说明里点明。
 > - **真值快照(2026-09-10;活库会变,数字带日期,形状与口径才是不变量)**:`task` 105 行 /
 >   已发布 **88**;`task_progress` 197 行 / `is_published=1` 仅 **56**;`task_milestone` 20(状态
 >   全为 0 未完成);`task_attachment` 30;`task_workflow_submission` 29;
