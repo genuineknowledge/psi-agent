@@ -311,6 +311,7 @@ service tools:
 - `feishu-task` — 飞书原生任务（task v2）接口表：建任务派给人、列/搜/读任务（含每个执行人完成情况）、改任务、标完成/重开、子任务、任务评论、成员与关注人、tasklist 管理。用 `feishu_api` 按表调用，机器人自己的 tenant token 即可（`task:task:write`）。与 `work-assignment-delegation` 配合——后者管台账与卡片闭环，本 skill 管飞书任务中心那一份。
 - `task-self-check` — 发出「任务完成」类最终回复前的**静默**自查：核对工具调用、工具结果与最终输出是否一致，有没有静默漏项或降级。每个会以用户可见答复收尾的回合都应加载，不限于用户主动要求 review 时；自查过程不写进回复。
 - `feishu-todo-card` — 发一张「今日 TODO」卡：一张卡多条待办、**逐条勾选**，勾一条只结那一条、其余仍可勾、卡片原地更新。讲清工具选择（一条答案用 `feishu_message_send_card`，多条待办用 `feishu_todo_card_send`，自拼多选卡用 `feishu_message_send_card(multi_use=True)`）、**建任务在前**的流程、逐行幂等边界与两层防重放、批量回调怎么处理（逐条调 tick、只回一条）、为什么不用飞书原生 `checker`、以及机器人非任务成员时传 `user_key`。`knowledge-base`；驱动现有 `feishu_todo_card_*` 工具，无额外依赖。
+- `haitun-feedback-collect` — **一层**反馈收集：识别用户在讨论海豚/HaiTun 的 bug、意见或爽点；**先口头确认类型并问是否落盘**，用户答应后再 `feishu_bitable_create_records` 写入多维表一行。配置 `config/haitun_feedback.yaml`（`app_token`/`table_id` 空则只整理草稿不空写）。**不含**状态变更后私聊提出人（二层另接）。`productivity`。
 - **Feishu tool credentials on Gateway（踩坑）**：`feishu_message_send` 等 workspace 工具跑在 **Session / Gateway 进程**里，读的是该进程的 `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET`。只给 Feishu **channel** 进程设环境变量不够——定时触发时会报 `Feishu app not configured`，飞书收不到推送。启动 Gateway 时也要带上同一组凭证。
 - **Feishu interactive-card callback contract**：发送给其他人的卡片必须同时传
   `business_context_json`（业务类型、稳定业务 ID、发起人、当前状态等收件方 agent 独立处理所需事实）和
