@@ -176,10 +176,69 @@ A 上这个 /16 被 `psi-cloud_default` 占着。停掉 psi-cloud 能腾出来,
 - 验证:起栈后 `docker network inspect psi-agent_default` 确认 Subnet 真是 172.19.0.0/16
 - 兜底:compose 里显式声明 `ipam.config.subnet`,不赌自动分配
 
+9-09 复核 A 机现状,冲突确实存在且**只此一处**:
+
+```
+bridge             172.17.0.0/16
+psi-cloud_default  172.19.0.0/16      ← 冲突源,停/删 psi-cloud 即腾出
+```
+
+A 机此刻只有 `psi-cloud` 一个容器在跑;`guoshu-weekly` 那套是**宿主进程不是容器**
+(`psi-agent :8766`、`uvicorn 0.0.0.0:8080`、`mysqld`、`python :18901`),
+所以它**不占 docker 网段**,与本次搬迁天然解耦 —— 这正是"不能耦合"要的结果。
+
+顺带确认(不属本次范围,已单独告知负责人):`uvicorn` 仍 listen `0.0.0.0:8080`,
+公网可达且无鉴权。本次搬迁不动它。
+
+A 机其余现状:磁盘 **40G 用 5.6G(15%)**,比 B 宽裕得多(B 只剩 7.6G);
+Caddy `v2.11.4` active,`account.genuineknowledge.cn` 的 LE 证书**已在**
+`/var/lib/caddy/.../certificates/`,Caddyfile 里该 vhost 现在 `reverse_proxy 127.0.0.1:8081`
+(指向 psi-cloud)—— 搬迁时这一行要改指 ToB 栈。
+
+**DNS TTL 实测仍是 600s**(`account` 与 `lark.oauth` 两条都是,均指向 B `8.222.255.23`)。
+方案里"599s → 60s"这一步**尚未做**,且它必须**提前一个 TTL 周期**做,否则回滚要等 10 分钟。
+
 #### B 上的 lark.oauth 现在就是 502
 
 `oauth-proxy` 挂在死 netns 上(proxy Up 7h vs gateway Up 4h),
 所以阶段 3 的判据"ToC 能登录"**在动手前就已经不可能通过**。负责人选择**先修**。
+
+##### 9-09 复核:502 不是一次性事故,是**会复发的因果链**
+
+原记录把它当单次事故。实测数字推翻了这个理解:
+
+| 项 | 原记录 | 9-09 实测 |
+|---|---|---|
+| dmesg OOM 次数 | 28 | **86** |
+| gateway RestartCount | 7 | **10** |
+| 最近一次 OOM | 9-08 09:40 | **9-09 11:01:30**(仍在发生) |
+| B 机 swap | — | **0B**,`free` 仅剩 269Mi |
+
+最近一次 OOM 的内核行为足以定性:
+
+```
+oom-kill:constraint=CONSTRAINT_MEMCG, oom_memcg=/system.slice/docker-5b84e881...scope
+Killed process 2130934 (psi-agent) anon-rss:2927440kB      # 2.93G 撞 3G mem_limit
+```
+
+`HostConfig.Memory = 3221225472`(3G),被杀的是容器内**子进程**,
+所以 `State.OOMKilled` 仍是 `false` —— 这类故障零告警,与记忆里那条一致。
+
+因果链:**gateway 撞 3G 被 OOM 杀 → 容器重启 → `oauth-proxy` 的
+`NetworkMode: container:<gatewayID>` 挂在死 netns 上 → `lark.oauth` 502。**
+
+现场证据(9-09):`oauth-proxy` 的 netns 目标 ID 与当前 gateway ID **相同且容器仍存在**,
+但 `docker exec oauth-proxy ss -ltn` 在自己的 netns 里**看不到 8090**;
+宿主 `127.0.0.1:8090` 上 listen 的是**新** gateway 拉起的 `docker-proxy`。
+`curl 127.0.0.1:8090` = `000`(连接失败),公网 `lark.oauth` = **502**。
+
+这条链有两个后果,都要写进决策:
+
+1. **单跑 `restart-stack.sh` 只修当次**,不阻止下一次 OOM 再把 502 造出来。
+2. **搬到 A 机若只加 4G swap、不动 gateway 的 3G `mem_limit`,同一条链会复发。**
+   swap 只是让 OOM 来得晚一点,`CONSTRAINT_MEMCG` 是 cgroup 硬上限,swap 不解除它。
+   → **需负责人定:A 机 compose 里 gateway 的 `mem_limit` 是否提高。**
+   (A 机内存 7.1G / 已用 1.6G / available 5.5G,比 B 宽松:B 是 7.1G 已用 5.6G。)
 
 ### 阶段 1 · 9-08 · 搬镜像与数据(实测约 5.2 小时,几乎全是等)
 
@@ -295,9 +354,45 @@ agent 还在写、用户还在聊。同理工具数原文写 200/93,实测 **220
 
 **判据改为:停机前一刻现场逐容器取一次基线,搬后逐容器比对。** 不写死数字。
 
+9-09 再量一次,**又漂了**,这条结论继续成立:
+
+| 项 | 原方案 | 9-08 | 9-09 |
+|---|---|---|---|
+| `workspace` 文件数 | 38747 | 39722 | **39740** |
+| `workspace-luolin` | 1314 | 1352 | **1354** |
+| `workspace-chengxx` | 1129 | 1160 | **1164** |
+
+9-09 逐容器基线(含镜像,便于搬后逐项对照):
+
+| 容器 | 镜像 | 工具 | 文件 | schedules |
+|---|---|---|---|---|
+| gateway | `meeting-fix-main-a1bc44d9-20260907-1154` | **220** | 130 | 6 |
+| luolin | `86d5f755` | **277** | 98 | 8 |
+| chengxx | `86d5f755` | **205** | 98 | 1 |
+
+gateway 一路上还出现过 222/132、223/133、224/134 —— agent 在往 `tools/` 写文件,
+**同一容器不同时刻的工具数本身就不是常数**。所以比对要用**停机前最后一次**那个值。
+
 加上:A 机 `docker images` 出现目标 tag 且 digest 与 B 一致;
 那 49 个收债文件在 A 机的 md5 与冻结清单逐条一致(**比对前做 LF 归一化** ——
 生产 LF、仓库 CRLF,裸比对会报几乎全不一致,已出过一次错误判断)。
+
+##### 两个判据陷阱(9-09 踩到并纠正)
+
+**① `grep -c 'Failed|Traceback'` 不能用作判据。** 旧 runbook 写"必须 0",实测三容器
+分别是 **2937 / 1348 / 0**,而生产是好的。拆开看:
+
+- gateway 的 2937 里有 **2929 条**是同一句 `Failed to parse YAML header` 警告;
+- 剩下的几乎全是 **agent 的 `bash` 工具输出被原样记进日志** ——
+  用户脚本自己报 `TypeError`/`FileNotFoundError`,与内核无关。
+
+**判据该改为按 ERROR 级别行去重后逐类看**,而不是数 `Traceback` 出现次数。
+
+**② `Loaded N tool(s)` 的 grep 模式写错会静默报 0。** 用 `"Loaded [0-9]+ tool[s]?"`
+匹配不上真实日志的 `Loaded 220 tool(s) from 130 file(s)`(括号),
+于是三个容器**全部返回空**,看起来像"工具全没加载"。
+正确模式:`Loaded [0-9]+ tool\(s\) from [0-9]+ file\(s\)`。
+这与记忆里"判据必须落在它声称的那一层"同类:**假零比真零危险,因为它长得像结论。**
 
 #### 漏项:fusion-memory 全文未提,而阶段 2 的判据依赖它
 
@@ -309,6 +404,38 @@ agent 还在写、用户还在聊。同理工具数原文写 200/93,实测 **220
 它的 venv **搬不动**:`pyvenv.cfg` 写死 `/usr/bin/python3.12`,B 是 3.12.3 而 A 是 3.14.4。
 负责人选择**容器化**。可行性已核:依赖只有 `aiohttp`/`anyio`/`mcp`/`psycopg2-binary`,
 proxy 是纯标准库,`python:3.12-slim` 即可,A 宿主的 3.14 不相关。
+
+**9-09 已在 A 机实测这条路可行**:`docker pull python:3.12-slim` 成功、
+四个依赖 `pip install` + `import` 全过(exit 0)。见上文"A 机能否真正 build"。
+
+B 上现状(9-09 实测):两个 systemd unit 都是 `active (running)`,
+`fusion-memory` 进程 listen 在 **`172.19.0.1:8700`** —— 正是网段冲突那条要保住的地址。
+
+##### 漏项之外的新发现:luolin 的 fusion-memory MCP 线程正在反复崩溃
+
+这条**方案通篇没有**,而它就长在"记忆能不能用"这条链上,所以记在这里:
+
+```
+/workspace/tools/_fusion_memory_mcp.py:187 - Fusion Memory MCP supervisor thread crashed
+RuntimeError: Attempted to exit a cancel scope that isn't the current task's current cancel scope
+```
+
+| 项 | 实测 |
+|---|---|
+| 次数 | **337 次** |
+| 时间跨度 | 9-07 10:28 → 9-09 03:37(**仍在发生**) |
+| 频率 | 稳定约 **4 次/小时**,最近一小时飙到 **33 次** |
+| 影响范围 | **只有 luolin**;gateway 与 chengxx 都是 **0 次** |
+
+根因是 anyio 的 cancel scope 被跨任务退出(`ExceptionGroup` 里裹 `CancelledError`),
+属**内核/工具层**问题,不在搬迁的 0 行配额内。
+
+搬迁这条线只需要记住一件事:**它搬前搬后都在,别在 A 机把它误判成搬迁引入的回归。**
+
+同时要纠正一个可能的误判来源:**无鉴权探针拿 401 不是故障证据。**
+从 luolin 容器裸打 `172.19.0.1:8700/mcp` 得 `401 Unauthorized`,
+但从 **gateway**(记忆功能正常)打同一个地址**同样得 401** ——
+401 是预期的鉴权门,**不能拿它当"记忆坏了"的判据**,也不能拿它当"记忆好了"的判据。
 
 ### 阶段 2 · 9-09 · A 机起栈自测(约 2 小时)
 
@@ -419,21 +546,62 @@ DNS 指回 B + B 上 `docker compose start`。前提是**B 的栈全程不删**,
 第 2 条恰好被负责人的方案覆盖:在生产上先统一、找两位主人实测,
 会议链断了主人立刻能发现,而不是搬完在 A 机上排查。
 
-#### 仍未验证的两条(不当结论用)
+#### 9-09 复核:原"未验证两条"已验,schema 不再是阻塞
 
-- `luolin`/`chengxx` 的 `config.yml` 在新镜像里的 **schema 兼容性未验**。
-  `86d5f755` → `meeting-fix` 跨了 `gateway/desktop/` 拆包那次重排,
-  config 里 `type: session` / `channel_socket` / `appdata` 这些键新代码是否还认同一套,
-  没测出来不能说能切。空跑验证是只读的(临时目录 + 假凭据 + `--rm`),不碰生产。
-- **A 机能否真正 build 未验**(curl 200 只证明 TLS 可达)。选项乙若要在 A 构建,
-  需先跑真实 `docker pull` + `git clone`。
+**① config schema 兼容性:已验,两镜像解析完全一致。**
+只读做法(不碰生产):`docker cp` 取出 config 到 `/tmp` + 假凭据 + `--rm` 空跑,
+对照组 `86d5f755`、实验组 `meeting-fix` 各跑一次。
+
+| 组 | 结果 |
+|---|---|
+| `86d5f755`(对照) | 2 个组件定义全部解析,session server bind `0.0.0.0:8081`,exit 0 |
+| `meeting-fix`(目标) | **同上,逐行对应** |
+
+`type: ai` / `type: session` / `session_socket` / `ai_socket` / `channel_socket` /
+`session_id` / `appdata` **全部被新代码接受**。且 luolin 与 chengxx 的键集 diff 为空。
+
+根因解释了为什么它不该出问题:这两份 config **根本没有 `gateway/desktop` 相关键** ——
+它们只声明 `ai` + 单个 `session`(私有容器不含飞书通道),
+而拆包重排动的是 `gateway/` 子树。**两者不相交。**
+
+**② A 机能否真正 build:pull 与依赖已验,`git clone` 是间歇性失败。**
+
+| 探针 | 结果 |
+|---|---|
+| `docker pull alpine:latest`(走 daemon.json 三个镜像站) | **成功** |
+| `docker pull python:3.12-slim`(fusion-memory 容器化要用的底座) | **成功** |
+| `pip install aiohttp anyio mcp psycopg2-binary` + 四个 import | **exit 0** |
+| `git clone --depth 1 github.com/pallets/click` | 3 次里 **1 次失败**(443 连接 134s 超时)、2 次 exit 0 |
+
+结论:**A 机能 build**,底座与依赖这条路是通的;但 `git clone github` 不稳,
+若选项乙要在 A 构建,应**先在 B 打包源码推过去**或加重试,不要让 build 依赖 github 的运气。
+
+两个探针的坑记在这里,因为都会产生**假结论**:
+
+- `docker pull registry.cn-hangzhou.aliyuncs.com/library/alpine` 报 "repository does not exist"
+  —— 那是**路径不存在**,不是网络不通。用它否定连通性会得出反的结论。
+- `git clone ... | tail -3` 会**吞掉退出码**,于是 `&& echo CLONE_OK` 在克隆失败时照样打印
+  `CLONE_OK`。同理 `python -c "import anyio; anyio.__version__"` 报 `AttributeError`
+  是**探针问错了属性**(anyio 不暴露 `__version__`),不是依赖装坏。
+  **判据要看退出码,不看被管道截断的尾部输出。**
 
 #### 另有一处需查:生产上有两份不同代龄的 src
 
 `/srv/haitun/psi-agent/workspace/genuine-psi-agent/src/` 下还有**第二份** psi_agent 源码,
 且那份**已含** `PSI_SEED_SCHEDULES_WORKSPACE`(主份也有 2 处)。
 两份不同代龄的 src 在同一台机器上,直接影响"哪份是被加载的那份"这个判断,
-而 md5 三层核验的第三层正是靠它。这份是否被 `PYTHONPATH` 捡到,**未查**。
+而 md5 三层核验的第三层正是靠它。
+
+**9-09 已查明:第二份 src 不被加载。** 容器内实测(只读):
+
+```
+PYTHONPATH            = /workspace/tools          # 只有这一条
+psi_agent.__file__    = /app/src/psi_agent/__init__.py
+sys.path              里没有 /workspace/genuine-psi-agent/src
+```
+
+该路径在容器内**可见**(`/workspace/genuine-psi-agent/src` 存在)但**未进 `sys.path`**,
+所以三层核验第三层的落点明确是 `/app/src`,不存在"改了一份、加载的是另一份"的风险。
 
 ## 需要负责人确认的副作用操作(按时间序)
 
@@ -443,14 +611,30 @@ DNS 指回 B + B 上 `docker compose start`。前提是**B 的栈全程不删**,
 | 9-08 | 修 B 的 `oauth-proxy` 死 netns(502) | 走 `restart-stack.sh`,ToC 登录短暂中断 | 无需 | 负责人已选"先修" |
 | 9-08 | A 机停/删 psi-cloud | A 上该服务不可用(B 那份保留) | 重新 `up -d` | 负责人已选 |
 | 9-08 | A 机加 4G swap | 无 | `swapoff` | 待确认 |
-| 9-09 | **只读**空跑验 config schema 兼容 | 无(`--rm` + 临时目录) | — | 只读,按规则可直接做 |
+| 9-09 | **只读**空跑验 config schema 兼容 | 无(`--rm` + 临时目录) | — | **已做,两镜像一致(见上)** |
+| 9-09 | **只读**查第二份 src 是否被加载 | 无 | — | **已做,不被加载(见上)** |
+| 9-09 | **只读**验 A 机 pull / pip / clone | 无(`--rm`) | — | **已做,pull+pip 通、clone 不稳** |
 | 9-09 | 改 compose 两行 `image:` + `up -d private-luolin private-chengxx` | **重建这两个容器**;不碰 gateway,故 oauth-proxy netns 不受影响 | 改回 `86d5f755` 再 `up -d` | **待确认(申请硬纪律例外)** |
 | 9-09 | 找两位主人实测 | 占用他们时间 | — | 待确认 |
-| 9-10 | DNS TTL 599s → 60s | 无 | 改回 | 待确认 |
+| 9-10 | DNS TTL 600s → 60s(实测仍是 600s,**尚未做**) | 无 | 改回 | 待确认,须提前一个 TTL 周期 |
 | 9-10 20:00 | 停机切换(见阶段 3 清单) | ToB 全停,ToC 登录受影响 | DNS 指回 B + `docker compose start` | **待确认停机窗** |
 
 判据:24 小时内 dmesg 零 OOM;无 502;飞书响应正常。
 B 机**保持不动**作为回退 —— 回退只需把 DNS 改回去。
+
+**这条判据要加一句前提**:B 上 OOM 现在是 **4 次/小时级别的常态**(9-09 实测 86 次),
+所以"24 小时零 OOM"在 A 机能否成立,取决于 gateway 的 `mem_limit` 是否从 3G 提上去 ——
+见上文"502 是会复发的因果链"。**不解决 mem_limit,这条判据大概率不通过。**
+
+### 新增待负责人决定:A 机 gateway 的 mem_limit
+
+原方案只写了"加 4G swap"。实测表明 swap **不解除** cgroup 硬上限
+(`CONSTRAINT_MEMCG`,被杀时 anon-rss 2.93G / limit 3G),
+所以加 swap 只能延后 OOM、不能消除它,而 OOM 就是 502 的上游。
+
+A 机内存比 B 宽松(A:7.1G 已用 1.6G / available 5.5G;B:7.1G 已用 5.6G / available 1.5G),
+有提上限的余量。建议把 gateway 的 `mem_limit` 从 3G 提到 4~4.5G 并保留 4G swap,
+但这会改 compose、影响资源规划,**属你的决定,我不擅自改。**
 
 ## 会话 2|内容分层 + 工具架构演进
 
