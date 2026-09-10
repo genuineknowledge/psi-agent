@@ -4129,6 +4129,12 @@ def weekly_rank(
             the row count answers a different question.
     """
 
+    formal = _formal.dispatch(
+        "weekly_rank", metric=metric, mode=mode, top=top, ascending=ascending, group_by=group_by, board=board
+    )
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         chosen = _RANK_METRICS.get((metric or "").strip())
         if chosen is None:

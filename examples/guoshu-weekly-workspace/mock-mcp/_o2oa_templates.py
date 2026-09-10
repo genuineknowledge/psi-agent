@@ -1771,3 +1771,195 @@ GROUP BY {axis}
 ORDER BY {order}
 """
     return sql, (y,)
+
+
+# ---- batch 9: 排名(三种并列语义 + 六种子表度量)-----------------------------
+
+RANK_MODES = ("cut", "keep_ties", "per_group")
+RANK_GROUPINGS = ("project_group", "board", "primary_category", "status")
+
+# 度量 = (子表, 子表闸门, 计数表达式, 中文标签, 是否可选表)
+# 全部走 LEFT JOIN,零值任务才不会被 INNER JOIN 静默丢掉(inner_join_drops_zero)。
+RANK_METRICS: dict[str, tuple[str, str, str, str, str | None]] = {
+    "progress_rounds": ("task_progress", "x.is_published = 1", "count(x.id)", "已发布进展期数", None),
+    "milestones": ("task_milestone", "x.is_deleted = 0", "count(x.id)", "里程碑数", None),
+    "milestones_done": (
+        "task_milestone",
+        "x.is_deleted = 0",
+        "count(*) FILTER (WHERE x.status = 1)",
+        "已完成里程碑数",
+        None,
+    ),
+    "attachments": ("task_attachment", "x.is_deleted = 0", "count(x.id)", "附件数", "task_attachment"),
+    "submissions": ("task_workflow_submission", "TRUE", "count(x.id)", "审批提交单数", None),
+    "group_rounds": (
+        "task_group_progress_history",
+        "x.is_published = 1",
+        "count(x.id)",
+        "集团看板成效期数",
+        "task_group_progress_history",
+    ),
+    # 唯一不 JOIN 子表的度量:值就在 task 行上。
+    "project_team_size": ("", "", "_TEAM_SIZE", "项目团队人数", None),
+}
+
+# 项目团队人数 = 三个分隔符(、 , ;)出现次数 + 1。
+# **三种都要数**:只数顿号会把另外两种写法算成 1 人。
+# 这一列在 task 行上、覆盖两个看板 128 条;集团明细的 project_owner_names 是另一列,
+# 只覆盖集团板 46 条,两个"人数"必须分开。
+# 分隔符用转义序列写出:它们是**数据里真实存在的字符**(顿号/半角逗号/全角分号),
+# 不能换成近似字符;直接写字面量会触发 RUF001(ambiguous unicode),转义后源码保持 ASCII。
+TEAM_SIZE_SEPARATORS = ("\u3001", ",", "\uff1b")
+
+TEAM_SIZE_SQL = (
+    "length(coalesce(t.project_owner_name, '')) - length("
+    + "replace(" * len(TEAM_SIZE_SEPARATORS)
+    + "coalesce(t.project_owner_name, '')"
+    + "".join(f", '{sep}', '')" for sep in TEAM_SIZE_SEPARATORS)
+    + ") + 1"
+)
+
+RANK_GROUP_SQL: dict[str, tuple[str, str]] = {
+    "project_group": ("t.project_group", "t.project_group"),
+    "board": ("b.name", "b.sort_order"),
+    "primary_category": ("pc.name", "pc.id"),
+    "status": ("t.status", "t.status"),
+}
+
+
+def rank_tasks(
+    metric: str = "progress_rounds",
+    mode: str = "cut",
+    top: int = 5,
+    ascending: bool = False,
+    group_by: str | None = None,
+    board_code: str | None = None,
+    granted_optional: tuple[str, ...] = (),
+) -> tuple[str, tuple]:
+    """任务排名:并列规则由服务端定(cut / keep_ties / per_group)。
+
+    三种语义在**同一份数据上返回不同的集合与行数**,不能让调用方拿到明细后自己裁:
+
+    * ``cut``:硬切前 N 条,并列按 task id 定序(返回 ``total_count`` = 符合口径的任务总数,
+      不是本次行数 —— 问"每个任务各有几个"时集合大小由它定);
+    * ``keep_ties``:用 ``RANK()`` 保留并列,返回到第 N 名为止的**全部**任务。
+      演示数据里"进展期数前 3 名"是 **12 行**(第 3 名有 12 条并列),而 cut 只给 3 行;
+    * ``per_group``:每组第一名,一组一行,``top`` 在这一档无意义。
+
+    NULL 排序按 MySQL 语义对齐:降序时 NULL 在最后、升序时在最前
+    (PG 默认相反,不写 ``NULLS LAST/FIRST`` 会与演示源给出不同的名次)。
+    """
+    if metric not in RANK_METRICS:
+        raise ValueError(f"不支持的 metric:{metric};支持 {', '.join(sorted(RANK_METRICS))}")
+    if mode not in RANK_MODES:
+        raise ValueError(f"不支持的 mode:{mode};支持 {', '.join(RANK_MODES)}")
+    bound = max(1, min(200, int(top)))
+    table, gate, expression, _label, optional = RANK_METRICS[metric]
+    if optional and optional not in granted_optional:
+        hint = adm.require_optional_table(optional, False)
+        raise PermissionError(hint)
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    joins = ""
+    if board:
+        joins = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    if table:
+        expr = expression
+        joins += f"\nLEFT JOIN {table} x ON x.task_id = t.id AND {gate}"
+    else:
+        expr = TEAM_SIZE_SQL
+    where_sql = "\n  AND ".join(where)
+    direction = "ASC" if ascending else "DESC"
+    # 对齐 MySQL:降序 NULL 最后、升序 NULL 最前
+    nulls = "NULLS FIRST" if ascending else "NULLS LAST"
+
+    # 不 JOIN 子表的度量(项目团队人数)直接引用 task 行上的列,必须进 GROUP BY:
+    # PG 只在有主键/唯一非空约束时才做函数依赖推断,缺约束时会直接报
+    # "column ... must appear in the GROUP BY clause"。带上这一列在任何 schema 下都成立。
+    group_extra = ", t.project_owner_name" if not table else ""
+
+    if mode == "keep_ties":
+        sql = f"""
+WITH ranked AS (
+    SELECT t.id AS task_id, t.task_name, {expr} AS metric_value,
+           rank() OVER (ORDER BY {expr} {direction} {nulls}) AS rk
+    FROM task t
+    {joins}
+    WHERE {where_sql}
+    GROUP BY t.id, t.task_name{group_extra}
+)
+SELECT task_id, task_name, metric_value, rk,
+       count(*) OVER () AS row_count_to_place
+FROM ranked
+WHERE rk <= %s
+ORDER BY rk, task_name
+"""
+        return sql, (*params, bound)
+
+    if mode == "per_group":
+        axis_key = (group_by or "").strip()
+        grouping = RANK_GROUP_SQL.get(axis_key)
+        if grouping is None:
+            raise ValueError(f"per_group 需要 group_by,支持 {', '.join(RANK_GROUPINGS)}")
+        axis, order_key = grouping
+        extra = ""
+        if axis_key == "board":
+            extra = f"\nJOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        elif axis_key == "primary_category":
+            extra = (
+                f"\nJOIN task_category c ON c.id = t.category_id AND {adm.sql_soft_delete('c')}"
+                f"\nJOIN task_category pc ON pc.id = c.parent_id AND {adm.sql_soft_delete('pc')}"
+            )
+        # 三部分 JOIN 各司其职,不能互相顶替:
+        #   axis_join  —— 分组轴需要的表(board 轴用 b,一级分类轴用 c+pc)
+        #   filter_join —— 调用方给了 board 过滤时的看板表(board 轴已由 axis_join 提供)
+        #   metric_join —— **度量自己的 LEFT JOIN**,漏掉它会报 missing FROM-clause entry for table "x"
+        axis_join = extra
+        filter_join = ""
+        if board and axis_key != "board":
+            filter_join = f"\nJOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        metric_join = f"\nLEFT JOIN {table} x ON x.task_id = t.id AND {gate}" if table else ""
+        sql = f"""
+WITH per_task AS (
+    SELECT t.id AS task_id, t.task_name, {axis} AS bucket, {order_key} AS bucket_order,
+           {expr} AS metric_value
+    FROM task t
+    {axis_join}
+    {filter_join}
+    {metric_join}
+    WHERE {where_sql}
+    GROUP BY t.id, t.task_name, {axis}, {order_key}
+), ranked AS (
+    SELECT task_id, task_name, bucket, metric_value,
+           row_number() OVER (PARTITION BY bucket
+                              ORDER BY metric_value {direction} {nulls}, bucket_order, task_id) AS rn
+    FROM per_task
+)
+SELECT bucket, task_id, task_name, metric_value
+FROM ranked
+WHERE rn = 1
+ORDER BY bucket
+"""
+        return sql, tuple(params)
+
+    sql = f"""
+WITH ranked AS (
+    SELECT t.id AS task_id, t.task_name, {expr} AS metric_value,
+           count(*) OVER () AS total_count
+    FROM task t
+    {joins}
+    WHERE {where_sql}
+    GROUP BY t.id, t.task_name{group_extra}
+)
+SELECT task_id, task_name, metric_value, total_count
+FROM ranked
+ORDER BY metric_value {direction} {nulls}, task_id
+LIMIT %s
+"""
+    return sql, (*params, bound)

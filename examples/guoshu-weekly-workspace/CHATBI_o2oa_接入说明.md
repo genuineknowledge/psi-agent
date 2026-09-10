@@ -142,7 +142,8 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 | `weekly_submission_query` | ✅ 已接线 | 9 个聚合 scope:提交单 462 张、外部标识 460/460/60(缺 402 行 = 87.0%)、驳回率 技术组 9/293 = 3.07% > 集团组 4/169 = 2.37%、按类型 progress 312 / initial 150、在途带进程号 59;带明细筛选的请求不迁移(回落演示路径) |
 | `weekly_workflow_query` | ✅ 已接线 | 审批动作流水(可选表):分布 955/460/150/**13**、日志 **1,578** 行 / 150 任务 / 10.52、node×action **6 档**、`scope=recent` 按动作时间倒序;**`opinion` 按权限才出列** |
 | `weekly_scale` | ✅ 已接线 | 三种 mode × 三种分组轴;技术组 totals 82/77/294/402、集团组 46/40/180/52(各组里程碑相加 = 全库 474,自校验未被 JOIN 放大);completeness 82/77/80/73;intensity 82 任务 / 943 行 / 11.5 |
-| 其余 19 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
+| `weekly_rank` | ✅ 已接线 | 三种并列语义 × 六种子表度量:**cut 前 3 名 = 3 行**、**keep_ties 前 3 名 = 12 行**(第 3 名并列)、per_group 每组一行;附件第一名任务 73(20 个);未授权表(附件/集团历史)报 `table_not_granted` |
+| 其余 18 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
 
 三条硬规则:
 
@@ -155,6 +156,13 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 **端到端验证**(真 PG + 正式源模式,20 项断言全通过):信封 9 字段齐全、`source_tables` 指向正式表、
 publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 103 的 V8 冲突(来自集团历史表)、
 新鲜度分档 63/44/8/9/4 且合计 = 任务总数、在办「从未报进展」8、漂移 73,未迁移参数全部回落。
+
+> 口径提醒:**NULL 的排序方向必须显式写**:MySQL 降序把 NULL 放最后、升序放最前,
+> 而 PG 默认相反 —— 不加 `NULLS LAST/FIRST` 会算出与演示源不同的名次。
+> 口径提醒:**排名度量的并列语义由服务端定**:同一份数据里「进展期数前 3 名」在 cut 下是 3 行、
+> 在 keep_ties(RANK)下是 12 行,两个集合不同,不能让调用方拿到明细后自己裁。
+> 口径提醒:引用 task 行上列的度量(如项目团队人数)**必须把该列写进 GROUP BY** ——
+> PG 只在有主键/唯一非空约束时才做函数依赖推断,缺约束的环境会直接报错。
 
 > 口径提醒:多张子表同时 JOIN 时,**每个子表计数都必须 `COUNT(DISTINCT 主键)`** ——
 > 不去重时技术组里程碑会从 294 变成 1363。自校验:各组里程碑相加应等于全库总数(474)。

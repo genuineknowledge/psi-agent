@@ -542,6 +542,38 @@ def _scale(args: dict[str, Any]) -> dict[str, Any] | None:
 
 _NEW_HANDLERS_8 = {"weekly_scale": _scale}
 
+
+def _rank(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_rank:任务排名(cut / keep_ties / per_group)。"""
+    metric = (args.get("metric") or "progress_rounds").strip()
+    optional = tuple(tpl.RANK_METRICS.get(metric, ("", "", "", "", None))[4:5])
+    optional_table = optional[0] if optional else None
+    granted = (optional_table,) if (optional_table and optional_granted(optional_table)) else ()
+    sql, params = tpl.rank_tasks(
+        metric=metric,
+        mode=(args.get("mode") or "cut").strip(),
+        top=int(args.get("top") or 5),
+        ascending=bool(args.get("ascending")),
+        group_by=(args.get("group_by") or "").strip() or None,
+        board_code=(args.get("board") or "").strip() or None,
+        granted_optional=granted,
+    )
+    return envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            "正式任务门 = is_deleted = 0 AND workflow_status = 'published';"
+            "cut 硬切前 N 条(并列按 task id),keep_ties 用 RANK() 保留并列(行数通常大于 N),"
+            "per_group 每组第一(top 无意义);各度量走 LEFT JOIN,零值任务保留;"
+            "project_team_size 数的是 task 行上 project_owner_name 的三种分隔符(、 , ;)"
+        ),
+        limit=int(args.get("top") or 5) if (args.get("mode") or "cut") == "cut" else MAX_ROWS,
+        cap_last_param=(args.get("mode") or "cut") == "cut",
+    )
+
+
+_NEW_HANDLERS_9 = {"weekly_rank": _rank}
+
 _HANDLERS = {
     "weekly_task_query": _task_query,
     "weekly_progress_coverage": _coverage,
@@ -555,6 +587,7 @@ _HANDLERS = {
     "weekly_submission_query": _submission,
     "weekly_workflow_query": _workflow,
     "weekly_scale": _scale,
+    "weekly_rank": _rank,
 }
 
 # _NEW_HANDLERS 只是构建期的清单,避免手工漏接线
