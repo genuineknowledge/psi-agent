@@ -1069,3 +1069,167 @@ JOIN task t ON t.id = s.task_id
 WHERE {where_sql}
 """
     return sql, tuple(params)
+
+
+# ---- batch 4: 文本规则域(服务端固化正则,模型照抄结果)------------------------
+
+TEXT_RULES = ("number_conflict", "availability", "keyword")
+
+# 规则用的正则与 mock 完全一致(PG 的 ARE 支持 \d / \s / (?:...),可原样移植)。
+DRAFT_RE = r"草案(\d+)\s*项"
+REPORT_RE_A = r"(\d+)\s*项已?报批"
+REPORT_RE_B = r"已?报批(\d+)\s*项"
+CONSULT_RE_A = r"(\d+)\s*项进入征求意见"
+CONSULT_RE_B = r"征求意见(\d+)\s*项"
+AVAILABILITY_RE = r"可用性(\d+(?:\.\d+)?)%"
+COORDINATION_RE = r"协调|协同|联动|牵头组织"
+
+AVAILABILITY_FLOOR = 90
+SUM_ANOMALY_LIMIT = 100
+
+
+def text_check(
+    rule: str,
+    board_code: str | None = None,
+    task_id: int | None = None,
+    keyword: str | None = None,
+    all_versions: bool = False,
+    group_history_granted: bool = True,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """文本规则检查(number_conflict / availability / keyword),规则固化在服务端。
+
+    为什么放服务端:这些题让模型自己从正文里数,要么跑满 max_rounds,要么方向不符;
+    正则与判定固化后模型只需调一次并照抄结果。
+
+    **进展正文在两个地方**:技术看板在 ``task_progress.latest_progress``,
+    集团看板在 ``task_group_progress_history.progress_effect``。只扫前者会漏掉集团任务
+    的历史版本 —— 演示数据里"任务 103 的 V8 冲突"就在集团历史表里,因此这里 UNION 两张表。
+
+    默认每任务取**最新一期**已发布进展(期号倒序、同期按 id 兜底);
+    ``all_versions=True`` 扫全部已发布轮次(问"历史上哪一版出过冲突"时用)。
+    ``task_group_progress_history`` 属四张可选表之一:未授权时退化为只看技术组,
+    调用方应把这一限制写进回答。
+    """
+    if rule not in TEXT_RULES:
+        raise ValueError(f"不支持的规则:{rule};支持 {', '.join(TEXT_RULES)}")
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+
+    def side(alias: str, table: str, text_expr: str, next_expr: str, latest_clause: str) -> tuple[str, list[object]]:
+        """构造一支数据源(技术组或集团组),各自带自己的过滤参数。"""
+        where = [adm.sql_task_admission("pg", "t")]
+        params: list[object] = []
+        join = ""
+        if board:
+            join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+            where.append("b.code = %s")
+            params.append(board)
+        if task_id is not None:
+            where.append("t.id = %s")
+            params.append(int(task_id))
+        sql = f"""SELECT t.id AS task_id, t.task_name, {alias}.version_no AS version_no,
+       {text_expr} AS progress_text, {next_expr} AS next_work, '{table}' AS source
+FROM {table} {alias}
+JOIN task t ON t.id = {alias}.task_id
+{join}
+WHERE {"\n  AND ".join(where)}
+  AND {latest_clause}"""
+        return sql, params
+
+    tech_latest = (
+        "p.is_published = 1 AND p.id = (SELECT q.id FROM task_progress q"
+        " WHERE q.task_id = p.task_id AND q.is_published = 1"
+        " ORDER BY q.version_no DESC, q.id DESC LIMIT 1)"
+        if not all_versions
+        else "p.is_published = 1"
+    )
+    hist_latest = (
+        "h.is_published = 1 AND h.version_no = (SELECT max(h2.version_no)"
+        " FROM task_group_progress_history h2"
+        " WHERE h2.task_id = h.task_id AND h2.is_published = 1)"
+        if not all_versions
+        else "h.is_published = 1"
+    )
+    tech_sql, tech_params = side("p", "task_progress", "p.latest_progress", "p.next_work", tech_latest)
+    hist_sql, hist_params = side("h", "task_group_progress_history", "h.progress_effect", "''", hist_latest)
+
+    sources = [tech_sql] + ([hist_sql] if group_history_granted else [])
+    params_out: list[object] = list(tech_params)
+    if group_history_granted:
+        params_out.extend(hist_params)
+    rows_cte = " UNION ALL ".join(sources)
+
+    if rule == "availability":
+        # 正则里的字面 % 必须写成 %%:psycopg 会对整条 SQL 文本做占位符解析,
+        # 裸 % 会被当成参数标记(报 "only '%s', '%b', '%t' are allowed as placeholders")。
+        pattern = AVAILABILITY_RE.replace("%", "%%")
+        expr = f"(regexp_match(progress_text, '{pattern}'))[1]"
+        sql = f"""
+WITH rows AS (
+{rows_cte}
+)
+SELECT task_id, task_name, version_no, source,
+       {expr} AS availability_pct
+FROM rows
+WHERE progress_text ~ '{pattern}'
+  AND ({expr})::numeric < {AVAILABILITY_FLOOR}
+ORDER BY task_id, version_no
+LIMIT %s
+"""
+        return sql, (*params_out, int(limit))
+
+    if rule == "keyword":
+        pattern = keyword.strip() if keyword and keyword.strip() else COORDINATION_RE
+        sql = f"""
+WITH rows AS (
+{rows_cte}
+)
+SELECT task_id, task_name, version_no, source, next_work
+FROM rows
+WHERE next_work ~ %s
+ORDER BY task_id, version_no
+LIMIT %s
+"""
+        return sql, (*params_out, pattern, int(limit))
+
+    text_expr = "progress_text || ' ' || coalesce(next_work, '')"
+    draft = f"(regexp_match({text_expr}, '{DRAFT_RE}'))[1]::int"
+    report = (
+        f"coalesce((regexp_match({text_expr}, '{REPORT_RE_A}'))[1],"
+        f" (regexp_match({text_expr}, '{REPORT_RE_B}'))[1])::int"
+    )
+    consult = (
+        f"coalesce((regexp_match({text_expr}, '{CONSULT_RE_A}'))[1],"
+        f" (regexp_match({text_expr}, '{CONSULT_RE_B}'))[1])::int"
+    )
+    sql = f"""
+WITH rows AS (
+{rows_cte}
+), extracted AS (
+    SELECT task_id, task_name, version_no, source, progress_text,
+           {draft}   AS draft_cnt,
+           {report}  AS report_cnt,
+           {consult} AS consult_cnt
+    FROM rows
+)
+SELECT task_id, task_name, version_no, source,
+       draft_cnt, report_cnt, consult_cnt,
+       concat_ws(',',
+           CASE WHEN report_cnt > draft_cnt  THEN 'hard_report_gt_draft'  END,
+           CASE WHEN consult_cnt > draft_cnt THEN 'hard_consult_gt_draft' END,
+           CASE WHEN report_cnt IS NOT NULL AND consult_cnt IS NOT NULL
+                     AND draft_cnt + report_cnt + consult_cnt > {SUM_ANOMALY_LIMIT}
+                THEN 'sum_anomaly' END) AS conflict_type,
+       left(progress_text, 60) AS text_snippet
+FROM extracted
+WHERE draft_cnt IS NOT NULL
+  AND (report_cnt > draft_cnt
+       OR consult_cnt > draft_cnt
+       OR (report_cnt IS NOT NULL AND consult_cnt IS NOT NULL
+           AND draft_cnt + report_cnt + consult_cnt > {SUM_ANOMALY_LIMIT}))
+ORDER BY task_id, version_no
+LIMIT %s
+"""
+    return sql, (*params_out, int(limit))

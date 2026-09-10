@@ -63,6 +63,10 @@
 | `by_kind` | progress 312 / initial 150 | ✅ 一致(合计 462) |
 | `inflight_by_kind` | 状态 × 类型 **九档** | ✅ 一致 |
 | `rounds_per_task` | 150 任务 / 462 单 / 3.08 单每任务 | ✅ 一致(分子分母都给出) |
+| 文本规则 `number_conflict` | **任务 103 的 V8 冲突在集团历史表里**,三种冲突类型齐全 | ✅ 一致 |
+| 对照:不看集团历史表 | 任务 103 命中 0 条 | ✅ 一致(证明必须扫两张表) |
+| 文本规则 `availability` | 只返回「可用性 NN%」低于 90 的 | ✅ 一致(命中 19 条) |
+| 文本规则 `keyword` | 默认 协调/协同/联动/牵头组织 | ✅ 一致(命中 19 条) |
 
 三条由此固化的铁律:
 
@@ -78,7 +82,9 @@
    因此必须提供 `latest_progress_drift` 这条检查。
 5. **提交单域只加 `t.is_deleted = 0`**(462 = 470 − 8 个软删任务下的单),**不带任务发布门**;看板在 `task` 上,按看板提问必须从任务侧下推(462 张单 vs 清单封顶 200 行);
 6. **「在途」按成员枚举 `SUBMISSION_INFLIGHT`**(含 `rejected`、不含 `cancelled`),写成 `status <> 'published'` 会多算 cancelled 那张(60 vs 59);
-7. **`latest_round` 按 `version_no DESC, id DESC` 取最新一期**,不按 `progress_date`:补报的老期号可能有更晚的日期。
+7. **文本规则的进展正文在两个地方**:技术组 `task_progress.latest_progress`、集团组 `task_group_progress_history.progress_effect`。只扫前者会漏掉集团任务的历史版本(任务 103 的 V8 冲突就在历史表里),必须 UNION 两张表,并在集团表未授权时显式说明这一限制;
+8. **SQL 文本里的字面 `%` 必须写成 `%%`**:psycopg 会对整条 SQL 做占位符解析,`可用性(\d+)%` 这种正则会被当成参数标记并报 `only '%s', '%b', '%t' are allowed as placeholders`。这是真库验证抓到的运行时错误,纯单测与语法解析都照不出来;
+9. **`latest_round` 按 `version_no DESC, id DESC` 取最新一期**,不按 `progress_date`:补报的老期号可能有更晚的日期。
 
 ### 3.0.1 性能与索引要求(2026-09-10 实测,真 PG 15.5)
 

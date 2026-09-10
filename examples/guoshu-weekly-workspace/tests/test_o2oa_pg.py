@@ -404,3 +404,61 @@ class TestSubmissionScopes:
     def test_unknown_scope_rejected(self):
         with pytest.raises(ValueError):
             o2.submission_stats("everything")
+
+
+class TestTextCheckRules:
+    """文本规则域:正则固化在服务端,且必须同时扫技术组与集团组两张进展表。"""
+
+    def test_unknown_rule_rejected(self):
+        with pytest.raises(ValueError):
+            o2.text_check("magic")
+
+    def test_scans_both_progress_tables(self):
+        sql, _params = o2.text_check("number_conflict")
+        assert "task_progress p" in sql
+        assert "task_group_progress_history h" in sql  # 任务 103 V8 的冲突在这张表里
+        assert "UNION ALL" in sql
+
+    def test_degrades_when_group_history_not_granted(self):
+        sql, _params = o2.text_check("number_conflict", group_history_granted=False)
+        assert "task_group_progress_history" not in sql
+        assert "task_progress p" in sql
+
+    def test_latest_mode_uses_two_level_ordering(self):
+        sql, _params = o2.text_check("availability")
+        assert "ORDER BY q.version_no DESC, q.id DESC LIMIT 1" in sql
+        assert "max(h2.version_no)" in sql  # 集团历史表按最大期号取最新
+
+    def test_all_versions_mode_keeps_every_published_round(self):
+        sql, _params = o2.text_check("number_conflict", all_versions=True)
+        assert "ORDER BY q.version_no DESC, q.id DESC LIMIT 1" not in sql
+        assert "max(h2.version_no)" not in sql
+        assert sql.count("is_published = 1") >= 2
+
+    def test_availability_rule_threshold(self):
+        sql, params = o2.text_check("availability")
+        # 字面 % 在 SQL 文本里必须转义成 %%(否则被 psycopg 当占位符)
+        assert "可用性(\\d+(?:\\.\\d+)?)%%" in sql
+        assert "::numeric < 90" in sql
+        assert params == (200,)
+
+    def test_keyword_rule_default_and_custom(self):
+        sql, params = o2.text_check("keyword")
+        assert "next_work ~ %s" in sql
+        assert params == ("协调|协同|联动|牵头组织", 200)
+        _sql2, params2 = o2.text_check("keyword", keyword="协同")
+        assert params2 == ("协同", 200)
+
+    def test_number_conflict_reports_three_labels(self):
+        sql, params = o2.text_check("number_conflict")
+        assert "hard_report_gt_draft" in sql
+        assert "hard_consult_gt_draft" in sql
+        assert "sum_anomaly" in sql
+        assert "> 100" in sql  # 阶段数量之和异常的门槛
+        assert "draft_cnt IS NOT NULL" in sql  # 没有草案数的行不判
+        assert params == (200,)
+
+    def test_task_filter_is_passed_to_both_sides(self):
+        sql, params = o2.text_check("number_conflict", task_id=103)
+        assert sql.count("t.id = %s") == 2  # 两支各自过滤
+        assert params == (103, 103, 200)
