@@ -18,7 +18,9 @@ import _admission as adm  # ty: ignore
 import _fallback  # ty: ignore
 import _formal  # ty: ignore
 import _o2oa_templates as o2  # ty: ignore
+import _pg  # ty: ignore
 import _store  # ty: ignore
+import psycopg
 
 # Every builder must carry rule 1; a template that forgets it would answer
 # drafts / in-flight tasks, which is the one failure the note calls out twice.
@@ -2222,4 +2224,59 @@ class TestSecondWaveScopes:
     def test_new_scopes_are_declared(self):
         for scope in ("id_variants", "id_longest", "reviewers", "self_review"):
             assert scope in o2.PERSON_SCOPES
+
+
+class TestPgConnectHardening:
+    """正式源建连的两道闸:超时 + 瞬时失败重试。
+
+    两条都是**实测踩出来的**:端口转发半死时工具调用会一直挂着(agent 侧只看到
+    "这一轮没返回");转发抖动时建连会 "server closed the connection unexpectedly",
+    下一次多半就成功 —— 为一次抖动让整个工具调用报错,对调用方是**假故障**。
+    """
+
+    def test_connect_timeout_and_statement_timeout_are_sent(self, monkeypatch):
+        seen: list[dict] = []
+        monkeypatch.setattr(_pg.psycopg, "connect", lambda **kwargs: seen.append(kwargs) or "conn")
+        assert _pg.connect() == "conn"
+        assert seen[0]["connect_timeout"] == _pg.DB_CONNECT_TIMEOUT > 0
+        assert f"statement_timeout={_pg.DB_STATEMENT_TIMEOUT_MS}" in seen[0]["options"]
+        assert "default_transaction_read_only=on" in seen[0]["options"]
+
+    def test_transient_connect_failure_is_retried(self, monkeypatch):
+        calls: list[int] = []
+
+        def flaky(**_kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise psycopg.OperationalError("server closed the connection unexpectedly")
+            return "conn"
+
+        monkeypatch.setattr(_pg, "DB_CONNECT_ATTEMPTS", 2)
+        monkeypatch.setattr(_pg.psycopg, "connect", flaky)
+        assert _pg.connect() == "conn" and len(calls) == 2
+
+    def test_last_failure_is_raised_not_swallowed(self, monkeypatch):
+        """重试只治抖动:一直失败要把原异常抛出去(错误信息里带真实原因)。"""
+
+        def always(**_kwargs):
+            raise psycopg.OperationalError("password authentication failed")
+
+        monkeypatch.setattr(_pg, "DB_CONNECT_ATTEMPTS", 2)
+        monkeypatch.setattr(_pg.psycopg, "connect", always)
+        with pytest.raises(psycopg.OperationalError):
+            _pg.connect()
+
+    def test_deterministic_errors_are_not_retried(self, monkeypatch):
+        """密码错/库不存在这类确定性错误重试没有意义,不许掩盖第一次的错。"""
+        calls: list[int] = []
+
+        def broken(**_kwargs):
+            calls.append(1)
+            raise psycopg.ProgrammingError("database does not exist")
+
+        monkeypatch.setattr(_pg, "DB_CONNECT_ATTEMPTS", 3)
+        monkeypatch.setattr(_pg.psycopg, "connect", broken)
+        with pytest.raises(psycopg.ProgrammingError):
+            _pg.connect()
+        assert len(calls) == 1
 

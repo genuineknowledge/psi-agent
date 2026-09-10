@@ -52,13 +52,29 @@ except ImportError:  # pragma: no cover
     psycopg = None  # ty: ignore (module-typed name cannot be rebound)
 
 
+DB_CONNECT_ATTEMPTS = int(os.environ.get("GUOSHU_PG_CONNECT_ATTEMPTS", "2"))
+"""建连尝试次数(默认 2:先试一次,失败且是**瞬时**错误再试一次)。
+
+为什么需要:每个工具调用都新建连接,而"连接刚建上就被对端关掉"
+(``server closed the connection unexpectedly``)在跨网络、经跳板/隧道时并不罕见 ——
+它下一次多半就成功了。为一次抖动就让整个工具调用报错,对调用方是**假故障**。
+只重试**瞬时类**错误(连接建立阶段、超时),``OperationalError`` 里那些确定性的错
+(密码错、库不存在)重试没有意义,不在此列。
+"""
+
+
 def dsn() -> str:
     """Human-readable target. Never includes the password."""
     return f"pg://{DB_USER}@{DB_HOST}:{DB_PORT}/{DB_NAME}?schema={DB_SCHEMA}"
 
 
 def connect() -> Any:
-    """Open a read-only connection to the formal source."""
+    """Open a read-only connection to the formal source.
+
+    瞬时建连失败会重试 ``DB_CONNECT_ATTEMPTS - 1`` 次(见该常量的说明);
+    最后一次仍失败就把原异常抛出去 —— 由 ``_formal.envelope`` / ``server._guard``
+    包成工具出口的错误信封,错误信息里带着真实原因。
+    """
     if psycopg is None:  # pragma: no cover
         raise RuntimeError(
             "psycopg is required for the o2oa data source; install with 'pip install \"psycopg[binary]>=3.2,<4\"'"
@@ -70,13 +86,20 @@ def connect() -> Any:
         f"-c search_path={DB_SCHEMA} "
         f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}"
     )
-    return psycopg.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD or None,
-        autocommit=True,
-        connect_timeout=DB_CONNECT_TIMEOUT or None,
-        options=options,
-    )
+    attempts = max(1, DB_CONNECT_ATTEMPTS)
+    for attempt in range(attempts):
+        try:
+            return psycopg.connect(
+                host=DB_HOST,
+                port=DB_PORT,
+                dbname=DB_NAME,
+                user=DB_USER,
+                password=DB_PASSWORD or None,
+                autocommit=True,
+                connect_timeout=DB_CONNECT_TIMEOUT or None,
+                options=options,
+            )
+        except (psycopg.OperationalError, psycopg.InterfaceError):
+            if attempt + 1 >= attempts:
+                raise
+    raise AssertionError("unreachable")  # pragma: no cover - 上面必定 return 或 raise

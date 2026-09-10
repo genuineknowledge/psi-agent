@@ -915,13 +915,24 @@ publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 1
 | 真库基线交叉核对 `verify_real_baseline.py` | **44 / 44**(31 → 44) |
 | 工具级 `verify_real_mcp_tools.py` | **28 / 28**(12 → 28) |
 | 列集合对照 `column_parity.py` | **139 / 141**(+14 例;1 处已知有意差异 + 1 处对照器覆盖不到) |
-| 单测 `test_o2oa_pg.py` | **252 通过**(241 → 252) |
+| 单测 `test_o2oa_pg.py` | **256 通过**(241 → 252 → 256,末 4 条是建连加固) |
 | `check_pg_syntax.py` / `ruff` / `ty` | **165 条 ALL OK** / 干净 / 干净 |
 
 顺带修掉一个**会挂死**的隐患:`_pg.connect()` 此前没有建连超时,库里不可达(网络黑洞、
-隧道半死)时工具调用会一直挂着,agent 侧只看到"这一轮没返回"。现在固定
-`connect_timeout`(默认 10s,`GUOSHU_PG_CONNECT_TIMEOUT` 可调)并下发
-`statement_timeout`(默认 30s)。**挂着与报错对调用方不是一回事**:后者可判断、可行动。
+隧道半死)时工具调用会一直挂着,agent 侧只看到"这一轮没返回"。现在三件事一起做:
+
+1. 固定 `connect_timeout`(默认 10s,`GUOSHU_PG_CONNECT_TIMEOUT` 可调);
+2. 下发 `statement_timeout`(默认 30s,`GUOSHU_PG_STATEMENT_TIMEOUT_MS` 可调)——
+   一个跑飞的查询与"库挂了"对调用方是同一件事(都要等),30 秒后报 `query_failed` 至少可行动;
+3. **瞬时建连失败重试一次**(`GUOSHU_PG_CONNECT_ATTEMPTS`,默认 2)。
+   每个工具调用都新建连接,"连接刚建上就被对端关掉"(`server closed the connection
+   unexpectedly`)在跨网络 / 经跳板隧道时并不罕见,下一次多半就成功 —— 为一次抖动让整个
+   工具调用报错,对调用方是**假故障**。只重试瞬时类(`OperationalError` / `InterfaceError`),
+   密码错、库不存在这类确定性错误不重试(不许掩盖第一次的错)。
+
+**挂着与报错对调用方不是一回事**:后者可判断、可行动。配套地,`chain.py` 的端口转发也
+打开了 SSH keepalive —— 实测两次"端口还在监听但转发链路已死",都是空闲一段时间后出现的,
+表现正是"连接能建上、请求没有响应"。
 
 ## 5. 能力边界(未授权表时)
 - `task_attachment` 只读元数据:问答只能答“存在附件《文件名》”,文件体在
