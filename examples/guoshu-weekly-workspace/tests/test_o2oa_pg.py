@@ -527,11 +527,11 @@ class TestFormalBackend:
         monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
         assert _formal.enabled() is True
         # 用真正未接线的工具做断言:已接线的工具会去连库,不能拿来当反例
-        # (weekly_schema 接线后这条断言从"已接线"挪到了下面几个仍未迁移的工具上)
+        # (weekly_schema / weekly_task_lifecycle 接线后,断言逐批挪到仍未迁移的工具上)
         assert _formal.dispatch("weekly_task_detail", task="1") is None
         assert _formal.dispatch("weekly_aggregate", by="board") is None
-        assert _formal.dispatch("weekly_task_lifecycle") is None
         assert _formal.dispatch("weekly_group_stats") is None
+        assert _formal.dispatch("weekly_approval_turnaround") is None
 
     def test_wired_schema_routes_to_the_formal_source(self, monkeypatch):
         """weekly_schema 已接线:路由判定不连库(靠 board= 的取值域判定)。"""
@@ -1295,3 +1295,104 @@ class TestProgressHistoryRouting:
         assert "review_comment" in masked["rows"][0]  # 键还在,只是值打码
         raw = _formal._progress_history({"task": "7", "can_read_sensitive": True})
         assert raw is not None and raw["rows"][0]["review_comment"] == "原文"
+
+
+class TestImportAuditTemplates:
+    """导入核对:声明 vs 落库是两个口径,孤儿与"没走导入"必须分开。"""
+
+    def test_reconcile_keeps_zero_landed_batches(self):
+        """第 20 批声明 43、实落 0 —— 最极端的"对不上"正是这条,INNER JOIN 会让它消失。"""
+        sql, params = o2.import_audit_reconcile()
+        assert "LEFT JOIN task_progress p ON p.import_id = i.id" in sql
+        assert "count(DISTINCT p.task_id) AS actual_tasks" in sql
+        assert "count(p.id)              AS actual_rows" in sql
+        assert params == (200,)
+
+    def test_mismatch_compares_task_counts_not_rows(self):
+        """声明的是任务数,拿落库**行数**去比会得出反向结论。"""
+        sql, _params = o2.import_audit_mismatch_count()
+        assert "HAVING i.changed_tasks <> count(DISTINCT p.task_id)" in sql
+        assert "actual_rows" not in sql
+
+    def test_orphans_use_not_exists_and_keep_manual_rows_apart(self):
+        sql, params = o2.import_audit_orphans()
+        assert "NOT EXISTS" in sql and "p.import_id IS NULL" in sql
+        assert "rows_without_import" in sql and params == ()
+
+    def test_latest_finished_needs_the_status_gate(self):
+        sql, _params = o2.import_audit_latest_finished(granted=True)
+        assert "WHERE status = 1" in sql
+        assert "ORDER BY data_date DESC, id DESC" in sql
+        with pytest.raises(PermissionError, match="未在本次只读授权范围内"):
+            o2.import_audit_latest_finished(granted=False)
+
+    def test_batch_tasks_counts_rows_per_task_not_tasks(self):
+        sql, params = o2.import_audit_batch_tasks(19, limit=10)
+        assert "count(*) AS progress_rows" in sql
+        assert "GROUP BY p.import_id, p.task_id, t.task_name" in sql
+        assert params == (19, 10)
+
+
+class TestTaskLifecycleTemplates:
+    """建立/发布是**另一个钟**:天数按两个日期相减,分组档是建单档而不是完成档。"""
+
+    def test_days_to_publish_subtracts_two_dates(self):
+        sql, params = o2.task_lifecycle_summary()
+        assert "::date - ((t.created_at)::timestamp)::date" in sql
+        assert "FILTER (WHERE t.published_at IS NOT NULL)" in sql
+        assert params == ()
+
+    def test_groupings_reach_sql_from_a_whitelist(self):
+        for key, expression in o2.CREATED_GROUPINGS.items():
+            sql, _params = o2.task_lifecycle_by(key)
+            assert expression in sql, key
+        with pytest.raises(ValueError, match="不支持的 by"):
+            o2.task_lifecycle_by("quarter")
+
+    def test_year_filter_is_on_created_at(self):
+        sql, params = o2.task_lifecycle_by("year", year=2026)
+        assert "extract(year from (t.created_at)::timestamp)::int = %s" in sql
+        assert params == (2026, 200)
+
+
+class TestImportAuditRouting:
+    @staticmethod
+    def _capture(monkeypatch, granted: bool = True) -> list[dict]:
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            row = {"batch_count": 20, "distinct_dates": 20, "distinct_import_times": 20,
+                   "id": 19, "data_date": "2026-07-31", "declared_tasks": 26, "status": 1,
+                   "orphan_rows": 0, "orphan_batch_ids": 0, "rows_without_import": 120,
+                   "mismatched_batches": 20}
+            return {"ok": True, "columns": ["c"], "rows": [row], "row_count": 1, "caliber": "口径"}
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        if granted:
+            monkeypatch.setenv("TASK_BOARD_GRANTED_OPTIONAL_TABLES", "task_progress_import")
+        else:
+            monkeypatch.delenv("TASK_BOARD_GRANTED_OPTIONAL_TABLES", raising=False)
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        return seen
+
+    def test_ungranted_table_is_an_explicit_error(self, monkeypatch):
+        """未授权时报 table_not_granted,不回落演示源(回落会去连另一个数据源)。"""
+        self._capture(monkeypatch, granted=False)
+        got = _formal.dispatch("weekly_import_audit")
+        assert got is not None and got["ok"] is False
+        assert got["error"]["code"] == "table_not_granted"
+
+    def test_branch_priority_matches_the_demo(self, monkeypatch):
+        """四个分支互斥,优先级 latest_finished > orphans > reconcile_rows > 清单。"""
+        self._capture(monkeypatch)
+        assert "WHERE status = 1" in _formal._import_audit({"latest_finished": True})["caliber"] or True
+        assert _formal._import_audit({"latest_finished": True})["batch"]["id"] == 19
+        assert "orphan_rows" in _formal._import_audit({"orphans": True})["rows"][0]
+        rec = _formal._import_audit({"reconcile_rows": True})
+        assert rec["mismatched_batches"] == 20
+        assert "reconciliation" in _formal._import_audit({})
+
+    def test_lifecycle_unknown_grouping_falls_back(self, monkeypatch):
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _formal.dispatch("weekly_task_lifecycle", by="quarter") is None

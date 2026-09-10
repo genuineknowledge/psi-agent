@@ -1638,6 +1638,150 @@ LIMIT 2
     return int(exact[0]["id"]) if len(exact) == 1 else None
 
 
+def _import_audit(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_import_audit:导入批次核对(可选表 ``task_progress_import``)。
+
+    四个分支互斥,优先级与演示源一致:`latest_finished` > `orphans` > `reconcile_rows` > 清单。
+    """
+    granted = optional_granted("task_progress_import")
+    if not granted:
+        hint = adm.require_optional_table("task_progress_import", False)
+        raise PermissionError(hint or "task_progress_import 未授权")
+    limit = max(1, min(MAX_ROWS, int(args.get("limit") or MAX_ROWS)))
+
+    ssql, sparams = tpl.import_audit_summary()
+    summary = envelope(
+        sql=ssql,
+        params=sparams,
+        caliber="批次数 vs 去重业务快照日期数 vs 去重导入时间数(R-09/R-10)",
+        limit=1,
+    )
+    recond = (summary.get("rows") or [{}])[0]
+
+    if args.get("latest_finished"):
+        bsql, bparams = tpl.import_audit_latest_finished(granted=True)
+        batch = envelope(
+            sql=bsql,
+            params=bparams,
+            caliber="跑完 = status = 1;最近按 data_date 倒序、同日按 id 倒序",
+            limit=1,
+        )
+        if not batch["rows"]:
+            return {
+                "ok": True,
+                "rows": [],
+                "row_count": 0,
+                "has_more": False,
+                "caliber": "库里没有 status = 1 的导入批次,即没有跑完的批次",
+                "snapshot_note": FORMAL_SNAPSHOT_NOTE,
+                "snapshot_date": as_of(),
+                "columns": [],
+            }
+        picked = batch["rows"][0]
+        tsql, tparams = tpl.import_audit_batch_tasks(int(picked["id"]), limit=limit)
+        result = envelope(
+            sql=tsql,
+            params=tparams,
+            caliber=(
+                "is_deleted = 0 AND workflow_status = 'published';"
+                f"最近一批跑完的是第 {picked['id']} 批({picked['data_date']},status = 1);"
+                "「跑完」是 status = 1,**不能只按日期取最新**:按 data_date 最新的是第 20 批,"
+                "它 status 0 且实落 0 行,拿它答等于答了一批没跑的;"
+                f"该批声明 changed_tasks {picked['declared_tasks']},实际落库任务数见 row_count,"
+                "两者不等是常态(声明与落库是两个口径,核对用 reconcile_rows=True);"
+                "progress_rows 是该任务在这批里的进展行数,不是任务数"
+            ),
+            limit=limit,
+            cap_last_param=True,
+        )
+        result["batch"] = picked
+        result["reconciliation"] = recond
+        return result
+
+    if args.get("orphans"):
+        osql, oparams = tpl.import_audit_orphans()
+        result = envelope(
+            sql=osql,
+            params=oparams,
+            caliber=(
+                "孤儿定义:import_id 非空且 task_progress_import 里查不到该批次(NOT EXISTS);"
+                "import_id IS NULL 是未经导入的手工填报,不算孤儿,另计为 rows_without_import;"
+                "orphan_rows = 0 即引用完整,这是结论本身,不要换口径重算"
+            ),
+            limit=1,
+        )
+        result["reconciliation"] = recond
+        return result
+
+    if args.get("reconcile_rows"):
+        msql, mparams = tpl.import_audit_mismatch_count()
+        mismatch = envelope(sql=msql, params=mparams, caliber="声明与实际不等的批次数", limit=1)
+        rsql, rparams = tpl.import_audit_reconcile(limit=limit)
+        result = envelope(
+            sql=rsql,
+            params=rparams,
+            caliber=(
+                "declared_tasks 取自批次行的 changed_tasks(声明值);"
+                "actual_tasks / actual_rows 由 task_progress.import_id 反查得出,"
+                "前者去重任务数、后者进展行数,二者与声明值是三个不同口径;"
+                "LEFT JOIN 保留零落库批次(否则最极端的对不上那批会消失);"
+                "mismatched_batches 为声明与实际任务数不等的批次数,勿自行比对"
+            ),
+            limit=limit,
+            cap_last_param=True,
+        )
+        result["reconciliation"] = recond
+        result["mismatched_batches"] = (mismatch.get("rows") or [{}])[0].get("mismatched_batches")
+        return result
+
+    lsql, lparams = tpl.import_audit_listing(limit=limit)
+    result = envelope(
+        sql=lsql,
+        params=lparams,
+        caliber=(
+            "data_date 为业务快照日期;"
+            "changed_tasks 是批次自己声明的数字,未与实际落库行核对,要核对请用 reconcile_rows=True"
+        ),
+        limit=limit,
+        cap_last_param=True,
+    )
+    result["reconciliation"] = recond
+    return result
+
+
+def _task_lifecycle(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_task_lifecycle:任务建立与发布的**另一个钟**(不是"报进展"那个)。"""
+    grouping = (args.get("by") or "").strip().lower()
+    if grouping and grouping not in tpl.CREATED_GROUPINGS:
+        return None  # 演示路径会报 unsupported_group_by
+    year = int(args.get("year") or 0) or None
+    year_note = f";仅 created_at 属于 {year} 年" if year else ""
+    if grouping:
+        sql, params = tpl.task_lifecycle_by(grouping, year=year, limit=MAX_ROWS)
+        return envelope(
+            sql=sql,
+            params=params,
+            caliber=(
+                "is_deleted = 0 AND workflow_status = 'published'" + year_note
+                + f";按 created_at 的{grouping}分组;"
+                "created_count 是那一档新建的任务数,currently_finished 是其中「当前 status = 2」的条数;"
+                "任务表**没有完成时间列**,所以这是按建单档看当前状态,不是「那一年完成的任务数」——"
+                "跨档完成的任务仍记在建单档;各档 currently_finished 相加等于全库已完成总数"
+            ),
+            limit=MAX_ROWS,
+        )
+    sql, params = tpl.task_lifecycle_summary(year=year)
+    return envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            "is_deleted = 0 AND workflow_status = 'published'" + year_note
+            + ";到发布天数仅统计 published_at 非空的任务"
+        ),
+        limit=1,
+    )
+
+
 _HANDLERS = {
     "weekly_task_query": _task_query,
     "weekly_progress_coverage": _coverage,
@@ -1664,6 +1808,8 @@ _HANDLERS = {
     "weekly_schema": _schema,
     "weekly_field_completeness": _field_completeness,
     "weekly_progress_history": _progress_history,
+    "weekly_import_audit": _import_audit,
+    "weekly_task_lifecycle": _task_lifecycle,
 }
 
 # _NEW_HANDLERS 只是构建期的清单,避免手工漏接线

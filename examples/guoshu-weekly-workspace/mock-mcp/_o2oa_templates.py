@@ -3964,3 +3964,191 @@ WHERE {adm.sql_task_admission("pg", "t")}
 ORDER BY t.id
 """
     return sql, (SERIES_SUFFIX, int(task_id), int(task_id))
+
+
+# ---- batch 16: 导入批次核对 / 任务生命周期(建立与发布)-------------------------
+#
+# 两件事都在同一张表上,但问句不同:
+#
+#   * ``import_audit`` 核的是"声明的改了 N 条"与"实际落了几条"对不对得上 ——
+#     声明值在批次行上,落库值只能对 ``task_progress`` 数出来,**两张表单独列谁都答不了**;
+#   * ``task_lifecycle`` 走的是 ``task.created_at`` / ``published_at`` 这条**另一个钟**,
+#     与"报进展"的钟不是一回事。
+
+CREATED_GROUPINGS: dict[str, str] = {
+    "month": "to_char((t.created_at)::timestamp, 'YYYY-MM')",
+    "year": "extract(year from (t.created_at)::timestamp)::int",
+}
+
+
+def import_audit_summary() -> tuple[str, tuple]:
+    """批次数 vs 去重业务快照日期数 vs 去重导入时间数(R-09/R-10)。"""
+    sql = """
+SELECT count(*)                    AS batch_count,
+       count(DISTINCT data_date)   AS distinct_dates,
+       count(DISTINCT import_time) AS distinct_import_times
+FROM task_progress_import
+"""
+    return sql, ()
+
+
+def import_audit_latest_finished(granted: bool) -> tuple[str, tuple]:
+    """最近一批**跑完**(``status = 1``)的批次。"""
+    hint = adm.require_optional_table("task_progress_import", granted)
+    if hint:
+        raise PermissionError(hint)
+    sql = """
+SELECT id, file_name, data_date, import_time,
+       changed_tasks AS declared_tasks, status
+FROM task_progress_import
+WHERE status = 1
+ORDER BY data_date DESC, id DESC
+LIMIT 1
+"""
+    return sql, ()
+
+
+def import_audit_batch_tasks(batch_id: int, limit: int = 200) -> tuple[str, tuple]:
+    """某一批影响的**任务**(不是行数):``progress_rows`` 是该任务在这批里的进展行数。"""
+    sql = f"""
+SELECT p.import_id, p.task_id, t.task_name, count(*) AS progress_rows
+FROM task_progress p
+JOIN task t ON t.id = p.task_id
+WHERE {adm.sql_task_admission("pg", "t")}
+  AND p.import_id = %s
+GROUP BY p.import_id, p.task_id, t.task_name
+ORDER BY p.task_id
+LIMIT %s
+"""
+    return sql, (int(batch_id), max(1, int(limit)))
+
+
+def import_audit_orphans() -> tuple[str, tuple]:
+    """孤儿:``import_id`` 非空、但批次表里查不到该批次(NOT EXISTS)。
+
+    ``import_id IS NULL`` 是"没走导入"的手工填报,**不是孤儿** —— 混在一起会把
+    手工填报的进展全报成孤儿,所以单列 ``rows_without_import``。
+    """
+    sql = """
+SELECT count(*) FILTER (
+           WHERE p.import_id IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM task_progress_import i WHERE i.id = p.import_id)
+       ) AS orphan_rows,
+       count(DISTINCT CASE
+           WHEN p.import_id IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM task_progress_import i WHERE i.id = p.import_id)
+           THEN p.import_id END) AS orphan_batch_ids,
+       count(*) FILTER (WHERE p.import_id IS NULL) AS rows_without_import
+FROM task_progress p
+"""
+    return sql, ()
+
+
+def import_audit_reconcile(limit: int = 200) -> tuple[str, tuple]:
+    """逐批"声明 vs 实际"。LEFT JOIN 保留**零落库**的批次。"""
+    sql = """
+SELECT i.id, i.file_name, i.data_date,
+       i.changed_tasks AS declared_tasks,
+       count(DISTINCT p.task_id) AS actual_tasks,
+       count(p.id)              AS actual_rows,
+       count(DISTINCT p.task_id) - i.changed_tasks AS task_diff
+FROM task_progress_import i
+LEFT JOIN task_progress p ON p.import_id = i.id
+GROUP BY i.id, i.file_name, i.data_date, i.changed_tasks
+ORDER BY i.id DESC
+LIMIT %s
+"""
+    return sql, (max(1, int(limit)),)
+
+
+def import_audit_mismatch_count() -> tuple[str, tuple]:
+    """声明与实际任务数不等的批次数。
+
+    ``actual_tasks`` 与 ``actual_rows`` 是**两个**口径:声明的是任务数,
+    拿落库**行数**去比声明会得出反向结论。
+    """
+    sql = """
+SELECT count(*) AS mismatched_batches
+FROM (
+    SELECT i.id, i.changed_tasks AS declared, count(DISTINCT p.task_id) AS actual_tasks
+    FROM task_progress_import i
+    LEFT JOIN task_progress p ON p.import_id = i.id
+    GROUP BY i.id, i.changed_tasks
+    HAVING i.changed_tasks <> count(DISTINCT p.task_id)
+) x
+"""
+    return sql, ()
+
+
+def import_audit_listing(limit: int = 200) -> tuple[str, tuple]:
+    """批次清单(默认分支):``changed_tasks`` 是批次**自己声明**的数字。"""
+    sql = """
+SELECT id, file_name, data_date, import_time, total_tasks, changed_tasks, status
+FROM task_progress_import
+ORDER BY data_date DESC, id DESC
+LIMIT %s
+"""
+    return sql, (max(1, int(limit)),)
+
+
+def task_lifecycle_summary(year: int | str | None = None) -> tuple[str, tuple]:
+    """建立/发布的汇总:最早、最晚、到发布天数(仅 ``published_at`` 非空的计入)。"""
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    y = None
+    if year not in (None, "", 0, "0"):
+        y, hint = adm.check_year(year)
+        if hint:
+            raise ValueError(hint)
+        where.append("extract(year from (t.created_at)::timestamp)::int = %s")
+        params.append(y)
+    sql = f"""
+SELECT count(*) AS formal_tasks,
+       {adm.normalize_ts_sql("min((t.created_at)::timestamp)")}  AS earliest_created,
+       {adm.normalize_ts_sql("max((t.created_at)::timestamp)")}  AS latest_created,
+       count(*) FILTER (WHERE t.published_at IS NOT NULL) AS with_published_at,
+       round(avg(((t.published_at)::timestamp)::date - ((t.created_at)::timestamp)::date)
+             ::numeric, 1) AS avg_days_to_publish,
+       max(((t.published_at)::timestamp)::date - ((t.created_at)::timestamp)::date) AS max_days_to_publish
+FROM task t
+WHERE {"\n  AND ".join(where)}
+"""
+    return sql, tuple(params)
+
+
+def task_lifecycle_by(
+    grouping: str,
+    year: int | str | None = None,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """按建单档看**当前**状态(月 / 年)。
+
+    任务表没有"完成时间"列,所以这是"按建单档看当前 status",**不是**
+    "那一年完成的任务数" —— 跨档完成的任务仍记在建单档。口径里必须说明。
+    """
+    key = (grouping or "").strip().lower()
+    if key not in CREATED_GROUPINGS:
+        raise ValueError(f"不支持的 by:{grouping};支持 {', '.join(sorted(CREATED_GROUPINGS))}")
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    if year not in (None, "", 0, "0"):
+        y, hint = adm.check_year(year)
+        if hint:
+            raise ValueError(hint)
+        where.append("extract(year from (t.created_at)::timestamp)::int = %s")
+        params.append(y)
+    bucket = CREATED_GROUPINGS[key]
+    sql = f"""
+SELECT {bucket} AS bucket,
+       count(*) AS created_count,
+       count(*) FILTER (WHERE t.status = 2)     AS currently_finished,
+       count(*) FILTER (WHERE t.status IN (0, 1)) AS currently_in_flight,
+       round(count(*) FILTER (WHERE t.status = 2)::numeric / NULLIF(count(*), 0) * 100, 1)
+           AS finished_pct
+FROM task t
+WHERE {"\n  AND ".join(where)}
+GROUP BY bucket
+ORDER BY bucket
+LIMIT %s
+"""
+    return sql, (*params, max(1, int(limit)))

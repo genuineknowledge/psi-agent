@@ -4397,6 +4397,16 @@ def weekly_import_audit(
             the honest answer here is zero, which is a finding, not a failure.
     """
 
+    formal = _formal.dispatch(
+        "weekly_import_audit",
+        limit=limit,
+        reconcile_rows=reconcile_rows,
+        orphans=orphans,
+        latest_finished=latest_finished,
+    )
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         summary = store.fetch(
             "SELECT COUNT(*) AS batch_count, COUNT(DISTINCT data_date) AS distinct_dates, "
@@ -4523,6 +4533,10 @@ def weekly_task_lifecycle(by: str = "", year: int = 0) -> str:
         by: Empty returns min/max/avg summary; ``month`` or ``year`` returns counts per bucket.
         year: Restrict to one creation year (0 means all years).
     """
+
+    formal = _formal.dispatch("weekly_task_lifecycle", by=by, year=year)
+    if formal is not None:
+        return _dump(formal)
 
     def work() -> dict[str, Any]:
         grouping = (by or "").strip().lower()
