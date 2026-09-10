@@ -381,6 +381,16 @@ publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 1
 - **批 3**:`milestone* / workflow_query / submission_query / approval_turnaround /
   person_stats / owner_roles / attachment* / import_audit / scale / field_completeness`
   等子表域工具;
+  - 其中 `weekly_milestone_stats` 的接线要点(第 25 轮侦察,尚未接线):6 个 scope
+    (`summary` / `by_dimension` / `deleted` / `fully_deleted` / `per_task` / `mismatch`)×
+    9 个维度(`year / category / group_name / project_group / status / task_status /
+    primary_category / reporter_id / owner_id`)。三个必须照抄的判据:
+    (1) `status` 是 0/1 两值码,「已完成」只认 `status = 1`,不做文本匹配;
+    (2) `fully_deleted` 用 **NOT EXISTS**(里程碑全被软删的任务,3 条),不能用
+    「有软删行」(那是 23 条);
+    (3) `per_task` 要保留零里程碑任务,并给 `top_tie_count` —— 榜首是 **23 路并列**在 6 条;
+    另:`group_name` 是里程碑行自己的短标签(6 种),`project_group` 是任务的专项组(11 种),
+    两者不是一回事,不可互换;
 - **批 4**:`group_detail* / group_owner* / group_history / group_stats` 集团板专表域;
 
 每批交付:PG SQL 模板 + 参数/口径 + caliber 文案 + 契约测试期望值(正式真值)。
