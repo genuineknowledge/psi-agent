@@ -11,8 +11,25 @@
 >   - 列集合对照 `column_parity.py`:**123 / 123** 一致(原先剩的 3 处已查清:全是**对照器侧**的
 >     解析与桩问题,不是正式源的列对不上 —— 详见 3.0.6 与 3.1.5)。
 > - **交付形式**:服务 / Docker(`Dockerfile`,streamable-http,默认 18900);不含前端,由主 Agent 经 MCP 调用。
-> - **唯一外部卡点**:`o2oa` 库缺 `CONNECT` 授权,直连尚未打通 ——
->   `GRANT CONNECT ON DATABASE o2oa TO read_only_all;` 一生效即可跑 `dump_real_schema.py` 做逐列 diff。
+> - **真库已打通(2026-09-10,本条已取代原先"直连尚未打通")**:物理库名是 **`o2oa`**
+>   (字段说明里的 `O2OA-DB` 是业务叫法,集群 `pg_database` 里没有该 database;`oa_biz` 是
+>   历史空表别用)。卡点根因不是"忘了授权",而是 **`o2oa` 的 `datacl` 被显式改过**
+>   (`{=T/admin,admin=CTc/admin}`):**PUBLIC 没有 CONNECT**,必须由库 owner 显式
+>   `GRANT CONNECT ON DATABASE o2oa TO <只读账号>` 才连得上。授权生效后实测:
+>   只读账号 `task_board_readonly` 已可连,**12 张 `task_*` 表全部可见**。
+> - **真库首次核对:31 / 31 个出口正常返回**,列集合与参考一致(脚本 `verify_real_o2oa.py`,
+>   4/4 断言;连法:本机 → H100 → opl 建 `chain.py forward` 端口转发,用本机 Python 3.14 跑)。
+> - **真值快照(2026-09-10;活库会变,数字带日期,形状与口径才是不变量)**:`task` 105 行 /
+>   已发布 **88**;`task_progress` 197 行 / `is_published=1` 仅 **56**;`task_milestone` 20(状态
+>   全为 0 未完成);`task_attachment` 30;`task_workflow_submission` 29;
+>   `task_group_progress_history` 6;`task_workflow_action` 92;`task_group_detail` 55;
+>   `task_year_goal` 57;`task_category` 51。`drift` **0 行**;`rank(progress_rounds)` 的
+>   `tied_at_top` = **53**;人员首位 陈海波 22;`workload_summary` 42 任务 / 7 人 / 6.00;
+>   附件 30 个 / 11.6 MB / 6 任务 / 5 上传人;`by_ext` 15 档;多值负责人「、」在真库真实存在。
+> - ⚠️ **演示库数字与真库差一个量级且形态不同**:既有断言断言的是演示库数字
+>   (943/128/454/462…),**需按真值重建或标注为演示口径**;"真库当前无数据"的分支
+>   (漂移 0、进展状态只有"已通过"一档、里程碑全部未完成)要求 agent **如实回答"没有/未完成"**;
+>   真库里还存在明显测试数据(`test001`、`测试-集团重点-0821` 等),统计口径需注意。
 > - 已知口径陷阱、性能与索引要求、列集合纪律等,**都在下面各节留痕**,改代码前请先读第 3 节与第 6 节。
 
 > 依据:国数方《ChatBI数据权限开通以及表字段说明》(2026-09-08,oa-weekly 核对版)。
