@@ -71,6 +71,43 @@
    因此必须提供 `latest_progress_drift` 这条检查。
 5. **`latest_round` 按 `version_no DESC, id DESC` 取最新一期**,不按 `progress_date`:补报的老期号可能有更晚的日期。
 
+### 3.0.1 性能与索引要求(2026-09-10 实测,真 PG 15.5)
+
+加上正式库应有的索引与统计信息后,批次 2 全部模板在演示库规模下耗时:
+
+| 模板 / scope | 中位耗时 |
+|---|---|
+| 新鲜度分档 / 总览 / 任意窗口 / 漂移 | 0.29 – 0.67 ms |
+| publish_split / import_split | 0.40 – 0.60 ms |
+| `summary` / `version_gaps` | 0.90 / 0.92 ms |
+| `pending_review` / `unpublished_by_task` | 0.96 / 1.33 ms |
+| `latest_round` / `formal_coverage` | 1.42 / 1.60 ms |
+
+放大到十万行进展(每任务追加 99 个历史版本)后,各模板耗时**没有增长**(0.13–2.63 ms),
+执行计划在十万行时自动切到索引扫描 —— 无 N+1,距库级 `statement_timeout = 20s`
+有三个数量级余量。
+
+**我们对索引的依赖(请数据侧确认正式库存在等价索引,或允许我们提交索引申请)**:
+
+```sql
+-- 最关键:待审核/最新一期/漂移检查都靠它;缺它时 pending_review 从 0.96ms 退化到 9.81ms
+create index ix_task_progress_published on task_progress (task_id, version_no desc) where is_published = 1;
+create index ix_task_admission        on task (board_id, sort_order) where is_deleted = 0 and workflow_status = 'published';
+create index ix_task_progress_status  on task_progress (task_id, status);
+create index ix_tws_task_status       on task_workflow_submission (task_id, status, round_no);
+create index ix_task_latest_progress  on task (latest_progress_time);
+create unique index ux_task_progress_task_version on task_progress (task_id, version_no);
+-- 其余见核对目录 pg_indexes.py(共 20 条,按 PDF 主键/外键推导)
+```
+
+**测量方法上的三个坑**(都会让同一模板的读数差一个量级,别据此优化模板):
+
+1. 批量导入后**没跑 `ANALYZE`** → 规划器按默认选择率估算,首测偏慢;
+2. 重载数据时**索引一起被删** → 相关子查询退化成逐行全表扫描(`pending_review` 0.96ms → 9.81ms);
+3. **不预热直接取单次读数** → 把首次规划与冷缓存算进去(同一模板能读到 62ms)。
+
+正确做法:载入 → 建索引 → `ANALYZE` → 预热一次 → 取 N 次中位。
+
 ### 3.1 第一批迭代要点(2026-09-10)
 
 - **时间字段**:`to_char(文本列)` 在 PG 上直接报错(`function to_char(text, unknown) does not exist`),
