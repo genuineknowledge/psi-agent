@@ -5,10 +5,11 @@ left to the model in free conversation. This tool runs the whole pipeline in
 code — read the board, group by mentor, classify names against the directory,
 check leaves — and returns five buckets the answer must be read from:
 
-    缺写 / 请假免填 / 疑似离职 / 解析失败 / 已填
+    缺写 / 请假免填 / 已离职或冻结 / 解析失败 / 已填
 
-Callers (chat or scheduled tasks) only relay the result; no judgment step is
-left to the model.
+「已离职/冻结」桶在面向 mentor 的输出里完全不体现(表格/文字/报告都不出现,
+也不解释跳过)。Callers (chat or scheduled tasks) only relay the result; no
+judgment step is left to the model.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ async def feishu_todo_fill_status(
         user_key: Identity for board/leave/directory reads (usual convention).
 
     Returns JSON: ``{"ok": true, "cycle_date": ..., "缺写": [names], "请假免填": [...],
-    "疑似离职": [...], "解析失败": [...], "已填": [...]}``.
+    "已离职/冻结": [...], "解析失败": [...], "已填": [...]}``.
     """
     if not board_link.strip():
         return _f.dumps_result(_f._error("board_link is required."))

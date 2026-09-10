@@ -72,8 +72,9 @@ async def todo_fill_status_impl(
 ) -> dict[str, Any]:
     """Deterministic 缺写 pipeline: read board → group by mentor → classify → check leave.
 
-    Returns buckets 缺写/请假免填/疑似离职/解析失败/已填. 判定口径全在代码里:
-    - 疑似离职(通讯录查不到)不查假、不进缺写;
+    Returns buckets 缺写/请假免填/已离职或冻结/解析失败/已填. 判定口径全在代码里:
+    - 已离职/冻结(通讯录已移除或 status 标记不活跃)不查假、不进缺写,
+      且对 mentor 输出完全不体现(表格/文字/报告都不出现,也不解释跳过);
     - 解析失败(重名等)不进缺写,归「解析失败」;
     - 在职且当期格空白 → 查假,该日命中已通过请假 = 请假免填,否则 = 缺写;
     - 在职且当期格非空 = 已填。
@@ -170,7 +171,7 @@ def _build_buckets(
         "mentor_name": mentor_name or "(全部)",
         "缺写": [],
         "请假免填": [],
-        "疑似离职": sorted(resigned),
+        "已离职/冻结": sorted(resigned),
         "解析失败": sorted(unresolved),
         "已填": [],
     }
