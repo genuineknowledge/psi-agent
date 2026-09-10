@@ -84,6 +84,24 @@ TOOL_ALIASES: dict[str, str] = {
     "feishu_department_members": "正在查部门成员",
     "feishu_permission_list_members": "正在查文档权限",
     "feishu_attendance_query": "正在查考勤",
+    # 会议自动化 (2026-09-07 起进入 M2 核心集; 2026-09-10 补别名, 此前判据是红的)
+    "meeting_transcript_prepare": "正在下载会议转写",
+    "meeting_session_read": "正在读会议内容",
+    "meeting_session_write": "正在保存会议分析",
+    "meeting_session_notify": "正在发送会议结果",
+    "meeting_pipeline_run": "正在分析会议",
+    "meeting_record_export": "正在打包会议资料",
+    # 正负面清单 (2026-09-07 起进入 M2 核心集; 2026-09-10 补别名, 此前判据是红的)
+    "positive_negative_rules": "正在查清单规则",
+    "positive_negative_case_prepare": "正在整理记录草稿",
+    "positive_negative_case_confirm": "正在写入清单记录",
+    "positive_negative_case_read": "正在读清单台账",
+    "positive_negative_case_analyze": "正在统计清单台账",
+    "positive_negative_case_remind": "正在发送记录通知",
+    "positive_negative_case_review_start": "正在发起复盘",
+    "positive_negative_case_review_submit": "正在保存复盘",
+    "positive_negative_candidate_analyze": "正在分析候选",
+    "positive_negative_candidate_card": "正在整理候选卡片",
 }
 """工具名 → 中文别名。覆盖 M2 高频集 (``TMPFIX_M2_CORE_TOOLS``), 由判据锁死。
 

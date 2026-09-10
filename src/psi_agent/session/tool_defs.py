@@ -128,6 +128,9 @@ TMPFIX_M2_CORE_TOOLS = frozenset(
         "meeting_session_read",
         "meeting_session_write",
         "meeting_transcript_prepare",
+        # 2026-09-10: 会议资料包导出 —— 读一场会议的转写/纪要/分析 + 云录制链接,
+        # 打包成可交付目录; 生产上 agent 曾自写拉取脚本, 这条给的是受控入口。
+        "meeting_record_export",
     }
 )
 
