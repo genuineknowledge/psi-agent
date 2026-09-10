@@ -22,8 +22,12 @@
 ## 1. 接入原则
 
 - agent(31 工具契约)与 mock 语义不变;正式源 = 同一契约的 **PostgreSQL 实现**;
-- 生产数据源:**O2OA 的 PostgreSQL**(库 `O2OA-DB`,schema `public`),**不要**给
-  MySQL `oa_biz` 的同名 task_* 旧空表授权(结构不同、基本为空);
+- 生产数据源:**O2OA 的 PostgreSQL**(物理库名 **`o2oa`**,schema `public`)。⚠️ 字段说明
+  里写的 `O2OA-DB` 是**业务叫法**:2026-09-10 用只读账号直连复核,集群里 `pg_database`
+  只有 `he3mysql / o2oa / oa_agent / oa_biz / postgres`,**没有 `O2OA-DB`**;
+  且 `o2oa` 的 `datacl` 被显式改过(`{=T/admin,admin=CTc/admin}`),**PUBLIC 没有 CONNECT** ——
+  必须由库 owner 显式 `GRANT CONNECT ON DATABASE o2oa TO <只读账号>`,否则一律
+  `permission denied for database "o2oa"`;**不要**给 MySQL `oa_biz` 的同名 task_* 旧空表授权;
 - 只读:连接角色仅授 SELECT;本包连接层强制 read-only 会话(双保险);
 - 发布准入等硬约束由服务端固化,见 `mock-mcp/_admission.py`,不得写散在单条查询里。
 
@@ -32,8 +36,8 @@
 |---|---|---|
 | `TASK_BOARD_DATA_SOURCE` | 数据源选择:`mock`(演示)/`o2oa`(正式) | mock(未设置时) |
 | `PGHOST` / `PGPORT` | PG 地址 | 127.0.0.1 / 5432 |
-| `PGDATABASE` | 正式库名 | O2OA-DB |
-| `PGUSER` / `PGPASSWORD` | 只读账号(chatbi_read) | chatbi_read / 空 |
+| `PGDATABASE` | 正式库名(**`o2oa`**,不是 `O2OA-DB`) | `o2oa` |
+| `PGUSER` / `PGPASSWORD` | 只读账号(实测账号为 `task_board_readonly`) | chatbi_read / 空 |
 | `PGSCHEMA` | schema | public |
 
 凭据只经环境/Secret 注入,不落代码与镜像。

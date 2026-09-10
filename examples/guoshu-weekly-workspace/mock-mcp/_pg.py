@@ -1,10 +1,16 @@
 """Read-only PostgreSQL connection for the oa-weekly (ChatBI) data source.
 
 The demo reads weekly_mock over MySQL (see ``_db.py``).  The formal ChatBI
-source lives in O2OA's PostgreSQL (database ``O2OA-DB``, schema ``public``,
-2026-09-08 field note): this module opens a *read-only* connection only -- the
-session is forced into read-only transactions, and the login role must hold
-SELECT only (granted by the data owner with the SQL in the field note).
+source lives in O2OA's PostgreSQL (schema ``public``; 2026-09-08 field note):
+this module opens a *read-only* connection only -- the session is forced into
+read-only transactions, and the login role must hold SELECT only (granted by
+the data owner with the SQL in the field note).
+
+库名的实测结论(2026-09-10,只读账号直连复核):字段说明里写的 ``O2OA-DB`` 是
+**业务叫法**,集群里没有这个 database;物理库名是 ``o2oa``(另见 ``oa_agent`` /
+``oa_biz`` 两个库,后者是历史空表别用)。该库的 ``datacl`` 被显式改过
+(``{=T/admin,admin=CTc/admin,...}``),PUBLIC 没有 CONNECT —— 所以必须由库 owner
+显式 ``GRANT CONNECT ON DATABASE o2oa TO <只读账号>``,光靠角色默认权限连不上。
 
 Environment (all optional; defaults are the demo/formal conventions):
     PGHOST / PGPORT / PGDATABASE / PGUSER / PGPASSWORD / PGSCHEMA
@@ -19,7 +25,7 @@ from typing import Any
 
 DB_HOST = os.environ.get("PGHOST", "127.0.0.1")
 DB_PORT = int(os.environ.get("PGPORT", "5432"))
-DB_NAME = os.environ.get("PGDATABASE", "O2OA-DB")
+DB_NAME = os.environ.get("PGDATABASE", "o2oa")
 DB_USER = os.environ.get("PGUSER", "chatbi_read")
 DB_PASSWORD = os.environ.get("PGPASSWORD", "")
 DB_SCHEMA = os.environ.get("PGSCHEMA", "public")
