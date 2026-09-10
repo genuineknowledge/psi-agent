@@ -1741,10 +1741,10 @@ def attachment_list(
         where.append("t.id = %s")
         params.append(int(task_id))
     sql = f"""
-SELECT a.id, t.id AS task_id, t.task_no, t.task_name,
-       a.file_name, a.file_size,
+SELECT a.id, t.id AS task_id, a.progress_id, a.workflow_submission_id,
+       a.file_name, a.file_size, a.uploader_id,
        {adm.normalize_ts_sql("a.upload_time")} AS upload_time,
-       a.uploader_id
+       t.task_no, t.task_name
 FROM task_attachment a
 JOIN task t ON t.id = a.task_id
 {board_join}
@@ -1756,10 +1756,18 @@ LIMIT %s
     return sql, tuple(params)
 
 
-def attachment_stats(board_code: str | None = None, granted: bool = True) -> tuple[str, tuple]:
-    """附件汇总:条数 / 涉及任务数 / 总字节 / 平均 KB / 各扩展名条数。
+def attachment_stats(
+    board_code: str | None = None,
+    scope: str = "summary",
+    granted: bool = True,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """附件汇总(``summary``)或按扩展名分档(``by_ext``)。
 
     ``file_size`` 是字节,原样报出(不要换算成 KB/MB,也不要写"约")——口径如此规定。
+
+    ``by_ext`` 与 ``summary`` 是**两种形状**,不能互相代答:参考实现按扩展名
+    **每档一行**(``ext / n / total_bytes / total_mb``),汇总行答不了"哪种文件最多"。
     """
     hint = adm.require_optional_table("task_attachment", granted)
     if hint:
@@ -1775,19 +1783,19 @@ def attachment_stats(board_code: str | None = None, granted: bool = True) -> tup
         where.append("b.code = %s")
         params.append(board)
     ext = "lower(substring(a.file_name from '\\.([^.]+)$'))"
-    sql = f"""
-WITH files AS (
-    SELECT a.*, {ext} AS ext
-    FROM task_attachment a
-    JOIN task t ON t.id = a.task_id
-    {board_join}
-    WHERE {"\n  AND ".join(where)}
-)
-SELECT (SELECT count(*) FROM files)                                  AS attachment_count,
-       (SELECT count(DISTINCT task_id) FROM files)                   AS tasks_with_attachment,
+    if scope == "by_ext":
+        # 每档一行,列名与排序照抄参考查询(n 降序、并列按 ext)
+        select = """ext, count(*) AS n,
+       sum(file_size)                 AS total_bytes,
+       round(sum(file_size) / 1024.0 / 1024.0, 1) AS total_mb"""
+        tail = "FROM files\nWHERE ext IS NOT NULL\nGROUP BY ext\nORDER BY n DESC, ext\nLIMIT %s"
+        params.append(int(limit))
+    else:
+        select = """(SELECT count(*) FROM files)                                  AS attachment_count,
        (SELECT sum(file_size) FROM files)                            AS total_bytes,
        (SELECT round(sum(file_size) / 1024.0 / 1024.0, 1) FROM files) AS total_mb,
        (SELECT round(avg(file_size) / 1024.0, 1) FROM files)         AS avg_kb,
+       (SELECT count(DISTINCT task_id) FROM files)                   AS tasks_with_attachment,
        (SELECT count(DISTINCT uploader_id) FROM files)               AS uploader_count,
        (SELECT count(*) FROM files WHERE progress_id IS NOT NULL)                                AS linked_to_progress,
        (SELECT count(*) FROM files WHERE workflow_submission_id IS NOT NULL) AS linked_to_submission,
@@ -1796,7 +1804,18 @@ SELECT (SELECT count(*) FROM files)                                  AS attachme
        (SELECT count(*) FROM files WHERE ext = 'pptx')               AS ext_pptx,
        (SELECT count(*) FROM files WHERE ext = 'xlsx')               AS ext_xlsx,
        (SELECT count(*) FROM files WHERE ext = 'pdf')                AS ext_pdf,
-       (SELECT count(*) FROM files WHERE ext = 'docx')               AS ext_docx
+       (SELECT count(*) FROM files WHERE ext = 'docx')               AS ext_docx"""
+        tail = ""
+    sql = f"""
+WITH files AS (
+    SELECT a.*, {ext} AS ext
+    FROM task_attachment a
+    JOIN task t ON t.id = a.task_id
+    {board_join}
+    WHERE {"\n  AND ".join(where)}
+)
+SELECT {select}
+{tail}
 """
     return sql, tuple(params)
 

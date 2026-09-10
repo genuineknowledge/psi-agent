@@ -409,11 +409,17 @@ publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 1
 > 实现的口径表里(它的分面是 node x action),是本移植为"各动作各有多少条"新增的;
 > 列名与 node x action 那档保持一致(`action_count`),并在模板注释里写明它是扩展。
 
-**剩余 6 处待办**(下一批):`attachment_stats summary/by_ext`(by_ext 是结构性差异:
-参考实现按扩展名**每档一行** `ext / n / total_bytes / total_mb`,正式源目前给的是
-单行汇总 + 各扩展名列)、`attachment_query`(缺 `progress_id / workflow_submission_id`
-两个挂载点列)、`formal_coverage`、以及两个演示路径取不到列的用例
-(`text_check` 与 `health` —— 演示实现走的是别的手工分支,对照器需要再补桩)。
+**判定口径(第二轮收紧后的版本)**:参考查询的列必须**同名同序**出现在正式源里;
+正式源**额外多给**的列允许(加信息不加歧义),但在报告里单列一栏供人过目 ——
+「多给一列」与「少给/改名/换序一列」是两种性质,不能混在同一个"不一致"里。
+按这个口径,62 个用例现在是 **59 一致 / 1 待查 / 2 取不到列**:
+
+- `attachment_stats summary` 与 `attachment_query` 的差异原来是**列序**问题
+  (同名但顺序不同),已按参考顺序调整;`by_ext` 已改成参考实现的**每档一行**
+  (`ext / n / total_bytes / total_mb`,首行 pptx 130),不再与 summary 共用一种形状;
+- 剩 1 处 `import_split` 与 2 处 `text_check` / `health` 是**对照器侧**的问题
+  (演示实现有手工拼信封的分支,桩还没覆盖到),不是正式源代码的差异 ——
+  下轮补桩即可。
 
 ## 5. 能力边界(未授权表时)
 - `task_attachment` 只读元数据:问答只能答“存在附件《文件名》”,文件体在

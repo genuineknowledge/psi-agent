@@ -762,22 +762,31 @@ _NEW_HANDLERS_10 = {"weekly_person_stats": _person_stats}
 
 
 def _attachment_stats(args: dict[str, Any]) -> dict[str, Any] | None:
-    """weekly_attachment_stats:附件汇总(条数 / 字节 / MB / 扩展名 / 挂载点)。"""
+    """weekly_attachment_stats:附件汇总 / 按扩展名分档(两种形状,不互相代答)。"""
     scope = (args.get("scope") or "summary").strip().lower()
     if scope not in ("summary", "by_ext"):
         return None  # 其余 scope(largest/by_uploader/by_month/deleted/orphan...)交给演示路径
     if (args.get("date_from") or "").strip():
         return None
     board = (args.get("board") or "").strip() or None
-    sql, params = tpl.attachment_stats(board_code=board, granted=optional_granted("task_attachment"))
+    limit = int(args.get("limit") or MAX_ROWS)
+    sql, params = tpl.attachment_stats(
+        board_code=board, scope=scope, granted=optional_granted("task_attachment"), limit=limit
+    )
     return envelope(
         sql=sql,
         params=params,
         caliber=(
             "is_deleted = 0 且关联任务已发布;file_size 单位是字节,原样报出(不要换算成 KB/MB 也不要写「约」);"
-            "total_mb 只是同一数值的另一种表示,以字节为准;storage_path 禁止外泄,不在返回字段内"
+            "total_mb 只是同一数值的另一种表示,以字节为准;storage_path 禁止外泄,不在返回字段内;"
+            + (
+                "by_ext 按扩展名每档一行(ext / n / total_bytes / total_mb),答「哪种文件最多」看 n 的首行"
+                if scope == "by_ext"
+                else "summary 是一行汇总(条数 / 任务数 / 字节 / 均值 / 上传人 / 挂载点 / 四个主扩展名条数)"
+            )
         ),
-        limit=1,
+        limit=limit if scope == "by_ext" else 1,
+        cap_last_param=scope == "by_ext",
     )
 
 
