@@ -477,7 +477,9 @@ class TestFormalBackend:
         monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
         assert _formal.enabled() is True
         assert _formal.dispatch("weekly_schema", board="tech") is None
-        assert _formal.dispatch("weekly_attachment_stats") is None
+        # 用真正未接线的工具做断言:已接线的工具会去连库,不能拿来当反例
+        assert _formal.dispatch("weekly_aggregate", by="board") is None
+        assert _formal.dispatch("weekly_task_lifecycle") is None
 
     def test_unmigrated_arguments_fall_back_instead_of_narrowing(self, monkeypatch):
         """未迁移的参数组合必须回落演示路径,绝不能返回一个范围更小的答案。"""

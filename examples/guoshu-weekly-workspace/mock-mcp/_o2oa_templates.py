@@ -1398,6 +1398,13 @@ WITH files AS (
 SELECT (SELECT count(*) FROM files)                                  AS attachment_count,
        (SELECT count(DISTINCT task_id) FROM files)                   AS tasks_with_attachment,
        (SELECT sum(file_size) FROM files)                            AS total_bytes,
+       (SELECT round(sum(file_size) / 1024.0 / 1024.0, 1) FROM files) AS total_mb,
+       (SELECT round(avg(file_size) / 1024.0, 1) FROM files)         AS avg_kb,
+       (SELECT count(DISTINCT uploader_id) FROM files)               AS uploader_count,
+       (SELECT count(*) FROM files WHERE progress_id IS NOT NULL)                                AS linked_to_progress,
+       (SELECT count(*) FROM files WHERE workflow_submission_id IS NOT NULL) AS linked_to_submission,
+       (SELECT count(*) FROM files
+         WHERE progress_id IS NULL AND workflow_submission_id IS NULL)      AS linked_to_task,
        (SELECT count(*) FROM files WHERE ext = 'pptx')               AS ext_pptx,
        (SELECT count(*) FROM files WHERE ext = 'xlsx')               AS ext_xlsx,
        (SELECT count(*) FROM files WHERE ext = 'pdf')                AS ext_pdf,
@@ -2210,3 +2217,163 @@ FROM (
 ) g
 """
     return sql, (*params, *inner_params)
+
+
+# ---- batch 11: 集团板历史 / 集团板多值负责人 / 附件统计细化 -------------------
+
+GROUP_HISTORY_SCOPES = ("rows", "by_task", "by_reporter", "lag", "linkage")
+
+
+def _multivalue_array(column: str) -> str:
+    """把多值列切成数组:分隔符**顿号与逗号都要处理**,空格一律去掉。
+
+    演示数据里两种分隔符混用(有的任务写"任建华、潘启明",有的写"胡建国,方永康"),
+    只按顿号切会把逗号串当成一个人;而用 LIKE '%名字%' 又会在不同人之间碰撞
+    (multivalue_like_collision)。所以元素级匹配必须先把两种分隔符统一再切数组。
+    """
+    return f"string_to_array(replace(replace(coalesce({column}, ''), ',', '、'), ' ', ''), '、')"
+
+
+def group_history(
+    scope: str = "rows",
+    task_id: int | None = None,
+    version_no: int | None = None,
+    latest_only: bool = False,
+    granted: bool = True,
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """集团板进展历史(``task_group_progress_history``,可选表)。
+
+    集团板的进展写在这张表里,**``task_progress`` 一行都没有** —— 所以
+    ``weekly_progress_history`` / ``weekly_progress_range`` 对集团任务返回空,
+    这里是它们的入口。
+
+    两道闸门必须同时成立:任务正式(R-01)**且**行 ``is_published = 1``;
+    少任何一道就会把 42 条未审草稿算进来(演示数据:全表 404 行、已发布 362 行、草稿 42 行)。
+    """
+    if scope not in GROUP_HISTORY_SCOPES:
+        raise ValueError(f"未知 scope:{scope};可选 {', '.join(GROUP_HISTORY_SCOPES)}")
+    hint = adm.require_optional_table("task_group_progress_history", granted)
+    if hint:
+        raise PermissionError(hint)
+    where = [adm.sql_task_admission("pg", "t"), "h.is_published = 1"]
+    params: list[object] = []
+    if task_id is not None:
+        where.append("h.task_id = %s")
+        params.append(int(task_id))
+    if version_no is not None:
+        where.append("h.version_no = %s")
+        params.append(int(version_no))
+    if latest_only:
+        where.append(
+            "h.version_no = (SELECT max(h2.version_no) FROM task_group_progress_history h2 "
+            "WHERE h2.task_id = h.task_id AND h2.is_published = 1)"
+        )
+    where_sql = "\n  AND ".join(where)
+
+    if scope == "by_task":
+        sql = f"""
+SELECT h.task_id, t.task_no, t.task_name, count(*) AS rounds, max(h.version_no) AS max_version
+FROM task_group_progress_history h
+JOIN task t ON t.id = h.task_id
+WHERE {where_sql}
+GROUP BY h.task_id, t.task_no, t.task_name
+ORDER BY rounds DESC, h.task_id
+LIMIT %s
+"""
+        return sql, (*params, int(limit))
+
+    if scope == "by_reporter":
+        sql = f"""
+SELECT h.reporter_id, count(*) AS rounds, count(DISTINCT h.task_id) AS tasks
+FROM task_group_progress_history h
+JOIN task t ON t.id = h.task_id
+WHERE {where_sql}
+GROUP BY h.reporter_id
+ORDER BY rounds DESC, h.reporter_id
+LIMIT %s
+"""
+        return sql, (*params, int(limit))
+
+    if scope == "linkage":
+        sql = f"""
+SELECT count(*)                                                          AS rows_total,
+       count(*) FILTER (WHERE h.workflow_submission_id IS NOT NULL)       AS with_submission,
+       count(*) FILTER (WHERE h.workflow_submission_id IS NULL)           AS without_submission
+FROM task_group_progress_history h
+JOIN task t ON t.id = h.task_id
+WHERE {where_sql}
+"""
+        return sql, tuple(params)
+
+    if scope == "lag":
+        sql = f"""
+SELECT h.task_id, t.task_no, t.task_name, max(h.report_time) AS last_report,
+       {adm.normalize_ts_sql("max(h.report_time)")} AS last_report_text,
+       date_part('day', now() - max({adm.parse_ts_sql("h.report_time")}))::int AS days_since
+FROM task_group_progress_history h
+JOIN task t ON t.id = h.task_id
+WHERE {where_sql}
+GROUP BY h.task_id, t.task_no, t.task_name
+ORDER BY days_since DESC NULLS LAST, h.task_id
+LIMIT %s
+"""
+        return sql, (*params, int(limit))
+
+    sql = f"""
+SELECT h.id, h.task_id, t.task_no, t.task_name, h.version_no,
+       h.progress_effect, h.completion_time, h.reporter_id,
+       {adm.normalize_ts_sql("h.report_time")} AS report_time,
+       h.is_published, h.workflow_submission_id
+FROM task_group_progress_history h
+JOIN task t ON t.id = h.task_id
+WHERE {where_sql}
+ORDER BY h.task_id, h.version_no DESC
+LIMIT %s
+"""
+    return sql, (*params, int(limit))
+
+
+def group_owner(
+    person: str | None = None,
+    role: str = "lead",
+    limit: int = 200,
+) -> tuple[str, tuple]:
+    """集团板多值负责人查询(``task_group_detail`` 的两列多值文本)。
+
+    ``role=lead`` 用 ``lead_owner_ids`` / ``lead_owner_names``,``role=project`` 用
+    ``project_owner_*``;两者是**不同的角色、不同的列**,不可互换。
+
+    匹配是**元素级精确**(把两种分隔符统一后切数组再判等):
+    用 ``LIKE '%名字%'`` 会在不同人之间碰撞(短名是长名的子串时尤其明显)。
+    """
+    roles = {
+        "lead": ("lead_owner_ids", "lead_owner_names", "牵头人"),
+        "project": ("project_owner_ids", "project_owner_names", "项目负责人"),
+    }
+    key = (role or "lead").strip().lower()
+    if key not in roles:
+        raise ValueError(f"不支持的角色:{role};支持 {', '.join(sorted(roles))}")
+    id_column, name_column, _label = roles[key]
+    where = [adm.sql_task_admission("pg", "t"), "b.code = 'group'"]
+    params: list[object] = []
+    if person and person.strip():
+        token = person.strip().replace(" ", "")
+        where.append(
+            f"(%s = ANY({_multivalue_array('g.' + id_column)}) OR %s = ANY({_multivalue_array('g.' + name_column)}))"
+        )
+        params.extend([token, token])
+    sql = f"""
+SELECT g.task_id, t.task_no, t.task_name,
+       g.{id_column}   AS owner_ids,
+       g.{name_column} AS owner_names,
+       g.project_group
+FROM task_group_detail g
+JOIN task t ON t.id = g.task_id
+JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
+WHERE {"\n  AND ".join(where)}
+ORDER BY t.sort_order, t.id
+LIMIT %s
+"""
+    params.append(int(limit))
+    return sql, tuple(params)

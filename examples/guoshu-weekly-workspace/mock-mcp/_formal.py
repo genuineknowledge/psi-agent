@@ -609,6 +609,90 @@ def _person_stats(args: dict[str, Any]) -> dict[str, Any] | None:
 
 _NEW_HANDLERS_10 = {"weekly_person_stats": _person_stats}
 
+
+def _attachment_stats(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_attachment_stats:附件汇总(条数 / 字节 / MB / 扩展名 / 挂载点)。"""
+    scope = (args.get("scope") or "summary").strip().lower()
+    if scope not in ("summary", "by_ext"):
+        return None  # 其余 scope(largest/by_uploader/by_month/deleted/orphan...)交给演示路径
+    if (args.get("date_from") or "").strip():
+        return None
+    board = (args.get("board") or "").strip() or None
+    sql, params = tpl.attachment_stats(board_code=board, granted=optional_granted("task_attachment"))
+    return envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            "is_deleted = 0 且关联任务已发布;file_size 单位是字节,原样报出(不要换算成 KB/MB 也不要写「约」);"
+            "total_mb 只是同一数值的另一种表示,以字节为准;storage_path 禁止外泄,不在返回字段内"
+        ),
+        limit=1,
+    )
+
+
+def _group_history(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_group_history:集团板进展历史(可选表)。"""
+    scope = "rows"
+    by = (args.get("by") or "").strip().lower()
+    if by in ("task", "reporter", "lag", "linkage"):
+        scope = {"task": "by_task", "reporter": "by_reporter", "lag": "lag", "linkage": "linkage"}[by]
+    elif by:
+        return None  # year/month/quarter 等分档交给演示路径
+    for key in ("date_from", "date_to"):
+        if (args.get(key) or "").strip():
+            return None
+    if int(args.get("last_days") or 0) or int(args.get("last_months") or 0):
+        return None
+    task_id, _task_name = _resolve_task(args.get("task") or "")
+    limit = int(args.get("limit") or MAX_ROWS)
+    sql, params = tpl.group_history(
+        scope,
+        task_id=task_id,
+        version_no=int(args.get("version_no") or 0) or None,
+        latest_only=bool(args.get("latest_only")),
+        granted=optional_granted("task_group_progress_history"),
+        limit=limit,
+    )
+    return envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            "集团板的进展在本表里,task_progress 一行都没有(所以进展类工具对集团任务返回空,入口在这里);"
+            "两道闸门必须同时成立:任务正式(workflow_status = 'published')且行 is_published = 1 ——"
+            "少任何一道都会把 42 条未审草稿算进来(演示数据 404 行 = 已发布 362 + 草稿 42)"
+        ),
+        limit=limit,
+        cap_last_param=scope != "linkage",
+    )
+
+
+def _group_owner(args: dict[str, Any]) -> dict[str, Any] | None:
+    """weekly_group_owner_query:集团板多值负责人(元素级精确匹配)。"""
+    limit = int(args.get("limit") or MAX_ROWS)
+    sql, params = tpl.group_owner(
+        person=(args.get("person") or "").strip() or None,
+        role=(args.get("role") or "lead"),
+        limit=limit,
+    )
+    return envelope(
+        sql=sql,
+        params=params,
+        caliber=(
+            "仅集团看板(task_board.code = 'group')且任务已发布;负责人是多值文本,"
+            "匹配按元素精确(先统一顿号与逗号再切数组),不用 LIKE —— 短名会在长名里碰撞;"
+            "lead 与 project 是不同角色、不同列,不可互换"
+        ),
+        limit=limit,
+        cap_last_param=True,
+    )
+
+
+_NEW_HANDLERS_11 = {
+    "weekly_attachment_stats": _attachment_stats,
+    "weekly_group_history": _group_history,
+    "weekly_group_owner_query": _group_owner,
+}
+
 _HANDLERS = {
     "weekly_task_query": _task_query,
     "weekly_progress_coverage": _coverage,
@@ -624,6 +708,9 @@ _HANDLERS = {
     "weekly_scale": _scale,
     "weekly_rank": _rank,
     "weekly_person_stats": _person_stats,
+    "weekly_attachment_stats": _attachment_stats,
+    "weekly_group_history": _group_history,
+    "weekly_group_owner_query": _group_owner,
 }
 
 # _NEW_HANDLERS 只是构建期的清单,避免手工漏接线

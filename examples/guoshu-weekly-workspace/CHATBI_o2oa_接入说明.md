@@ -144,7 +144,10 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 | `weekly_scale` | ✅ 已接线 | 三种 mode × 三种分组轴;技术组 totals 82/77/294/402、集团组 46/40/180/52(各组里程碑相加 = 全库 474,自校验未被 JOIN 放大);completeness 82/77/80/73;intensity 82 任务 / 943 行 / 11.5 |
 | `weekly_rank` | ✅ 已接线 | 三种并列语义 × 六种子表度量:**cut 前 3 名 = 3 行**、**keep_ties 前 3 名 = 12 行**(第 3 名并列)、per_group 每组一行;附件第一名任务 73(20 个);未授权表(附件/集团历史)报 `table_not_granted` |
 | `weekly_person_stats` | ✅ 已接线(9/14 scope) | 牵头人任务量首位 吴晓东 **14** 个且 **tied_at_top=3**;workload_top 保留三名并列;汇总 128 任务 / 16 人 / 全局均值 8.0;只带 1 个任务 4 人;标准安全组 **9 位牵头人 / 19 条任务**;跨组 12 人;双重角色 6 人;工号写法 69/50/9;填报首位 10515(63 轮 / 4 任务)。未迁移的 4 个 scope 仍走演示路径 |
-| 其余 17 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
+| `weekly_attachment_stats` | ✅ 已接线(summary/by_ext) | 存活附件 **454 条 / 106 任务**;总字节 **1,954,375,767**(原样报出) / 1863.8 MB / 均 4203.9 KB;上传人 46;挂载点 315/58/81;扩展名 pptx130/xlsx116/pdf107/docx101 |
+| `weekly_group_history` | ✅ 已接线(5 个 scope) | 集团板进展**只在本表**:已发布 **362** 行 / 46 任务;草稿 **42** 行(两道闸门缺一即被算进来);明细/按任务/按填报人/滞后/联动 |
+| `weekly_group_owner_query` | ✅ 已接线 | 多值负责人**元素级精确**匹配:吴晓东 → 4 个集团任务(按 id `u3124` 同样 4 个);role=project 列出 46 行 |
+| 其余 14 个工具 | 待迁移 | 调用时 `_formal.dispatch` 返回 `None` → 演示路径,行为不变 |
 
 三条硬规则:
 
@@ -157,6 +160,10 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 **端到端验证**(真 PG + 正式源模式,20 项断言全通过):信封 9 字段齐全、`source_tables` 指向正式表、
 publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 103 的 V8 冲突(来自集团历史表)、
 新鲜度分档 63/44/8/9/4 且合计 = 任务总数、在办「从未报进展」8、漂移 73,未迁移参数全部回落。
+
+> 口径提醒:**多值列的匹配要按元素、且两种分隔符都要处理**:演示数据里多值负责人文本
+> 既用顿号(`任建华、潘启明`)也用半角逗号(`胡建国,方永康`)。只按顿号切会把逗号串当成一个人;
+> 用 `LIKE '%名字%'` 则会在不同人之间碰撞(短名是长名的子串)。正确做法是先统一分隔符再切数组判等。
 
 > 口径提醒:**NULL 的排序方向必须显式写**:MySQL 降序把 NULL 放最后、升序放最前,
 > 而 PG 默认相反 —— 不加 `NULLS LAST/FIRST` 会算出与演示源不同的名次。

@@ -1531,6 +1531,17 @@ def weekly_attachment_stats(
             which is already ungated on purpose.
     """
 
+    formal = _formal.dispatch(
+        "weekly_attachment_stats",
+        scope=scope,
+        date_from=date_from,
+        task=task,
+        top=top,
+        include_informal=include_informal,
+    )
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         key = (scope or "summary").strip().lower()
         if key not in _ATTACHMENT_STATS_SCOPES:
@@ -5824,6 +5835,10 @@ def weekly_group_owner_query(person: str = "", role: str = "lead", limit: int = 
         limit: Max rows, capped at 200.
     """
 
+    formal = _formal.dispatch("weekly_group_owner_query", person=person, role=role, limit=limit)
+    if formal is not None:
+        return _dump(formal)
+
     def work() -> dict[str, Any]:
         key = (role or "lead").strip().lower()
         if key not in _GROUP_OWNER_ROLES:
@@ -5931,6 +5946,21 @@ def weekly_group_history(
             three May rows. Do not substitute one for the other.
         limit: Max rows, capped at 200.
     """
+
+    formal = _formal.dispatch(
+        "weekly_group_history",
+        task=task,
+        version_no=version_no,
+        by=by,
+        latest_only=latest_only,
+        date_from=date_from,
+        date_to=date_to,
+        last_days=last_days,
+        last_months=last_months,
+        limit=limit,
+    )
+    if formal is not None:
+        return _dump(formal)
 
     def work() -> dict[str, Any]:
         grouping = (by or "").strip().lower()
