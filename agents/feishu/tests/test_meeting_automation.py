@@ -125,6 +125,21 @@ def test_meeting_schedule_task_declares_review_and_followups() -> None:
         assert "产出本场评价与后续建议" in body, f"{name}/TASK.md 未声明评价与后续建议产出"
 
 
+def test_meeting_sop_skill_requires_review_and_followups() -> None:
+    """会议 SOP 引擎必须固定要求「本场会议评价 + 后续建议」三段产出。
+
+    纪要卡片首屏取自 ``meeting_summary``: 判定 / 评价 / 建议 三段都要在摘要里,
+    建议含 行动项(做什么+负责人+截止, 未定写"待指定")、改进建议、下次会议关注点
+    (对应 msop.core.04 闭环锚点), 否则收件人只看到判定、看不到该怎么跟进。
+    """
+    skill = Path(__file__).resolve().parents[1] / "skills" / "meeting-sop" / "weekday-alignment" / "SKILL.md"
+    text = skill.read_text(encoding="utf-8")
+    assert "会议评价与后续建议" in text
+    assert "本场会议评价" in text
+    assert "行动项" in text and "改进建议" in text and "下次会议关注点" in text
+    assert "待指定" in text and "msop.core.04" in text
+
+
 def test_committed_meeting_schedule_files_match_projection() -> None:
     """``agents/feishu/schedules`` 下的静态 TASK.md 必须与 ``MEETING_JOBS`` 投影一致。
 
