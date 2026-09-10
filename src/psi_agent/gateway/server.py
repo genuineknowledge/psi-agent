@@ -593,7 +593,12 @@ async def _serve_chat_sse(request: web.Request, session_id: str) -> web.StreamRe
         if request.content_type and "multipart" in request.content_type:
             data = await request.post()
             raw = data.get("chunks")
-            raw_chunks = json.loads(str(raw)) if raw else []
+            if isinstance(raw, str):
+                raw_chunks = json.loads(raw)
+            elif isinstance(raw, list):
+                raw_chunks = raw
+            else:
+                raw_chunks = []
             if not isinstance(raw_chunks, list):
                 return _error("chunks must be a JSON array", status=400)
             body: dict[str, Any] = {"chunks": raw_chunks}

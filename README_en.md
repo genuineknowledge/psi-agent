@@ -322,20 +322,59 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | POST | `/ais` | Create AI instance |
 | DELETE | `/ais/{ai_id}` | Delete AI |
 | GET | `/ais` | List all AIs |
-| POST | `/sessions` | Create Session |
-| DELETE | `/sessions/{session_id}` | Delete Session |
+| POST | `/routers` | Create and start Router |
+| DELETE | `/routers/{router_id}` | Stop and delete Router |
+| GET | `/routers` | List all Routers |
+| POST | `/sessions` | Create Session (optional `agent` / `workspace`) |
+| DELETE | `/sessions/{session_id}` | Delete Session + history JSONL + title + summary |
 | GET | `/sessions` | List all Sessions |
 | POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream) |
 | GET | `/sessions/{session_id}/history` | Get conversation history |
-| POST | `/feishu/route` | Idempotently route a Feishu chat to a Session: group chats by chat_id (whole chat shares one), DMs by open_id (one per user); spawn on first use |
+| GET | `/sessions/{session_id}/todos` | Get session todo items |
+| GET | `/sessions/{session_id}/todo-segments` | Get todo segment list |
+| GET/POST | `/sessions/{session_id}/todo-segments/{segment_id}` | Get/Set todo segment label |
+| POST | `/feishu/route` | Idempotently route a Feishu chat to a Session (spawn on first use) |
 | GET | `/feishu/routes` | List Feishu chat → Session routes |
+| POST | `/feishu/sessions/{session_id}/chat` | Authenticated chat stream for Feishu Web App (SSE) |
+| GET | `/feishu/defaults` | Web App default AI instance ID |
+| GET | `/feishu/app-id` | Feishu App ID for SSO |
+| GET | `/feishu/jsapi/config` | Feishu JSAPI signature configuration |
+| POST | `/feishu/auth/login` | Feishu web login |
+| GET | `/feishu/auth/me` | Current Feishu identity |
+| POST | `/feishu/auth/logout` | Feishu web logout |
+| GET | `/feishu/sessions` | Feishu session list visible to current identity |
+| POST | `/feishu/sessions` | Create a new Feishu Web App session |
+| GET | `/feishu/sessions/{session_id}/history` | Get Feishu Web App session history |
+| GET | `/feishu/titles` | Session title map visible to current identity |
+| GET | `/feishu/summaries` | Session summary map visible to current identity |
+| GET | `/oauth/callback` | OAuth redirect callback handler |
+| GET | `/oauth/code` | Fetch OAuth code by state for initiator |
+| GET | `/auth/status` | Cloud auth status and connection self-check |
+| POST | `/auth/send-code` | Request verification code from cloud auth |
+| POST | `/auth/verify` | Verify code and log in |
+| POST | `/auth/complete` | Complete registration display name |
+| POST | `/auth/bind` | Bind phone or email |
+| DELETE | `/auth/identities/{provider}` | Unbind specified identity provider |
+| GET | `/auth/me` | Get current user info and bound identities |
+| POST | `/auth/logout` | Revoke cloud session and clear local credentials |
+| GET | `/auth/devices` | List logged-in devices |
+| DELETE | `/auth/devices/{device_id}` | Kick specified logged-in device |
+| GET | `/defaults` | Default agent, workspace, and appdata paths |
+| GET | `/workspace/cwd` | Get Gateway working directory |
+| GET | `/workspace/places` | PathPicker shortcut locations and drive letters |
+| GET | `/workspace/browse` | Browse directory (`?path=...`) |
+| GET | `/workspace/file` | Read file as Base64 |
+| POST | `/workspace/reveal` | Reveal specified path in local file manager |
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
-| GET | `/workspace/browse` | Browse directory (`?path=...`) |
-| GET | `/workspace/cwd` | Get working directory |
+| GET | `/summaries` | Get all session summaries |
+| POST | `/summaries` | Set session summary |
+| POST | `/summaries/generate` | AI auto-generate session summary |
+| POST | `/ui/attention` | Pulse tray/webview attention notification |
+| GET/POST | `/ui/prefs/survey` | Get/Set survey dialog completion status |
 | GET | `/openapi.json` | OpenAPI schema |
-| GET | `/favicon.ico` | Favicon (available only with `--icon`; returns 404 otherwise) |
+| GET | `/favicon.ico` | Favicon (available only when `--icon` is set) |
 
 ### Web Console Chat Protocol
 
