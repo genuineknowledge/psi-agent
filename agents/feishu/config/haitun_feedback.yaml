@@ -1,0 +1,38 @@
+# HaiTun B/C 端 · 爽点/意见/bug 收集表（一层：确认后再写入）
+# 填好 app_token / table_id 后本 skill 才能落盘；列名须与多维表字段**逐字一致**。
+# 对话节奏见 skills/haitun-feedback-collect：先问类型/是否落盘，用户答应才 create_records。
+#
+# 推荐：一张表 + 「端」「类型」两列（筛选视图模拟 6 入口），不要 6 张独立 sheet。
+# 环境变量可覆盖（优先）：
+#   HAITUN_FEEDBACK_APP_TOKEN / HAITUN_FEEDBACK_TABLE_ID
+
+app_token: ""
+table_id: ""
+
+# 字段名 ↔ 多维表列名（改表头时同步改这里）
+fields:
+  description: 详细描述
+  surface: 端
+  kind: 类型
+  reporter: 提出者
+  reporter_open_id: 提出者open_id
+  date: 日期
+  status: 状态
+  # 附件列可选；无此列则只把图片说明写进「详细描述」
+  attachment: 附件
+
+# 单选/选项取值（须与表内选项名一致）
+surface_values:
+  b: B
+  c: C
+  unknown: 待分类
+kind_values:
+  bug: bug
+  opinion: 意见
+  delight: 爽点
+  unknown: 待分类
+# bug / 意见默认状态；爽点可留空（见 skill）
+default_status: 待确认
+
+# identity: bot 代写（收集表通常归机器人）；需要以用户身份写时改 user
+identity: bot
