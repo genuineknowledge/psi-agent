@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import re
 
 import _card_dsl
 import _feishu_impl as _f
@@ -34,6 +35,67 @@ _UNSTRUCTURED_OVERVIEW_LIMIT = 400
 _ELLIPSIS = "\n\n…(内容较长, 已截断, 完整文本见会议存档)"
 
 _CANDIDATE_KEYS = ("positive_candidates", "negative_candidates", "positives", "negatives")
+
+# 「写在代码/规则里的声明」不该出现在给人看的卡片正文里 —— 模型会把系统侧口径复述进
+# 输出(实测: 【用途与边界】本输出仅为候选观察, 不写入正式负面总表、不计分、不进入绩效)。
+# 这里做确定性剥离: 不依赖模型自觉, 也保证历史 record 重渲染时同样干净。
+_DECLARATION_SECTION_RE = re.compile(
+    r"【[^】]{0,20}(?:用途|边界|声明|口径|免责|合规)[^】]{0,20}】[\s\S]*?"
+    r"(?=【|\n\s*\n|\n\s*#{1,6}\s|$)"
+)
+_DECLARATION_HINTS = (
+    "不写入正式",
+    "不计分",
+    "不进入绩效",
+    "不排名",
+    "不自动认定红线",
+    "候选观察",
+    "本输出仅",
+    "仅为候选",
+    "不作为证据",
+    "active:false",
+    "active: false",
+)
+# 代码生成的两类元信息也不该出现在卡片正文(卡片首行已经有会议与日期):
+#   「合并口径: 本分析由三段分块分析合并去重…」整段, 与「【合并后分析|会议 ...】」横幅行。
+_MERGE_DECLARATION_RE = re.compile(r"(?m)^\s*合并口径[:\uff1a][^\n]*(?:\n+|$)")
+_META_BANNER_RE = re.compile(r"(?m)^\s*【合并后分析[^\n]*】\s*(?:\n+|$)")
+# 单段超过这个长度就按句号切成分行要点 —— 卡片是给人扫的, 一大段流水文字读不动。
+_PARAGRAPH_BULLET_THRESHOLD = 140
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。\uff1b!?\uff01\uff1f])")
+_BRACKET_TITLE_RE = re.compile(r"【([^】]{1,24})】")
+_MD_HEADING_RE = re.compile(r"(?m)^\s*#{1,6}\s*(.+?)\s*$")
+_CN_NUMBERED_HEADING_RE = re.compile(r"(?m)^\s*([一二三四五六七八九十]{1,3}、)\s*(.+?)\s*$")
+
+
+def _strip_declarations(text: str) -> str:
+    """去掉口径/边界声明段落与行(系统侧约束不该复述给收件人)。"""
+    cleaned = _DECLARATION_SECTION_RE.sub("", str(text or ""))
+    cleaned = _MERGE_DECLARATION_RE.sub("", cleaned)
+    cleaned = _META_BANNER_RE.sub("", cleaned)
+    kept = [line for line in cleaned.splitlines() if not any(hint in line for hint in _DECLARATION_HINTS)]
+    return "\n".join(kept).strip()
+
+
+def _structure(text: str) -> str:
+    """把正文整理成分层结构: 标题独立成行、长段落切成要点、压缩空行。"""
+    body = str(text or "").strip()
+    if not body:
+        return ""
+    body = _MD_HEADING_RE.sub(lambda match: f"\n\n**{match.group(1).strip()}**\n", body)
+    body = _CN_NUMBERED_HEADING_RE.sub(lambda match: f"\n\n**{match.group(1)}{match.group(2)}**\n", body)
+    body = _BRACKET_TITLE_RE.sub(lambda match: f"\n\n**{match.group(1).strip()}**\n", body)
+    blocks: list[str] = []
+    for raw_paragraph in body.split("\n"):
+        paragraph = raw_paragraph.strip()
+        if not paragraph:
+            continue
+        if len(paragraph) < _PARAGRAPH_BULLET_THRESHOLD or paragraph.startswith(("-", "*", ">", "|", "**")):
+            blocks.append(paragraph)
+            continue
+        sentences = [piece.strip() for piece in _SENTENCE_SPLIT_RE.split(paragraph) if piece.strip()]
+        blocks.append("\n".join(f"- {sentence}" for sentence in sentences))
+    return re.sub(r"\n{3,}", "\n\n", "\n\n".join(blocks)).strip()
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -133,8 +195,8 @@ def render_meeting_summary_card(
         footer = f"{overview_note}\n\n{footer}"
     values = {
         "meeting_line": f"{meeting_title} · {meeting_date}",
-        "summary": _truncate(summary, _SUMMARY_LIMIT),
-        "key_points": _truncate(key_points, _KEY_POINTS_LIMIT),
+        "summary": _truncate(_structure(_strip_declarations(summary)), _SUMMARY_LIMIT),
+        "key_points": _truncate(_structure(_strip_declarations(key_points)), _KEY_POINTS_LIMIT),
         "positives": positives,
         "negatives": negatives,
         "footer": footer,
