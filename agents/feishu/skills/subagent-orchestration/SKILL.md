@@ -6,6 +6,13 @@ category: agent
 
 # Subagent orchestration
 
+## 调用面约束（防空转）
+
+- 子 Agent 相关可调工具仅：`subagent_plan` / `subagent_wait` / `subagent_chat`，以及配方中的 `background_start` / `background_stop` / `background_list`。
+- **禁止**调用已删除的 `subagent_run` / `subagent_stop` / `subagent_list`，也禁止发明其它 `subagent_*`。
+- 参数名以本 skill 入参表 / 本回合工具 schema 为准。
+- 若返回 `Tool … not found`、非法 JSON 参数、`unexpected keyword` / missing required：**立刻停止换名或微调参数重试**；重新扫描本回合 `tools` 与本 skill 入参表确认正确性后再调。连续两次此类失败时运行时会拒绝继续调用并下发说明。
+
 ## 定义
 
 **Subagent = 一个新的后台 Session**（独立 channel + 独立 history）。在 Gateway 内默认**复用主 Agent 已链接的 AI**（不另起 `psi-agent ai`、不依赖环境变量里的 key）；仅在 Gateway 不可达时才 standalone 起 ai+session。

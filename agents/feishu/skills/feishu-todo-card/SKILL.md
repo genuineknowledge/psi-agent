@@ -9,6 +9,13 @@ description: 给某人发一张「今日 TODO」卡片：一张卡列多条待�
 一张卡多条待办，**逐条勾选**。这跟普通卡片的根本区别：普通卡片点一次就整张退休（防重复提交），
 TODO 卡把「一次性」的粒度从**整张卡**降到**每一行**。
 
+## 调用面约束（防空转）
+
+- 本 skill 的「接口 / 端点」表**不是**可直接 call 的 Session 工具名。无专用工具时用 `feishu_api(method, uri, …)`；专用工具名必须出现在本回合 `tools` 列表（可用 `tool_search`）。
+- **禁止**发明 `feishu_*` 函数名（例如把 URI 路径改成 `feishu_user_get`）并换名连打。
+- 参数名以专用工具 schema 或本 skill / `feishu_api` 参数表为准，勿猜 keyword。
+- 若返回 `Tool … not found`、非法 JSON 参数、`unexpected keyword` / missing required：**立刻停止换名或微调参数重试**；重新扫描本回合 `tools` 与目标参数 schema（或本 skill 参数表）确认正确性后再调。连续两次此类失败时运行时会拒绝继续调用并下发说明。
+
 ## 用哪个工具
 
 | 场景 | 工具 |

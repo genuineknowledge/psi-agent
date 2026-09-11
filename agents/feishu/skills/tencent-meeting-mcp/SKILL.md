@@ -18,6 +18,12 @@ metadata:
 
 # 腾讯会议 MCP 服务
 
+## 调用面约束（防空转）
+
+- 工具名只认本回合 `tools` 列表里真实存在的名字（本 skill 写明的入口，如 `td_*`）；**禁止**根据文档发明变体或假 dispatcher 并换名连打。
+- 参数名以本 skill / 工具 schema 为准，勿猜 keyword。
+- 若返回 `Tool … not found`、非法 JSON 参数、`unexpected keyword` / missing required：**立刻停止换名或微调参数重试**；重新扫描本回合 `tools` 与目标参数 schema 确认正确性后再调。连续两次此类失败时运行时会拒绝继续调用并下发说明。
+
 ## 概述
 
 本技能为腾讯会议提供完整的 MCP 工具集，涵盖会议管理、成员管理、录制、转写与智能纪要查询等核心功能。
