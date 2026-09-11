@@ -573,6 +573,108 @@ async def test_daily_meeting_pipeline_runs_each_stage_once(tmp_path: Path, monke
 
 
 @pytest.mark.anyio
+async def test_pipeline_does_not_resend_old_analysis_without_new_transcript(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """今天这场只有云录制(无文字转写)时: 不得回退到上一场已处理的转写重算重发。"""
+    calls: list[str] = []
+
+    async def fake_prepare(**_kwargs: object) -> str:
+        calls.append("prepare")
+        return json.dumps({"ok": True, "status": "already_processed"})
+
+    async def fake_analyze(*_args: object, **_kwargs: object) -> dict[str, str]:
+        calls.append("analyze")
+        return {"analysis_text": "x", "meeting_summary": "x", "positive_negative_overview": "x"}
+
+    async def fake_notify(**_kwargs: object) -> str:
+        calls.append("notify")
+        return json.dumps({"ok": True, "status": "sent"})
+
+    monkeypatch.setattr(pipeline, "meeting_transcript_prepare", fake_prepare)
+    monkeypatch.setattr(pipeline, "_analyze_meeting_transcript", fake_analyze)
+    monkeypatch.setattr(pipeline, "meeting_session_notify", fake_notify)
+
+    async def resolve_root(_root: str = "") -> str:
+        return _root or str(tmp_path)
+
+    monkeypatch.setattr(pipeline, "resolve_appdata_root", resolve_root)
+
+    result = json.loads(
+        await pipeline.meeting_pipeline_run(
+            meeting_name="weekday-alignment", meeting_code="57152787045", appdata_root=str(tmp_path)
+        )
+    )
+    assert result["status"] == "already_processed"
+    assert result["notified"] is False
+    assert calls == ["prepare"]
+
+
+@pytest.mark.anyio
+async def test_pipeline_retries_only_delivery_for_unresolved_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """没有新转写但旧 record 仍有未送达回执: 只补投递, 不重新分析。"""
+    artifact = tmp_path / "meeting-session" / "weekday-alignment"
+    artifact.mkdir(parents=True, exist_ok=True)
+    (artifact / "manifest.json").write_text(
+        json.dumps({"record_file_id": "record-old", "chunk_count": 1, "transcript_chars": 5}),
+        encoding="utf-8",
+    )
+    (artifact / "pipeline_state.json").write_text(
+        json.dumps(
+            {
+                "record_file_id": "record-old",
+                "status": "notifications_pending",
+                "source_chunks": [0],
+                "analysis_text": "旧分析",
+                "meeting_summary": "旧纪要",
+                "positive_negative_overview": "旧总览",
+                "recipient_receipts": {"罗霖": {"ok": False, "status": "send_failed"}},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    calls: list[object] = []
+
+    async def fake_prepare(**_kwargs: object) -> str:
+        calls.append("prepare")
+        return json.dumps({"ok": True, "status": "already_processed"})
+
+    async def fake_analyze(*_args: object, **_kwargs: object) -> dict[str, str]:
+        calls.append("analyze")
+        return {"analysis_text": "新", "meeting_summary": "新", "positive_negative_overview": "新"}
+
+    async def fake_notify(**kwargs: object) -> str:
+        calls.append(("notify", kwargs["recipient"]))
+        return json.dumps({"ok": True, "status": "sent", "recipient": kwargs["recipient"]})
+
+    def fake_render_card(**_kwargs: object) -> dict[str, object]:
+        return {"ok": False}
+
+    monkeypatch.setattr(pipeline, "meeting_transcript_prepare", fake_prepare)
+    monkeypatch.setattr(pipeline, "_analyze_meeting_transcript", fake_analyze)
+    monkeypatch.setattr(pipeline, "meeting_session_notify", fake_notify)
+    monkeypatch.setattr(pipeline, "render_meeting_summary_card", fake_render_card)
+
+    async def resolve_root(_root: str = "") -> str:
+        return _root or str(tmp_path)
+
+    monkeypatch.setattr(pipeline, "resolve_appdata_root", resolve_root)
+
+    result = json.loads(
+        await pipeline.meeting_pipeline_run(
+            meeting_name="weekday-alignment", meeting_code="57152787045", appdata_root=str(tmp_path)
+        )
+    )
+    assert result["prepare_status"] == "already_processed"
+    assert "analyze" not in calls
+    assert any(isinstance(call, tuple) and call[0] == "notify" for call in calls)
+
+
+@pytest.mark.anyio
 async def test_read_full_transcript_follows_has_more_beyond_manifest_count(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

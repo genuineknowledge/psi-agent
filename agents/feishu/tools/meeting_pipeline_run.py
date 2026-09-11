@@ -628,6 +628,19 @@ async def _notify_failure_alert(
             )
 
 
+# prepare 的这几种状态都表示"本场没有可用的新文字转写"(仅云录制、转写未完成,
+# 或最新转写已经处理过)。它们不是失败, 但也绝不能触发"拿上一场转写重算重发"。
+_NO_NEW_TRANSCRIPT_STATUSES = frozenset({"transcript_pending", "no_completed_transcript", "already_processed"})
+
+
+def _pending_receipt_names(state: dict[str, Any]) -> list[str]:
+    """该场仍有未送达回执的收件人(用来区分"没新转写"与"投递欠账")。"""
+    raw = state.get("recipient_receipts")
+    if not isinstance(raw, dict):
+        return []
+    return [str(name) for name, receipt in raw.items() if isinstance(receipt, dict) and not receipt.get("ok")]
+
+
 async def meeting_pipeline_run(
     meeting_name: str = DAILY_MEETING_NAME,
     meeting_code: str = DAILY_MEETING_CODE,
@@ -690,6 +703,25 @@ async def meeting_pipeline_run(
                 ensure_ascii=False,
             )
         manifest = read_meeting_manifest(base, meeting_name)
+        prepare_status = str(prepare_result.get("status") or "")
+        if not prepare_result.get("record_file_id") and prepare_status in _NO_NEW_TRANSCRIPT_STATUSES:
+            # 腾讯侧本场没有可用的新文字转写(仅云录制 / 转写未完成 / 最新转写已处理过)。
+            # 此时**不能**回退到上一场已处理的转写去重算并把旧内容当今天产出重发 —— 那
+            # 正是"12:00 调用成功、群里却收到 9/9 内容"的成因。唯一例外: 那个已处理
+            # record 仍有未送达回执(投递欠账), 此时只补投递、不重新分析。
+            pending_recipients = _pending_receipt_names(state)
+            if not pending_recipients:
+                await _write_json(state_path, {"status": prepare_status, "prepare": prepare_result})
+                await _record(prepare_status, record_file_id="", entry={"prepare_status": prepare_status})
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "status": prepare_status,
+                        "notified": False,
+                        "message": "腾讯侧暂无本场可用的文字转写(仅云录制或转写未完成), 未重发历史分析",
+                    },
+                    ensure_ascii=False,
+                )
         record_file_id = str(
             prepare_result.get("record_file_id") or manifest.get("record_file_id") or state.get("record_file_id") or ""
         )
@@ -867,6 +899,7 @@ async def meeting_pipeline_run(
                 "total": _ms(),
             },
             "analysis_reused": not analysis_new,
+            "prepare_status": prepare_status,
             "analysis": _analysis_stats_entry(analysis_stats),
             "transcript_chars": int(manifest.get("transcript_chars") or 0),
             "paragraph_count": int(manifest.get("paragraph_count") or 0),
@@ -912,6 +945,7 @@ async def meeting_pipeline_run(
                 "status": final_status,
                 "meeting_name": meeting_name,
                 "record_file_id": record_file_id,
+                **({"prepare_status": prepare_status} if prepare_status else {}),
                 **({"analysis_issues": analysis_issues} if analysis_issues else {}),
             },
             ensure_ascii=False,
