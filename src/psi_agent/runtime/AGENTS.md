@@ -42,6 +42,7 @@ git grep -n "from psi_agent.gateway" -- src/psi_agent/runtime/   # 必须无输�
 | `_chat_manager.py` | SSE 流式对话管理（复用 ChannelCore） |
 | `_history_manager.py` | JSONL 历史读取（``{appdata}/histories/{session_id}.jsonl``，legacy ``{workspace}/histories/`` 双读；delete 两侧都清） |
 | `_todo_manager.py` | 会话 todo 列表读取（``{appdata}/todos/{session_id}.json``，legacy ``{workspace}/.psi/todos/`` 双读） |
+| `_session_relocate.py` | AppData history/todos/segments 的 session-id 拷贝与 todo 清理；供 Gateway `POST /sessions/{id}/relocate`（**刻意为之**：不热改运行中 Session 根路径；磁盘交付物不搬家） |
 
 各 manager 的行为细节、Socket 路径约定、`_wait_socket` 120s 超时的由来、SchedulerManager 的「定时任务归 workspace，触发权归 session × schedule」不变量、免费模型的 key 替换钩子，仍记在 `gateway/AGENTS.md` 对应小节——那里同时讲了 REST 侧的接线，拆开会让两边都读不完整。
 
