@@ -167,6 +167,11 @@ _CONTEXT_FILE_MAX_CHARS = 40_000
 
 _SKILLS_SNAPSHOT_FILE = ".skills_prompt_snapshot.json"
 
+# Tombstone list of user-disabled OFFICIAL skills (B: official-skill disable).
+# Lives in the writable ~/.agent so it survives upgrades; format {"disabled": [names]}.
+# Shared contract with the gateway's disable/enable endpoints.
+_SKILL_TOMBSTONES_FILE = "skill-tombstones.json"
+
 _SUPERVISOR_MANAGERS: dict[str, Any] = {}
 
 # Global skills directory, shared across workspaces (AGENTS.md ecosystem
@@ -515,20 +520,51 @@ async def _collect_skill_dirs(skills_dir: anyio.Path) -> list[tuple[str, anyio.P
     return entries
 
 
+async def _read_skill_tombstones() -> set[str]:
+    """Read the disabled-official-skill tombstone list from ~/.agent (B).
+
+    Format: {"disabled": ["name1", ...]}. Returns an empty set when the file is
+    absent or malformed -- fail-open, a broken tombstone must never wipe the
+    index. Shared contract with the gateway's disable/enable endpoints.
+    """
+    path = _GLOBAL_AGENT_HOME / _SKILL_TOMBSTONES_FILE
+    with contextlib.suppress(OSError, json.JSONDecodeError, KeyError, TypeError):
+        if await path.exists():
+            data = json.loads(await path.read_text(encoding="utf-8"))
+            disabled = data.get("disabled", [])
+            if isinstance(disabled, list):
+                return {str(n) for n in disabled}
+    return set()
+
+
 async def _build_skills_index(workspace_dir: anyio.Path) -> str:
     skills_dir = workspace_dir / "skills"
 
-    # Merge global (~/.agent/skills) with workspace skills. Workspace skills
-    # override globals on name conflict, so collect globals first and let the
-    # workspace pass replace them. This keeps the "nearest wins" convention
-    # consistent with AGENTS.md/CLAUDE.md context lookup.
+    # Merge the official layer (agent package skills/) with the global personal
+    # layer (~/.agent/skills). ToC content layering: the PERSONAL layer WINS on
+    # name conflict, so collect official first and let the global pass override
+    # it (index scans official-then-global, last write wins). Reversed from the
+    # old "nearest wins" order; deliberately opposite-iterating but
+    # same-priority as resolve_skill_path (global-first) -- see the layering test.
     skill_md_by_name: dict[str, anyio.Path] = {}
-    for name, skill_md in await _collect_skill_dirs(_GLOBAL_AGENT_SKILLS_DIR):
-        skill_md_by_name[name] = skill_md
     for name, skill_md in await _collect_skill_dirs(skills_dir):
+        skill_md_by_name[name] = skill_md
+    for name, skill_md in await _collect_skill_dirs(_GLOBAL_AGENT_SKILLS_DIR):
         skill_md_by_name[name] = skill_md
 
     skill_entries: list[tuple[str, anyio.Path]] = sorted(skill_md_by_name.items())
+
+    # Tombstone filter (B): drop official-won skills the user disabled. MUST sit
+    # before the manifest is computed so a disabled skill leaves the manifest and
+    # invalidates the snapshot cache (a stale cache would keep serving it). Only
+    # official-won entries drop; global-won (user override / pure personal) are
+    # spared -- the tombstone hides the read-only official layer, not user data.
+    tombstones = await _read_skill_tombstones()
+    if tombstones:
+        official_prefix = str(skills_dir) + os.sep
+        skill_entries = [
+            (name, md) for name, md in skill_entries if not (name in tombstones and str(md).startswith(official_prefix))
+        ]
 
     if not skill_entries:
         return ""
@@ -545,7 +581,11 @@ async def _build_skills_index(workspace_dir: anyio.Path) -> str:
     if not skill_contents:
         return ""
 
-    snapshot_path = workspace_dir / _SKILLS_SNAPSHOT_FILE
+    # Snapshot cache lives in the writable global ~/.agent, not the official
+    # package dir (read-only in production -> the cache silently never worked).
+    # The manifest covers all merged skills (official + global), so a change in
+    # either layer invalidates the cache.
+    snapshot_path = _GLOBAL_AGENT_HOME / _SKILLS_SNAPSHOT_FILE
     with contextlib.suppress(OSError, json.JSONDecodeError, KeyError):
         if await snapshot_path.exists():
             raw = await snapshot_path.read_text(encoding="utf-8")
@@ -605,6 +645,7 @@ async def _build_skills_index(workspace_dir: anyio.Path) -> str:
     skills_xml = "\n".join(lines)
 
     with contextlib.suppress(OSError):
+        await _GLOBAL_AGENT_HOME.mkdir(parents=True, exist_ok=True)
         await snapshot_path.write_text(
             json.dumps({"manifest": manifest, "skills_xml": skills_xml}, indent=2),
             encoding="utf-8",

@@ -245,6 +245,49 @@ export async function browseWorkspace(
   return api<BrowseResult>('GET', `/workspace/browse?${params.toString()}`)
 }
 
+export type SkillSource = 'official' | 'global'
+
+export type SkillItem = {
+  name: string
+  description: string
+  category: string
+  /** Which layer won: 'official' (agent package) | 'global' (~/.agent personal). */
+  source: SkillSource
+  /** Absolute path of the winning SKILL.md, for readWorkspaceFile / revealWorkspacePath. */
+  path: string
+  /** Official-only: the user disabled (tombstoned) it, so the agent index hides it. */
+  tombstoned: boolean
+}
+
+/** GET /workspace/skills -- official + global (~/.agent) layers, global wins on a
+ *  name conflict. Backed by WorkspaceManager.list_skills; the source tag says which
+ *  layer won (kept consistent with the agent index by test_workspace_skills). View a
+ *  body via readWorkspaceFile(path); open its folder via revealWorkspacePath(path). */
+export async function listSkills(): Promise<SkillItem[]> {
+  const r = await api<{ skills: SkillItem[] }>('GET', '/workspace/skills')
+  return r.skills
+}
+
+/** DELETE /workspace/skills/{name} -- remove a personal (global-layer) skill.
+ *  Official skills are not deletable (the backend rejects them); hiding an
+ *  official skill is disableSkill below (the tombstone mechanism). */
+export async function deleteSkill(name: string) {
+  return api<{ name: string; ok: boolean }>('DELETE', `/workspace/skills/${encodeURIComponent(name)}`)
+}
+
+/** POST /workspace/skills/{name}/disable -- tombstone an official skill: hide it
+ *  from the agent index without deleting the read-only package file (an upgrade
+ *  would restore it anyway). Backed by WorkspaceManager.disable_skill. */
+export async function disableSkill(name: string) {
+  return api<{ name: string; disabled: boolean }>('POST', `/workspace/skills/${encodeURIComponent(name)}/disable`)
+}
+
+/** POST /workspace/skills/{name}/enable -- remove an official skill's tombstone,
+ *  re-enabling it so the agent index shows it again. Backed by enable_skill. */
+export async function enableSkill(name: string) {
+  return api<{ name: string; disabled: boolean }>('POST', `/workspace/skills/${encodeURIComponent(name)}/enable`)
+}
+
 export async function streamChat(
   sessionId: string,
   formData: FormData,

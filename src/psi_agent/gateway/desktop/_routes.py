@@ -208,6 +208,73 @@ async def _reveal_workspace_path(request: web.Request) -> web.Response:
         return _error(str(e), status=400)
 
 
+async def _list_workspace_skills(request: web.Request) -> web.Response:
+    """GET /workspace/skills -- skills across official + global layers, global wins.
+
+    The official layer comes from app["default_agent"] (the --default-agent package
+    root); the global layer (~/.agent/skills) is fixed by convention. The merge is a
+    second implementation of the agent package's index; test_workspace_skills.py
+    guards that the two agree on the winning layer.
+    """
+    wm: WorkspaceManager = request.app["wm"]
+    agent_dir = str(request.app.get("default_agent") or "")
+    try:
+        return _json({"skills": await wm.list_skills(agent_dir)})
+    except OSError as e:
+        return _error(str(e), status=400)
+
+
+async def _delete_workspace_skill(request: web.Request) -> web.Response:
+    """DELETE /workspace/skills/{name} -- remove a personal (global-layer) skill.
+
+    Official skills are not deletable here (tombstone hiding is a later stage);
+    delete_skill confines the target to ~/.agent/skills and rejects traversal.
+    """
+    wm: WorkspaceManager = request.app["wm"]
+    name = request.match_info.get("name", "")
+    try:
+        return _json(await wm.delete_skill(name))
+    except ValueError as e:
+        return _error(str(e), status=400)
+    except FileNotFoundError as e:
+        return _error(str(e), status=404)
+    except OSError as e:
+        return _error(str(e), status=400)
+
+
+async def _disable_workspace_skill(request: web.Request) -> web.Response:
+    """POST /workspace/skills/{name}/disable -- tombstone an official skill (B).
+
+    Official skills are read-only in production and restored on upgrade, so they
+    can only be hidden (tombstone), never deleted. disable_skill validates the
+    name and writes ~/.agent/skill-tombstones.json; the agent index then hides it.
+    """
+    wm: WorkspaceManager = request.app["wm"]
+    name = request.match_info.get("name", "")
+    try:
+        return _json(await wm.disable_skill(name))
+    except ValueError as e:
+        return _error(str(e), status=400)
+    except OSError as e:
+        return _error(str(e), status=400)
+
+
+async def _enable_workspace_skill(request: web.Request) -> web.Response:
+    """POST /workspace/skills/{name}/enable -- remove an official skill's tombstone.
+
+    Re-enables a disabled official skill so the agent index shows it again.
+    Idempotent (enabling a name not in the tombstone is a harmless no-op).
+    """
+    wm: WorkspaceManager = request.app["wm"]
+    name = request.match_info.get("name", "")
+    try:
+        return _json(await wm.enable_skill(name))
+    except ValueError as e:
+        return _error(str(e), status=400)
+    except OSError as e:
+        return _error(str(e), status=400)
+
+
 # ---------------------------------------------------------------- 认证 (/auth/*)
 #
 # 这些路由只在云端地址非空时注册 (见 register_desktop_routes)。为空时整套认证不加载, 现有本地
@@ -400,6 +467,10 @@ async def register_desktop_routes(
     app.router.add_get("/workspace/browse", _browse_workspace)
     app.router.add_get("/workspace/file", _read_workspace_file)
     app.router.add_post("/workspace/reveal", _reveal_workspace_path)
+    app.router.add_get("/workspace/skills", _list_workspace_skills)
+    app.router.add_delete("/workspace/skills/{name}", _delete_workspace_skill)
+    app.router.add_post("/workspace/skills/{name}/disable", _disable_workspace_skill)
+    app.router.add_post("/workspace/skills/{name}/enable", _enable_workspace_skill)
 
     # 认证路由: 只在配了云端地址时才注册。authm 为 None 时**一条都不注册**,
     # 现有本地单用户流程零回归。

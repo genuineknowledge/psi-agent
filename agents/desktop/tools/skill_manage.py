@@ -10,8 +10,12 @@ import anyio
 
 
 def _skills_dir() -> anyio.Path:
-    # Skills live in the agent package (not the user workspace).
-    return _paths.resolve_agent() / "skills"
+    # User-created/derived skills land in the global personal layer
+    # ~/.agent/skills: the official layer is replaced wholesale on upgrade, so
+    # writing the official package gets wiped (requirement one). Keeps the same
+    # personal layer as the index/read paths. No need to pre-create the dir:
+    # create goes through _atomic_write's mkdir(parents=True).
+    return _paths.global_skills_dir()
 
 
 def _validate_skill_name(skill_name: str) -> str | None:
@@ -82,31 +86,43 @@ async def skill_manage(
     action = action.strip().lower()
 
     if action == "list":
-        if not await skills_dir.exists():
+        # Layered merge: official (agent package skills/) + global personal
+        # (~/.agent/skills), global wins on conflict (matches _build_skills_index).
+        # Scanning only the global layer would make the pre-create dedup miss
+        # 100+ official skills, so both layers must be scanned.
+        merged: dict[str, anyio.Path] = {}
+        for layer_dir in (_paths.resolve_agent() / "skills", skills_dir):
+            if not await layer_dir.exists():
+                continue
+            async for skill_dir in layer_dir.iterdir():
+                if not await skill_dir.is_dir() or skill_dir.name.startswith("."):
+                    continue
+                skill_md = skill_dir / "SKILL.md"
+                if await skill_md.exists():
+                    merged[skill_dir.name] = skill_md  # later global pass overrides earlier official
+
+        if not merged:
             return "No skills found."
 
         entries: list[str] = []
-        async for skill_dir in skills_dir.iterdir():
-            if not await skill_dir.is_dir() or skill_dir.name.startswith("."):
-                continue
-            skill_md = skill_dir / "SKILL.md"
-            if not await skill_md.exists():
-                continue
-
+        for dir_name, skill_md in merged.items():
             raw = await skill_md.read_text(encoding="utf-8", errors="replace")
             frontmatter, _body = _parse_frontmatter(raw)
-            name = frontmatter.get("name") or skill_dir.name
+            name = frontmatter.get("name") or dir_name
             desc = frontmatter.get("description") or "(no description)"
             cat = frontmatter.get("category") or "general"
             tag = " [agent]" if frontmatter.get("created_by") == "agent" else ""
             entries.append(f"- {name} ({cat}){tag}: {desc}")
 
-        return "Skills:\n" + "\n".join(sorted(entries)) if entries else "No skills found."
+        return "Skills:\n" + "\n".join(sorted(entries))
 
     if action == "view":
         if err := _validate_skill_name(skill_name):
             return f"[Error] {err}"
-        skill_md = skills_dir / skill_name / "SKILL.md"
+        # Layered resolution (global -> official), same as read's skills/ branch.
+        # Querying only the global layer would leave an official skill "listed
+        # but not found on view", so go through resolve_skill_path.
+        skill_md = await _paths.resolve_skill_path(f"skills/{skill_name}/SKILL.md")
         if not await skill_md.exists():
             return f"[Error] Skill not found: {skill_name!r}"
         return await skill_md.read_text(encoding="utf-8", errors="replace")
