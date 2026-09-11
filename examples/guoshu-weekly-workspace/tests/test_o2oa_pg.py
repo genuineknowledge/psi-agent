@@ -2226,6 +2226,134 @@ class TestSecondWaveScopes:
             assert scope in o2.PERSON_SCOPES
 
 
+class TestAttachmentRemainingScopes:
+    """附件统计补齐到 **13/13**:每一档的形状、闸门与排序各有一条判据。"""
+
+    def test_all_thirteen_scopes_are_declared(self):
+        assert set(_formal._MIGRATED_ATTACHMENT_SCOPES) == {
+            "summary", "by_ext", "largest", "by_uploader", "uploader_count", "by_link",
+            "by_progress", "zero_attachment", "on_open_submission", "by_month",
+            "deleted", "deleted_by_link", "orphan",
+        }
+
+    def test_by_link_priority_is_progress_then_submission_then_task(self):
+        """一条附件只进一档,所以各档相加等于总数 —— 判据全在 CASE 的**顺序**里。"""
+        sql, params = o2.attachment_stats(scope="by_link", limit=10)
+        assert o2.ATTACHMENT_LINK_CASE in sql
+        assert sql.index("progress_id IS NOT NULL") < sql.index("workflow_submission_id IS NOT NULL")
+        assert "GROUP BY link_type" in sql and "ORDER BY n DESC, link_type" in sql
+        assert params == (10,)
+
+    def test_deleted_by_link_keeps_the_same_link_vocabulary(self):
+        """软删档与在用档必须同一套 link_type 词表,否则两张表没法对着看。"""
+        sql, _params = o2.attachment_stats(scope="deleted_by_link")
+        assert o2.ATTACHMENT_LINK_CASE in sql
+        assert "a.is_deleted = 1" in sql
+        assert "workflow_status" not in sql  # 全表口径:不加任务闸门
+        assert "total_mb" in sql
+
+    def test_by_progress_gates_on_the_published_progress_row(self):
+        """闸门在 progress 行上(p.is_published = 1),与任务闸门是**两道**。"""
+        sql, params = o2.attachment_stats(scope="by_progress", limit=7)
+        assert "p.id = a.progress_id AND p.is_published = 1" in sql
+        assert adm.sql_task_admission("pg", "t") in sql
+        assert "GROUP BY t.id, t.task_name, p.version_no" in sql
+        assert params == (7,)
+
+    def test_on_open_submission_uses_the_submission_status_domain(self):
+        """在途判在**提交单自己的**状态上:`s.status <> 'published'`。
+
+        SQL 里同时有 ``t.workflow_status = 'published'``,但那是**任务准入闸门**(R-01),
+        不是"在途"的判据 —— 两者必须能分开看:任务可以是已发布的,而它某一轮提交单
+        还在流程里(那正是本档要数的)。
+        """
+        sql, _params = o2.attachment_stats(scope="on_open_submission", granted=True)
+        assert "JOIN task_workflow_submission s ON s.id = a.workflow_submission_id" in sql
+        assert "s.status <> 'published'" in sql
+        assert adm.sql_task_admission("pg", "t") in sql  # 任务闸门仍在,但它是另一件事
+
+    def test_zero_attachment_asks_about_existence_not_counts(self):
+        """NOT EXISTS 而非 LEFT JOIN + HAVING:问的是存在性;分母随行给出。"""
+        sql, params = o2.attachment_stats(scope="zero_attachment", limit=9)
+        assert "NOT EXISTS (SELECT 1 FROM task_attachment a" in sql
+        assert "total_formal_tasks" in sql
+        assert params == (9,)
+        total_sql, total_params = o2.attachment_zero_total()
+        assert "count(*) AS total_count" in total_sql and total_params == ()
+
+    def test_by_month_formats_the_month_and_bounds_it(self):
+        sql, params = o2.attachment_stats(scope="by_month", date_from="2026-08-01", limit=12)
+        assert "to_char((a.upload_time)::timestamp, 'YYYY-MM') AS ym" in sql
+        assert "a.upload_time >= %s" in sql
+        assert "GROUP BY ym" in sql and "ORDER BY ym" in sql
+        assert params == ("2026-08-01", 12)
+        with pytest.raises(ValueError):  # 日期格式错要当场说清,而不是让 PG 报类型错
+            o2.attachment_stats(scope="by_month", date_from="2026/08/01")
+
+    def test_uploader_count_is_computed_server_side(self):
+        sql, params = o2.attachment_stats(scope="uploader_count")
+        assert "count(DISTINCT a.uploader_id) AS uploader_count" in sql
+        assert "LIMIT" not in sql and params == ()
+
+    def test_informal_mode_switches_the_join_kind(self):
+        """光把闸门改成恒真还差 3 行:INNER JOIN 自己会丢掉孤儿附件。"""
+        gated_sql, _ = o2.attachment_stats(scope="by_link")
+        informal_sql, _ = o2.attachment_stats(scope="by_link", include_informal=True)
+        assert "JOIN task t ON t.id = a.task_id" in gated_sql
+        assert "workflow_status = 'published'" in gated_sql
+        assert "LEFT JOIN task t ON t.id = a.task_id" in informal_sql
+        assert "workflow_status" not in informal_sql
+
+    def test_task_scope_drops_the_task_gate(self):
+        """附件挂在外键上:任务不过 R-01 时它的附件依然在,带门问只会静默答 0。"""
+        for scope in ("by_link", "by_month", "uploader_count", "on_open_submission"):
+            sql, _params = o2.attachment_stats(scope=scope, task_id=2)
+            assert "a.task_id = %s" in sql, scope
+            assert "workflow_status" not in sql, scope
+
+    def test_whole_table_scopes_reject_a_task_argument(self, monkeypatch):
+        """跨任务口径传 task 无意义:显式报错,不静默忽略(会让调用方以为答案被收窄)。"""
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        for scope in ("zero_attachment", "deleted", "deleted_by_link", "orphan"):
+            got = _formal._attachment_stats({"scope": scope, "task": "50"})
+            assert got is not None and got["error"]["code"] == "task_not_applicable", scope
+
+    def test_every_scope_gets_a_usable_row_limit(self, monkeypatch):
+        """回归:分档清单漏登记会让 ``limit=1`` 把分组结果**静默截成一行**。
+
+        by_link 曾因此只回「挂在进展 29」,把「挂在任务本体 1」整档吃掉,
+        而 has_more 还报着 true —— 调用方完全看不出少了一档。
+        """
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            return {"ok": True, "columns": ["c"], "rows": [{"n": 1, "total_count": 22,
+                                                            "total_formal_tasks": 128}],
+                    "row_count": 1, "has_more": False, "caliber": "口径"}
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setenv("TASK_BOARD_GRANTED_OPTIONAL_TABLES", "task_attachment")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        for scope in _formal._ATTACHMENT_LISTING_SCOPES:
+            seen.clear()
+            got = _formal._attachment_stats({"scope": scope})
+            assert got is not None, scope
+            assert seen[0]["limit"] == 200, scope  # 默认 limit 要真的传下去,不能被压成 1
+            assert seen[0]["cap_last_param"] is True, scope
+        for scope in ("summary", "uploader_count", "deleted", "orphan"):
+            seen.clear()
+            _formal._attachment_stats({"scope": scope})
+            assert seen[0]["limit"] == 1, scope
+            assert seen[0]["cap_last_param"] is False, scope
+        # 单行汇总档不许出现在清单档清单里(反之亦然)
+        assert set(_formal._ATTACHMENT_LISTING_SCOPES) <= set(_formal._MIGRATED_ATTACHMENT_SCOPES)
+
+    def test_date_from_only_applies_to_by_month(self, monkeypatch):
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _formal._attachment_stats({"scope": "by_ext", "date_from": "2026-08-01"}) is None
+
+
 class TestPgConnectHardening:
     """正式源建连的两道闸:超时 + 瞬时失败重试。
 

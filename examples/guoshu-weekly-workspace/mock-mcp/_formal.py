@@ -1162,19 +1162,78 @@ def _person_stats(args: dict[str, Any]) -> dict[str, Any] | None:
 _NEW_HANDLERS_10 = {"weekly_person_stats": _person_stats}
 
 
-_MIGRATED_ATTACHMENT_SCOPES = ("summary", "by_ext", "largest", "by_uploader", "deleted", "orphan")
+_ATTACHMENT_WHOLE_TABLE_SCOPES = ("zero_attachment", "deleted", "deleted_by_link", "orphan")
+"""跨任务 / 全表口径:给 ``task=`` 无意义(参考实现直接报 ``task_not_applicable``)。
+
+``zero_attachment`` 问的是"哪些任务一个附件都没有"(分母是**全部**正式任务),
+``deleted`` / ``deleted_by_link`` / ``orphan`` 是对整张附件表的软删与孤儿审计 ——
+这三者的答案与"某个任务"无关,静默忽略 ``task=`` 会让调用方以为答案已被收窄。
+"""
+
+_MIGRATED_ATTACHMENT_SCOPES = (
+    "summary",
+    "by_ext",
+    "largest",
+    "by_uploader",
+    "uploader_count",
+    "by_link",
+    "by_progress",
+    "zero_attachment",
+    "on_open_submission",
+    "by_month",
+    "deleted",
+    "deleted_by_link",
+    "orphan",
+)
+"""13 档全部迁移(与参考实现的 ``_ATTACHMENT_STATS_SCOPES`` 逐一对应)。"""
+
+_ATTACHMENT_LISTING_SCOPES = (
+    "by_ext",
+    "largest",
+    "by_uploader",
+    "by_link",
+    "by_progress",
+    "zero_attachment",
+    "by_month",
+    "deleted_by_link",
+)
+"""输出**多行**的那些档(其余是单行汇总:summary / uploader_count / on_open_submission /
+deleted / orphan)。
+
+它同时喂给 ``envelope`` 的两个参数,两者不能分家:清单类档要按 ``limit`` 截断,
+而且模板把上限放在**最后一个参数**上(``cap_last_param`` 才能多要一行判"取满还是被截断");
+单行汇总档恒为 1。**新增分档时两处(模板与这张表)一起改** —— 漏一档的后果不是报错,
+而是 ``limit=1`` 把分组结果静默截成一行:``by_link`` 就曾因此只回「挂在进展 29」,
+把「挂在任务本体 1」整档吃掉,``has_more`` 还报着 true。
+"""
 
 
 def _attachment_stats(args: dict[str, Any]) -> dict[str, Any] | None:
-    """weekly_attachment_stats:附件汇总 / 分档 / 清单 / 软删审计(六种形状,不互相代答)。"""
+    """weekly_attachment_stats:附件统计的**全部 13 档**(每档一种形状,不互相代答)。"""
     scope = (args.get("scope") or "summary").strip().lower()
     if scope not in _MIGRATED_ATTACHMENT_SCOPES:
-        return None  # 其余 scope(by_month/on_open_submission/by_link/...)交给演示路径
-    if (args.get("date_from") or "").strip():
-        return None  # date_from 只对 by_month 有意义,那一档未迁
+        return None  # 未知 scope 交给演示路径(它报 unsupported_scope 并列出值域)
     board = _board(args)
     limit = int(args.get("limit") or MAX_ROWS)
-    task_id, task_name = _resolve_task(args.get("task") or "")
+    raw_task = (args.get("task") or "").strip()
+    if raw_task and scope in _ATTACHMENT_WHOLE_TABLE_SCOPES:
+        # 不静默忽略:调用方以为答案被收窄了,而其实没有
+        return {
+            "ok": False,
+            "error": {
+                "code": "task_not_applicable",
+                "message": (
+                    f"口径 {scope} 是跨任务 / 全表口径,传 task 无意义,不做静默忽略:"
+                    "zero_attachment 问的是「哪些任务一个附件都没有」(分母是全部正式任务),"
+                    "deleted / deleted_by_link / orphan 是对整张附件表的软删与孤儿审计。"
+                    "要单任务的附件量请用 scope=summary 加 task"
+                ),
+            },
+        }
+    date_from = (args.get("date_from") or "").strip() or None
+    if date_from and scope != "by_month":
+        return None  # date_from 只对 by_month 有口径支撑(其余档参考实现也是忽略的)
+    task_id, task_name = _resolve_task(raw_task)
     include_informal = bool(args.get("include_informal"))
     sql, params = tpl.attachment_stats(
         board_code=board,
@@ -1184,6 +1243,7 @@ def _attachment_stats(args: dict[str, Any]) -> dict[str, Any] | None:
         task_id=task_id,
         task_name=task_name,
         include_informal=include_informal,
+        date_from=date_from,
     )
     caliber = (
         "is_deleted = 0 且关联任务已发布;file_size 单位是字节,原样报出(不要换算成 KB/MB 也不要写「约」);"
@@ -1204,10 +1264,43 @@ def _attachment_stats(args: dict[str, Any]) -> dict[str, Any] | None:
             "不是按任务或看板分组,并列按 uploader_id 定序;"
             "拿清单去数人会把同一人的多个文件重复计入"
         )
+    elif scope == "uploader_count":
+        caliber += "uploader_count 只回去重上传人数(服务端算的一个数),别拿别处的行数代替"
+    elif scope == "by_link":
+        caliber += (
+            "by_link 按挂载去向分档,**优先级 进展 > 提交单 > 任务本体**:一条附件只进一档,"
+            "所以各档相加等于总数(同一条附件同时挂了进展与提交单时只算「挂在进展」)"
+        )
+    elif scope == "by_progress":
+        caliber += (
+            "by_progress 按**任务 + 期号**聚合,只算已发布进展(p.is_published = 1,与任务闸门是两道);"
+            "同一任务可出现多期;attachment_count 是该期挂的附件数,不是任务数"
+        )
+    elif scope == "zero_attachment":
+        caliber += (
+            "zero_attachment 列**一个有效附件都没有的正式任务**(NOT EXISTS 判定,附件被软删等于没有);"
+            "total_count 是零附件任务数,total_formal_tasks 才是分母 —— 占比用它,"
+            "不要拿本次行数当分母"
+        )
+    elif scope == "on_open_submission":
+        caliber += (
+            "on_open_submission 只算挂在**在途提交单**上的附件(提交单 status <> 'published');"
+            "提交单状态是它自己的一套码值(已发布叫 published),不要拿任务的 workflow_status 判"
+        )
+    elif scope == "by_month":
+        caliber += (
+            "by_month 按 upload_time 的**年月**分档并升序"
+            + (f",仅 {date_from} 起(闭区间下界)" if date_from else ",未限起始月,含全部历史")
+        )
     elif scope == "deleted":
         caliber += (
             "**全表口径,不加任务闸门**:这是关于表本身的问题(软删的行本就挂在不该再被过滤的任务上),"
             "按任务过滤会少算;active + deleted = total_rows"
+        )
+    elif scope == "deleted_by_link":
+        caliber += (
+            "**全表口径,不加任务闸门**,且只算已软删附件(a.is_deleted = 1);"
+            "link_type 与 by_link 同一套优先级(进展 > 提交单 > 任务本体)"
         )
     else:  # orphan
         caliber += "orphan 数的是**外键悬空**的附件行(任务已不在库里、附件还在);0 行表示没有孤儿"
@@ -1216,15 +1309,37 @@ def _attachment_stats(args: dict[str, Any]) -> dict[str, Any] | None:
             f";已按任务收窄({task_name or task_id})并**刻意放开任务发布门** ——"
             "附件挂在 task_id 外键上,正式集之外的任务照样有附件,带着门问只会静默答 0"
         )
-    elif include_informal:
-        caliber += ";include_informal=True 已放开任务发布门(全表口径),与默认档的差异就是这批非正式任务的附件"
-    return envelope(
+    elif include_informal and scope not in _ATTACHMENT_WHOLE_TABLE_SCOPES:
+        caliber += (
+            ";include_informal=True 已放开任务发布门(全表口径),"
+            "并且 **JOIN 换成 LEFT JOIN** —— 光放开闸门还差挂在孤儿附件上的那几行"
+        )
+    result = envelope(
         sql=sql,
         params=params,
         caliber=caliber,
-        limit=limit if scope in ("by_ext", "largest", "by_uploader") else 1,
-        cap_last_param=scope in ("by_ext", "largest", "by_uploader"),
+        # 清单类档按 limit 截断(且模板把上限放在**最后一个参数**上,cap_last_param 才能
+        # 多要一行判"取满还是被截断");单行汇总档恒为 1。
+        # **这张清单必须与本函数里所有分档一一对应**:漏一档的后果不是报错,而是
+        # `limit=1` 把分组结果静默截成一行(by_link 曾因此只回「挂在进展 29」,
+        # 而「挂在任务本体 1」那档被吃掉、has_more 还报 true)。
+        limit=limit if scope in _ATTACHMENT_LISTING_SCOPES else 1,
+        cap_last_param=scope in _ATTACHMENT_LISTING_SCOPES,
     )
+    if scope == "zero_attachment":
+        # 分母(全部正式任务)与命中总数都提到顶层:占比要用分母,不能拿本次行数当分母;
+        # 总数也不能拿行数顶替 —— 清单被 limit 截断时那只是第一页。
+        total_sql, total_params = tpl.attachment_zero_total(board_code=board)
+        counted = envelope(sql=total_sql, params=total_params, caliber="零附件任务总数", limit=1)
+        result["total_count"] = (counted.get("rows") or [{}])[0].get("total_count")
+        first = (result["rows"] or [{}])[0]
+        result["total_formal_tasks"] = first.get("total_formal_tasks")
+        result["caliber"] += (
+            f";total_count 是零附件任务数({result['total_count']}),"
+            f"total_formal_tasks 是分母({result['total_formal_tasks']}) —— 占比用它,"
+            "不要拿本次行数当分母"
+        )
+    return result
 
 
 def _group_history(args: dict[str, Any]) -> dict[str, Any] | None:

@@ -20,8 +20,12 @@ statement order (psycopg 3 style).  Builders raise:
 from __future__ import annotations
 
 import datetime as dt
+import re
 
 import _admission as adm
+
+# 调用方给的日期要么是这个格式,要么就是口径错(与 ``_formal`` 同一形状)。
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def published_task_list(
@@ -1973,6 +1977,89 @@ LIMIT %s
     return sql, tuple(params)
 
 
+def _attachment_gate(
+    board: str | None,
+    task_id: int | None,
+    task_name: str | None,
+    include_informal: bool,
+    *,
+    alias: str = "a",
+) -> tuple[str, str, list[object]]:
+    """附件各档的公共 FROM/WHERE:``(from_sql, where_sql, params)``。
+
+    三档闸门,选择的依据是**问句的对象**而不是省事:
+
+    * ``task_id`` / ``task_name`` ⇒ 闸门就是"这个任务的附件",**刻意放开任务门** ——
+      附件按 ``task_id`` 外键挂,任务不过 R-01 时它的附件依然存在,加了门会把真实条数
+      静默答成 0(演示数据里任务 2 正是 ``workflow_status = 'rejected'``);
+    * ``include_informal`` ⇒ 全表口径:只留附件行自己的软删闸门,并且**JOIN 要换成
+      LEFT JOIN** —— 光把闸门改成恒真还差 3 行,因为 INNER JOIN 自己就会丢掉孤儿附件
+      (演示数据 507 + 3 孤儿 = 510);
+    * 默认 ⇒ 任务过正式门 + 附件行 ``is_deleted = 0``,两道都要。
+
+    ``board`` 是任务侧的事,三种闸门下都要 JOIN 看板表(全表口径下它会顺手把
+    没有任务行的孤儿附件滤掉 —— 那是"按看板问"应有的语义)。
+    """
+    where = [adm.sql_soft_delete(alias)]
+    params: list[object] = []
+    board_join = ""
+    scoped = task_id is not None or bool(task_name)
+    join_kind = "LEFT JOIN" if (include_informal and not scoped) else "JOIN"
+    if board:
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+    if task_id is not None:
+        where.append(f"{alias}.task_id = %s")
+        params.append(int(task_id))
+    elif task_name:
+        where.append("t.task_name = %s")
+        params.append(task_name)
+    elif not include_informal:
+        where.append(adm.sql_task_admission("pg", "t"))
+    if board:
+        where.append("b.code = %s")
+        params.append(board)
+    from_sql = f"FROM task_attachment {alias}\n{join_kind} task t ON t.id = {alias}.task_id"
+    if board_join:
+        from_sql += f"\n{board_join}"
+    return from_sql, "\n  AND ".join(where), params
+
+
+# 关联去向的分档表达式。三处口径(deleted_by_link 也用同一套)必须一致,抽出来共用。
+ATTACHMENT_LINK_CASE = (
+    "CASE WHEN a.progress_id IS NOT NULL THEN '挂在进展'\n"
+    "       WHEN a.workflow_submission_id IS NOT NULL THEN '挂在提交单'\n"
+    "       ELSE '挂在任务本体' END"
+)
+
+
+def attachment_zero_total(board_code: str | None = None) -> tuple[str, tuple]:
+    """``zero_attachment`` 的命中总数(一行一个数)。
+
+    清单被 ``limit`` 截断时,"一共有多少个零附件任务"必须由服务端算完再回 ——
+    拿本次行数当总数是这类档最常见的错(演示数据 22 个零附件任务 / 128 个正式任务,
+    默认 ``limit`` 一截就只剩一页)。分母(全部正式任务)在明细行里已经带了同一个数。
+    """
+    board, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    where = [adm.sql_task_admission("pg", "t")]
+    params: list[object] = []
+    board_join = ""
+    if board:
+        board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
+        where.append("b.code = %s")
+        params.append(board)
+    sql = f"""
+SELECT count(*) AS total_count
+FROM task t
+{board_join}
+WHERE {"\n  AND ".join(where)}
+  AND NOT EXISTS (SELECT 1 FROM task_attachment a
+                  WHERE a.task_id = t.id AND {adm.sql_soft_delete("a")})
+"""
+    return sql, tuple(params)
+
+
 def attachment_stats(
     board_code: str | None = None,
     scope: str = "summary",
@@ -1981,24 +2068,33 @@ def attachment_stats(
     task_id: int | None = None,
     task_name: str | None = None,
     include_informal: bool = False,
+    date_from: str | None = None,
 ) -> tuple[str, tuple]:
-    """附件汇总 / 分档 / 清单 / 软删审计(五种形状,不能互相代答)。
+    """附件统计的**全部 13 档**(每档一种形状,不能互相代答)。
 
     ``file_size`` 是字节,原样报出(不要换算成 KB/MB,也不要写"约")——口径如此规定。
 
-    各档是**不同的形状**,不能互相代答:
+    各档问的是不同的东西:
 
-    * ``summary`` 一行多列(计数 / 字节 / 均 KB / 大类型 Top4);``by_ext`` 每扩展名一行
-      (汇总行答不了"哪种文件最多",分档也答不了总量);
+    * ``summary`` 一行多列(计数 / 字节 / 均 KB / 挂载点 / 大类型 Top4);``by_ext`` 每扩展名
+      一行(汇总行答不了"哪种文件最多",分档也答不了总量);
     * ``largest`` 是**清单**(一行一个文件,按字节倒序);``by_uploader`` 是**按人分档**
       (一行一个人,带条数与字节) —— 拿清单去数人会把同一人的多个文件重复计入;
-    * ``deleted`` 问的是**表本身**,故**全表口径、不加任务闸门**:按任务过滤会少算
-      (软删的行本来就挂在不该再被过滤的任务上);``orphan`` 同理,数的是外键悬空的行。
+      ``uploader_count`` 只回去重人数,是服务端算的一个数;
+    * ``by_link`` / ``deleted_by_link`` 按挂载去向分档,**优先级 进展 > 提交单 > 任务本体**,
+      一条附件只进一档(所以各档相加等于总数);
+    * ``by_progress`` 按(任务, 期号)聚合,**只算已发布进展**(``p.is_published = 1``,
+      与任务闸门是两道);``on_open_submission`` 只算挂在**在途提交单**上的附件
+      (提交单状态是它自己的一套码值,``published`` 才叫已发布);
+    * ``by_month`` 按 ``upload_time`` 的年月分档,``date_from`` 是**闭区间下界**;
+    * ``zero_attachment`` 列**一个有效附件都没有的正式任务**(``NOT EXISTS`` 而非
+      LEFT JOIN + HAVING:问的是存在性),分母是全部正式任务,不是本次行数;
+    * ``deleted`` / ``orphan`` 问的是**表本身**,故**全表口径、不加任务闸门**:
+      按任务过滤会少算(软删的行本来就挂在不该再被过滤的任务上)。
 
-    闸门(默认档):``t`` 过正式任务门 + ``a.is_deleted = 0``。``task_id`` / ``task_name``
-    一旦给了就**刻意放开任务门** —— 附件挂在 ``task_id`` 外键上,正式集之外的任务照样有
-    附件,带着门去问只会静默答 0(参考实现的 docstring 就是这么写的)。
-    ``include_informal`` 是同一件事的显式开关(全表 vs 只算正式任务)。
+    闸门细节见 ``_attachment_gate``:``task_id`` / ``task_name`` 与 ``include_informal``
+    都会**放开任务门**,而 ``zero_attachment`` / ``deleted`` / ``deleted_by_link`` / ``orphan``
+    是跨任务口径,传 ``task`` 无意义(调用方显式报 ``task_not_applicable``,不静默忽略)。
     """
     hint = adm.require_optional_table("task_attachment", granted)
     if hint:
@@ -2032,33 +2128,129 @@ WHERE a.is_deleted = 0
 """
         return sql, ()
 
-    if scope in ("largest", "by_uploader"):
-        # 这两档要文件级字段与上传人,故不套 CTE,直接 JOIN 任务表。
-        # 闸门随参数变化:默认套任务门;给 task_id / task_name 或 include_informal 时放开 ——
-        # 附件挂在 task_id 外键上,正式集之外的任务照样有附件,带着门问只会静默答 0。
-        where = [adm.sql_soft_delete("a")]
+    if scope == "deleted_by_link":
+        # 软删审计的另一半:按挂载去向看**已软删**的那些。全表口径(不加任务闸门)——
+        # 软删的附件本就挂在不该再被过滤的任务上,加门会少算。
+        sql = f"""
+SELECT {ATTACHMENT_LINK_CASE} AS link_type,
+       count(*) AS n,
+       round(sum(a.file_size) / 1024.0 / 1024.0, 1) AS total_mb
+FROM task_attachment a
+WHERE a.is_deleted = 1
+GROUP BY link_type
+ORDER BY n DESC, link_type
+LIMIT %s
+"""
+        return sql, (int(limit),)
+
+    if scope == "zero_attachment":
+        # 「哪些任务一个附件都没有」:NOT EXISTS 而非 LEFT JOIN + HAVING COUNT = 0(问的是存在性)。
+        # 分母(全部正式任务)由单独一条查询给出 —— 占比要用它,不能拿本次行数当分母
+        # (演示数据:22 / 128)。行里也带上同一个数,便于逐行核对口径。
+        where = [adm.sql_task_admission("pg", "t")]
         params: list[object] = []
         board_join = ""
         if board:
             board_join = f"JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete('b')}"
             where.append("b.code = %s")
             params.append(board)
+        sql = f"""
+SELECT t.id AS task_id, t.task_name,
+       (SELECT count(*) FROM task t2
+         WHERE {adm.sql_task_admission("pg", "t2")}) AS total_formal_tasks
+FROM task t
+{board_join}
+WHERE {"\n  AND ".join(where)}
+  AND NOT EXISTS (SELECT 1 FROM task_attachment a
+                  WHERE a.task_id = t.id AND {adm.sql_soft_delete("a")})
+ORDER BY t.id
+LIMIT %s
+"""
+        return sql, (*params, int(limit))
+
+    if scope == "by_progress":
+        # 「哪些已发布进展带了附件」:闸门在 progress 行上(p.is_published = 1),与任务闸门两道。
+        # 按 (任务, 期号) 聚合,同一任务可出现多期。
+        where = [adm.sql_task_admission("pg", "t"), adm.sql_soft_delete("a")]
+        params = []
         if task_id is not None:
             where.append("a.task_id = %s")
             params.append(int(task_id))
-        elif task_name:
-            where.append("t.task_name = %s")
-            params.append(task_name)
-        elif not include_informal:
-            where.append(adm.sql_task_admission("pg", "t"))
+        sql = f"""
+SELECT t.task_name, p.version_no, count(*) AS attachment_count
+FROM task_attachment a
+JOIN task_progress p ON p.id = a.progress_id AND {adm.sql_published_progress("pg", "p")}
+JOIN task t ON t.id = a.task_id
+WHERE {"\n  AND ".join(where)}
+GROUP BY t.id, t.task_name, p.version_no
+ORDER BY attachment_count DESC, t.id, p.version_no
+LIMIT %s
+"""
+        return sql, (*params, int(limit))
+
+    if scope == "on_open_submission":
+        # 「在途」= 提交单状态不是 published。提交单状态另有码值,
+        # 不能拿任务的 workflow_status 来判。
+        from_sql, where_sql, params = _attachment_gate(board, task_id, task_name, include_informal)
+        sql = f"""
+SELECT count(*) AS attachment_count
+{from_sql}
+JOIN task_workflow_submission s ON s.id = a.workflow_submission_id
+WHERE {where_sql}
+  AND s.status <> 'published'
+"""
+        return sql, tuple(params)
+
+    if scope == "by_month":
+        from_sql, where_sql, params = _attachment_gate(board, task_id, task_name, include_informal)
+        extra = ""
+        if date_from:
+            token = date_from.strip()
+            if not _DATE_RE.match(token):
+                raise ValueError(f"date_from 需为 YYYY-MM-DD:{date_from!r}")
+            extra = "\n  AND a.upload_time >= %s"
+            params.append(token)
+        sql = f"""
+SELECT to_char((a.upload_time)::timestamp, 'YYYY-MM') AS ym,
+       count(*) AS n,
+       round(sum(a.file_size) / 1024.0 / 1024.0, 1) AS total_mb
+{from_sql}
+WHERE {where_sql}{extra}
+GROUP BY ym
+ORDER BY ym
+LIMIT %s
+"""
+        return sql, (*params, int(limit))
+
+    if scope == "by_link":
+        from_sql, where_sql, params = _attachment_gate(board, task_id, task_name, include_informal)
+        sql = f"""
+SELECT {ATTACHMENT_LINK_CASE} AS link_type, count(*) AS n
+{from_sql}
+WHERE {where_sql}
+GROUP BY link_type
+ORDER BY n DESC, link_type
+LIMIT %s
+"""
+        return sql, (*params, int(limit))
+
+    if scope == "uploader_count":
+        from_sql, where_sql, params = _attachment_gate(board, task_id, task_name, include_informal)
+        sql = f"""
+SELECT count(DISTINCT a.uploader_id) AS uploader_count
+{from_sql}
+WHERE {where_sql}
+"""
+        return sql, tuple(params)
+
+    if scope in ("largest", "by_uploader"):
+        from_sql, where_sql, params = _attachment_gate(board, task_id, task_name, include_informal)
         if scope == "largest":
             sql = f"""
 SELECT a.file_name, a.file_size,
        round(a.file_size / 1024.0 / 1024.0, 2) AS size_mb, t.task_name
-FROM task_attachment a
-JOIN task t ON t.id = a.task_id
-{board_join}
-WHERE {"\n  AND ".join(where)}
+{from_sql}
+WHERE {where_sql}
 ORDER BY a.file_size DESC, a.id
 LIMIT %s
 """
@@ -2068,16 +2260,13 @@ SELECT a.uploader_id,
        count(*)                     AS upload_count,
        sum(a.file_size)             AS total_bytes,
        round(sum(a.file_size) / 1024.0 / 1024.0, 1) AS total_mb
-FROM task_attachment a
-JOIN task t ON t.id = a.task_id
-{board_join}
-WHERE {"\n  AND ".join(where)}
+{from_sql}
+WHERE {where_sql}
 GROUP BY a.uploader_id
 ORDER BY upload_count DESC, a.uploader_id
 LIMIT %s
 """
-        params.append(int(limit))
-        return sql, tuple(params)
+        return sql, (*params, int(limit))
 
     where = [adm.sql_task_admission("pg", "t"), adm.sql_soft_delete("a")]
     params = []
