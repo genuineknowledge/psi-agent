@@ -122,6 +122,47 @@ def test_overview_unstructured_falls_back_to_note_without_crashing() -> None:
     assert "没有输出结构化" in result["values"]["footer"]
 
 
+def test_declaration_block_is_stripped_from_card_body() -> None:
+    """口径/边界声明(系统侧约束)不得复述进卡片正文。"""
+    analysis = {
+        "meeting_summary": (
+            "【用途与边界】本输出仅为候选观察, 不写入正式负面总表、不计分、不进入绩效。\n\n"
+            "会议决定把可插拔排在基础本体之前。"
+        ),
+        "analysis_text": (
+            "【用途与边界】本分析针对白名单固定会议 42654699903。\n\n"
+            "## 关键决定\n- 可插拔优先于基础本体。\n\n"
+            "msop.core.02 为 active:false, 按口径不判符合/不符合。"
+        ),
+        "positive_negative_overview": "",
+    }
+    result = cardmod.render_meeting_summary_card("日会", "42654699903", "2026-09-11", analysis)
+    assert result.get("ok"), result.get("error")
+    values = result["values"]
+    for key in ("summary", "key_points"):
+        text = values[key]
+        assert "用途与边界" not in text
+        assert "不计分" not in text
+        assert "不进入绩效" not in text
+        assert "active:false" not in text
+    assert "可插拔优先于基础本体" in values["key_points"]
+    assert "可插拔排在基础本体之前" in values["summary"]
+
+
+def test_long_paragraph_is_rendered_as_bullets() -> None:
+    """长段落按句切成分行要点, 避免卡片里一大坨流水文字。"""
+    paragraph = "第一句话说明结论。" * 25
+    result = cardmod.render_meeting_summary_card(
+        "日会",
+        "42654699903",
+        "2026-09-11",
+        {"meeting_summary": paragraph, "analysis_text": paragraph, "positive_negative_overview": ""},
+    )
+    assert result.get("ok"), result.get("error")
+    assert result["values"]["summary"].count("\n- ") >= 3
+    assert result["values"]["key_points"].count("\n- ") >= 3
+
+
 @pytest.mark.anyio
 async def test_notify_meeting_card_sends_then_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sent: list[tuple[str, str]] = []
