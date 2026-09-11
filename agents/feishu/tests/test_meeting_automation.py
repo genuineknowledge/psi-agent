@@ -125,6 +125,28 @@ def test_meeting_schedule_task_declares_review_and_followups() -> None:
         assert "产出本场评价与后续建议" in body, f"{name}/TASK.md 未声明评价与后续建议产出"
 
 
+def test_meeting_schedule_files_self_describe_retry_and_recovery() -> None:
+    """每条定时任务文件必须自报身份, 并写清补救路径。
+
+    ``fire: tool`` 的正文不进入模型 (调度器直接调工具), 但对读文件的人与调度历史
+    是唯一的自述: 两条补偿重跑若与主任务描述一模一样, 被问「有哪些定时任务」时读
+    不出哪条是兜底; 正文不写补救路径, 出事只能靠翻代码找补跑工具。
+    """
+    files = meeting_schedule_files()
+    retries = [name for name in files if "-retry-" in name]
+    assert len(retries) == 2, f"应有两个补偿重跑条目, 实际 {retries}"
+    for name, body in files.items():
+        header, _, note = body.partition("---\n\n")
+        assert "meeting_pipeline_replay" in note, f"{name}/TASK.md 未写补跑工具"
+        assert "config/meeting-sop.yaml" in note, f"{name}/TASK.md 未写口径来源"
+        if name in retries:
+            assert "补偿重跑" in body, f"{name}/TASK.md 未自报补偿重跑"
+            assert "补偿重跑" in header, f"{name}/TASK.md 的 description 未自报补偿重跑"
+            assert "自动跳过" in note, f"{name}/TASK.md 未写去重跳过语义"
+        else:
+            assert "补偿重跑" not in body, f"{name}/TASK.md 是主任务, 不应自称补偿重跑"
+
+
 def test_committed_meeting_schedule_files_match_projection() -> None:
     """``agents/feishu/schedules`` 下的静态 TASK.md 必须与 ``MEETING_JOBS`` 投影一致。
 
