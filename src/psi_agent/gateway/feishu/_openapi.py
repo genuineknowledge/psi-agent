@@ -16,6 +16,53 @@ from __future__ import annotations
 from typing import Any
 
 FEISHU_PATHS: dict[str, Any] = {
+    "/feishu/app-id": {
+        "get": {
+            "summary": "Get configured Feishu app ID",
+            "operationId": "feishuAppId",
+            "responses": {
+                "200": {"description": "Feishu app ID"},
+            },
+        },
+    },
+    "/feishu/defaults": {
+        "get": {
+            "summary": "Get default AI ID for Feishu Web",
+            "operationId": "feishuDefaults",
+            "responses": {
+                "200": {"description": "Default AI ID for Feishu Web"},
+            },
+        },
+    },
+    "/feishu/auth/login": {
+        "post": {
+            "summary": "Login via Feishu code or dev open_id",
+            "operationId": "feishuAuthLogin",
+            "responses": {
+                "200": {"description": "Login result and session cookie"},
+                "400": {"$ref": "#/components/responses/Error"},
+            },
+        },
+    },
+    "/feishu/auth/me": {
+        "get": {
+            "summary": "Get current Feishu web session identity",
+            "operationId": "feishuAuthMe",
+            "responses": {
+                "200": {"description": "Current identity"},
+                "401": {"$ref": "#/components/responses/Error"},
+            },
+        },
+    },
+    "/feishu/auth/logout": {
+        "post": {
+            "summary": "Logout from Feishu web session",
+            "operationId": "feishuAuthLogout",
+            "responses": {
+                "200": {"description": "Logged out"},
+            },
+        },
+    },
     "/feishu/jsapi/config": {
         "get": {
             "summary": "Return signed parameters for window.tt.config",
@@ -49,6 +96,69 @@ FEISHU_PATHS: dict[str, Any] = {
                 },
                 "400": {"$ref": "#/components/responses/Error"},
                 "500": {"$ref": "#/components/responses/Error"},
+            },
+        },
+    },
+    "/feishu/sessions": {
+        "get": {
+            "summary": "List Feishu sessions accessible to current identity",
+            "operationId": "feishuListSessions",
+            "responses": {
+                "200": {"description": "Filtered sessions list"},
+                "401": {"$ref": "#/components/responses/Error"},
+            },
+        },
+        "post": {
+            "summary": "Create a Feishu session",
+            "operationId": "feishuCreateSession",
+            "responses": {
+                "201": {"description": "Session created"},
+                "400": {"$ref": "#/components/responses/Error"},
+                "401": {"$ref": "#/components/responses/Error"},
+            },
+        },
+    },
+    "/feishu/sessions/{session_id}/chat": {
+        "post": {
+            "summary": "Feishu web authenticated chat stream (SSE)",
+            "operationId": "feishuChat",
+            "responses": {
+                "200": {"description": "SSE stream"},
+                "401": {"$ref": "#/components/responses/Error"},
+                "403": {"$ref": "#/components/responses/Error"},
+                "404": {"$ref": "#/components/responses/Error"},
+            },
+        },
+    },
+    "/feishu/sessions/{session_id}/history": {
+        "get": {
+            "summary": "Get Feishu session conversation history",
+            "operationId": "feishuGetHistory",
+            "responses": {
+                "200": {"description": "Conversation history"},
+                "401": {"$ref": "#/components/responses/Error"},
+                "403": {"$ref": "#/components/responses/Error"},
+                "404": {"$ref": "#/components/responses/Error"},
+            },
+        },
+    },
+    "/feishu/titles": {
+        "get": {
+            "summary": "Get session titles for Feishu web identity",
+            "operationId": "feishuListTitles",
+            "responses": {
+                "200": {"description": "Titles dict"},
+                "401": {"$ref": "#/components/responses/Error"},
+            },
+        },
+    },
+    "/feishu/summaries": {
+        "get": {
+            "summary": "Get session summaries for Feishu web identity",
+            "operationId": "feishuListSummaries",
+            "responses": {
+                "200": {"description": "Summaries dict"},
+                "401": {"$ref": "#/components/responses/Error"},
             },
         },
     },

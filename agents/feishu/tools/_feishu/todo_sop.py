@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import _feishu_impl as _core
 import _runtime_paths as _paths
 import yaml
 from lark_channel.core.enum import AccessTokenType, HttpMethod
@@ -79,6 +78,7 @@ async def todo_fill_status_impl(
     - 在职且当期格空白 → 查假,该日命中已通过请假 = 请假免填,否则 = 缺写;
     - 在职且当期格非空 = 已填。
     """
+    import _feishu_impl as _core
     from _feishu.contact import member_status_check_impl  # noqa: PLC0415
     from _feishu.leave import query_leave_impl  # noqa: PLC0415
     from _feishu.sheet import read_sheet_grid_impl  # noqa: PLC0415
