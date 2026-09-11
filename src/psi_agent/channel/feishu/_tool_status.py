@@ -105,7 +105,15 @@ TOOL_ALIASES: dict[str, str] = {
     "positive_negative_candidate_analyze": "正在分析候选",
     "positive_negative_candidate_card": "正在整理候选卡片",
 }
-"""工具名 → 中文别名。覆盖 M2 高频集 (``TMPFIX_M2_CORE_TOOLS``), 由判据锁死。
+"""工具名 → 中文别名。覆盖飞书包自己声明暴露的工具, 由判据锁死。
+
+锚是 ``agents/feishu/tools/EXPOSED.txt`` —— 该包声明「模型直接看得见」的那批工具
+(``session/tool_exposure``)。原来的锚是内核常量 ``TMPFIX_M2_CORE_TOOLS``, 那份名单
+连同它的三处引用已随分层暴露一起删掉; 换锚而不是撤掉这条判据, 是因为它防的事情没变:
+被暴露的工具是模型最可能直接调的, 缺别名就在生产卡片上显示成通用兜底。
+
+未被声明暴露的工具仍可经 ``tool_search`` 调到, 所以别名表**不要求**覆盖全集 ——
+那是几百个工具的产品文案工作, 且大多数永远不会出现在状态行上; 兜底本身是设计的一部分。
 
 文案与颗粒度属产品侧, 这是可用的一版而非终版; 几个工具共用一句别名是刻意的
 (``feishu_sheet_read`` / ``read_grid`` 对用户是同一件事)。
