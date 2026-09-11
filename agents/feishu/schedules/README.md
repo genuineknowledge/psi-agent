@@ -10,8 +10,8 @@ meeting 自动化会把它们落到会议专用 workspace(`.meeting-session/sche
 |---|---|---|---|
 | `weekday-alignment/TASK.md` | 周中对齐会 `57152787045`(周一/三/五 10:00) | `0 12 * * 1,3,5` | `meeting_pipeline_run`: 取最新已完成转写 → 分块分析 → 按路由发送 |
 | `weekday-alignment-retry-1730/TASK.md` | 周中对齐会(12:00 未转码完成时补跑) | `30 17 * * 1,3,5` | 同上, 幂等跳过已处理录制 |
-| `weekday-alignment-1100/TASK.md` | 日会 `42654699903`(周一/三/五 11:00) | `0 12 * * 1,3,5` | 同上 |
-| `weekday-alignment-1100-retry-1730/TASK.md` | 日会(12:00 未转码完成时补跑) | `30 17 * * 1,3,5` | 同上, 幂等跳过已处理录制 |
+| `weekday-alignment-1100/TASK.md` | 日会 `42654699903`(周一/三/五 11:00) | `0 13 * * 1,3,5` | 同上 |
+| `weekday-alignment-1100-retry-1730/TASK.md` | 日会(13:00 未转码完成时补跑) | `30 17 * * 1,3,5` | 同上, 幂等跳过已处理录制 |
 
 运行语义: `visibility: silent`(结果不进普通用户对话)、`fire: tool`(到点直调工具、
 不经过模型自主决策)、按录制 `record_file_id` 幂等。

@@ -127,7 +127,7 @@ _MEETING_JOBS_WHITELIST: tuple[MeetingJob, ...] = (
     MeetingJob(
         name="weekday-alignment-1100",
         meeting_code="42654699903",
-        cron="0 12 * * 1,3,5",
+        cron="0 13 * * 1,3,5",
         title="日会",
         recipients=("张浩", "王金旺", "罗霖"),
         retry_crons=("30 17 * * 1,3,5",),
@@ -466,17 +466,69 @@ def should_process_recording(record: dict[str, Any], processed_ids: set[str]) ->
     return True
 
 
-def _task_body(job: MeetingJob, *, name: str | None = None, cron: str | None = None) -> str:
+#: 补偿重跑条目在 description 与正文里都自报身份: 否则「有哪些定时任务」看到的 4 条
+#: 里, 两条主任务与两条补偿重跑描述一模一样, 读不出哪条是兜底 (2026-09-11 评审)。
+_RETRY_NOTE = "补偿重跑"
+
+
+def _cron_clock(cron: str) -> str:
+    """``"30 17 * * 1,3,5"`` → ``"17:30"`` —— 只给人读的时点文案, 解析失败原样返回。"""
+    fields = cron.split()
+    if len(fields) < 2 or not (fields[0].isdigit() and fields[1].isdigit()):
+        return cron
+    return f"{int(fields[1]):02d}:{int(fields[0]):02d}"
+
+
+def _task_body(
+    job: MeetingJob,
+    *,
+    name: str | None = None,
+    cron: str | None = None,
+    retry: bool = False,
+) -> str:
+    """渲染一条 seed ``TASK.md``。
+
+    ``fire: tool`` 的正文不进入模型 (调度器直接调工具, 见
+    ``psi_agent.session.schedule_registry._fire_tool``), 但它是读文件的人与调度历史
+    里唯一的自述, 所以写清 做什么 / 口径在哪 / 失败了怎么补。
+
+    正文是给人和调度历史读的中文文案, 全角标点刻意保留, 逐行豁免 RUF001 (与
+    ``_card_dsl`` 的卡片文案同一处理)。
+    """
     tool_args = json.dumps(dict(job.tool_args), ensure_ascii=False, separators=(",", ":"))
+    schedule_cron = cron or job.cron
+    description = f"会后自动获取{job.title}原始全文转写并分析, 产出本场评价与后续建议"
+    lines = [
+        f"本任务由调度器直接调用 {job.tool_name}（fire: {job.fire}，不经过模型）；"  # noqa: RUF001
+        "上面的 tool_args 即全部入参。",
+        "",
+        f"- 做什么：取「{job.title}」最新已完成场次的原始转写，"  # noqa: RUF001
+        "按 config/meeting-sop.yaml 的生效条目逐条判定；"  # noqa: RUF001
+        "产出「本场 SOP 判定 + 本场会议评价 + 后续建议」，"  # noqa: RUF001
+        "投递给 config/meeting-automation.yaml 的收件人。",
+        "- 口径在哪：config/meeting-sop.yaml（可编辑的判定条目，改口径只改这里）+ "  # noqa: RUF001
+        "skills/meeting-sop/weekday-alignment/SKILL.md（判定纪律与输出结构）。",  # noqa: RUF001
+        "- 失败怎么办：按 record_file_id 去重；失败告警发给 alert_recipients；"  # noqa: RUF001
+        "补跑/补发用 meeting_pipeline_replay(meeting_name, record_file_id)。",
+    ]
+    if retry:
+        description += f"（{_cron_clock(schedule_cron)} {_RETRY_NOTE}，主任务已投递则自动跳过）"  # noqa: RUF001
+        lines.append(
+            f"- 本条是 {_cron_clock(schedule_cron)} 的{_RETRY_NOTE}："  # noqa: RUF001
+            f"主任务（{job.cron}）已成功投递时，"  # noqa: RUF001
+            "本次按 record 去重自动跳过，不重复投递。"  # noqa: RUF001
+        )
     return f"""---
 name: {name or job.name}
-description: 会后自动获取{job.title}原始全文转写并分析, 产出本场评价与后续建议
-cron: \"{cron or job.cron}\"
+description: {description}
+cron: \"{schedule_cron}\"
 visibility: silent
 fire: {job.fire}
 tool: {job.tool_name}
 tool_args: {tool_args}
 ---
+
+{chr(10).join(lines)}
 """
 
 
@@ -503,7 +555,7 @@ def meeting_schedule_files() -> dict[str, str]:
     files: dict[str, str] = {}
     for job in MEETING_JOBS:
         for schedule_name, cron in _job_schedules(job):
-            files[schedule_name] = _task_body(job, name=schedule_name, cron=cron)
+            files[schedule_name] = _task_body(job, name=schedule_name, cron=cron, retry=cron != job.cron)
     return files
 
 
