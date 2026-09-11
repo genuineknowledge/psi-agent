@@ -65,7 +65,7 @@ tool that starts producing results gets a clean slate (see
 REPEAT_LIMIT = 5
 """Identical (tool, arguments) attempts allowed before the next one is refused.
 
-Higher than a bare 1–3, deliberately: a repeat is not always pointless.  Tools
+Higher than a bare 1-3, deliberately: a repeat is not always pointless.  Tools
 here poll external state (a Feishu document that is being edited, a background
 process that is still running, meeting transcripts still generating), so a
 handful of identical calls can legitimately return something new.  Five is
@@ -125,15 +125,15 @@ something twice.
 
 CALL_SURFACE_NOTICE = (
     f"{REFUSAL_PREFIX} 本回合已连续 {{count}} 次因**工具名不存在或参数非法**失败"
-    "（Tool not found / 参数不是合法 JSON 对象 / unexpected keyword 等）。"
+    "(Tool not found / 参数不是合法 JSON 对象 / unexpected keyword 等)."
     "这一次的调用没有真正发出。"
-    "请立刻停止换名或微调参数重试："
-    "重新对照本回合请求里的 tools 列表与目标工具的参数 schema（或 skill 参数表），"
-    "确认确切工具名与参数名后再调；"
-    "飞书能力不要发明 feishu_*（多数走 feishu_api）；"
-    "browser MCP 表内名走 browser_call；"
+    "请立刻停止换名或微调参数重试: "
+    "重新对照本回合请求里的 tools 列表与目标工具的参数 schema (或 skill 参数表), "
+    "确认确切工具名与参数名后再调; "
+    "飞书能力不要发明 feishu_* (多数走 feishu_api); "
+    "browser MCP 表内名走 browser_call; "
     "subagent 只用 subagent_plan / subagent_wait / subagent_chat。"
-    "若仍不确定，用 tool_search（如有）或改用文档写明的入口，不要继续连打。"
+    "若仍不确定, 用 tool_search (如有) 或改用文档写明的入口, 不要继续连打。"
 )
 """Turn-level stop after guessed tool names / bad parameters.
 
