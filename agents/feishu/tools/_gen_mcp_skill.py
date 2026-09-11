@@ -112,7 +112,7 @@ def render(group: str, prefix: str | None, schemas: dict[str, dict[str, Any]]) -
         "",
         "## 调用面约束（防空转）",
         "",
-        f"- **禁止**把下表 MCP 工具名当成 Session 顶层函数直接 call"
+        "- **禁止**把下表 MCP 工具名当成 Session 顶层函数直接 call"
         + ("（除「独立工具」小节列出的以外）" if kept else "")
         + f"。正确入口是 `{group}_call(tool=…, args_json=…)`。",
         "- **禁止**根据表名发明变体（改前缀、加后缀、拆成假 `*_` 工具）并换名连打。",
