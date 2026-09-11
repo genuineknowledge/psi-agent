@@ -121,7 +121,12 @@ _MEETING_JOBS_WHITELIST: tuple[MeetingJob, ...] = (
         meeting_code="57152787045",
         cron="0 12 * * 1,3,5",
         title="周中对齐会",
-        retry_crons=(),
+        # 腾讯的文字转写是异步产出的, 主跑时常还没生成(实测 09-11: 12:00 主跑没有,
+        # 21:59 才生成)。这条会议此前没有任何兜底 → 当天没赶上就永远不重跑
+        # (管道只认最新 occurrence, 下一次主跑时最新已是下一场)。故补两档补偿重跑:
+        # 17:30 沿用历史档位, 22:30 覆盖上述"晚上才出转写"的情形。
+        # 幂等: 主跑已成功投递时按 record 去重自动跳过, 不会重复发卡。
+        retry_crons=("30 17 * * 1,3,5", "30 22 * * 1,3,5"),
         analysis_sop_skills=("meeting-sop/weekday-alignment",),
         tool_args=(("meeting_name", "weekday-alignment"), ("meeting_code", "57152787045")),
     ),
@@ -410,8 +415,14 @@ def extract_latest_transcript_record(payload: Any, processed_ids: set[str] | Non
             key=lambda occurrence_id: max(_record_sort_key(record) for record in occurrences[occurrence_id]),
         )
         records = occurrences[latest_occurrence_id]
+        # 「还没就绪」的检查只对**转写类**记录生效: 同一 occurrence 里常常还有云录制,
+        # 其中一段可能仍在"录制中/转码中", 那不是"这场会议的转写还没好"。此前对整组
+        # 所有记录做状态检查, 于是一条未完成的云录制会把**已经完成的文字转写**一起否掉
+        # (实测 09-11 那场: state=3 的文字转写 + state=1 的云录制 → 返回「没有转写」,
+        # 而当天 21:59 转写其实已经生成)。
         if any(
-            record.get("state_int", record.get("state")) is not None
+            _is_transcript_record(record)
+            and record.get("state_int", record.get("state")) is not None
             and not should_process_recording({**record, "record_file_id": "__state_check__"}, set())
             for record in records
         ):
