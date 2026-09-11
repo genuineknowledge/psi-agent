@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import _feishu_api_impl as _api
 import _feishu_impl as _f
@@ -84,20 +85,23 @@ async def _resolve_with_bot(name: str) -> tuple[str, str]:
     return "", f"未找到姓名为“{name}”的唯一成员"
 
 
-def _chat_items(response: object) -> list[dict[str, object]]:
+def _chat_items(response: Any) -> list[dict[str, Any]]:
     """从 chats 接口回包里取出 items (兼容 data.items 嵌套)。"""
     if not isinstance(response, dict):
         return []
-    items = response.get("items")
-    if not isinstance(items, list):
+    raw_items: Any = response.get("items")
+    if not isinstance(raw_items, list):
         data = response.get("data")
-        items = data.get("items") if isinstance(data, dict) else []
-    if not isinstance(items, list):
-        return []
-    return [item for item in items if isinstance(item, dict)]
+        raw_items = data.get("items") if isinstance(data, dict) else []
+    found: list[dict[str, Any]] = []
+    if isinstance(raw_items, list):
+        for item in raw_items:
+            if isinstance(item, dict):
+                found.append(item)
+    return found
 
 
-def _exact_chat_match(items: list[dict[str, object]], name: str) -> tuple[str, str]:
+def _exact_chat_match(items: list[dict[str, Any]], name: str) -> tuple[str, str]:
     """群名精确匹配; 命中唯一一个才返回 chat_id。"""
     matches: list[tuple[str, str]] = []
     for item in items:
@@ -128,7 +132,7 @@ async def _search_chat_by_name(name: str) -> tuple[str, str]:
     return _exact_chat_match(_chat_items(response), name)
 
 
-async def _list_bot_chats() -> tuple[list[dict[str, object]], str]:
+async def _list_bot_chats() -> tuple[list[dict[str, Any]], str]:
     """机器人所在群列表(分页最多 5 页)。
 
     搜索索引未收录、但机器人确已在群里的场景 (群刚建立/刚被拉进群) 只有列表接口看得到 ——
