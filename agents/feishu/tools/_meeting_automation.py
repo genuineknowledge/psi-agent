@@ -40,8 +40,10 @@ _MEETING_OVERLAY_KEYS = frozenset(
     }
 )
 _WHITELIST_ONLY_KEYS = frozenset(
-    {"name", "meeting_code", "cron", "retry_crons", "recipients", "fire", "tool_name", "tool_args", "token_env"}
+    {"name", "meeting_code", "cron", "retry_crons", "fire", "tool_name", "tool_args", "token_env"}
 )
+#: 收件人解析表允许的目标键(见 ``notify_recipients``): person/chat 走解析, 其余是显式 id 类型。
+_RECIPIENT_TARGET_KEYS = ("person", "chat", "open_id", "user_id", "union_id", "chat_id", "email")
 
 
 def load_meeting_automation_config(path: str | Path | None = None) -> dict[str, Any]:
@@ -85,7 +87,6 @@ def automation_resources() -> dict[str, Any]:
 
 #: 引擎常量: 单一来源为 yaml (runtime.analysis.chunk_chars); 此处仅为同值导出, 测试可覆写。
 TRANSCRIPT_CHUNK_CHARS = int(MEETING_AUTOMATION_CONFIG["runtime"]["analysis"]["chunk_chars"])
-MAIN_MEETING_GROUP_NAME = "HaiTun Agent主战场"
 
 
 @dataclass(frozen=True)
@@ -94,10 +95,12 @@ class MeetingJob:
     meeting_code: str
     cron: str
     title: str
-    recipients: tuple[str, ...]
     retry_crons: tuple[str, ...] = ()
-    summary_recipients: tuple[str, ...] = ("程秀秀",)
-    overview_recipients: tuple[str, ...] = ("罗霖",)
+    # 投递收件人一律来自 meeting-automation.yaml: 代码里不留任何具体人名/群名,
+    # 缺收件人的 job 在模块导入时就报错(见 _validate_recipients), 不会静默变成
+    # "没人收"。改人/改群只改配置, 不需要动代码。
+    summary_recipients: tuple[str, ...] = ()
+    overview_recipients: tuple[str, ...] = ()
     # Versioned SOP skill(s) whose text is injected verbatim into scheduled
     # analysis prompts ("meeting-sop/<name>").  Missing file is a hard error.
     analysis_sop_skills: tuple[str, ...] = ()
@@ -109,19 +112,17 @@ class MeetingJob:
     tool_args: tuple[tuple[str, str], ...] = ()
 
 
-#: 代码权威白名单: name/meeting_code/cron/retry/token_env 配对 (授权门) 只能改这里;
-#: 投递/SOP/告警口径的当前值作为缺省, 可被 meeting-automation.yaml 的 meetings 覆盖。
+#: 代码权威白名单: name/meeting_code/cron/retry/token_env 配对 (授权门) 只能改这里。
+#: 投递收件人与告警收件人**不在代码里**: 它们必须由 meeting-automation.yaml 的
+#: meetings 段给出(缺了直接报错)。SOP skill 与展示标题属结构性口径, 仍留代码。
 _MEETING_JOBS_WHITELIST: tuple[MeetingJob, ...] = (
     MeetingJob(
         name="weekday-alignment",
         meeting_code="57152787045",
         cron="0 12 * * 1,3,5",
         title="周中对齐会",
-        recipients=(MAIN_MEETING_GROUP_NAME, "罗霖"),
         retry_crons=(),
-        summary_recipients=(MAIN_MEETING_GROUP_NAME,),
         analysis_sop_skills=("meeting-sop/weekday-alignment",),
-        alert_recipients=("张浩", "王金旺"),
         tool_args=(("meeting_name", "weekday-alignment"), ("meeting_code", "57152787045")),
     ),
     MeetingJob(
@@ -129,12 +130,8 @@ _MEETING_JOBS_WHITELIST: tuple[MeetingJob, ...] = (
         meeting_code="42654699903",
         cron="0 13 * * 1,3,5",
         title="日会",
-        recipients=("张浩", "王金旺", "罗霖"),
         retry_crons=(),
-        summary_recipients=("张浩", "王金旺"),
-        overview_recipients=("罗霖",),
         analysis_sop_skills=("meeting-sop/weekday-alignment",),
-        alert_recipients=("张浩", "王金旺"),
         token_env="TENCENT_MEETING_TOKEN_42654699903",
         tool_args=(("meeting_name", "weekday-alignment-1100"), ("meeting_code", "42654699903")),
     ),
@@ -145,7 +142,8 @@ def _meeting_jobs_with_overlay() -> tuple[MeetingJob, ...]:
     """白名单 (代码) + yaml meetings 覆盖 (仅允许的五个口径键) 合并出运行时会议列表。
 
     yaml 里出现的会议名必须全部命中代码白名单 (授权不可经配置文件扩展); 白名单中的
-    会议也必须有 yaml 条目 (防止误删后口径悄然回退代码缺省)。
+    会议也必须有 yaml 条目 (防止误删后口径悄然回退代码缺省)——收件人正是靠这一条
+    从代码里搬进了配置。
     """
     meetings: dict[str, Any] = MEETING_AUTOMATION_CONFIG["meetings"]
     whitelist_names = {job.name for job in _MEETING_JOBS_WHITELIST}
@@ -161,7 +159,76 @@ def _meeting_jobs_with_overlay() -> tuple[MeetingJob, ...]:
         for key, value in overlay.items():
             kwargs[key] = tuple(value) if isinstance(value, list) else value
         merged.append(replace(job, **kwargs))
-    return tuple(merged)
+    jobs = tuple(merged)
+    _validate_recipients(jobs)
+    return jobs
+
+
+def _validate_recipients(jobs: tuple[MeetingJob, ...]) -> None:
+    """每场会议都必须有投递收件人; 缺了在导入期报错, 而不是发不出去才被发现。
+
+    收件人只从 meeting-automation.yaml 来(代码不再留缺省)。空的收件人清单会让整条
+    流水线「跑成功但不投递」—— 报告里看不见、日志里也不报错, 所以这里 fail-fast。
+    """
+    for job in jobs:
+        pairs = (("summary_recipients", job.summary_recipients), ("overview_recipients", job.overview_recipients))
+        for field, values in pairs:
+            if not values:
+                raise RuntimeError(
+                    f"meeting-automation.yaml 的 meetings.{job.name} 缺少 {field}: 收件人只从配置来, "
+                    f"代码不留缺省: {MEETING_AUTOMATION_CONFIG_PATH}"
+                )
+            for value in values:
+                if not isinstance(value, str) or not value.strip():
+                    raise RuntimeError(f"meetings.{job.name}.{field} 含空收件人: {values!r}")
+
+
+def notify_recipients() -> dict[str, dict[str, str]]:
+    """``runtime.notify.recipients`` —— 收件人解析表(键 → 目标)。
+
+    键就是调用方传给 ``meeting_session_notify`` 的 recipient 字符串。目标**恰好一个**:
+    ``person``(姓名, 走通讯录拿当前应用的 open_id)、``chat``(群名, 走群名解析)、或一个
+    显式 id 类型 ``open_id`` / ``user_id`` / ``union_id`` / ``chat_id`` / ``email``
+    (直接使用, **不做任何姓名解析**)。
+
+    **免解析优先用租户级 ``user_id``**: ``open_id``/``chat_id`` 按应用隔离(换个应用就
+    失效, 飞书报 99992361), ``user_id``/``union_id`` 是租户级的、跨应用不变。
+
+    表缺失 = 空表(此时只剩"直接给 id"与"按姓名解析"两条路), 但**形状写错一律显式报错**
+    —— 一个写错的收件人不能静默失效。
+    """
+    notify_section = MEETING_AUTOMATION_CONFIG["runtime"].get("notify", {})
+    table = notify_section.get("recipients", {}) if isinstance(notify_section, dict) else {}
+    if not isinstance(table, dict):
+        raise RuntimeError(f"runtime.notify.recipients 必须是「键 → 对象」的映射: {MEETING_AUTOMATION_CONFIG_PATH}")
+    parsed: dict[str, dict[str, str]] = {}
+    for key, entry in table.items():
+        name = str(key).strip()
+        if not name:
+            raise RuntimeError(f"runtime.notify.recipients 含空键: {MEETING_AUTOMATION_CONFIG_PATH}")
+        if isinstance(entry, str):
+            entry = {"person": entry}
+        if not isinstance(entry, dict):
+            raise RuntimeError(f"runtime.notify.recipients.{name} 必须是对象(或直接写姓名): {entry!r}")
+        unknown = set(entry) - set(_RECIPIENT_TARGET_KEYS)
+        if unknown:
+            raise RuntimeError(
+                f"runtime.notify.recipients.{name} 含未知键 {sorted(unknown)}; 只允许 {list(_RECIPIENT_TARGET_KEYS)}"
+            )
+        targets = {k: str(entry.get(k) or "").strip() for k in _RECIPIENT_TARGET_KEYS}
+        filled = [k for k, value in targets.items() if value]
+        if len(filled) != 1:
+            raise RuntimeError(
+                f"runtime.notify.recipients.{name} 必须**恰好**给一个目标({list(_RECIPIENT_TARGET_KEYS)}), "
+                f"现在给了 {filled or '零个'}: {entry!r}"
+            )
+        parsed[name] = targets
+    return parsed
+
+
+#: 导入期就校验一次收件人解析表: 表写错 = 启动即失败, 而不是等到某天发纪要才发现。
+#: 调用方仍用 ``notify_recipients()`` 取当前表(测试可 monkeypatch 该函数)。
+NOTIFY_RECIPIENTS: dict[str, dict[str, str]] = notify_recipients()
 
 
 MEETING_JOBS: tuple[MeetingJob, ...] = _meeting_jobs_with_overlay()
@@ -600,9 +667,9 @@ async def atomic_write_text(path: str | Path, text: str) -> None:
 
 
 __all__ = [
-    "MAIN_MEETING_GROUP_NAME",
     "MEETING_AUTOMATION_CONFIG_PATH",
     "MEETING_JOBS",
+    "NOTIFY_RECIPIENTS",
     "MeetingJob",
     "async_meeting_store_root",
     "atomic_write_text",
@@ -619,6 +686,7 @@ __all__ = [
     "meeting_job_for",
     "meeting_schedule_files",
     "meeting_store_root",
+    "notify_recipients",
     "path_lock",
     "read_meeting_manifest",
     "render_transcript_paragraphs",
