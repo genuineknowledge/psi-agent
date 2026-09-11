@@ -911,6 +911,21 @@ async def _handle_comment(
 
 _APPROVAL_EVENT_TYPE = "approval_instance"
 
+#: 平台会推、但本产品不消费的事件。**不注册处理器时, SDK 对每一条这类投递记一条**
+#: ``[ERROR] handle message failed ... err: processor not found, type: X`` —— 实测生产
+#: channel.log 的 147 条 ERROR 全是这一类(考勤流水 75 / 有人打开机器人私聊 45 /
+#: 考勤任务更新 27), 把真错误埋在噪声里。
+#:
+#: 之所以"装一个什么都不做的处理器"而不是在日志层过滤: 前者是「这条事件确实被处理了,
+#: 只是产品不消费它」(留 DEBUG 可查), 后者只是把 ERROR 藏起来、事件依旧无人接。
+#: 这些是**平台事件名**(不是公司配置), 换租户同样成立; 若飞书后台退订了某个事件,
+#: 对应条目只是空转, 删掉即可。
+_IGNORED_PLATFORM_EVENTS = (
+    "attendance.user_flow.created_v1",
+    "attendance.user_task.updated_v1",
+    "im.chat.access_event.bot_p2p_chat_entered_v1",
+)
+
 # Human-facing labels for the Feishu instance status enum.
 _APPROVAL_STATUS_LABELS = {
     "PENDING": "审批中",
@@ -1100,6 +1115,42 @@ def _register_approval_processor(channel: Any, on_event: Callable[[Any], None]) 
     return registered
 
 
+def _register_ignored_processors(channel: Any) -> int:
+    """给「平台会推、产品不消费」的事件装 no-op 处理器(幂等), 消除 SDK 的噪声。
+
+    与 :func:`_register_approval_processor` 同一约束: 必须在 ``start_background()``
+    之后调用(它会重建 dispatcher, 提前注册会被覆盖)。已有处理器的键**不覆盖**
+    (真消费方优先); SDK 内部结构缺失/改名一律降级为 WARNING, 绝不拖垮启动。
+    返回注册成功的键数。
+    """
+    dispatcher = getattr(channel, "dispatcher", None)
+    proc_map = getattr(dispatcher, "_processorMap", None)
+    if not isinstance(proc_map, dict):
+        logger.warning("ignored-event processors unavailable — dispatcher has no _processorMap")
+        return 0
+
+    def _ignore_for(event_type: str) -> Callable[[Any], None]:
+        def _handler(_event: Any) -> None:
+            logger.debug(f"unconsumed platform event delivered and ignored: {event_type}")
+
+        return _handler
+
+    registered = 0
+    for event_type in _IGNORED_PLATFORM_EVENTS:
+        for schema in ("p1", "p2"):
+            key = f"{schema}.{event_type}"
+            if key in proc_map:  # don't clobber a real consumer (or an SDK-provided processor)
+                continue
+            try:
+                proc_map[key] = CustomizedEventProcessor(_ignore_for(event_type))
+                registered += 1
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(f"ignored-event processor register failed for {key} — {e!r}")
+    if registered:
+        logger.info(f"registered {registered} no-op processor(s) for unconsumed platform events")
+    return registered
+
+
 def _log_reject(event: Any) -> None:
     """记录被准入策略拒绝的消息 (如群里没 @机器人的普通发言)。
     注册为 channel 的 ``reject`` 回调; 自身异常绝不冒泡, 以免拖垮事件循环。
@@ -1264,6 +1315,9 @@ async def run_feishu(
             # Inject the approval processor AFTER start_background — it rebuilds the
             # dispatcher, so an earlier registration would be discarded.
             _register_approval_processor(channel, _on_approval)
+            # 同样在 start_background 之后: 给不消费的平台事件装 no-op 处理器,
+            # 否则 SDK 对每一条这类投递记一条 ERROR (实测 147 条全是这一类)。
+            _register_ignored_processors(channel)
             await _ensure_bot_identity(channel)
             # Agent-package channel_events/feishu → unified POST /events
             if agent_root.strip():
