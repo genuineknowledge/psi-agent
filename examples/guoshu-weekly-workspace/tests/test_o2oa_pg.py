@@ -7,7 +7,9 @@ regress while the real O2OA connection is still being provisioned.
 
 import sys
 from pathlib import Path
+from typing import ClassVar
 
+import anyio
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mock-mcp"))
@@ -15,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mock-mcp"))
 # mock-mcp is a sys.path tool dir, not a package: ty cannot resolve these
 # statically, pytest can (path inserted above).  Same pattern as the tools.
 import _admission as adm  # ty: ignore
+import _auth  # ty: ignore
 import _fallback  # ty: ignore
 import _formal  # ty: ignore
 import _o2oa_templates as o2  # ty: ignore
@@ -2798,3 +2801,178 @@ class TestFormalSourceErrorEnvelope:
         assert _fallback.should_translate() is True
         assert _fallback.CODE == "not_migrated" != _fallback.FORMAL_SOURCE_CODE
 
+
+
+class TestAuthPolicy:
+    """端点鉴权的策略解析(``_auth``):正式源模式必须显式配置,且默认拒绝。"""
+
+    ENV: ClassVar[dict[str, str]] = {
+        "TASK_BOARD_DATA_SOURCE": "o2oa",
+        _auth.REQUEST_TOKEN_ENV: "reader-token",
+        _auth.SENSITIVE_TOKEN_ENV: "sensitive-token",
+    }
+
+    def test_formal_mode_without_tokens_refuses_to_start(self):
+        """正式源模式下缺 token 一律拒绝 —— 继承代码里的 demo 默认值等于没鉴权。
+
+        这条是本模块存在的理由:此前容器起来时**没有任何请求级鉴权**,而"审批意见
+        明文"的开关默认值是 ``demo-admin-token``。没有这道拒绝启动,交付出去的容器
+        在被注入 token 之前就是一个完全开放的服务。
+        """
+        with pytest.raises(_auth.AuthConfigError, match="缺少环境变量"):
+            _auth.load_policy({"TASK_BOARD_DATA_SOURCE": "o2oa"})
+
+    def test_formal_mode_with_only_one_token_refuses_to_start(self):
+        """只给一个也不行:缺常规 token = 没鉴权,缺敏感 token = 敏感字段无人可读。"""
+        for partial in (
+            {"TASK_BOARD_DATA_SOURCE": "o2oa", _auth.REQUEST_TOKEN_ENV: "r"},
+            {"TASK_BOARD_DATA_SOURCE": "o2oa", _auth.SENSITIVE_TOKEN_ENV: "s"},
+        ):
+            with pytest.raises(_auth.AuthConfigError, match="缺少环境变量"):
+                _auth.load_policy(partial)
+
+    def test_identical_tokens_refuse_to_start(self):
+        """两个 token 相同 -> 常规通道能解锁敏感字段,分级形同虚设。"""
+        with pytest.raises(_auth.AuthConfigError, match="不能相同"):
+            _auth.load_policy({"TASK_BOARD_DATA_SOURCE": "o2oa",
+                               _auth.REQUEST_TOKEN_ENV: "same",
+                               _auth.SENSITIVE_TOKEN_ENV: "same"})
+
+    def test_demo_mode_without_tokens_stays_open_for_backward_compatibility(self):
+        """演示模式(未选正式源)不配 token 就不启用鉴权,README 那套流程不受影响。"""
+        policy = _auth.load_policy({})
+        assert policy.enabled is False
+        assert policy.grant_for("anything") is None
+
+    def test_pg_alias_also_counts_as_formal(self):
+        assert _auth.formal_source_selected({"TASK_BOARD_DATA_SOURCE": "PG"}) is True
+        assert _auth.formal_source_selected({"TASK_BOARD_DATA_SOURCE": "mock"}) is False
+
+    def test_grants_are_two_levels(self):
+        policy = _auth.load_policy(self.ENV)
+        assert policy.enabled is True
+        reader = policy.grant_for("reader-token")
+        sensitive = policy.grant_for("sensitive-token")
+        assert reader is not None and reader.may_read_sensitive is False
+        assert sensitive is not None and sensitive.may_read_sensitive is True
+        assert policy.grant_for("wrong") is None
+        assert policy.grant_for("") is None
+
+    def test_sensitive_grant_wins_even_if_tokens_were_the_same(self):
+        """兜底:即便有人绕过校验把两者配成一样,管理通道也不该被降级成常规通道。"""
+        policy = _auth.AuthPolicy(enabled=True, reader_token="x", sensitive_token="x")
+        grant = policy.grant_for("x")
+        assert grant is not None and grant.may_read_sensitive is True
+
+
+class TestBearerParsing:
+    """请求头解析:大小写、多余空格、以及 ``BearerFoo`` 这种必须拒绝的形态。"""
+
+    @pytest.mark.parametrize(
+        ("header", "expected"),
+        [
+            ("Bearer abc", "abc"),
+            ("bearer abc", "abc"),
+            ("BEARER   abc  ", "abc"),
+            ("Bearer abc def", "abc def"),  # token 里本来就可能有空格? 保留原样更安全
+            ("Basic abc", ""),
+            ("BearerFoo", ""),          # removeprefix("Bearer") 会错放它进来
+            ("abc", ""),
+            ("Bearer", ""),
+            ("", ""),
+        ],
+    )
+    def test_parse(self, header, expected):
+        assert _auth.bearer_token({"authorization": header}) == expected
+
+    def test_missing_header_is_empty_not_an_exception(self):
+        assert _auth.bearer_token({}) == ""
+        assert _auth.bearer_token(None) == ""
+
+
+class TestBearerMiddleware:
+    """401 与放行:用假 ASGI app 跑,不依赖 starlette/uvicorn。"""
+
+    @staticmethod
+    def _run(policy, scope):
+        """跑一次中间件,返回(下游收到的 scope 列表, 中间件发出的 ASGI 消息)。"""
+        calls: list[dict] = []
+
+        async def inner(scope_, receive, send):
+            calls.append(scope_)
+
+        middleware = _auth.BearerAuthMiddleware(inner, policy)
+        sent: list[dict] = []
+
+        async def send(message):
+            sent.append(message)
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def go() -> None:
+            await middleware(scope, receive, send)
+
+        anyio.run(go)
+        return calls, sent
+
+    @staticmethod
+    def _scope(path="/mcp", header=None):
+        headers = []
+        if header is not None:
+            headers.append((b"authorization", header.encode()))
+        return {"type": "http", "path": path, "headers": headers}
+
+    @staticmethod
+    def _policy():
+        return _auth.load_policy({"TASK_BOARD_DATA_SOURCE": "o2oa",
+                                  _auth.REQUEST_TOKEN_ENV: "r",
+                                  _auth.SENSITIVE_TOKEN_ENV: "s"})
+
+    def test_missing_token_is_401(self):
+        calls, sent = self._run(self._policy(), self._scope())
+        assert calls == []  # 没有走到下游 app
+        assert sent[0]["status"] == 401
+        assert b"www-authenticate" in dict(sent[0]["headers"])
+
+    def test_wrong_token_is_401_and_does_not_echo_it(self):
+        _calls, sent = self._run(self._policy(), self._scope(header="Bearer secret-guess"))
+        body = sent[1]["body"].decode("utf-8")
+        assert sent[0]["status"] == 401
+        assert "secret-guess" not in body  # 回显会把 token 写进访问日志
+
+    def test_valid_token_passes_and_records_the_grant(self):
+        calls, sent = self._run(self._policy(), self._scope(header="Bearer s"))
+        assert sent == []
+        assert len(calls) == 1
+        grant = _auth.grant_from_scope(calls[0])
+        assert grant is not None and grant.may_read_sensitive is True
+
+    def test_reader_token_passes_but_cannot_read_sensitive(self):
+        """常规通道能调工具,但拿不到敏感字段 —— 这就是"两级"的全部含义。"""
+        calls, sent = self._run(self._policy(), self._scope(header="Bearer r"))
+        assert sent == [] and len(calls) == 1
+        grant = _auth.grant_from_scope(calls[0])
+        assert grant is not None and grant.may_read_sensitive is False
+
+    def test_trailing_slash_is_guarded_too(self):
+        """``/mcp/`` 与 ``/mcp`` 是同一个端点,不能靠加个斜杠绕过去。"""
+        calls, sent = self._run(self._policy(), self._scope(path="/mcp/"))
+        assert calls == [] and sent[0]["status"] == 401
+
+    def test_healthz_is_open_and_unguarded(self):
+        """探活端点不需要 token:编排系统不该拿着业务凭据去探活。"""
+        calls, sent = self._run(self._policy(), self._scope(path="/healthz"))
+        assert sent == [] and len(calls) == 1
+        assert _auth.grant_from_scope(calls[0]) is None  # 探活不带任何权限
+
+    def test_disabled_policy_lets_everything_through(self):
+        """演示模式(策略未启用)必须一字不改地放行,否则本地流程全挂。"""
+        calls, sent = self._run(_auth.load_policy({}), self._scope())
+        assert sent == [] and len(calls) == 1
+
+    def test_non_http_scopes_pass_through(self):
+        """lifespan 等非 HTTP 消息不能拦 —— 拦了会话管理器起不来。"""
+        policy = _auth.AuthPolicy(enabled=True, reader_token="r", sensitive_token="s")
+        calls, _sent = self._run(policy, {"type": "lifespan"})
+        assert len(calls) == 1

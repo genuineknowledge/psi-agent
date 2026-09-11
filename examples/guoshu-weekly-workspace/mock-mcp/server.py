@@ -14,48 +14,67 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 from datetime import date
 from pathlib import Path
 from typing import Any
 
+import anyio
+import uvicorn
+from mcp.server.fastmcp import Context, FastMCP
+from starlette.responses import JSONResponse
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import _auth
 import _db
 import _fallback
 import _formal
 import _store as store
-from mcp.server.fastmcp import Context, FastMCP
 
 mcp = FastMCP("guoshu-weekly-mock")
 
-BEARER_TOKEN = os.environ.get("GUOSHU_WEEKLY_MOCK_TOKEN", "demo-token")
-SENSITIVE_TOKEN = os.environ.get("GUOSHU_WEEKLY_MOCK_ADMIN_TOKEN", "demo-admin-token")
+AUTH_POLICY = _auth.load_policy()
+"""端点鉴权策略(启动时解析一次)。
+
+正式源模式下**必须**两个 token 都显式注入(``_auth.load_policy`` 会拒绝启动),
+所以这里拿到的一定是"真的启用"或"演示模式不启用",不存在"半个鉴权"。
+"""
 
 
 def _caller_may_read_sensitive(ctx: Context | None) -> bool:
-    """Decide sensitive-field access from the caller's bearer token.
+    """Decide sensitive-field access for this call.
 
     R-04/R-14 say approval opinions are returned *by permission* -- blanket
     redaction fails the requirement just as surely as blanket exposure does, and
-    it also makes the capability untestable.  The decision is taken here, from
-    the transport's Authorization header, because that is the one input the model
-    cannot influence: nothing a user or a prompt says can widen this.
+    it also makes the capability untestable.  The decision is taken from the
+    transport, because that is the one input the model cannot influence: nothing
+    a user or a prompt says can widen it.
 
-    In production the header maps to an OA identity and a row-level policy; the
-    demo has two fixed tokens so the two branches are both exercisable.
+    两个来源,新通道优先:
+
+    1. **ASGI scope 里的权限**(``_auth.BearerAuthMiddleware`` 写入)—— 这是启用
+       端点鉴权之后的唯一权威来源。它比"自己再比一遍 token"可信:中间件是唯一
+       解析入口,这里只是读结果,不再重复判定。
+    2. **旧通道**:直接比对请求头里的 bearer token。保留它是为了**演示模式**
+       (不启用端点鉴权时,``mcp.run`` 那条老路径仍能区分两类 token),以及
+       单测里直接构造 ctx 的场景。
+
+    两条都不成立 -> 打码。**默认拒绝**是刻意的:任何"取不到身份"的情况(没带
+    token、中间件没装、ctx 缺失)都落到最小权限,而不是放开。
     """
     if ctx is None:
         return False
     request = getattr(ctx.request_context, "request", None)
     if request is None:
         return False
+    grant = _auth.grant_from_scope(getattr(request, "scope", None) or {})
+    if grant is not None:
+        return grant.may_read_sensitive
     headers = getattr(request, "headers", None) or {}
-    raw = headers.get("authorization") or headers.get("Authorization") or ""
-    token = raw.removeprefix("Bearer").removeprefix("bearer").strip()
-    return bool(token) and token == SENSITIVE_TOKEN
+    fallback = AUTH_POLICY.grant_for(_auth.bearer_token(headers))
+    return fallback is not None and fallback.may_read_sensitive
 
 
 def _days_between(lo: str, hi: str) -> int:
@@ -6753,11 +6772,63 @@ def weekly_health() -> str:
     return _guard("weekly_health", work)
 
 
+def build_http_app(host: str, port: int) -> Any:
+    """装好鉴权中间件的 Starlette app(就是 ``--host/--port`` 那个服务的本体)。
+
+    为什么不用 ``mcp.run(transport="streamable-http")``:它内部自己建 app、自己起
+    uvicorn,**没有插入中间件的位置**。而端点鉴权必须拦在 HTTP 层 —— 只拦工具入口
+    会漏掉 ``initialize`` 与 ``tools/list``:未鉴权的调用方仍能探到这个服务、列出
+    31 个工具的名字与参数(那本身就是一份"我们能查什么"的清单)。
+
+    做法是复刻 ``run_streamable_http_async`` 的三行(建 app -> uvicorn.Config ->
+    uvicorn.Server),中间插一步 ``add_middleware``。``add_middleware`` 只在 app
+    尚未启动时可调用,所以必须在这里、serve 之前挂。
+    """
+    mcp.settings.host = host
+    mcp.settings.port = port
+    app = mcp.streamable_http_app()
+    if AUTH_POLICY.enabled:
+        app.add_middleware(_auth.BearerAuthMiddleware, AUTH_POLICY)
+    app.add_route("/healthz", _healthz, methods=["GET"])
+    return uvicorn.Config(
+        app, host=host, port=port, log_level=mcp.settings.log_level.lower()
+    )
+
+
+async def _healthz(request: Any) -> Any:
+    """探活端点:只报进程活着,不查库、不需鉴权。
+
+    刻意不探库:探活失败会让编排系统重启容器,而"库连不上"重启容器解决不了任何问题
+    (那是网络/账号问题),反而把一次可诊断的故障变成一串重启。库的健康状态由工具
+    出口的 ``formal_source_unreachable`` 表达。
+    """
+    return JSONResponse({"ok": True, "service": "guoshu-weekly-mcp"})
+
+
+async def _serve(host: str, port: int) -> None:
+    server = uvicorn.Server(build_http_app(host, port))
+    await server.serve()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Mock weekly-report MCP service")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18900)
     args = parser.parse_args()
+
+    if AUTH_POLICY.enabled:
+        print(
+            "auth: 已启用(两级 bearer token);"
+            f"{_auth.REQUEST_TOKEN_ENV}=常规通道, {_auth.SENSITIVE_TOKEN_ENV}=敏感字段通道",
+            flush=True,
+        )
+    else:
+        print(
+            "auth: 未启用(演示模式,且未注入 token)—— 生产交付必须启用,"
+            f"注入 {_auth.REQUEST_TOKEN_ENV} 与 {_auth.SENSITIVE_TOKEN_ENV} 即生效",
+            file=sys.stderr,
+            flush=True,
+        )
 
     try:
         probe = store.connect()
@@ -6772,11 +6843,10 @@ def main() -> int:
             print("start MySQL and import the dump -- see README", file=sys.stderr)
             return 2
 
-    mcp.settings.host = args.host
-    mcp.settings.port = args.port
     print(f"mock weekly MCP on http://{args.host}:{args.port}/mcp", flush=True)
+    print(f"health: http://{args.host}:{args.port}/healthz", flush=True)
     print(f"store: {'正式只读源(o2oa/PG)' if _formal.enabled() else _db.DSN_DESCRIPTION}", flush=True)
-    mcp.run(transport="streamable-http")
+    anyio.run(_serve, args.host, args.port)
     return 0
 
 
