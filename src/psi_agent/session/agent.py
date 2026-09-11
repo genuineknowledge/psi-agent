@@ -908,7 +908,7 @@ class SessionAgent:
                                                     f"Error: Tool '{func_name}' arguments must be a JSON object"
                                                 )
                                                 args = {}
-                                        except (json.JSONDecodeError, TypeError):
+                                        except json.JSONDecodeError, TypeError:
                                             logger.warning(
                                                 f"Failed to parse tool call arguments: {func_args_str[:1000]!r}"
                                             )

@@ -188,7 +188,7 @@ def _args_key(args: dict[str, Any]) -> str:
     """
     try:
         return json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         # Unserializable arguments are rare and never worth failing a turn over;
         # falling back to ``repr`` keeps the key stable within the process.
         return repr(sorted(args.items(), key=lambda kv: kv[0]))
@@ -247,7 +247,7 @@ def _is_empty_json_payload(text: str) -> bool:
         return False
     try:
         parsed = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError, ValueError:
         return False
     if isinstance(parsed, list):
         return not parsed
@@ -304,15 +304,9 @@ class ToolCallConvergence:
         """
         if name and self._last_had_info.get(name):
             self._retry_after_info[name] = self._retry_after_info.get(name, 0) + 1
-            logger.info(
-                f"retry-after-info tool={name!r} "
-                f"count={self._retry_after_info[name]}"
-            )
+            logger.info(f"retry-after-info tool={name!r} count={self._retry_after_info[name]}")
         if self._call_surface_errors >= self.call_surface_error_limit:
-            logger.warning(
-                f"Refusing tool call ({name!r}): {self._call_surface_errors} "
-                "call-surface errors this turn"
-            )
+            logger.warning(f"Refusing tool call ({name!r}): {self._call_surface_errors} call-surface errors this turn")
             return CALL_SURFACE_NOTICE.format(count=self._call_surface_errors)
         if not name:
             return None
