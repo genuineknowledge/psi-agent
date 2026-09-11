@@ -21,6 +21,12 @@ haitun agent  ──Streamable HTTP──▶  twozero.tox(TD 内, 127.0.0.1:4040
 
 > 这是操作指南,不是唯一事实来源。TouchDesigner 与 twozero 迭代快,算子类型、参数名、工具签名都可能变。下否定结论前,以真机 `td_get_par_info`、`td_get_operators_info`、`td_get_docs` 的实际返回为准,别照记忆(尤其旧版 TD 的参数名)硬套。
 
+## 调用面约束（防空转）
+
+- 工具名只认本回合 `tools` 列表里真实存在的名字（本 skill 写明的入口，如 `td_*`）；**禁止**根据文档发明变体或假 dispatcher 并换名连打。
+- 参数名以本 skill / 工具 schema 为准，勿猜 keyword。
+- 若返回 `Tool … not found`、非法 JSON 参数、`unexpected keyword` / missing required：**立刻停止换名或微调参数重试**；重新扫描本回合 `tools` 与目标参数 schema 确认正确性后再调。连续两次此类失败时运行时会拒绝继续调用并下发说明。
+
 ## 何时使用
 
 - 用户要 **AI 操作 / 搭建一个 TouchDesigner 工程**:建算子(TOP/CHOP/SOP/DAT/COMP/MAT)、改参数、连线成网络、跑 TD Python 脚本。

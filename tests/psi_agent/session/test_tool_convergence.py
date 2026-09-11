@@ -25,10 +25,13 @@ from aiohttp import web
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.tool_convergence import (
+    CALL_SURFACE_ERROR_LIMIT,
+    CALL_SURFACE_NOTICE,
     REPEAT_LIMIT,
     UNPRODUCTIVE_LIMIT,
     UNPRODUCTIVE_NOTICE,
     ToolCallConvergence,
+    is_call_surface_error,
     is_refusal_notice,
     is_unproductive_result,
 )
@@ -182,11 +185,79 @@ def test_recording_a_refusal_notice_is_a_no_op() -> None:
     assert is_refusal_notice('{"items": []}') is False
 
 
-def test_empty_tool_name_is_never_refused() -> None:
+def test_empty_tool_name_does_not_trip_per_tool_gates() -> None:
+    """Empty name alone must not feed futility/repeat maps."""
     conv = ToolCallConvergence()
     for _ in range(UNPRODUCTIVE_LIMIT + REPEAT_LIMIT):
         conv.record("", {}, "[]")
     assert conv.refusal_for("", {}) is None
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        "Error: Tool 'feishu_user_get' not found",
+        "Error: empty tool call name",
+        "Error: Tool 'x' arguments must be a JSON object",
+        "Error: Tool 'x' arguments must be valid JSON",
+        "Error executing tool 'feishu_api': got an unexpected keyword argument 'uri_path'",
+        "Error executing tool 'feishu_api': missing 1 required positional argument: 'uri'",
+    ],
+    ids=[
+        "not-found",
+        "empty-name",
+        "args-not-object",
+        "args-bad-json",
+        "unexpected-keyword",
+        "missing-required",
+    ],
+)
+def test_call_surface_errors_are_recognized(result: str) -> None:
+    assert is_call_surface_error(result) is True
+
+
+def test_ordinary_tool_errors_are_not_call_surface() -> None:
+    assert is_call_surface_error("Error executing tool 'x': boom") is False
+    assert is_call_surface_error('{"items": []}') is False
+
+
+def test_inventing_different_wrong_tool_names_trips_call_surface_gate() -> None:
+    """The feishu_* invention shape: each wrong name would reset a per-tool streak."""
+    conv = ToolCallConvergence()
+    for i in range(CALL_SURFACE_ERROR_LIMIT):
+        name = f"feishu_ghost_{i}"
+        assert conv.refusal_for(name, {"q": "x"}) is None
+        conv.record(name, {"q": "x"}, f"Error: Tool '{name}' not found")
+    refusal = conv.refusal_for("feishu_ghost_next", {"q": "x"})
+    assert refusal is not None
+    assert "未执行" in refusal
+    assert "工具名不存在或参数非法" in refusal
+    assert str(CALL_SURFACE_ERROR_LIMIT) in refusal
+    # Even a blank name is refused once the turn-level gate is open.
+    assert conv.refusal_for("", {}) is not None
+
+
+def test_invalid_args_also_feed_the_call_surface_gate() -> None:
+    conv = ToolCallConvergence()
+    conv.record("feishu_api", {}, "Error: Tool 'feishu_api' arguments must be valid JSON")
+    conv.record(
+        "feishu_api",
+        {"uri_path": "/x"},
+        "Error executing tool 'feishu_api': got an unexpected keyword argument 'uri_path'",
+    )
+    refusal = conv.refusal_for("feishu_api", {"uri": "/x"})
+    assert refusal is not None
+    assert is_refusal_notice(refusal)
+    assert "工具名不存在或参数非法" in refusal
+    assert str(CALL_SURFACE_ERROR_LIMIT) in refusal
+
+
+def test_recording_a_call_surface_refusal_is_a_no_op() -> None:
+    conv = ToolCallConvergence()
+    notice = CALL_SURFACE_NOTICE.format(count=CALL_SURFACE_ERROR_LIMIT)
+    for _ in range(5):
+        conv.record("feishu_ghost", {}, notice)
+    assert conv.refusal_for("anything", {}) is None
 
 
 # --- end to end: what the model actually receives ------------------------------

@@ -110,6 +110,17 @@ def render(group: str, prefix: str | None, schemas: dict[str, dict[str, Any]]) -
             else "名字写错会被本地拒绝并列出可用名，不会真发请求。"
         ),
         "",
+        "## 调用面约束（防空转）",
+        "",
+        f"- **禁止**把下表 MCP 工具名当成 Session 顶层函数直接 call"
+        + ("（除「独立工具」小节列出的以外）" if kept else "")
+        + f"。正确入口是 `{group}_call(tool=…, args_json=…)`。",
+        "- **禁止**根据表名发明变体（改前缀、加后缀、拆成假 `*_` 工具）并换名连打。",
+        "- 参数名以本表为准；`args_json` 必须是 JSON **对象**字符串。",
+        "- 若返回 `Tool … not found`、非法 JSON 参数、`unexpected keyword` / missing required 等："
+        "**立刻停止换名或微调参数重试**；重新对照本回合 `tools` 列表与本表参数名确认正确性后再调。"
+        "连续两次此类失败时运行时会拒绝继续调用并下发说明。",
+        "",
     ]
     if kept:
         out += [

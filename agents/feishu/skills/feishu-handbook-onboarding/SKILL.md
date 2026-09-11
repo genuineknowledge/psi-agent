@@ -9,6 +9,13 @@ agent_editable: true
 
 新员工入职后：发欢迎 + 管理制度链接 + **确认表单卡** → 对方提交 → **校验** → 通过则通知本人与 HR；失败则说明原因并 **再发一张新卡**（旧卡点击后已失效，不能改原卡重填）。
 
+## 调用面约束（防空转）
+
+- 本 skill 的「接口 / 端点」表**不是**可直接 call 的 Session 工具名。无专用工具时用 `feishu_api(method, uri, …)`；专用工具名必须出现在本回合 `tools` 列表（可用 `tool_search`）。
+- **禁止**发明 `feishu_*` 函数名（例如把 URI 路径改成 `feishu_user_get`）并换名连打。
+- 参数名以专用工具 schema 或本 skill / `feishu_api` 参数表为准，勿猜 keyword。
+- 若返回 `Tool … not found`、非法 JSON 参数、`unexpected keyword` / missing required：**立刻停止换名或微调参数重试**；重新扫描本回合 `tools` 与目标参数 schema（或本 skill 参数表）确认正确性后再调。连续两次此类失败时运行时会拒绝继续调用并下发说明。
+
 ## When to use
 
 - 通讯录新建员工（`feishu.hr.user_created`）或用户要求「给某人发入职手册确认卡」。

@@ -12,6 +12,13 @@ description: 飞书群（chat）接口表 —— 建群/拉人/踢人、群设�
 只有**群主或管理员**能做，机器人不是 —— 除非群是它建的。被拒是 232017，把群主的 open_id
 传 `user_key` 以他的身份调用。
 
+## 调用面约束（防空转）
+
+- 本 skill 的「接口 / 端点」表**不是**可直接 call 的 Session 工具名。无专用工具时用 `feishu_api(method, uri, …)`；专用工具名必须出现在本回合 `tools` 列表（可用 `tool_search`）。
+- **禁止**发明 `feishu_*` 函数名（例如把 URI 路径改成 `feishu_user_get`）并换名连打。
+- 参数名以专用工具 schema 或本 skill / `feishu_api` 参数表为准，勿猜 keyword。
+- 若返回 `Tool … not found`、非法 JSON 参数、`unexpected keyword` / missing required：**立刻停止换名或微调参数重试**；重新扫描本回合 `tools` 与目标参数 schema（或本 skill 参数表）确认正确性后再调。连续两次此类失败时运行时会拒绝继续调用并下发说明。
+
 ## 群列表与建群
 
 | 要做的事 | method | endpoint | 关键参数 |
