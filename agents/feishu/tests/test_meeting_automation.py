@@ -882,6 +882,10 @@ async def test_meeting_session_notify_is_idempotent_for_fixed_recipient(
         sent.append((identity, text, receive_id_type))
         return {"ok": True, "message_id": "om_1"}
 
+    async def _unresolvable(_name: str) -> tuple[str, str]:
+        return "", "未找到姓名为“罗霖”的唯一成员"
+
+    monkeypatch.setattr(notify, "_resolve_with_bot", _unresolvable)
     monkeypatch.setattr(notify, "_configured_hr_identity", lambda: "ou_hr")
     monkeypatch.setattr(notify._f, "send_message_impl", fake_send)
 
@@ -925,6 +929,10 @@ async def test_meeting_session_notify_resumes_direct_chunks_after_partial_failur
         sent.append(text)
         return {"ok": True, "message_id": f"om_{attempts}"}
 
+    async def _unresolvable(_name: str) -> tuple[str, str]:
+        return "", "未找到姓名为“罗霖”的唯一成员"
+
+    monkeypatch.setattr(notify, "_resolve_with_bot", _unresolvable)
     monkeypatch.setattr(notify, "_configured_hr_identity", lambda: "ou_hr")
     monkeypatch.setattr(notify._f, "send_message_impl", fake_send)
     text = "x" * (notify.MAX_NOTIFICATION_CHARS * 2 + 10)
@@ -1034,6 +1042,10 @@ async def test_meeting_session_notify_serializes_same_receipt_key(
         active -= 1
         return {"ok": True, "message_id": "om_once"}
 
+    async def _unresolvable(_name: str) -> tuple[str, str]:
+        return "", "未找到姓名为“罗霖”的唯一成员"
+
+    monkeypatch.setattr(notify, "_resolve_with_bot", _unresolvable)
     monkeypatch.setattr(notify, "_configured_hr_identity", lambda: "ou_hr")
     monkeypatch.setattr(notify._f, "send_message_impl", fake_send)
     results: list[dict[str, object]] = []
@@ -1199,6 +1211,93 @@ async def test_resolve_main_meeting_group_requires_one_exact_match(monkeypatch: 
     identity, display_name = await notify._resolve_group_with_bot("HaiTun Agent主战场")
 
     assert (identity, display_name) == ("oc_main", "HaiTun Agent主战场")
+
+
+@pytest.mark.anyio
+async def test_resolve_group_falls_back_to_bot_chat_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """群名搜索落空时回落到机器人所在群列表 (群存在但搜索索引没收录)。
+
+    生产事故: ``chats/search`` 返回空 → 收件人解析失败 → 周中对齐会纪要发不进群,
+    状态停在 notifications_pending。
+    """
+    calls: list[str] = []
+
+    async def fake_api(**kwargs: object) -> dict[str, object]:
+        uri = str(kwargs["uri"])
+        calls.append(uri)
+        if uri.endswith("/chats/search"):
+            return {"ok": True, "items": []}
+        return {"ok": True, "items": [{"chat_id": "oc_main", "name": "HaiTun Agent主战场"}]}
+
+    monkeypatch.setattr(notify._api, "call_api_impl", fake_api)
+
+    identity, display_name = await notify._resolve_group_with_bot("HaiTun Agent主战场")
+
+    assert (identity, display_name) == ("oc_main", "HaiTun Agent主战场")
+    assert calls == ["/open-apis/im/v1/chats/search", "/open-apis/im/v1/chats"]
+
+
+@pytest.mark.anyio
+async def test_resolve_group_reports_both_lookups_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """两个接口都没命中时, 报错要同时说清搜索与列表各自的结果。"""
+
+    async def fake_api(**kwargs: object) -> dict[str, object]:
+        if str(kwargs["uri"]).endswith("/chats/search"):
+            return {"ok": True, "items": []}
+        return {"ok": True, "items": [{"chat_id": "oc_other", "name": "别的群"}]}
+
+    monkeypatch.setattr(notify._api, "call_api_impl", fake_api)
+
+    identity, error = await notify._resolve_group_with_bot("HaiTun Agent主战场")
+
+    assert identity == ""
+    assert "未找到群名" in error
+    assert "机器人所在 1 个群" in error
+
+
+@pytest.mark.anyio
+async def test_hr_recipient_prefers_current_app_open_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """罗霖: 优先按姓名解析(当前应用 open_id), 不再直接用可能 cross app 的历史固定 id。"""
+
+    async def fake_resolve(name: str) -> tuple[str, str]:
+        assert name == "罗霖"
+        return "ou_luolin_current", "罗霖"
+
+    monkeypatch.setattr(notify, "_resolve_with_bot", fake_resolve)
+    monkeypatch.setattr(notify, "_configured_hr_identity", lambda: "ou_f330_stale")
+
+    assert await notify._resolve_recipient("罗霖", "") == ("ou_luolin_current", "罗霖")
+    assert await notify._resolve_recipient("hr", "") == ("ou_luolin_current", "罗霖")
+
+
+@pytest.mark.anyio
+async def test_hr_recipient_falls_back_to_configured_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """通讯录解析不到时仍用配置里的 id, 行为不倒退。"""
+
+    async def fake_resolve(_name: str) -> tuple[str, str]:
+        return "", "未找到姓名为“罗霖”的唯一成员"
+
+    monkeypatch.setattr(notify, "_resolve_with_bot", fake_resolve)
+    monkeypatch.setattr(notify, "_configured_hr_identity", lambda: "ou_hr")
+
+    assert await notify._resolve_recipient("hr", "") == ("ou_hr", "罗霖")
+
+
+@pytest.mark.anyio
+async def test_unknown_recipient_name_falls_back_to_roster(monkeypatch: pytest.MonkeyPatch) -> None:
+    """白名单外的中文姓名先按姓名解析; 解析失败才报"不支持"。"""
+
+    async def fake_resolve(name: str) -> tuple[str, str]:
+        if name == "高博":
+            return "ou_gaobo", "高博"
+        return "", f"未找到姓名为“{name}”的唯一成员"
+
+    monkeypatch.setattr(notify, "_resolve_with_bot", fake_resolve)
+
+    assert await notify._resolve_recipient("高博", "") == ("ou_gaobo", "高博")
+    identity, error = await notify._resolve_recipient("查无此人", "")
+    assert identity == ""
+    assert "不支持的会议收件人: 查无此人" in error
 
 
 # ── P1: 运行指标 run_metrics.jsonl ───────────────────────────────────────────

@@ -33,6 +33,23 @@ def _configured_hr_identity() -> str:
     return str(value).strip() if isinstance(value, str) else ""
 
 
+async def _resolve_hr_recipient() -> tuple[str, str]:
+    """HR 收件人(罗霖): 先按姓名用本应用凭据解析, 解析不到才用配置里的 id。
+
+    ``rookie_sop.yaml`` 的 ``hr_notify_id`` 是一个固定 open_id。一旦它来自别的飞书应用
+    (换过应用/换过租户), 发送就会报 ``99992361 open_id cross app`` —— 生产上两场会议的
+    overview 收件人因此长期投递失败, 状态停在 ``notifications_pending``。按姓名走通讯录
+    拿到的一定是**当前应用**的 open_id, 所以优先用它; 配置值仅作兜底。
+    """
+    identity, error = await _resolve_with_bot("罗霖")
+    if identity:
+        return identity, "罗霖"
+    configured = _configured_hr_identity()
+    if configured:
+        return configured, "罗霖"
+    return "", f"HR 收件人未配置或无法解析({error})"
+
+
 async def _resolve_with_bot(name: str) -> tuple[str, str]:
     """Resolve an exact member name with the bot's tenant token.
 
@@ -67,8 +84,34 @@ async def _resolve_with_bot(name: str) -> tuple[str, str]:
     return "", f"未找到姓名为“{name}”的唯一成员"
 
 
-async def _resolve_group_with_bot(name: str) -> tuple[str, str]:
-    """Resolve one exact group name with the scheduler bot's tenant token."""
+def _chat_items(response: object) -> list[dict[str, object]]:
+    """从 chats 接口回包里取出 items (兼容 data.items 嵌套)。"""
+    if not isinstance(response, dict):
+        return []
+    items = response.get("items")
+    if not isinstance(items, list):
+        data = response.get("data")
+        items = data.get("items") if isinstance(data, dict) else []
+    return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
+def _exact_chat_match(items: list[dict[str, object]], name: str) -> tuple[str, str]:
+    """群名精确匹配; 命中唯一一个才返回 chat_id。"""
+    matches: list[tuple[str, str]] = []
+    for item in items:
+        display = str(item.get("name") or item.get("chat_name") or "").strip()
+        chat_id = str(item.get("chat_id") or item.get("id") or "").strip()
+        if display == name and chat_id.startswith("oc_"):
+            matches.append((chat_id, display))
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        return "", f"群名“{name}”匹配到 {len(matches)} 个群聊, 请在配置里直接写 chat_id"
+    return "", f"未找到群名为“{name}”的唯一群聊"
+
+
+async def _search_chat_by_name(name: str) -> tuple[str, str]:
+    """按群名走 chats/search (只覆盖机器人可见的群)。"""
     try:
         response = await _api.call_api_impl(
             method="GET",
@@ -80,21 +123,58 @@ async def _resolve_group_with_bot(name: str) -> tuple[str, str]:
         return "", f"{type(exc).__name__}: {exc}"
     if not isinstance(response, dict) or not response.get("ok"):
         return "", str((response or {}).get("message") or (response or {}).get("error") or "按群名查询失败")
-    items = response.get("items")
-    if not isinstance(items, list):
-        data = response.get("data")
-        items = data.get("items") if isinstance(data, dict) else []
-    matches: list[tuple[str, str]] = []
-    for item in items if isinstance(items, list) else []:
-        if not isinstance(item, dict):
-            continue
-        display = str(item.get("name") or item.get("chat_name") or "").strip()
-        chat_id = str(item.get("chat_id") or item.get("id") or "").strip()
-        if display == name and chat_id.startswith("oc_"):
-            matches.append((chat_id, display))
-    if len(matches) == 1:
-        return matches[0]
-    return "", f"未找到群名为“{name}”的唯一群聊"
+    return _exact_chat_match(_chat_items(response), name)
+
+
+async def _list_bot_chats() -> tuple[list[dict[str, object]], str]:
+    """机器人所在群列表(分页最多 5 页)。
+
+    搜索索引未收录、但机器人确已在群里的场景 (群刚建立/刚被拉进群) 只有列表接口看得到 ——
+    生产上它表现为「群名解析不到 → 纪要发不进群」。
+    """
+    items: list[dict[str, object]] = []
+    page_token = ""
+    for _ in range(5):
+        query: dict[str, object] = {"page_size": 100}
+        if page_token:
+            query["page_token"] = page_token
+        try:
+            response = await _api.call_api_impl(
+                method="GET",
+                uri="/open-apis/im/v1/chats",
+                query_json=json.dumps(query, ensure_ascii=False),
+                prefer="tenant",
+            )
+        except Exception as exc:
+            return items, f"{type(exc).__name__}: {exc}"
+        if not isinstance(response, dict) or not response.get("ok"):
+            return items, str((response or {}).get("message") or (response or {}).get("error") or "群列表查询失败")
+        items.extend(_chat_items(response))
+        data = response.get("data") if isinstance(response.get("data"), dict) else {}
+        if not (response.get("has_more") or data.get("has_more")):
+            break
+        page_token = str(response.get("page_token") or data.get("page_token") or "")
+        if not page_token:
+            break
+    return items, ""
+
+
+async def _resolve_group_with_bot(name: str) -> tuple[str, str]:
+    """Resolve one exact group name with the scheduler bot's tenant token.
+
+    先走 ``chats/search``, 搜不到再列机器人所在群: 两个接口的可见范围不同, 只依赖搜索
+    会在「群存在但索引没收录」时把纪要卡在收件人解析这一步。
+    """
+    identity, search_error = await _search_chat_by_name(name)
+    if identity:
+        return identity, name
+    items, list_error = await _list_bot_chats()
+    if items:
+        listed_id, listed_error = _exact_chat_match(items, name)
+        if listed_id:
+            return listed_id, name
+        return "", f"{search_error}; 机器人所在 {len(items)} 个群里{listed_error}"
+    return "", f"{search_error}; 群列表查询失败: {list_error}"
 
 
 async def _resolve_recipient(recipient: str, user_key: str) -> tuple[str, str]:
@@ -102,14 +182,20 @@ async def _resolve_recipient(recipient: str, user_key: str) -> tuple[str, str]:
     if value.startswith(("ou_", "oc_", "user_")):
         return value, value
     if value in {"hr", "罗霖"}:
-        identity = _configured_hr_identity()
-        return (identity, "罗霖") if identity else ("", "HR 收件人未配置")
+        return await _resolve_hr_recipient()
     person_aliases = {"cheng": "程秀秀", "程秀秀": "程秀秀", "张浩": "张浩", "王金旺": "王金旺"}
     if value in person_aliases:
         return await _resolve_with_bot(person_aliases[value])
     if value == "HaiTun Agent主战场":
         return await _resolve_group_with_bot(value)
-    return "", f"不支持的会议收件人: {value}"
+    if value:
+        # 其它中文姓名不再直接判"不支持": 先按姓名走一次通讯录(拿当前应用的 open_id),
+        # 解析不到才报不支持。配置里写错名字时的报错同时给出两个原因。
+        identity, detail = await _resolve_with_bot(value)
+        if identity:
+            return identity, detail or value
+        return "", f"不支持的会议收件人: {value}({detail})"
+    return "", "会议收件人为空"
 
 
 async def _reply_in_topic(message_id: str, text: str) -> dict[str, object]:
