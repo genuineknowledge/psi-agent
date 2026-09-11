@@ -137,6 +137,41 @@ CEO 口径：MVP 起即记录 check 结果数据，先搭评测体系再搭数�
   「持续逾期」并同步该 mentor 上级（见回流规则第 3 条）。
 - **boss 视图**：全公司汇总，每个 mentor 团队加「较上期」趋势列（闭环数、回流数、顺延数）。
 
+### 推送前置：先对账人与 mentor 的关系（`feishu_todo_ledger_reconcile`）
+
+**本节的输出是按 mentor 分组的，而分组用的是台账行里的 `mentor` 字段 —— 那是 `company-todo-sync`
+建行那一刻从看板抄下来的快照，之后没有任何流程会更新它。** 所以只要有人在建行之后改了看板的
+mentor 列（把某人换到另一个 mentor 名下），这里就会继续按**改前的关系**分组出卡：人发到旧 mentor
+手里、新 mentor 名下少一个人，而且发送本身会全绿（卡片内容是错的，投递是成功的）。
+
+因此**凡要产出/推送逐 mentor 的分组（前后对比卡、mentor 报表、评价卡补发），先跑一次对账**：
+
+```
+feishu_todo_ledger_reconcile(
+  board_link=<看板链接>,
+  cycle_date=<本周期日期>,
+  folder_token=<台账 base 所在文件夹>,   # 或改传 ledgers_json 逐个 base 的 app_token
+  apply_fixes=false,                     # 先只看差在哪
+  user_key=<发送者 open_id>,
+)
+```
+
+按返回处理，三条都不许跳：
+
+1. `relation_aligned: true` → 才可以说「按当前关系分组」，继续推送。
+2. `mentor_changed` 非空 → 台账仍写着改前的 mentor。带 `apply_fixes=true` 重跑修正字段
+   （只在名字唯一解析到一个通讯录条目时才写；解析不出的进 `needs_manual`，**交人工，不要自己
+   挑一个同名的人写进去**）。
+3. `needs_move` 非空 → **修正字段之后才会出现的那一半**：行还躺在旧 mentor 的
+   `TODO 台账-<旧 mentor>` base 里。按 base 枚举的消费者仍会按旧关系读到它，所以此时
+   **不得**声称已对齐——把行搬进新 mentor 的本周期表（`company-todo-sync` 的建行口径），
+   或先如实报告「这两处还没对齐」。改字段与搬行是两件事。
+
+`person_not_on_board` / `row_missing_mentor` / `board_missing_mentor` / `row_missing_owner` 四类
+一律交人工补数据。其中**人不在看板上**的名字在转述给 mentor 之前，必须先过
+`feishu_member_status_check` 分类（离职 / 冻结人员面向 mentor 的输出完全不体现，见本文件开头的
+离职口径）——对账结果的这几桶**不是**可以直接贴给 mentor 的成品。
+
 **纪律**：消失 ≠ 未闭环 ≠ 失实；请假顺延不计逾期；承接只对任务做去重、不对填报文本硬匹配（当前多数人
 todo 还没写好父子关联，父项留空是常态，不强挂）。比对只读台账与 wiki 快照两处权威源，不接受口头 / 聊天
 记录里的「说已经做完了」。
