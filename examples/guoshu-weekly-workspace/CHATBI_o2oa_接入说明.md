@@ -18,6 +18,9 @@
 >   **同构三套**问"移植是否忠实"(同一份演示数据上能不能复现 mock docstring 里那批契约数字)。
 >   列集合对照 **150 / 151** 里剩下的那一处是**已知的有意差异**(见 3.1.7)。
 > - **交付形式**:服务 / Docker(`Dockerfile`,streamable-http,默认 18900);不含前端,由主 Agent 经 MCP 调用。
+>   **镜像已实跑(2026-09-11,3090 上 rootless podman)**:构建、起容器、非 root、18900 端口、
+>   MCP `tools/list` 31 个工具全部通过;并据此修掉两个只有起容器才暴露的缺陷(缺 `pymysql`
+>   导致启动即崩、库不可达时 30 个工具把异常漏到 MCP 层)—— 详见 3.1.10。
 > - **真库已打通(2026-09-10,本条已取代原先"直连尚未打通")**:物理库名是 **`o2oa`**
 >   (字段说明里的 `O2OA-DB` 是业务叫法,集群 `pg_database` 里没有该 database;`oa_biz` 是
 >   历史空表别用)。卡点根因不是"忘了授权",而是 **`o2oa` 的 `datacl` 被显式改过**
@@ -1029,6 +1032,83 @@ assert set(_formal._PERSON_LISTING_SCOPES) == set(o2.PERSON_SCOPES) - single_row
 **验收**:`check_pg_syntax` **198 条 ALL OK**;真库验收 **34/34**;基线交叉核对 **62/62**
 (新增 reporter_count 三处一致 + id_format 各档之和);工具级 **34/34**;
 列集合对照 **152/153**(+2 例);单测 **271**(269 → 271)。
+
+### 3.1.10 镜像实跑(3090 / podman):抓到两个只有起容器才暴露的缺陷(2026-09-11 第 39 轮)
+
+镜像此前**从未实跑过**(本机无 docker)。这轮在 3090(`ubuntu01`,192.168.120.3,rootless
+podman 4.9.3)上真跑了 `podman build` + `podman run`,抓到两个**单元测试与真库验收都照不出来**
+的缺陷 —— 它们的共同点是"只在**进程入口**才出现":
+
+**缺陷 1:正式源模式下缺 `pymysql`,容器一起来就崩**
+
+```
+ModuleNotFoundError: No module named 'pymysql'
+```
+
+`server.py` 顶层 `import _db` → `_db` 里 `import pymysql`,而那是**演示源**的驱动。
+正式源模式下它一辈子用不到,所以 `Dockerfile` 里没装 —— 但导入期就炸,容器根本起不来。
+它还有第二个用途:未迁移的参数组合要靠它去连演示库、失败后才由 `_fallback` 报 `not_migrated`。
+**它不是"可选依赖",是导入期硬依赖**(已写进 `Dockerfile` 的注释,免得后人又"优化"掉)。
+
+**缺陷 2:数据库不可达时,工具把异常漏到 MCP 层(31 个里 30 个)**
+
+```
+Error executing tool weekly_health: failed to resolve host 'he3pg-...internal':
+[Errno -2] Name or service not known
+```
+
+这是一句**纯文本**,不是工具信封。两个后果:一是"演示源出错给信封、正式源出错给文本",
+读 `error.code` 的调用方在正式源上永远拿不到东西;二是 `_fallback` 那条"把连不上翻译成
+可操作报错"的兜底**碰不到它**(它只认信封里的码),于是国数生产上真出网络问题时,
+agent 看到的是一句没有 code、没有指路的驱动报错。
+
+修法分三层,每一层都由实跑数据驱动:
+
+1. **`_formal.envelope` 把驱动异常包成错误信封**(唯一执行正式源 SQL 的地方);
+2. **改用异常(``SourceUnavailableError``)而不是"返回错误信封"**。第一版做成了"返回",
+   结果 `weekly_rank` / `weekly_health` / `weekly_schema` / `weekly_task_detail` 等 **10 个**
+   工具继续读 `result["rows"]`,一个 `KeyError: 'rows'` 把刚包好的错误信封**顶掉**,
+   又变回文本。改成抛异常,整段加工自然跳过;
+   **纪律:错误信封一旦生成,就不许被后续加工顶掉。**
+3. **错误码分开**:正式源自己不可达 ⇒ `formal_source_unreachable`(查网络/库/账号 ——
+   基础设施问题);参数没迁 ⇒ `not_migrated`(换 scope/参数 —— 口径问题)。
+   混成一个码的代价是真实的:把基础设施故障说成"参数没迁",调用方会一直换参数试。
+
+**实跑步骤与判据(3090)**
+
+```bash
+# 1) 打包上传构建上下文(只含 Dockerfile / mock-mcp / README)
+tar -czf guoshu-image.tgz -C examples/guoshu-weekly-workspace Dockerfile README.md mock-mcp
+scp guoshu-image.tgz 3090:/home/gaobo/
+
+# 2) 构建(本机网络到 docker.io 不通,基础镜像走 daocloud 加速站;pip 走 USTC)
+podman build -t guoshu-weekly-mcp:latest -f Dockerfile.3090 .
+
+# 3) 起容器(正式源模式 + 端口 18900)
+podman run -d --name guoshu-mcp -p 18900:18900 --env-file o2oa.env guoshu-weekly-mcp:latest
+
+# 4) 经 MCP 协议验(不是"进程活着"就算数)
+podman run --rm --network host -v ./verify_container.py:/tmp/vc.py:ro \
+    guoshu-weekly-mcp:latest python /tmp/vc.py
+```
+
+| 判据 | 结果 |
+|---|---|
+| 构建成功且镜像可起 | ✅ `podman ps` 显示 `Up`,`0.0.0.0:18900->18900/tcp` |
+| 启动日志 | ✅ `store: 正式只读源(o2oa/PG)`;演示库探测失败按预期只记一行 "expected in formal mode",**不退出** |
+| 非 root 运行 | ✅ 容器内 `uid=10001(appuser)` |
+| MCP `initialize` + `tools/list` | ✅ streamable-http 连通,**31 个工具**(不多不少) |
+| 参数校验先于连库 | ✅ 缺 `person` 报 `invalid_argument`(不经数据库) |
+| 库不可达时的出口 | ✅ **31/31 都返回信封**,码为 `formal_source_unreachable`,消息里带 `pg://user@host:port/db`(**不含口令**) |
+| 容器重启后仍可服务 | ✅ `podman restart` 后再次 `tools/list` 仍 31 个 |
+
+真库四套在改完后**重跑一遍**(确保"库可达"这条主路径没被改坏):冒烟 **31/31**、
+验收 **34/34**、基线 **62/62**、工具级 **34/34**;单测 **277**。
+
+**3090 这台机器的两个环境限制**(与代码无关,交付时要记着):
+它到国数 PG 的**内网不通**(DNS 解析不出、TCP 5432 不可达),所以实跑验的是
+"容器起得来 + 协议活着 + 错误可读",**不是**"取数取得到";
+要验取数,得把容器放到能连 o2oa 的网段(或用与真库核对脚本相同的那条端口转发)。
 
 ## 5. 能力边界(未授权表时)
 - `task_attachment` 只读元数据:问答只能答“存在附件《文件名》”,文件体在

@@ -1,4 +1,4 @@
-"""Formal-source (O2OA PostgreSQL) implementations for the migrated tool scopes.
+﻿"""Formal-source (O2OA PostgreSQL) implementations for the migrated tool scopes.
 
 The demo answers from ``weekly_mock`` over MySQL; the formal source is O2OA's
 PostgreSQL.  ``TASK_BOARD_DATA_SOURCE=o2oa`` switches the *migrated* scopes over
@@ -22,6 +22,7 @@ import re
 from typing import Any
 
 import _admission as adm
+import _fallback
 import _o2oa_templates as tpl
 
 try:  # psycopg is only needed on the formal path
@@ -77,6 +78,23 @@ def envelope(
     与 ``_store.fetch`` 同一个技巧。少了这一步,SQL 里写死的 ``LIMIT`` 会让
     "刚好取满" 与 "被截断" 长得一模一样(313 行的年度目标会被报成 200 行且
     ``has_more=false``,实测踩过)。
+
+    **驱动异常一律包成信封**(``ok: false`` + ``error.code``),不外泄:
+
+    这是**容器实跑抓到的一条**:正式源连不上时,原先异常会一路冒到 MCP 层,
+    工具返回的是 ``Error executing tool weekly_health: failed to resolve host ...``
+    —— 一句纯文本,不是信封。对调用方有两个后果:
+
+    1. **换数据源就要换读法**:演示源出错给信封、正式源出错给文本,读 ``error.code``
+       的代码在正式源上永远拿不到东西;
+    2. ``_fallback`` 那条"把连不上翻译成可操作报错"的兜底**碰不到它**(它只认信封里的
+       ``store_unreachable``),于是国数生产上真出网络问题时,agent 看到的是一句
+       没有 code、没有指路的驱动报错。
+
+    所以这里把 ``_pg.driver_errors()`` 接住,统一成 ``store_unreachable``:
+    与演示源连不上是**同一个语义**(数据源不可达),``_fallback`` 那层因此能一视同仁地
+    翻译成 ``not_migrated`` 或保留原文。工具名靠 ``error.message`` 里的查询目标
+    (``pg://user@host:port/db``,不含口令)定位,不必让每个工具自己包一层。
     """
     if _pg is None:  # pragma: no cover - enabled() 已经挡住
         raise RuntimeError("psycopg 不可用,无法访问正式源")
@@ -85,14 +103,28 @@ def envelope(
     if cap_last_param and params:
         # 多要一行只为判定截断;模板里的 LIMIT 已经把结果集压在 bounded+1 以内
         sql_params = (*params[:-1], bounded + 1)
-    conn = _pg.connect()
     try:
-        with conn.cursor() as cur:
-            cur.execute(sql, sql_params)
-            columns = [d.name for d in cur.description] if cur.description else []
-            raw = cur.fetchall()
-    finally:
-        conn.close()
+        conn = _pg.connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, sql_params)
+                columns = [d.name for d in cur.description] if cur.description else []
+                raw = cur.fetchall()
+        finally:
+            conn.close()
+    except _pg.driver_errors() as exc:
+        raise SourceUnavailableError(
+            {
+                "ok": False,
+                "error": {
+                    "code": "store_unreachable",
+                    "message": (
+                        f"cannot reach {_pg.dsn()}: {type(exc).__name__}: "
+                        f"{str(exc).splitlines()[0][:200]}"
+                    ),
+                },
+            }
+        ) from exc
     has_more = len(raw) > bounded
     rows = [dict(zip(columns, r, strict=True)) for r in raw[:bounded]]
     result: dict[str, Any] = {
@@ -111,15 +143,60 @@ def envelope(
     return result
 
 
+class SourceUnavailableError(Exception):
+    """正式源不可达 —— 携带一个**已经成形的错误信封**,由 ``dispatch`` 原样交出。
+
+    为什么不沿用"返回错误信封"的形式:``envelope`` 的返回值会被处理函数继续加工
+    (``result["rows"]`` / ``result["caliber"] += ...``)。返回错误信封时那些加工会
+    ``KeyError: 'rows'``,**把刚生成的错误信封顶掉**,又变成一句
+    ``Error executing tool ...`` 文本冒到 MCP 层 —— 容器实跑里 31 个工具中有 10 个
+    正是这样(``weekly_rank`` / ``weekly_health`` / ``weekly_schema`` / ``weekly_task_detail`` …)。
+
+    改成抛异常,整段加工自然跳过,错误信封原封不动到出口。
+    """
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        super().__init__((payload.get("error") or {}).get("message", "formal source unavailable"))
+        self.payload = payload
+
+
+def ok_envelope(result: dict[str, Any]) -> bool:
+    """``envelope`` 的返回值是不是**成功的**信封(有 ``rows`` 可取)。
+
+    ``SourceUnavailableError`` 已经挡住了"库连不上"这一大类;这个函数是给
+    **其余错误信封**留的一道闸(例如处理函数自己拼的错误信封,或未来新增的
+    非异常错误路径)。用法与 ``_rank`` 里那一处相同:
+
+    ```python
+    result = envelope(...)
+    if not ok_envelope(result):
+        return result
+    totals = [row.pop(...) for row in result["rows"]]   # ← 这行才安全
+    ```
+    """
+    return bool(result.get("ok"))
+
+
 def dispatch(tool: str, **kwargs: Any) -> dict[str, Any] | None:
-    """把一次工具调用映射到正式源模板;未迁移的组合返回 ``None``。"""
+    """把一次工具调用映射到正式源模板;未迁移的组合返回 ``None``。
+
+    出口统一过一遍 ``_fallback.translate_formal_error``:把"正式源连不上"这个
+    ``store_unreachable`` 换成 ``formal_source_unreachable``(与"参数没迁"分开)。
+    放在这**一个**地方而不是每个工具里 —— 它是所有正式源调用的唯一漏斗。
+
+    ``SourceUnavailableError`` 也在这里接住:连不上库时,处理函数里那些
+    ``result["rows"]`` / ``result["caliber"]`` 的加工代码没有意义,让它们整段跳过 ——
+    **一个刚生成的错误信封不许被后续加工顶掉**(详见 ``envelope`` 的说明)。
+    """
     if not enabled():
         return None
     handler = _HANDLERS.get(tool)
     if handler is None:
         return None
     try:
-        return handler(kwargs)
+        result = handler(kwargs)
+    except SourceUnavailableError as exc:
+        return _fallback.translate_formal_error(tool, exc.payload)
     except ValueError as exc:
         # 参数不满足口径(缺 year、看板码不在域内……):直接按契约报错,不落到演示路径
         return {"ok": False, "error": {"code": "invalid_argument", "message": str(exc)}}
@@ -127,6 +204,9 @@ def dispatch(tool: str, **kwargs: Any) -> dict[str, Any] | None:
         # 可选表未在本次授权范围内:显式说明不可答。**不回落演示路径** ——
         # 回落会去连演示 MySQL,把"没有权限"变成"另一个数据源的答案"。
         return {"ok": False, "error": {"code": "table_not_granted", "message": str(exc)}}
+    if result is not None and result.get("ok") is False:
+        return _fallback.translate_formal_error(tool, result)
+    return result
 
 
 # ---- 各工具的映射 -----------------------------------------------------------
@@ -556,6 +636,8 @@ def _freshness_one_task(args: dict[str, Any], raw_task: str, *, limit: int) -> d
         ),
         limit=1,
     )
+    if not ok_envelope(result):
+        return result
     if result["row_count"]:
         return result
     # 0 行:补一次"这一行到底在不在"的判定(不带 R-01 闸门),把两种 0 行分开
@@ -714,6 +796,8 @@ def _health(args: dict[str, Any]) -> dict[str, Any] | None:
         caliber="逐表 count(*);未授权或不存在的表返回 NULL(四张可选表可能在授权范围外)",
         limit=200,
     )
+    if not ok_envelope(result):
+        return result
     rows = result["rows"]
     present = [r for r in rows if r["row_count"] is not None]
     result["store"] = _pg.dsn() if _pg is not None else "unknown"
@@ -972,6 +1056,8 @@ def _workflow(args: dict[str, Any]) -> dict[str, Any] | None:
             limit=limit,
             cap_last_param=True,
         )
+        if not ok_envelope(result):
+            return result
         if not bool(args.get("can_read_sensitive")):
             # 敏感字段打码而不是删列,列集合在两种权限下保持一致
             for row in result["rows"]:
@@ -999,6 +1085,8 @@ def _workflow(args: dict[str, Any]) -> dict[str, Any] | None:
         limit=limit,
         cap_last_param=scope == "recent",
     )
+    if not ok_envelope(result):
+        return result
     if not bool(args.get("can_read_sensitive")):
         # 敏感字段打码而不是删列,列集合在两种权限下保持一致
         for row in result["rows"]:
@@ -1069,6 +1157,8 @@ def _rank(args: dict[str, Any]) -> dict[str, Any] | None:
         limit=top if mode == "cut" else MAX_ROWS,
         cap_last_param=mode == "cut",
     )
+    if not ok_envelope(result):
+        return result
     if mode == "cut":
         # 演示源的 cut 分支把「符合口径的任务总数」放在**顶层**(不是行内列):
         # 两边键位必须一致,否则同一个问题换数据源就得换字段读,而模型只会读它

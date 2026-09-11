@@ -7,8 +7,15 @@
 # 运行:  docker run --rm -p 18900:18900 --env-file o2oa.env guoshu-weekly-mcp:latest
 FROM python:3.14-slim
 
-# 只装运行期依赖。mcp 必须钉在 1.x:2.x 把 FastMCP 改名成 MCPServer,直接导入失败。
-RUN pip install --no-cache-dir "mcp>=1.28.1,<2.0.0" "psycopg[binary]>=3.2"
+# 只装运行期依赖。两条都踩过:
+#
+# * ``mcp`` 必须钉在 1.x:2.x 把 FastMCP 改名成 MCPServer,直接导入失败;
+# * ``pymysql`` **在正式源模式下也必须装**:``server.py`` 顶层就 ``import _db`` →
+#   ``_db`` 里 ``import pymysql``,而那是**演示源**的驱动。正式源模式下它一辈子用不到,
+#   但少了它容器一起来就 ``ModuleNotFoundError: No module named 'pymysql'``(实跑抓到的)。
+#   演示路径本身也要它:未迁移的参数组合要靠它去连演示库、失败后才由 ``_fallback`` 报
+#   ``not_migrated``。所以它不是"可选依赖",是**导入期硬依赖**。
+RUN pip install --no-cache-dir "mcp>=1.28.1,<2.0.0" "psycopg[binary]>=3.2" "pymysql>=1.1"
 
 WORKDIR /app
 COPY mock-mcp/ /app/mock-mcp/

@@ -68,6 +68,23 @@ def dsn() -> str:
     return f"pg://{DB_USER}@{DB_HOST}:{DB_PORT}/{DB_NAME}?schema={DB_SCHEMA}"
 
 
+def driver_errors() -> tuple[type[BaseException], ...]:
+    """驱动异常的**基类元组**,给"把库的问题包成工具信封"用。
+
+    为什么要有这个函数而不是在调用处写 ``except Exception``:
+
+    * ``psycopg`` 不可用时(演示源环境)这里要给一个**永远不匹配**的元组,
+      否则模块导入就会失败,而演示源根本不需要 psycopg;
+    * 把"哪几类异常算库的问题"收在一处 —— 调用方(``_formal.envelope``)不需要
+      认识 psycopg 的异常层级。``InterfaceError`` / ``OperationalError`` 是连不上/
+      连接断了,``ProgrammingError`` 是 SQL 或参数错(两者对调用方都是"这次取数失败",
+      但要能分辨原因,所以错误消息里带类型名)。
+    """
+    if psycopg is None:  # pragma: no cover
+        return ()
+    return (psycopg.Error, psycopg.InterfaceError, OSError)
+
+
 def connect() -> Any:
     """Open a read-only connection to the formal source.
 

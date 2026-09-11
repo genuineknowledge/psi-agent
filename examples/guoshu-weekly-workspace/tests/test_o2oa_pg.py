@@ -2430,3 +2430,90 @@ class TestPgConnectHardening:
             _pg.connect()
         assert len(calls) == 1
 
+
+class TestFormalSourceErrorEnvelope:
+    """正式源连不上时必须给**信封**,而且码要与"参数没迁"分开。
+
+    这是**容器实跑**抓到的:原先驱动异常一路冒到 MCP 层,工具返回的是一句
+    ``Error executing tool weekly_health: failed to resolve host ...`` 文本 ——
+    31 个工具里 30 个都这样。后果是"演示源出错给信封、正式源出错给文本",
+    读 ``error.code`` 的调用方在正式源上永远拿不到东西;``_fallback`` 那条兜底
+    也碰不到它(它只认信封里的 ``store_unreachable``)。
+    """
+
+    def test_envelope_wraps_driver_errors(self, monkeypatch):
+        """``envelope`` 抛 ``SourceUnavailableError``,错误信封就装在异常里。"""
+
+        def broken(**_kwargs):
+            raise psycopg.OperationalError(
+                "failed to resolve host 'he3pg-xxx.internal': [Errno -2] Name or service not known"
+            )
+
+        monkeypatch.setattr(_pg.psycopg, "connect", broken)
+        with pytest.raises(_formal.SourceUnavailableError) as exc:
+            _formal.envelope(sql="SELECT 1", params=(), caliber="x", limit=1)
+        got = exc.value.payload
+        assert got["ok"] is False
+        assert got["error"]["code"] == "store_unreachable"
+        # 目标要能定位问题,但**不能含口令**
+        assert _pg.dsn() in got["error"]["message"]
+        assert "resolve host" in got["error"]["message"]
+        assert "password" not in got["error"]["message"].lower()
+
+    def test_dispatch_catches_the_unavailable_exception(self, monkeypatch):
+        """**加工代码不许顶掉错误信封**:用异常让整段加工自然跳过。
+
+        这是容器实跑抓到的第二个形态:最初把错误做成"返回错误信封",结果
+        ``weekly_rank`` / ``weekly_health`` / ``weekly_schema`` / ``weekly_task_detail``
+        等 10 个工具继续读 ``result["rows"]``,一个 ``KeyError: 'rows'`` 把刚包好的
+        错误信封顶掉,又变成 ``Error executing tool ...`` 文本冒到 MCP 层。
+        """
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+
+        def boom(_args):
+            raise _formal.SourceUnavailableError(
+                {"ok": False, "error": {"code": "store_unreachable", "message": "cannot reach pg://x"}}
+            )
+
+        monkeypatch.setitem(_formal._HANDLERS, "weekly_rank", boom)
+        got = _formal.dispatch("weekly_rank", metric="progress_rounds")
+        assert got is not None and got["ok"] is False
+        assert got["error"]["code"] == _fallback.FORMAL_SOURCE_CODE
+        assert "不是参数问题" in got["error"]["message"]
+
+    def test_dispatch_renames_the_code_for_the_formal_source(self, monkeypatch):
+        """"正式源连不上"与"参数没迁"要调用方做的事不同,不能一个码。"""
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            return {"ok": False, "error": {"code": "store_unreachable", "message": "cannot reach pg://x"}}
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        got = _formal.dispatch("weekly_task_query", board="tech")
+        assert got is not None and got["ok"] is False
+        assert got["error"]["code"] == _fallback.FORMAL_SOURCE_CODE
+        assert "网络" in got["error"]["message"] and "不是参数问题" in got["error"]["message"]
+
+    def test_contract_errors_are_not_rewritten(self, monkeypatch):
+        """契约错误(缺参数/未授权/不属正式任务)已经可操作,不许被翻译层改写。"""
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        for payload, code in (
+            ({"ok": False, "error": {"code": "invalid_argument", "message": "x"}}, "invalid_argument"),
+            ({"ok": False, "error": {"code": "table_not_granted", "message": "x"}}, "table_not_granted"),
+            ({"ok": False, "error": {"code": "task_not_formal", "message": "x"}}, "task_not_formal"),
+        ):
+            assert _fallback.translate_formal_error("weekly_task_query", payload) is payload
+            assert payload["error"]["code"] == code
+
+    def test_ok_payloads_are_untouched(self):
+        good = {"ok": True, "rows": [], "row_count": 0}
+        assert _fallback.translate_formal_error("weekly_task_query", good) is good
+
+    def test_demo_path_keeps_its_own_meaning(self, monkeypatch):
+        """演示路径的 ``store_unreachable`` 仍然翻成 ``not_migrated``(那确实是没迁)。"""
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _fallback.should_translate() is True
+        assert _fallback.CODE == "not_migrated" != _fallback.FORMAL_SOURCE_CODE
+
