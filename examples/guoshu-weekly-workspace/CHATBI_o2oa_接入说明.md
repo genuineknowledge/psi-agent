@@ -124,6 +124,22 @@ docker build -t guoshu-weekly-mcp:latest examples/guoshu-weekly-workspace
 docker run --rm -p 18900:18900 --env-file o2oa.env guoshu-weekly-mcp:latest
 ```
 
+`Dockerfile` 顶部有两个**可选**构建参数(默认值就是标准值,交付方不用管;
+内网 / 受限网络下才需要覆盖 —— 实测那台机器的 docker.io 不通):
+
+```bash
+docker build -t guoshu-weekly-mcp:latest \
+  --build-arg BASE_IMAGE=<镜像站前缀>/library/python:3.14-slim \
+  --build-arg PIP_INDEX_URL=https://<pip 镜像>/simple \
+  examples/guoshu-weekly-workspace
+```
+
+**交付件已产出并复验**(2026-09-11,3090 上 rootless podman):源码包(代码 + Dockerfile +
+README + 本说明 + 单测)、镜像包(`podman save` 的 docker-archive)、`MANIFEST.md`(版本 /
+校验和 / 怎么用 / 必需环境变量 / 验收结论)与 `SHA256SUMS`。生成脚本
+(`build_delivery_3090.sh`)含五道自检:**凭据扫描、源码与 HEAD 逐字节一致、用交付用的那份
+Dockerfile 构建、从 tar 载入后可起、载入后跑协议验收** —— 详见 3.1.10 与交接总结第 39 轮。
+
 `o2oa.env` 至少要有:`TASK_BOARD_DATA_SOURCE=o2oa`、`PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD/PGSCHEMA`;
 联调期再加 `GUOSHU_AS_OF=2026-08-15`(固定基准日,与演示快照日对齐)与
 `TASK_BOARD_GRANTED_OPTIONAL_TABLES=task_attachment,task_group_progress_history,task_workflow_action`。
