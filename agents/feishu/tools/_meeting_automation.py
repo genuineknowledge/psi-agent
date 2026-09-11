@@ -127,7 +127,7 @@ _MEETING_JOBS_WHITELIST: tuple[MeetingJob, ...] = (
     MeetingJob(
         name="weekday-alignment-1100",
         meeting_code="42654699903",
-        cron="0 12 * * 1,3,5",
+        cron="0 13 * * 1,3,5",
         title="日会",
         recipients=("张浩", "王金旺", "罗霖"),
         retry_crons=("30 17 * * 1,3,5",),

@@ -80,7 +80,7 @@ def test_meeting_jobs_use_fixed_post_meeting_crons() -> None:
     assert jobs["weekday-alignment"].summary_recipients == ("HaiTun Agent主战场",)
     assert jobs["weekday-alignment"].overview_recipients == ("罗霖",)
     assert jobs["weekday-alignment-1100"].meeting_code == "42654699903"
-    assert jobs["weekday-alignment-1100"].cron == "0 12 * * 1,3,5"
+    assert jobs["weekday-alignment-1100"].cron == "0 13 * * 1,3,5"
     assert jobs["weekday-alignment-1100"].retry_crons == ("30 17 * * 1,3,5",)
     assert jobs["weekday-alignment-1100"].recipients == ("张浩", "王金旺", "罗霖")
     assert jobs["weekday-alignment-1100"].token_env == "TENCENT_MEETING_TOKEN_42654699903"
