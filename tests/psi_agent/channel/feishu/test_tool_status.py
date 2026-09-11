@@ -7,13 +7,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from psi_agent.channel.feishu._tool_status import (
     GENERIC_TOOL_LABEL,
     TOOL_ALIASES,
     ToolStatusTracker,
     status_line_for,
 )
-from psi_agent.session.tool_defs import TMPFIX_M2_CORE_TOOLS
+from psi_agent.session.tool_exposure import DISCOVERY_TOOLS, MANIFEST_NAME, parse_manifest_text
+
+_FEISHU_TOOLS = Path(__file__).resolve().parents[4] / "agents" / "feishu" / "tools"
 
 
 def test_known_tool_maps_to_chinese_alias():
@@ -56,10 +60,26 @@ def test_no_running_tools_has_no_status_line():
     assert status_line_for([]) is None
 
 
-def test_alias_table_covers_the_m2_core_set():
-    """M2 高频工具必须全有别名 —— 缺一个就在生产里显示成通用兜底。"""
-    missing = sorted(TMPFIX_M2_CORE_TOOLS - set(TOOL_ALIASES))
-    assert missing == [], f"M2 工具缺别名: {missing}"
+def test_alias_table_covers_the_feishu_packs_exposed_tools():
+    """被暴露的工具必须全有别名 —— 缺一个就在生产卡片上显示成通用兜底。
+
+    换锚说明: 原先锚在内核常量 ``TMPFIX_M2_CORE_TOOLS`` 上, 那份名单已随分层暴露删除。
+    现在锚在飞书包自己声明的暴露清单 (``agents/feishu/tools/EXPOSED.txt``) 上 —— 同一批
+    工具, 同一个风险 (模型最可能直接调这些, 缺别名就兜底), 只是名单搬去了它该在的那一层。
+
+    ``DISCOVERY_TOOLS`` 由内核无条件暴露而不写在清单里, 所以要单独并进来一起要求别名:
+    它们照样会出现在状态行上。
+    """
+    exposed = parse_manifest_text((_FEISHU_TOOLS / MANIFEST_NAME).read_text(encoding="utf-8"))
+    missing = sorted((exposed | DISCOVERY_TOOLS) - set(TOOL_ALIASES))
+    assert missing == [], f"已暴露但缺别名: {missing}"
+
+
+def test_the_anchor_manifest_is_actually_there():
+    """锚必须存在且非空 —— 文件没了会让上面那条判据静默变成「空集全覆盖」。"""
+    path = _FEISHU_TOOLS / MANIFEST_NAME
+    assert path.is_file(), f"暴露清单不在: {path}"
+    assert len(parse_manifest_text(path.read_text(encoding="utf-8"))) > 20
 
 
 def test_aliases_carry_no_ascii_tool_names():
