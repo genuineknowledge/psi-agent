@@ -259,19 +259,15 @@ jobs:
             (Resolve-Path 'agents\desktop\psi-agent.exe').Path,
             (Resolve-Path '.github\inno-setup\haitun.exe').Path
           )
-          & $env:AZURE_SIGN_TOOL sign `
-            --azure-key-vault-url $vaultUrl `
-            --azure-key-vault-managed-identity `
-            --azure-key-vault-certificate $certificateName `
-            --description 'HaiTun Agent' `
-            --timestamp-rfc3161 $tsaUrl `
-            --timestamp-digest sha256 `
-            --file-digest sha256 `
-            --verbose `
-            $files
-          if ($LASTEXITCODE -ne 0) {
-            throw "AzureSignTool failed for application executables (exit code $LASTEXITCODE)."
-          }
+          # Serialized + retried: the TSA rate-limits us (801901AD = HTTP 429).
+          # See .github/inno-setup/sign-with-retry.ps1 for the full account.
+          & '.github\inno-setup\sign-with-retry.ps1' `
+            -SignTool $env:AZURE_SIGN_TOOL `
+            -VaultUrl $vaultUrl `
+            -CertificateName $certificateName `
+            -TsaUrl $tsaUrl `
+            -Description 'HaiTun Agent' `
+            -Files $files
       - name: Inject runtime .env
         shell: pwsh
         env:
@@ -356,19 +352,16 @@ jobs:
           if ($files.Count -ne 3) {
             throw "Expected three installer executables, found $($files.Count)."
           }
-          & $env:AZURE_SIGN_TOOL sign `
-            --azure-key-vault-url $vaultUrl `
-            --azure-key-vault-managed-identity `
-            --azure-key-vault-certificate $certificateName `
-            --description 'HaiTun Agent installer' `
-            --timestamp-rfc3161 $tsaUrl `
-            --timestamp-digest sha256 `
-            --file-digest sha256 `
-            --verbose `
-            $files
-          if ($LASTEXITCODE -ne 0) {
-            throw "AzureSignTool failed for installer executables (exit code $LASTEXITCODE)."
-          }
+          # This is the step that actually broke: 3 files signed concurrently,
+          # one of them reliably lost to a TSA 429 (801901AD). Serialized and
+          # retried now — see .github/inno-setup/sign-with-retry.ps1.
+          & '.github\inno-setup\sign-with-retry.ps1' `
+            -SignTool $env:AZURE_SIGN_TOOL `
+            -VaultUrl $vaultUrl `
+            -CertificateName $certificateName `
+            -TsaUrl $tsaUrl `
+            -Description 'HaiTun Agent installer' `
+            -Files $files
           $signtool = Get-ChildItem `
             -LiteralPath "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
             -Filter 'signtool.exe' -File -Recurse -ErrorAction SilentlyContinue |
