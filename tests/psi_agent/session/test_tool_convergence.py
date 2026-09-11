@@ -260,6 +260,52 @@ def test_recording_a_call_surface_refusal_is_a_no_op() -> None:
     assert conv.refusal_for("anything", {}) is None
 
 
+def test_retry_after_info_counts_same_tool_after_productive_result() -> None:
+    """Info came back → same name again → observe counter bumps; still no refuse."""
+    conv = ToolCallConvergence()
+    assert conv.refusal_for("sheet_read", {"range": "A1"}) is None
+    conv.record("sheet_read", {"range": "A1"}, '{"items": [{"v": 1}]}')
+    assert conv.retry_after_info_count("sheet_read") == 0
+
+    assert conv.refusal_for("sheet_read", {"range": "B1"}) is None
+    assert conv.retry_after_info_count("sheet_read") == 1
+    conv.record("sheet_read", {"range": "B1"}, '{"items": [{"v": 2}]}')
+
+    assert conv.refusal_for("sheet_read", {"range": "C1"}) is None
+    assert conv.retry_after_info_count("sheet_read") == 2
+    # Observe-only: must not refuse on this counter alone.
+    assert conv.refusal_for("sheet_read", {"range": "D1"}) is None
+    assert conv.retry_after_info_count("sheet_read") == 3
+
+
+def test_retry_after_info_does_not_count_after_empty_result() -> None:
+    conv = ToolCallConvergence()
+    assert conv.refusal_for("search", {"q": "a"}) is None
+    conv.record("search", {"q": "a"}, "[]")
+    assert conv.refusal_for("search", {"q": "b"}) is None
+    assert conv.retry_after_info_count("search") == 0
+
+
+def test_retry_after_info_is_per_tool_name() -> None:
+    conv = ToolCallConvergence()
+    conv.record("alpha", {}, '{"ok": true, "items": [1]}')
+    conv.record("beta", {}, '{"ok": true, "items": [2]}')
+    assert conv.refusal_for("alpha", {"n": 2}) is None
+    assert conv.retry_after_info_count("alpha") == 1
+    assert conv.retry_after_info_count("beta") == 0
+
+
+def test_parallel_same_wave_does_not_count_siblings_as_retry_after_info() -> None:
+    """Two refusal_for before either record: neither has prior info yet."""
+    conv = ToolCallConvergence()
+    assert conv.refusal_for("read", {"path": "a"}) is None
+    assert conv.refusal_for("read", {"path": "b"}) is None
+    assert conv.retry_after_info_count("read") == 0
+    conv.record("read", {"path": "a"}, '{"items": [1]}')
+    conv.record("read", {"path": "b"}, '{"items": [2]}')
+    assert conv.retry_after_info_count("read") == 0
+
+
 # --- end to end: what the model actually receives ------------------------------
 
 

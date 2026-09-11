@@ -16,7 +16,8 @@ being closed.  This is the same reasoning
 `history_display.truncate_tool_result` already records for truncation: a cut
 that does not announce itself gets answered from partial data.
 
-Three counters, because the incidents had three shapes:
+Three refusal counters, because the incidents had three shapes, plus one
+**observe-only** counter for a fourth shape (no refuse yet):
 
 - **Consecutive futility, keyed by tool name.**  Rewording defeats any
   argument-keyed counter -- that is what "换词调 305 次" means.  Only the tool
@@ -28,6 +29,12 @@ Three counters, because the incidents had three shapes:
   JSON args / ``unexpected keyword`` while *inventing* ``feishu_*`` /
   ``browser_*`` names resets every per-tool streak; a turn-level counter is
   what stops that family of idle loops.
+- **Retry-after-info, keyed by tool name (record only).**  A non-empty /
+  non-error result came back, then the model called the **same** tool again.
+  That is the implicit "prior result was not enough" signal.  Legitimate
+  polling looks the same, so this counter does **not** refuse yet -- it only
+  logs and exposes :meth:`ToolCallConvergence.retry_after_info_count` for a
+  future gate.
 
 **Scope is one turn.**  The tracker is created per `run()` and dies with it, so
 counters cannot leak between unrelated questions -- and a user who follows up
@@ -75,6 +82,9 @@ every streak.  Two such failures in one turn are enough evidence the model is
 guessing names or parameters; further calls are refused until it re-reads the
 live ``tools`` list / schema (see :data:`CALL_SURFACE_NOTICE`).
 """
+
+# No RETRY_AFTER_INFO_LIMIT yet: counting only.  Polling and "non-empty but
+# useless" retries share this shape; a refuse threshold needs a separate design.
 
 REFUSAL_PREFIX = "[本次调用未执行]"
 """Sentinel opening refusal notices, so a notice can be recognized as one.
@@ -265,6 +275,22 @@ class ToolCallConvergence:
     _unproductive: dict[str, int] = field(default_factory=dict)
     _attempts: dict[tuple[str, str], int] = field(default_factory=dict)
     _call_surface_errors: int = 0
+    _last_had_info: dict[str, bool] = field(default_factory=dict)
+    """Whether the latest recorded result for this tool name carried usable data.
+
+    ``True`` after a productive (non-unproductive) result; ``False`` after empty /
+    error / call-surface.  Used only to detect the next same-name call.
+    """
+    _retry_after_info: dict[str, int] = field(default_factory=dict)
+    """How often the model re-invoked this tool after a prior info-bearing result.
+
+    Incremented in :meth:`refusal_for` (the moment of "继续调用"), not in
+    :meth:`record`, so parallel same-wave calls do not count each other.
+    """
+
+    def retry_after_info_count(self, name: str) -> int:
+        """Observe-only: same-tool re-calls after a non-empty prior result."""
+        return self._retry_after_info.get(name, 0)
 
     def refusal_for(self, name: str, args: dict[str, Any]) -> str | None:
         """The notice to return instead of dispatching, or ``None`` to dispatch.
@@ -272,7 +298,16 @@ class ToolCallConvergence:
         Order: call-surface (turn-level) → futility → verbatim repeat.  Call-surface
         is checked even when ``name`` is empty so a blank tool call after two
         not-found failures still gets the recovery notice.
+
+        Before those checks, a same-name call after an info-bearing result bumps
+        :meth:`retry_after_info_count` (log only; does not refuse).
         """
+        if name and self._last_had_info.get(name):
+            self._retry_after_info[name] = self._retry_after_info.get(name, 0) + 1
+            logger.info(
+                f"retry-after-info tool={name!r} "
+                f"count={self._retry_after_info[name]}"
+            )
         if self._call_surface_errors >= self.call_surface_error_limit:
             logger.warning(
                 f"Refusing tool call ({name!r}): {self._call_surface_errors} "
@@ -297,7 +332,8 @@ class ToolCallConvergence:
         Call for every finished slot (including argument-parse failures that
         never dispatched).  Only *dispatched* productive/unproductive paths
         update the per-tool futility and repeat maps; call-surface errors always
-        bump the turn-level counter.
+        bump the turn-level counter.  Productive vs empty also updates
+        ``_last_had_info`` for the retry-after-info observer.
 
         Refusals are never recorded (see :func:`is_refusal_notice`).
         """
@@ -311,6 +347,7 @@ class ToolCallConvergence:
                 self._unproductive[name] = self._unproductive.get(name, 0) + 1
                 key = (name, _args_key(args))
                 self._attempts[key] = self._attempts.get(key, 0) + 1
+                self._last_had_info[name] = False
             return
         if not name:
             return
@@ -318,8 +355,10 @@ class ToolCallConvergence:
         self._attempts[key] = self._attempts.get(key, 0) + 1
         if is_unproductive_result(result):
             self._unproductive[name] = self._unproductive.get(name, 0) + 1
+            self._last_had_info[name] = False
         else:
             # A productive result proves the tool and this query shape work, so
             # the futility streak is over.  The counter measures a *streak*, not
             # lifetime volume -- lifetime volume is bounded by max_tool_rounds.
             self._unproductive.pop(name, None)
+            self._last_had_info[name] = True

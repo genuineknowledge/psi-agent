@@ -416,8 +416,15 @@ provider 只认 `reasoning_content`（any-llm 的 `REASONING_FIELD_NAMES` 首项
   **猜工具名或参数名**（常见：把 skill 里的飞书 URI / MCP 表名发明成 `feishu_*` / 顶层 `browser_*`）。
   这类失败**不能**按工具名计连续无效 —— 每次换一个错名都会清零。满 2 次后本回合后续调用一律不发出，
   顶替字符串（`CALL_SURFACE_NOTICE`）要求重新对照 live `tools` / schema，并点名 `feishu_api` /
-  `browser_call` / `subagent_plan|wait|chat`。`agent.py` 对 not-found、空名、坏 JSON args 也会
+  `browser_call` / `subagent_plan|wait|chat`。  `agent.py` 对 not-found、空名、坏 JSON args 也会
   `record`（不只记真正 dispatch 的调用），否则闸门永远攒不到证据。
+
+- **有信息后同名再调（只记账，暂不拒发，刻意为之）**：`record` 把「非空 / 非 error 开头 /
+  非空信封」记成该工具名 `_last_had_info=True`；下一次 `refusal_for` 再见到**同名**时
+  `_retry_after_info` +1，并打 INFO `retry-after-info tool=… count=…`。计数挂在
+  `retry_after_info_count(name)`，供后续闸门设计用。刻意**不**据此拒发——合法轮询与
+  「非空但没用」长得一样，阈值与豁免未定前只观测。同波并行的多次 `refusal_for`（尚未
+  `record`）互不计，避免把同轮并行当成「读完再调」。
 
 - **无效判定同时覆盖「成功但空」与「调用失败」**：从调用方看这是同一件事——又一次没推进；驱动失控的是
   重试，不是这两者中哪个发生了。空 JSON 信封（`{"items": []}`、`total: 0`）必须算空，它不是空字符串，
