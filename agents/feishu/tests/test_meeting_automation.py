@@ -82,7 +82,7 @@ def test_meeting_jobs_use_fixed_post_meeting_crons() -> None:
     jobs = {job.name: job for job in MEETING_JOBS}
     assert jobs["weekday-alignment"].meeting_code == "57152787045"
     assert jobs["weekday-alignment"].cron == "0 12 * * 1,3,5"
-    assert jobs["weekday-alignment"].retry_crons == ()
+    assert jobs["weekday-alignment"].retry_crons == ("30 17 * * 1,3,5", "30 22 * * 1,3,5")
     assert jobs["weekday-alignment-1100"].meeting_code == "42654699903"
     assert jobs["weekday-alignment-1100"].cron == "0 13 * * 1,3,5"
     assert jobs["weekday-alignment-1100"].retry_crons == ()
@@ -93,21 +93,31 @@ def test_meeting_jobs_use_fixed_post_meeting_crons() -> None:
 
 
 def test_meeting_schedule_files_cover_every_job() -> None:
-    """投影只包含两场主任务: 17:30 补偿重跑已下线 (2026-09-11)。
+    """投影覆盖两场主任务 + 周中会的两档补偿重跑。
 
-    生成器仍保留 retry 渲染能力 (见下一条判据), 但没有任何 job 声明 ``retry_crons``,
-    所以静态文件、投影与线上 runner 都只应有两场主任务。
+    补偿重跑不是"再来一次"的重复劳动: 腾讯的文字转写是异步产出的, 主跑时常还没生成
+    (实测 09-11: 12:00 主跑没有转写, 21:59 才生成)。周中会此前没有任何兜底, 而管道
+    只认最新 occurrence —— 当天没赶上就永远是"没有转写"。日会仍有 17:30 那一档。
     """
     files = meeting_schedule_files()
-    assert set(files) == {"weekday-alignment", "weekday-alignment-1100"}
-    assert [name for name in files if "-retry-" in name] == []
+    assert set(files) == {
+        "weekday-alignment",
+        "weekday-alignment-retry-1730",
+        "weekday-alignment-retry-2230",
+        "weekday-alignment-1100",
+    }
+    weekly = next(job for job in MEETING_JOBS if job.name == "weekday-alignment")
+    assert set(weekly.retry_crons) == {"30 17 * * 1,3,5", "30 22 * * 1,3,5"}
     for job in MEETING_JOBS:
-        assert job.retry_crons == (), f"{job.name} 不应再声明补偿重跑 cron"
         body = files[job.name]
         assert f"name: {job.name}" in body
         assert f'cron: "{job.cron}"' in body
         assert job.meeting_code in body
         assert "原始全文转写" in body
+        for retry_name, retry_cron in ma._job_schedules(job)[1:]:
+            retry_body = files[retry_name]
+            assert f'cron: "{retry_cron}"' in retry_body
+            assert "补偿重跑" in retry_body
 
 
 def test_retry_entry_renders_when_a_job_declares_retry_crons() -> None:
@@ -142,13 +152,18 @@ def test_meeting_schedule_files_self_describe_recovery() -> None:
 
     ``fire: tool`` 的正文不进入模型 (调度器直接调工具), 但对读文件的人与调度历史
     是唯一的自述: 正文不写补救路径, 出事只能靠翻代码找补跑工具。
+    身份也要自述准确: 主任务不许自称"补偿重跑", 补偿重跑条目必须自称(否则 4 条任务的
+    描述一模一样, 读不出哪条是兜底)。
     """
     files = meeting_schedule_files()
     for name, body in files.items():
         _, _, note = body.partition("---\n\n")
         assert "meeting_pipeline_replay" in note, f"{name}/TASK.md 未写补跑工具"
         assert "config/meeting-sop.yaml" in note, f"{name}/TASK.md 未写口径来源"
-        assert "补偿重跑" not in body, f"{name}/TASK.md 是主任务, 不应自称补偿重跑"
+        if "-retry-" in name:
+            assert "补偿重跑" in body, f"{name}/TASK.md 是补偿重跑, 必须自述身份"
+        else:
+            assert "补偿重跑" not in body, f"{name}/TASK.md 是主任务, 不应自称补偿重跑"
 
 
 def test_committed_meeting_schedule_files_match_projection() -> None:
@@ -211,6 +226,56 @@ def test_extract_completed_text_record_selects_latest_transcript() -> None:
     selected = extract_latest_transcript_record(payload, set())
     assert selected is not None
     assert selected["record_file_id"] == "text-new"
+
+
+def test_extract_record_takes_ready_transcript_beside_an_unfinished_cloud_recording() -> None:
+    """回归钉子: 同组里一段还没转码完的**云录制**不得否掉已完成的**文字转写**。
+
+    实测形状(09-11 周中会): 最新 occurrence 里有一条 state=3 的文字转写与一条 state=1
+    (录制中) 的云录制。旧逻辑对整组做状态检查 → 返回 None("没有转写"), 于是当天 21:59
+    已经生成的转写被忽略, 而管道只认最新 occurrence —— 下一次主跑时最新已是下一场,
+    这场就永久丢了。
+    """
+    payload = {
+        "record_meetings": [
+            {
+                "sub_meeting_id": "1789092000",
+                "record_type": "文字转写",
+                "state_int": 3,
+                "media_start_time": "2026-09-11T21:59:55+08:00",
+                "record_files": [{"record_file_id": "transcript-ready"}],
+            },
+            {
+                "sub_meeting_id": "1789092000",
+                "record_type": "云录制",
+                "state_int": 1,
+                "media_start_time": "2026-09-11T21:59:56+08:00",
+                "record_files": [{"record_file_id": "cloud-still-recording"}],
+            },
+        ]
+    }
+
+    selected = extract_latest_transcript_record(payload, set())
+
+    assert selected is not None, "已完成的文字转写不该被同组未完成的云录制否掉"
+    assert selected["record_file_id"] == "transcript-ready"
+
+
+def test_extract_record_still_waits_when_the_transcript_itself_is_not_ready() -> None:
+    """反向钉子: 转写**自己**还没转码完, 仍然要等(原语义不许被上面的修法放宽)。"""
+    payload = {
+        "record_meetings": [
+            {
+                "sub_meeting_id": "1789092000",
+                "record_type": "文字转写",
+                "state_int": 1,
+                "media_start_time": "2026-09-11T21:59:55+08:00",
+                "record_files": [{"record_file_id": "transcript-still-transcoding"}],
+            }
+        ]
+    }
+
+    assert extract_latest_transcript_record(payload, set()) is None
 
 
 def test_json_payload_unwraps_tencent_http_envelope() -> None:
