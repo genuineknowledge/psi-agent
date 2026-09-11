@@ -1,18 +1,18 @@
 # ChatBI 正式数据接入说明(o2oa / O2OA PostgreSQL)
 
-> **进度快照(2026-09-10/11,第 37 轮)**
+> **进度快照(2026-09-11,第 38 轮)**
 >
-> - **工具接线:31 / 31**;四个默认分支已补齐(第 35 轮),第二批具名 scope 已补迁(第 36 轮),
->   本轮把最后一批**附件统计的 7 个 scope 收完** —— `weekly_attachment_stats` 现在
->   **13 / 13 档全部走正式源**。仍未迁移的只剩**语义不清的坏组合**(见下)。
+> - **工具接线:31 / 31,且 scope 级迁移已收尾** —— `weekly_attachment_stats` **13/13**、
+>   `weekly_person_stats` **14/14**;四个默认分支(第 35 轮)与两批具名 scope(第 36–38 轮)都已补齐。
+>   仍未迁移的只剩**语义不清的坏组合**(第 3.1.7 节列了那 2 条)。
 > - **回落不再等于 `store_unreachable`**(第 35 轮):正式源模式下未迁移组合报 `not_migrated`
 >   并附调用建议;演示模式保持原样。
 > - **验收分两组,别混着读**(脚本与数据源都在下表里):
 >
 >   | 组 | 跑在哪 | 本轮结果 |
 >   |---|---|---|
->   | **真库四套**(活库 `o2oa`,端口转发到本机) | 生产库,数字每天在变 | 冒烟 **31 / 31**;验收 **34 / 34**;基线交叉核对 **59 / 59**;工具级(经 MCP 出口)**34 / 34** |
->   | **同构 PG 三套**(H100 上载入演示库数据的 PG 实例) | 演示数据,复现契约数字 | 端到端 **408 / 408**;口径 **38 / 38**;列集合对照 **150 / 151** |
+>   | **真库四套**(活库 `o2oa`,端口转发到本机) | 生产库,数字每天在变 | 冒烟 **31 / 31**;验收 **34 / 34**;基线交叉核对 **62 / 62**;工具级(经 MCP 出口)**34 / 34** |
+>   | **同构 PG 三套**(H100 上载入演示库数据的 PG 实例) | 演示数据,复现契约数字 | 端到端 **408 / 408**;口径 **38 / 38**;列集合对照 **152 / 153** |
 >
 >   两组回答的是不同问题:**真库四套**问"在生产库上活着吗、口径与直连一致吗"(不依赖具体数字);
 >   **同构三套**问"移植是否忠实"(同一份演示数据上能不能复现 mock docstring 里那批契约数字)。
@@ -68,7 +68,9 @@
 > 9. 真库当前**多数任务只有一期正式进展**,"谁进展最多"类问题请先看 `tied_at_top`;
 > 10. `weekly_person_stats` 的 `reviewers` / `self_review` / `id_variants`、
 >     `weekly_attachment_stats` 的 `on_open_submission` / `orphan` 在真库上**可能是 0**
->     —— 那是**答案**(该口径下没有这类记录),不是"取不到"。
+>     —— 那是**答案**(该口径下没有这类记录),不是"取不到";
+> 11. 要"一共几个人填报"用 **`scope=reporter_count`**(一个数),
+>     **不要数 `scope=reporters` 的行数** —— 那份清单会被 `top` 截断。
 > - **真值快照(2026-09-10;活库会变,数字带日期,形状与口径才是不变量)**:`task` 105 行 /
 >   已发布 **88**;`task_progress` 197 行 / `is_published=1` 仅 **56**;`task_milestone` 20(状态
 >   全为 0 未完成);`task_attachment` 30;`task_workflow_submission` 29;
@@ -265,7 +267,7 @@ create unique index ux_task_progress_task_version on task_progress (task_id, ver
 | `weekly_workflow_query` | ✅ 已接线(**+ 默认明细清单 + `by_task`**) | 审批动作流水(可选表):分布 955/460/150/**13**、日志 **1,578** 行 / 150 任务 / 10.52、node×action **6 档**、`scope=recent` 按动作时间倒序;**`scope` 为空走默认明细清单**(列集合 `id / submission_id / task_id / round_no / node_type / action / operator_name / opinion / created_at`,按 `task_id + created_at` 升序 = 某任务的审批轨迹,`LEFT JOIN` 提交单不少行);**`by_task=True` 是一任务一行** `action_count`(次数 ≠ 任务数;带 `board=` 时一并回 `task_name`);`opinion` **始终在列**,无权限打码不删列 |
 | `weekly_scale` | ✅ 已接线 | 三种 mode × 三种分组轴;技术组 totals 82/77/294/402、集团组 46/40/180/52(各组里程碑相加 = 全库 474,自校验未被 JOIN 放大);completeness 82/77/80/73;intensity 82 任务 / 943 行 / 11.5 |
 | `weekly_rank` | ✅ 已接线 | 三种并列语义 × 六种子表度量:**cut 前 3 名 = 3 行**、**keep_ties 前 3 名 = 12 行**(第 3 名并列)、per_group 每组一行;附件第一名任务 73(20 个);未授权表(附件/集团历史)报 `table_not_granted` |
-| `weekly_person_stats` | ✅ 已接线(**13 / 14 scope**) | 牵头人任务量首位 吴晓东 **14** 个且 **tied_at_top=3**;workload_top 保留三名并列;汇总 128 任务 / 16 人 / 全局均值 8.0;只带 1 个任务 4 人;标准安全组 **9 位牵头人 / 19 条任务**;跨组 12 人;双重角色 6 人;工号写法 69/50/9;填报首位 10515(63 轮 / 4 任务);`id_variants` **0 行就是答案**;`id_longest` 一行一个去重标识 + `tied_at_top` / `max_id_length`;`reviewers` / `self_review` **不加** `p.is_published`(审过但没发布的进展同样算审过);仅 `reporter_count` 仍走演示路径 |
+| `weekly_person_stats` | ✅ 已接线(**14 / 14 scope 全部迁移**) | 牵头人任务量首位 吴晓东 **14** 个且 **tied_at_top=3**;workload_top 保留三名并列;汇总 128 任务 / 16 人 / 全局均值 8.0;只带 1 个任务 4 人;标准安全组 **9 位牵头人 / 19 条任务**;跨组 12 人;双重角色 6 人;工号写法 69/50/9;填报首位 10515(63 轮 / 4 任务,真库 19 位填报人 / 56 轮已发布进展);`id_variants` **0 行就是答案**;`id_longest` 一行一个去重标识 + `tied_at_top` / `max_id_length`;`reviewers` / `self_review` **不加** `p.is_published`(审过但没发布的进展同样算审过);`reporter_count` 与 `reporters` **同一批行**(两道闸门逐字一致),是**一个数**、不能拿清单行数顶替 |
 | `weekly_attachment_stats` | ✅ 已接线(**13 / 13 档全部迁移**) | 存活附件 **454 条 / 106 任务**;总字节 **1,954,375,767**(原样报出) / 1863.8 MB / 均 4203.9 KB;上传人 46;挂载点 315/58/81;扩展名 pptx130/xlsx116/pdf107/docx101。**13 档各是一种形状**:`summary` 一行多列 / `by_ext` 每扩展名一行 / `largest` 文件清单 / `by_uploader` 按人分档 / `uploader_count` 去重人数 / `by_link` 挂载去向(优先级 进展 > 提交单 > 任务本体)/ `by_progress` 按(任务, 期号)只看**已发布**进展 / `zero_attachment` 零附件任务清单(分母 `total_formal_tasks`)/ `on_open_submission` 在途提交单上的附件 / `by_month` 按 upload_time 年月(`date_from` 下界)/ `deleted` 与 `deleted_by_link` 软删审计(**全表口径**)/ `orphan` 外键悬空。`task=` 与 `include_informal` 都会**放开任务门**(附件挂外键);`zero_attachment` / `deleted` / `deleted_by_link` / `orphan` 是跨任务口径,**不接受 `task=`** |
 | `weekly_group_history` | ✅ 已接线(8 个 scope) | 明细 / `year` / `month` / `quarter` / `task` / `reporter` / `lag` / `linkage` + 日期窗(`date_from/to`、`last_days`、`last_months`)与 `latest_only`;已发布 **362** 行 / 46 任务、草稿 **42** 行;**`linkage` 分母是表内全部 404 行**(挂接率题);`lag` 按基准日算天数 |
 | `weekly_group_owner_query` | ✅ 已接线 | 多值负责人**元素级精确**匹配:吴晓东 → 4 个集团任务(按 id `u3124` 同样 4 个);role=project 列出 46 行 |
@@ -1000,6 +1002,33 @@ publish_split 943/123/1066、summary 943/73/12.92、never_reported 55、任务 1
 其中挂在**已发布**进展上的 27;在途提交单上的附件 0;已软删附件 1(挂在进展);
 全表活跃 37(LEFT JOIN 口径)。`by_month` 在真库上只有一个档(2026-08,30 个 / 11.1 MB)——
 数据是刚导入的测试库,月份分布尚未展开。
+
+### 3.1.9 人员统计补齐到 14/14,并抓出一处静默截断(2026-09-11 第 38 轮)
+
+最后一档 `reporter_count` 与已迁的 `reporters` 是**同一批行的两种读法**:
+前者是一个数(去重人数),后者是清单(按轮次降序)。两条 SQL 的闸门必须**逐字一致**
+(任务闸门 + `p.is_published = 1`),否则"某人 63 轮"与"一共几个填报人"会来自两个分母。
+**这个数不能让调用方拿清单行数顶替** —— 清单会被 `top` 截断,数出来的只是前 N 人。
+真库实测:填报人 **19** 位,已发布进展 56 行,与直连 SQL 三处一致。
+
+**这一轮真正的收获是那条"分档清单遍历断言"抓到了一个老缺陷**:
+`weekly_person_stats` 的清单档清单(`cap_last_param`)漏登记了 **`id_format`** ——
+它一行一个标识写法,本该按 `top` 截断,却一直被当成单行汇总档取 `limit=1`,
+于是**只回第一档**(真库上恰好只有一档"其他",所以肉眼看不出来)。
+写法与附件那边同源(见 3.1.8 第 3 条),现在两处都用"独立成表 + 遍历断言"钉住:
+
+```python
+single_row = {"workload_summary", "reporter_count"}
+assert set(_formal._PERSON_LISTING_SCOPES) == set(o2.PERSON_SCOPES) - single_row
+```
+
+**这条经验值得单独记**:静默截断的破坏力不在"少几行",而在**它不报错**——
+`has_more` 还报着 true,报告里那一档看着"就是只有一个值"。
+所以清单档必须由**一张显式的表**定义,并用遍历断言保证它与分档集合同步。
+
+**验收**:`check_pg_syntax` **198 条 ALL OK**;真库验收 **34/34**;基线交叉核对 **62/62**
+(新增 reporter_count 三处一致 + id_format 各档之和);工具级 **34/34**;
+列集合对照 **152/153**(+2 例);单测 **271**(269 → 271)。
 
 ## 5. 能力边界(未授权表时)
 - `task_attachment` 只读元数据:问答只能答“存在附件《文件名》”,文件体在

@@ -1086,10 +1086,10 @@ _NEW_HANDLERS_9 = {"weekly_rank": _rank}
 
 
 def _person_stats(args: dict[str, Any]) -> dict[str, Any] | None:
-    """weekly_person_stats:人员统计(13 个 scope,只剩 1 个走演示路径)。"""
+    """weekly_person_stats:人员统计(**14 / 14 scope 全部迁移**)。"""
     scope = (args.get("scope") or "workload").strip().lower()
     if scope not in tpl.PERSON_SCOPES:
-        return None  # reporter_count 等未迁 scope 交给演示路径
+        return None  # 未知 scope 交给演示路径(它报 unsupported_scope 并列出值域)
     role = (args.get("role") or "lead_owner").strip() or "lead_owner"
     top = int(args.get("top") or MAX_ROWS)
     board = _board(args)
@@ -1102,6 +1102,12 @@ def _person_stats(args: dict[str, Any]) -> dict[str, Any] | None:
         "id_format / id_variants 只统计有标识的任务;"
         "reporters 走任务闸门 + 进展行发布闸门两道"
     )
+    if scope == "reporter_count":
+        caliber = (
+            f"{adm.BUSINESS_STATUS_NOTE};**与 scope=reporters 同一批行**的去重填报人数"
+            "(任务闸门 + p.is_published = 1 两道,一道都不少);"
+            "这是**一个数**,不要拿 reporters 的行数顶替 —— 那份清单会被 top 截断"
+        )
     if scope in ("reviewers", "self_review"):
         caliber = (
             f"{adm.BUSINESS_STATUS_NOTE};**审核口径刻意不加 p.is_published**:"
@@ -1129,20 +1135,7 @@ def _person_stats(args: dict[str, Any]) -> dict[str, Any] | None:
         params=params,
         caliber=caliber,
         limit=top,
-        cap_last_param=scope
-        in (
-            "workload",
-            "single_task",
-            "group_roster",
-            "workload_top",
-            "cross_group",
-            "dual_role",
-            "reporters",
-            "reviewers",
-            "self_review",
-            "id_variants",
-            "id_longest",
-        ),
+        cap_last_param=scope in _PERSON_LISTING_SCOPES,
     )
     if scope == "workload":
         tsql, tparams = tpl.person_ties(role=role, board_code=board)
@@ -1160,6 +1153,29 @@ def _person_stats(args: dict[str, Any]) -> dict[str, Any] | None:
 
 
 _NEW_HANDLERS_10 = {"weekly_person_stats": _person_stats}
+
+_PERSON_LISTING_SCOPES = (
+    "workload",
+    "single_task",
+    "group_roster",
+    "workload_top",
+    "cross_group",
+    "dual_role",
+    "id_format",
+    "reporters",
+    "reviewers",
+    "self_review",
+    "id_variants",
+    "id_longest",
+)
+"""人员统计里输出**多行**的那些档(其余是单行答案:workload_summary / reporter_count)。
+
+与 ``_ATTACHMENT_LISTING_SCOPES`` 同一个理由:**漏一档不是报错而是静默截断** ——
+``envelope`` 会按单行档取 ``limit=1``,分组结果只剩第一行,``has_more`` 还报着 true。
+这张表是**补出来**的:``id_format`` 此前没登记(它一行一个标识写法),
+于是那一档的分档清单一直只回第一档 —— 由 ``test_person_listing_scopes_cover_every_multi_row_scope``
+抓出来(该断言要求这张表 == 全部 scope 减去两个单行档)。
+"""
 
 
 _ATTACHMENT_WHOLE_TABLE_SCOPES = ("zero_attachment", "deleted", "deleted_by_link", "orphan")

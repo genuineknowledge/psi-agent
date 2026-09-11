@@ -3101,6 +3101,7 @@ PERSON_SCOPES = (
     "id_variants",
     "id_longest",
     "reporters",
+    "reporter_count",
     "reviewers",
     "self_review",
 )
@@ -3146,7 +3147,9 @@ def person_stats(
     * ``id_longest`` 一行一个**去重后的标识**(不是一行一个任务),按字符长度倒序,
       并列个数由 ``person_id_ties`` 给出;
     * ``reporters`` 的口径是"任务闸门 + ``p.is_published = 1``"两道闸门,
-      填报人在 ``task_progress`` 上而不在 ``task`` 上;
+      填报人在 ``task_progress`` 上而不在 ``task`` 上;``reporter_count`` 是**同一批行**
+      的去重人数(一个数,不是清单)—— 拿 ``reporters`` 的行数顶替会把"被 top 截断过的
+      前 N 人"当成总人数;
     * ``reviewers`` / ``self_review`` **刻意不加** ``p.is_published``:审过但还没发布的
       进展同样是审过的,加了发布闸门会把"待审已审"整批滤掉。
     """
@@ -3298,7 +3301,7 @@ ORDER BY task_count DESC, id_format
 """
         return sql, tuple(params)
 
-    # reporters:任务闸门 + 进展行发布闸门,两道都要
+    # reporters / reporter_count:任务闸门 + 进展行发布闸门,两道都要
     if scope == "reporters":
         sql = f"""
 SELECT p.reporter_id, count(*) AS reported_rounds, count(DISTINCT p.task_id) AS tasks
@@ -3312,6 +3315,21 @@ ORDER BY reported_rounds DESC, p.reporter_id
 LIMIT %s
 """
         return sql, (*params, int(top))
+
+    if scope == "reporter_count":
+        # 与 ``reporters`` **同一批行**的去重计数:口径必须逐字一致(两道闸门一样),
+        # 否则"有人 63 轮"与"一共几个填报人"会来自两个不同的分母。
+        # 它是**一个数**而不是清单 —— 让调用方拿 reporters 的行数顶替,
+        # 就会把"被 top 截断过的前 N 人"当成总人数(参考实现专门写了这条注释)。
+        sql = f"""
+SELECT count(DISTINCT p.reporter_id) AS reporter_count
+FROM task_progress p
+JOIN task t ON t.id = p.task_id
+{joins}
+WHERE {gate_sql}
+  AND {adm.sql_published_progress("pg", "p")}
+"""
+        return sql, tuple(params)
 
     if scope == "id_variants":
         # "同一个人在不同任务里会不会挂着不同格式的标识"。**空集就是答案**:

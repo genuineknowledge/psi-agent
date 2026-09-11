@@ -2225,6 +2225,28 @@ class TestSecondWaveScopes:
         for scope in ("id_variants", "id_longest", "reviewers", "self_review"):
             assert scope in o2.PERSON_SCOPES
 
+    def test_reporter_count_shares_the_reporters_population(self):
+        """与 reporters **同一批行**:两道闸门逐字一致,否则两个数来自两个分母。"""
+        count_sql, count_params = o2.person_stats("reporter_count")
+        list_sql, _list_params = o2.person_stats("reporters", top=50)
+        assert "count(DISTINCT p.reporter_id) AS reporter_count" in count_sql
+        assert "p.is_published = 1" in count_sql
+        assert adm.sql_task_admission("pg", "t") in count_sql
+        assert "GROUP BY" not in count_sql and "LIMIT" not in count_sql
+        assert count_params == ()  # 一个数,不吃 top
+        # 两道闸门与 reporters 完全一致(把 GROUP BY/LIMIT 与 SELECT 之外的部分对齐)
+        for gate in ("p.is_published = 1", adm.sql_task_admission("pg", "t")):
+            assert gate in count_sql, gate
+            assert gate in list_sql, gate
+
+    def test_person_listing_scopes_cover_every_multi_row_scope(self):
+        """漏登记的档会被 ``limit=1`` 静默截成一行(附件那边已经踩过一次)。
+
+        这条断言写完就抓到一处真缺陷:``id_format`` 没登记,分档清单一直只回第一档。
+        """
+        single_row = {"workload_summary", "reporter_count"}
+        assert set(_formal._PERSON_LISTING_SCOPES) == set(o2.PERSON_SCOPES) - single_row
+
 
 class TestAttachmentRemainingScopes:
     """附件统计补齐到 **13/13**:每一档的形状、闸门与排序各有一条判据。"""
