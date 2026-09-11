@@ -76,12 +76,12 @@ def test_meeting_jobs_use_fixed_post_meeting_crons() -> None:
     jobs = {job.name: job for job in MEETING_JOBS}
     assert jobs["weekday-alignment"].meeting_code == "57152787045"
     assert jobs["weekday-alignment"].cron == "0 12 * * 1,3,5"
-    assert jobs["weekday-alignment"].retry_crons == ("30 17 * * 1,3,5",)
+    assert jobs["weekday-alignment"].retry_crons == ()
     assert jobs["weekday-alignment"].summary_recipients == ("HaiTun Agent主战场",)
     assert jobs["weekday-alignment"].overview_recipients == ("罗霖",)
     assert jobs["weekday-alignment-1100"].meeting_code == "42654699903"
     assert jobs["weekday-alignment-1100"].cron == "0 13 * * 1,3,5"
-    assert jobs["weekday-alignment-1100"].retry_crons == ("30 17 * * 1,3,5",)
+    assert jobs["weekday-alignment-1100"].retry_crons == ()
     assert jobs["weekday-alignment-1100"].recipients == ("张浩", "王金旺", "罗霖")
     assert jobs["weekday-alignment-1100"].token_env == "TENCENT_MEETING_TOKEN_42654699903"
     assert jobs["weekday-alignment-1100"].summary_recipients == ("张浩", "王金旺")
@@ -91,28 +91,39 @@ def test_meeting_jobs_use_fixed_post_meeting_crons() -> None:
     assert jobs["weekday-alignment"].tool_name == "meeting_pipeline_run"
 
 
-def test_meeting_schedule_files_cover_every_job_and_retry() -> None:
+def test_meeting_schedule_files_cover_every_job() -> None:
+    """投影只包含两场主任务: 17:30 补偿重跑已下线 (2026-09-11)。
+
+    生成器仍保留 retry 渲染能力 (见下一条判据), 但没有任何 job 声明 ``retry_crons``,
+    所以静态文件、投影与线上 runner 都只应有两场主任务。
+    """
     files = meeting_schedule_files()
-    assert set(files) == {
-        "weekday-alignment",
-        "weekday-alignment-1100",
-        "weekday-alignment-1100-retry-1730",
-        "weekday-alignment-retry-1730",
-    }
+    assert set(files) == {"weekday-alignment", "weekday-alignment-1100"}
+    assert [name for name in files if "-retry-" in name] == []
     for job in MEETING_JOBS:
+        assert job.retry_crons == (), f"{job.name} 不应再声明补偿重跑 cron"
         body = files[job.name]
         assert f"name: {job.name}" in body
         assert f'cron: "{job.cron}"' in body
         assert job.meeting_code in body
         assert "原始全文转写" in body
-    retry = files["weekday-alignment-1100-retry-1730"]
-    assert 'cron: "30 17 * * 1,3,5"' in retry
-    assert '"meeting_name":"weekday-alignment-1100"' in retry
-    assert '"meeting_code":"42654699903"' in retry
-    retry = files["weekday-alignment-retry-1730"]
-    assert 'cron: "30 17 * * 1,3,5"' in retry
-    assert '"meeting_name":"weekday-alignment"' in retry
-    assert '"meeting_code":"57152787045"' in retry
+
+
+def test_retry_entry_renders_when_a_job_declares_retry_crons() -> None:
+    """若将来某场会议重新声明 ``retry_crons``, 补偿重跑条目仍能渲染身份与跳过语义。"""
+    job = replace(MEETING_JOBS[0], retry_crons=("30 17 * * 1,3,5",))
+    schedules = dict(ma._job_schedules(job))
+    assert schedules == {
+        "weekday-alignment": "0 12 * * 1,3,5",
+        "weekday-alignment-retry-1730": "30 17 * * 1,3,5",
+    }
+
+    body = ma._task_body(job, name="weekday-alignment-retry-1730", cron="30 17 * * 1,3,5", retry=True)
+    header, _, note = body.partition("---\n\n")
+    assert "补偿重跑" in header, "retry 条目的 description 未自报补偿重跑"
+    assert "补偿重跑" in note, "retry 条目的正文未自报补偿重跑"
+    assert "自动跳过" in note, "retry 条目未写去重跳过语义"
+    assert "meeting_pipeline_replay" in note, "retry 条目未写补跑工具"
 
 
 def test_meeting_schedule_task_declares_review_and_followups() -> None:
@@ -125,26 +136,18 @@ def test_meeting_schedule_task_declares_review_and_followups() -> None:
         assert "产出本场评价与后续建议" in body, f"{name}/TASK.md 未声明评价与后续建议产出"
 
 
-def test_meeting_schedule_files_self_describe_retry_and_recovery() -> None:
-    """每条定时任务文件必须自报身份, 并写清补救路径。
+def test_meeting_schedule_files_self_describe_recovery() -> None:
+    """每条定时任务文件必须自述身份与补救路径。
 
     ``fire: tool`` 的正文不进入模型 (调度器直接调工具), 但对读文件的人与调度历史
-    是唯一的自述: 两条补偿重跑若与主任务描述一模一样, 被问「有哪些定时任务」时读
-    不出哪条是兜底; 正文不写补救路径, 出事只能靠翻代码找补跑工具。
+    是唯一的自述: 正文不写补救路径, 出事只能靠翻代码找补跑工具。
     """
     files = meeting_schedule_files()
-    retries = [name for name in files if "-retry-" in name]
-    assert len(retries) == 2, f"应有两个补偿重跑条目, 实际 {retries}"
     for name, body in files.items():
-        header, _, note = body.partition("---\n\n")
+        _, _, note = body.partition("---\n\n")
         assert "meeting_pipeline_replay" in note, f"{name}/TASK.md 未写补跑工具"
         assert "config/meeting-sop.yaml" in note, f"{name}/TASK.md 未写口径来源"
-        if name in retries:
-            assert "补偿重跑" in body, f"{name}/TASK.md 未自报补偿重跑"
-            assert "补偿重跑" in header, f"{name}/TASK.md 的 description 未自报补偿重跑"
-            assert "自动跳过" in note, f"{name}/TASK.md 未写去重跳过语义"
-        else:
-            assert "补偿重跑" not in body, f"{name}/TASK.md 是主任务, 不应自称补偿重跑"
+        assert "补偿重跑" not in body, f"{name}/TASK.md 是主任务, 不应自称补偿重跑"
 
 
 def test_committed_meeting_schedule_files_match_projection() -> None:
