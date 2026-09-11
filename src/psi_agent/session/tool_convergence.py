@@ -52,24 +52,25 @@ from typing import Any
 
 from loguru import logger
 
-UNPRODUCTIVE_LIMIT = 4
+UNPRODUCTIVE_LIMIT = 5
 """Consecutive empty / failed results from one tool before its next call is refused.
 
 Above the useful range of retrying and well below a runaway.  Rewording a query
-two or three times is ordinary research behaviour and stays untouched; the
-observed pathology ran to 305.  The limit counts *consecutive* futility, so a
-tool that starts producing results gets a clean slate (see
-:meth:`ToolCallConvergence.record`).
+a few times is ordinary research behaviour and stays untouched; the observed
+pathology ran to 305.  The limit counts *consecutive* futility, so a tool that
+starts producing results gets a clean slate (see
+:meth:`ToolCallConvergence.record`).  Five is the interim production value
+(raised from 4 when REPEAT was tightened to 3); revisit with live distributions.
 """
 
-REPEAT_LIMIT = 5
+REPEAT_LIMIT = 3
 """Identical (tool, arguments) attempts allowed before the next one is refused.
 
-Higher than a bare 1-3, deliberately: a repeat is not always pointless.  Tools
+Higher than a bare 1, deliberately: a repeat is not always pointless.  Tools
 here poll external state (a Feishu document that is being edited, a background
 process that is still running, meeting transcripts still generating), so a
-handful of identical calls can legitimately return something new.  Five is
-enough headroom for that; a sixth identical call is treated as a stuck process
+couple of identical calls can legitimately return something new.  Three is
+enough headroom for that; a fourth identical call is treated as a stuck process
 or a model that is not reading prior results.
 """
 
