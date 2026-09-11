@@ -56,16 +56,23 @@ _DECLARATION_HINTS = (
     "active:false",
     "active: false",
 )
+# 代码生成的两类元信息也不该出现在卡片正文(卡片首行已经有会议与日期):
+#   「合并口径: 本分析由三段分块分析合并去重…」整段, 与「【合并后分析|会议 ...】」横幅行。
+_MERGE_DECLARATION_RE = re.compile(r"(?m)^\s*合并口径[:\uff1a][^\n]*(?:\n+|$)")
+_META_BANNER_RE = re.compile(r"(?m)^\s*【合并后分析[^\n]*】\s*(?:\n+|$)")
 # 单段超过这个长度就按句号切成分行要点 —— 卡片是给人扫的, 一大段流水文字读不动。
 _PARAGRAPH_BULLET_THRESHOLD = 140
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[。\uff1b!?\uff01\uff1f])")
 _BRACKET_TITLE_RE = re.compile(r"【([^】]{1,24})】")
 _MD_HEADING_RE = re.compile(r"(?m)^\s*#{1,6}\s*(.+?)\s*$")
+_CN_NUMBERED_HEADING_RE = re.compile(r"(?m)^\s*([一二三四五六七八九十]{1,3}、)\s*(.+?)\s*$")
 
 
 def _strip_declarations(text: str) -> str:
     """去掉口径/边界声明段落与行(系统侧约束不该复述给收件人)。"""
     cleaned = _DECLARATION_SECTION_RE.sub("", str(text or ""))
+    cleaned = _MERGE_DECLARATION_RE.sub("", cleaned)
+    cleaned = _META_BANNER_RE.sub("", cleaned)
     kept = [line for line in cleaned.splitlines() if not any(hint in line for hint in _DECLARATION_HINTS)]
     return "\n".join(kept).strip()
 
@@ -76,6 +83,7 @@ def _structure(text: str) -> str:
     if not body:
         return ""
     body = _MD_HEADING_RE.sub(lambda match: f"\n\n**{match.group(1).strip()}**\n", body)
+    body = _CN_NUMBERED_HEADING_RE.sub(lambda match: f"\n\n**{match.group(1)}{match.group(2)}**\n", body)
     body = _BRACKET_TITLE_RE.sub(lambda match: f"\n\n**{match.group(1).strip()}**\n", body)
     blocks: list[str] = []
     for raw_paragraph in body.split("\n"):

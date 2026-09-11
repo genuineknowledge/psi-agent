@@ -163,6 +163,32 @@ def test_long_paragraph_is_rendered_as_bullets() -> None:
     assert result["values"]["key_points"].count("\n- ") >= 3
 
 
+def test_code_generated_meta_and_cn_headings() -> None:
+    """代码生成的"合并口径"声明与【合并后分析】横幅不进卡片; 中文序号小节变粗体标题。"""
+    analysis = {
+        "meeting_summary": (
+            "合并口径\uff1a本分析由三段分块分析合并去重\uff0c智能纪要仅作辅助\uff1b凡仅靠单方陈述的结论标待补充证据。"
+            "\n\n会议围绕架构复盘展开。"
+        ),
+        "analysis_text": (
+            "【合并后分析\uff5c会议 42654699903\uff5cweekday-alignment-1100 日会\uff5c2026-09-11】\n\n"
+            "一、证据范围与口径\n\n本分析以四段原始转写为主要证据。\n\n"
+            "二、关键决定\n\n- 可插拔优先于基础本体。"
+        ),
+        "positive_negative_overview": "",
+    }
+    result = cardmod.render_meeting_summary_card("日会", "42654699903", "2026-09-11", analysis)
+    assert result.get("ok"), result.get("error")
+    values = result["values"]
+    for key in ("summary", "key_points"):
+        text = values[key]
+        assert "合并口径" not in text
+        assert "合并后分析" not in text
+        assert "智能纪要仅作辅助" not in text
+    assert "**一、证据范围与口径**" in values["key_points"]
+    assert "**二、关键决定**" in values["key_points"]
+
+
 @pytest.mark.anyio
 async def test_notify_meeting_card_sends_then_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sent: list[tuple[str, str]] = []
