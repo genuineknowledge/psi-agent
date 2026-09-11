@@ -8,13 +8,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-import _feishu_impl as _core
 from lark_channel.core.enum import AccessTokenType, HttpMethod
 from lark_channel.core.model import BaseRequest
-
-from _feishu.drive import export_doc_impl
-from _feishu.sheet import read_sheet_grid_impl
-
 
 def _build_wiki_get_node_request(token: str) -> BaseRequest:
     req = BaseRequest()
@@ -55,6 +50,10 @@ async def sheet_strike_read_impl(
     board_link: str, person_name: str, cycle_date: str, user_key: str = ""
 ) -> dict[str, Any]:
     """Locate the cell (person x cycle column), export xlsx, parse its run strikes."""
+    import _feishu_impl as _core
+    from _feishu.drive import export_doc_impl
+    from _feishu.sheet import read_sheet_grid_impl
+
     # 1. wiki → obj_token
     wiki_token = board_link.rstrip("/").split("/")[-1]
     res = await _core._invoke(_build_wiki_get_node_request(wiki_token), user_key=user_key)

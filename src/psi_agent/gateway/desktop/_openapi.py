@@ -19,6 +19,35 @@ DESKTOP_PATHS: dict[str, Any] = {
             },
         },
     },
+    "/ui/prefs/language": {
+        "get": {
+            "summary": "Get saved UI language preference",
+            "operationId": "getLanguagePref",
+            "responses": {
+                "200": {"description": "Language preference string"},
+            },
+        },
+        "post": {
+            "summary": "Set saved UI language preference",
+            "operationId": "setLanguagePref",
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "language": {"type": "string"},
+                            },
+                        }
+                    }
+                },
+            },
+            "responses": {
+                "200": {"description": "Language preference updated"},
+            },
+        },
+    },
     "/ui/prefs/survey": {
         "get": {
             "summary": "Whether the survey popup was already dismissed on this machine",
@@ -32,6 +61,21 @@ DESKTOP_PATHS: dict[str, Any] = {
             "operationId": "setSurveyPref",
             "responses": {
                 "200": {"description": "Survey flag persisted"},
+            },
+        },
+    },
+    "/workspace/file": {
+        "get": {
+            "summary": "Read file content as base64",
+            "operationId": "readWorkspaceFile",
+            "parameters": [
+                {"name": "path", "in": "query", "required": True, "schema": {"type": "string"}},
+                {"name": "root", "in": "query", "schema": {"type": "string"}},
+            ],
+            "responses": {
+                "200": {"description": "File base64 content"},
+                "400": {"$ref": "#/components/responses/Error"},
+                "404": {"$ref": "#/components/responses/Error"},
             },
         },
     },
