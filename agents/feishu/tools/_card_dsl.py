@@ -441,7 +441,19 @@ _TEMPLATE_DIR = _resolve_template_dir()
 
 
 def _xml_escape(text: str) -> str:
-    return escape(text)
+    """Escape one value destined for an XML **attribute**.
+
+    Newlines/tabs are emitted as character references, not literals: XML normalizes
+    literal whitespace inside attribute values to spaces (XML 1.0 §3.3.3), which
+    silently flattened every multi-line card body into a single run-on line — the
+    meeting summary card's ``- `` bullets all came back as one paragraph. Character
+    references are exempt from that normalization, so the parser hands the newline
+    back intact.
+
+    Order matters: escape first, then inject the references, or the ``&`` of a
+    reference would itself be escaped.
+    """
+    return escape(text).replace("\r\n", "&#10;").replace("\n", "&#10;").replace("\r", "&#13;").replace("\t", "&#9;")
 
 
 def _row_xml(row: dict[str, Any]) -> str:
