@@ -31,7 +31,17 @@ RUN if [ -n "$PIP_INDEX_URL" ]; then \
 
 WORKDIR /app
 COPY mock-mcp/ /app/mock-mcp/
-COPY README.md /app/README.md
+# 镜像里放**交付用的运行说明**(`RUNBOOK.md`),不放开发期的 README.md。
+#
+# 这条踩过:原先 COPY 的是 workspace 的 ``README.md``,而那份写的是演示形态
+# ("MySQL 8.4 已起、导入 weekly_mock、预期 415/415 passed")。交付方打开容器第一眼
+# 看到它,就会去装 MySQL —— 而正式源模式下那条路径根本不参与。镜像内的文档是
+# **交付方唯一会看到的那份**,必须是运行说明,不是我们的联调笔记。
+#
+# 文件名必须是 **ASCII**:实测 BuildKit 不接受构建上下文里含非 ASCII 的文件名,
+# 报 ``header key "followpaths" contains value with non-printable ASCII characters``
+# 并直接中止构建(第一次改就是拿 ``运行说明.md`` 撞上的)。内容仍然是中文。
+COPY RUNBOOK.md /app/README.md
 
 # 非 root 运行;代码里已带 default_transaction_read_only=on 与 statement_timeout,
 # 容器这一层只是再加一道(最小权限)。
