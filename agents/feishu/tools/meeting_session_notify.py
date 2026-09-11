@@ -92,7 +92,9 @@ def _chat_items(response: object) -> list[dict[str, object]]:
     if not isinstance(items, list):
         data = response.get("data")
         items = data.get("items") if isinstance(data, dict) else []
-    return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
 
 
 def _exact_chat_match(items: list[dict[str, object]], name: str) -> tuple[str, str]:
@@ -150,7 +152,8 @@ async def _list_bot_chats() -> tuple[list[dict[str, object]], str]:
         if not isinstance(response, dict) or not response.get("ok"):
             return items, str((response or {}).get("message") or (response or {}).get("error") or "群列表查询失败")
         items.extend(_chat_items(response))
-        data = response.get("data") if isinstance(response.get("data"), dict) else {}
+        raw_data = response.get("data")
+        data: dict[str, object] = raw_data if isinstance(raw_data, dict) else {}
         if not (response.get("has_more") or data.get("has_more")):
             break
         page_token = str(response.get("page_token") or data.get("page_token") or "")
