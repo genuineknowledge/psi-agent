@@ -650,6 +650,7 @@ WHERE {adm.sql_task_admission("pg", "t")}
 
 COVERAGE_SCOPES = (
     "summary",
+    "formal_coverage",
     "publish_split",
     "import_split",
     "unpublished",
@@ -657,6 +658,7 @@ COVERAGE_SCOPES = (
     "pending_review",
     "never_reported",
     "version_gaps",
+    "orphan_records",
 )
 
 # 相对时间窗的基准日必须由调用方显式给出,绝不使用 now()。
@@ -860,6 +862,34 @@ LIMIT %s
 """
         return sql, (*params, int(limit))
 
+    if scope == "formal_coverage":
+        # 转发到**已有的** ``formal_coverage`` 模板(它先前的测试就已存在,只是没有
+        # 任何调用方 —— 这一档因此长期报 not_migrated)。这里不重写一遍 SQL:
+        # 同一口径两份实现迟早会分叉,而这一档的坑(并集、EXISTS、可选表降级)
+        # 已经在那个模板里踩过并写进注释了。
+        return formal_coverage(group_history_granted, board_code=board)
+
+    if scope == "orphan_records":
+        # 孤儿 = **外键指向查不到的记录**(NOT EXISTS 语义),两类各一个数:
+        #   * 进展行挂不到任务;
+        #   * 审批动作挂不到提交单。
+        #
+        # 刻意**不加**任何闸门(任务门、软删、发布):孤儿本来就是"连父行都找不到",
+        # 给它加 `t.is_deleted = 0` 这类条件等于要求一条已经失败的 JOIN 再满足父行属性 ——
+        # 那样永远数不出东西。参考实现同样不带门。
+        #
+        # 也刻意不与另外两类孤儿合并:附件孤儿(附件挂不到任务/进展)与导入批次孤儿
+        # 是**另两问**,各答各的;混在一起答会指错方向(G-E03 就曾把孤儿指到附件上)。
+        sql = """
+SELECT (SELECT count(*) FROM task_progress p
+        LEFT JOIN task t ON t.id = p.task_id
+        WHERE t.id IS NULL) AS orphan_progress_rows,
+       (SELECT count(*) FROM task_workflow_action a
+        LEFT JOIN task_workflow_submission s ON s.id = a.submission_id
+        WHERE s.id IS NULL) AS orphan_actions
+"""
+        return sql, ()
+
     # never_reported:存在性判定,不是 NULL 判定。列集合照抄参考实现:
     # task_id / task_name / board_name / project_group / has_group_history ——
     # has_group_history 说明"这条根本没往 task_progress 报过"里有多少是集团板的
@@ -924,7 +954,9 @@ SELECT (SELECT count(*) FROM task t {board_join}
     return sql, (*params, *params)
 
 
-def formal_coverage(group_history_granted: bool) -> tuple[str, tuple]:
+def formal_coverage(
+    group_history_granted: bool, board_code: str | None = None
+) -> tuple[str, tuple]:
     """正式周报覆盖率:两张正式进展表的**并集**(技术组 + 集团组)。
 
     原工具记的数是:正式任务 128、有正式进展 119、覆盖率 93.0%;只看
@@ -932,9 +964,27 @@ def formal_coverage(group_history_granted: bool) -> tuple[str, tuple]:
     集团组那 46 条成效写在 ``task_group_progress_history`` 里。
 
     ``task_group_progress_history`` 属四张可选表之一:未授权时退化为"仅技术组"口径,
-    SQL 里显式去掉那半支,并在注释里说明差别 —— 宁可少答一半也不能把并集算错。
+    SQL 里显式去掉那半支 —— 宁可少答一半也不能把并集算错。
+
+    ``board_code`` 限定**任务**的看板归属(覆盖率问"某个看板里多少任务报过"时用);
+    不传即全库。它出现在三段子查询里,所以参数要按出现次数重复。
     """
-    gate = adm.sql_task_admission("pg", "t")
+    board_clause = ""
+    board_params: list[object] = []
+    if board_code:
+        code, hint = adm.check_board_code(board_code)
+        if hint:
+            raise ValueError(hint)
+        if code:
+            board_clause = (
+                "\n           AND t.board_id = (SELECT id FROM task_board"
+                " WHERE code = %s AND is_deleted = 0)"
+            )
+            board_params.append(code)
+    # 看板条件**只**进下面那两个"任务集"锚点;上面那句 `SELECT count(*) FROM task t WHERE {gate}`
+    # 是分母(full table),不加看板会与分子口径不一致吗?——不会:分子也带上同一个看板条件,
+    # 两者都是"该看板内的任务",所以分母那句也要带。占位符总数 = 出现次数,按此重复参数。
+    gate = adm.sql_task_admission("pg", "t") + board_clause
     group_branch = (
         "OR EXISTS (SELECT 1 FROM task_group_progress_history h WHERE h.task_id = t.id AND h.is_published = 1)"
         if group_history_granted
@@ -947,15 +997,15 @@ SELECT (SELECT count(*) FROM task t WHERE {gate})      AS formal_task_count,
            AND (EXISTS (SELECT 1 FROM task_progress p
                          WHERE p.task_id = t.id AND p.is_published = 1)
                 {group_branch}))                        AS tasks_with_progress,
-       (SELECT round(count(*)::numeric * 100 / NULLIF((SELECT count(*) FROM task t2
-                WHERE t2.is_deleted = 0 AND t2.workflow_status = 'published'), 0), 1)
+       (SELECT round(count(*)::numeric * 100 / NULLIF((SELECT count(*) FROM task t
+                 WHERE {gate}), 0), 1)
           FROM task t
          WHERE {gate}
            AND (EXISTS (SELECT 1 FROM task_progress p
                          WHERE p.task_id = t.id AND p.is_published = 1)
                 {group_branch}))                        AS coverage_pct
 """
-    return sql, ()
+    return sql, tuple(board_params * sql.count("%s"))
 
 
 def latest_round(
@@ -4599,7 +4649,6 @@ ORDER BY year_count DESC, t.id
 LIMIT %s
 """
     return sql, (*gate_params, *params, threshold, max(1, int(limit)))
-
 
 
 def year_goal_multi_year_total(

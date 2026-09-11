@@ -387,6 +387,41 @@ class TestCoverageScopes:
         assert "task_group_progress_history" not in sql  # 宁可少答一半也不把并集算错
         assert "FROM task_progress p" in sql
 
+    def test_formal_coverage_board_filter_repeats_params(self):
+        """看板条件会出现在**每一段子查询**里,参数要按出现次数重复(否则驱动报参数数不符)。"""
+        sql, params = o2.formal_coverage(group_history_granted=True, board_code="tech")
+        assert sql.count("%s") == len(params) == 4
+        assert params == ("tech",) * 4
+        assert "task_board" in sql
+
+    def test_formal_coverage_reaches_the_tool_scope(self):
+        """`scope=formal_coverage` 必须真的路由到那条模板(此前它没有任何调用方)。"""
+        sql, params = o2.coverage_stats("formal_coverage")
+        assert "formal_task_count" in sql and "coverage_pct" in sql
+        assert params == ()
+
+    def test_orphan_records_counts_the_two_foreign_key_gaps(self):
+        """孤儿 = 外键指向查不到的记录:进展行挂不到任务 + 审批动作挂不到提交单。
+
+        刻意**不带**任务门/软删/发布闸门:孤儿本来就是"连父行都找不到",
+        再加父行属性条件等于要求一条已经失败的 JOIN 还满足父行属性 —— 永远数不出东西。
+        """
+        sql, params = o2.coverage_stats("orphan_records")
+        assert "orphan_progress_rows" in sql and "orphan_actions" in sql
+        assert "LEFT JOIN task t ON t.id = p.task_id" in sql
+        assert "LEFT JOIN task_workflow_submission s ON s.id = a.submission_id" in sql
+        assert "workflow_status" not in sql and "is_deleted" not in sql
+        assert params == ()
+
+    def test_orphan_records_is_distinct_from_the_other_two_orphan_scopes(self):
+        """附件孤儿与导入孤儿是**另两问**:混着答会指错方向(G-E03 就这么错过)。"""
+        attachments, _ = o2.attachment_stats(scope="orphan")
+        assert "task_attachment" in attachments
+        assert "orphan_progress_rows" not in attachments
+        imports, _ = o2.import_audit_orphans()
+        assert "task_progress_import" in imports
+        assert "orphan_actions" not in imports
+
     def test_latest_round_is_one_row_per_task_not_full_history(self):
         sql, params = o2.latest_round()
         assert "row_number() OVER (PARTITION BY p.task_id" in sql
