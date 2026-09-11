@@ -162,10 +162,15 @@ def _not_migrated_error(func_name: str, cause: str) -> str:
 
     判定与文案都在 ``_fallback``(独立模块,便于单测不拉 mcp 包直接钉住)。
     这里只负责接住异常、把它转成工具出口的信封。
+
+    ``cause`` 传进去只用于**日志**(下一行的 stderr):它通常是一串演示 MySQL 的驱动报错,
+    而正式源部署里没有那台库 —— 把 `127.0.0.1:3306` 写进给调用方的信封会把人引去查一个
+    不存在的库,所以文案层刻意不引用它(见 ``_fallback.DEMO_CAUSE``)。
     """
     if not _fallback.should_translate():
         return _error(_fallback.STORE_CODE, cause)
-    return _error(_fallback.CODE, _fallback.not_migrated_message(func_name, cause))
+    print(f"[guoshu] {func_name} 回落到演示路径但演示源不可用: {cause}", file=sys.stderr)
+    return _error(_fallback.CODE, _fallback.not_migrated_message(func_name))
 
 
 def _guard(func_name: str, work) -> str:

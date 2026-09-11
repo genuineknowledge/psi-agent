@@ -1,4 +1,4 @@
-﻿"""Formal-source (O2OA PostgreSQL) implementations for the migrated tool scopes.
+"""Formal-source (O2OA PostgreSQL) implementations for the migrated tool scopes.
 
 The demo answers from ``weekly_mock`` over MySQL; the formal source is O2OA's
 PostgreSQL.  ``TASK_BOARD_DATA_SOURCE=o2oa`` switches the *migrated* scopes over
@@ -1595,11 +1595,27 @@ def _task_ranking(args: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _progress_range(args: dict[str, Any]) -> dict[str, Any] | None:
-    """weekly_progress_range:时间轴上的正式进展(全任务或指定看板)。"""
-    if (args.get("by") or "").strip() or args.get("peak"):
-        return None  # 分档/峰值交给演示路径
-    if (args.get("date_field") or "progress_date").strip() != "progress_date":
+    """weekly_progress_range:时间轴上的正式进展(全任务或指定看板)。
+
+    三条轴全部接线(此前只迁了"给定窗口列明细"这一档,其余一律回落):
+
+    * **窗口两端都可以为空** —— 参考实现的文档写的是 "Empty means unbounded",
+      所以空串是"这一端不设限",不是"缺参数"。默认档 ``weekly_progress_range()``
+      因此能答(它此前是回落的一档);
+    * ``date_field``:``progress_date``(所报周期)或 ``report_time``(交上来的时刻)。
+      补报时后者晚于前者 —— 拿周期答"什么时候交的"会把补报算到它所属的周期上;
+    * ``by`` = month / quarter / task 的分组计数,``peak`` 只回最高的一档。
+      month / quarter 不带 peak 时**由服务端给环比列**,见模板层的说明。
+    """
+    date_field = (args.get("date_field") or "progress_date").strip().lower()
+    if date_field not in tpl.PROGRESS_DATE_FIELDS:
+        # 值域错由参考实现自己报(它的消息里带可用取值),这里不抢答
         return None
+    grouping = (args.get("by") or "").strip().lower()
+    if grouping and grouping not in tpl.PROGRESS_GROUPINGS:
+        return None
+    peak = bool(args.get("peak"))
+
     date_from = (args.get("date_from") or "").strip()
     date_to = (args.get("date_to") or "").strip()
     last_days = int(args.get("last_days") or 0)
@@ -1612,40 +1628,149 @@ def _progress_range(args: dict[str, Any]) -> dict[str, Any] | None:
         end = dt.date.fromisoformat(as_of())
         date_to = date_to or end.isoformat()
         date_from = (end - dt.timedelta(days=last_days)).isoformat()
-    if not date_from or not date_to:
-        return None
     for label, value in (("date_from", date_from), ("date_to", date_to)):
-        if not _DATE_RE.match(value):
+        if value and not _DATE_RE.match(value):
             # 不校验就会把 '2026/08/01' 直接喂给 PG,报出来的是驱动层的语法错而不是口径错
             raise ValueError(f"{label} 需为 YYYY-MM-DD:{value}")
-    if date_from > date_to:
+    if date_from and date_to and date_from > date_to:
         raise ValueError(f"窗口起点晚于终点:{date_from} > {date_to}")
+    # 空窗提示只在窗口**真的短**时才有意义:无界窗口 0 行是另一回事(库里确实没有进展),
+    # 拿"半月口径"去解释它会把调用方引到错误的下一步。
+    span = None
+    if date_from and date_to:
+        span = (dt.date.fromisoformat(date_to) - dt.date.fromisoformat(date_from)).days
+
     limit = int(args.get("limit") or MAX_ROWS)
-    sql, params = tpl.progress_range(None, date_from, date_to, limit=limit)
+    field_note = (
+        "时间轴按 progress_date(所报周期)过滤与排序"
+        if date_field == "progress_date"
+        else "时间轴按 report_time(交上来的时刻)过滤与排序 —— 补报的行落在这里,"
+        "与按周期看不是同一批"
+    )
+    window_note = (
+        f"窗口 [{date_from or '不限'} ~ {date_to or '不限'}],两端都是闭区间"
+        if (date_from or date_to)
+        else "未限定窗口,覆盖全库正式进展"
+    )
+    base_caliber = (
+        "只取正式展示版本(is_published = 1)且任务已发布;"
+        f"{window_note};"
+        f"相对窗口以数据基准日 {as_of()} 为基准,不用系统当前时间(last_days=N 时窗口是 "
+        f"{as_of()} 往前数 N 天到基准日,含两端);"
+        f"{field_note};"
+        "lag_days = 上报日 - 周期日(补报更早周期时为正);"
+        "集团看板的进展不在这张表里,用 weekly_group_history"
+    )
+
+    if grouping:
+        return _progress_grouped(
+            grouping=grouping,
+            peak=peak,
+            date_from=date_from,
+            date_to=date_to,
+            date_field=date_field,
+            limit=limit,
+            base_caliber=base_caliber,
+            span=span,
+        )
+
+    sql, params = tpl.progress_range(
+        None, date_from, date_to, limit=limit, date_field=date_field
+    )
     result = envelope(
         sql=sql,
         params=params,
-        caliber=(
-            "只取正式展示版本(is_published = 1)且任务已发布;窗口两端都是闭区间;"
-            f"相对窗口以数据基准日 {as_of()} 为基准,不用系统当前时间(last_days=N 时窗口是 "
-            f"{as_of()} 往前数 N 天到基准日,含两端);"
-            "lag_days = 上报日 - 周期日(补报更早周期时为正);"
-            "集团看板的进展不在这张表里,用 weekly_group_history"
-        ),
+        caliber=base_caliber,
         limit=limit,
         cap_last_param=True,
-        extra={"date_from": date_from, "date_to": date_to},
+        extra={"date_from": date_from, "date_to": date_to, "date_field": date_field},
     )
     # 总数单独查一次(与参考实现同法):明细被 200 行截断后,调用方还原不出真值
-    tsql, tparams = tpl.progress_range_totals(None, date_from, date_to)
+    tsql, tparams = tpl.progress_range_totals(
+        None, date_from, date_to, date_field=date_field
+    )
     totals = envelope(sql=tsql, params=tparams, caliber="窗口总数", limit=1)
     first = (totals.get("rows") or [{}])[0]
     result["total_count"] = first.get("total_rows")
     result["total_tasks"] = first.get("total_tasks")
-    span = (dt.date.fromisoformat(date_to) - dt.date.fromisoformat(date_from)).days
-    if not result["total_count"] and span < 15:
+    if not result["total_count"] and span is not None and span < 15:
         # 0 行有两种完全不同的原因。不点明,task_progress 按月上报这件事会让
         # "最近一周"被答成"没有任务更新进展"——参考实现为此吃了 6 轮返工。
+        result["caliber"] += _short_window_hint()
+    return result
+
+
+def _progress_grouped(
+    *,
+    grouping: str,
+    peak: bool,
+    date_from: str,
+    date_to: str,
+    date_field: str,
+    limit: int,
+    base_caliber: str,
+    span: int | None,
+) -> dict[str, Any]:
+    """``weekly_progress_range`` 的分组档(month / quarter / task,可带 peak)。
+
+    与参考实现的三条判断逐条对齐:
+
+    * month / quarter **不带 peak** → 回环比列(``prev_count`` / ``mom_change``),
+      相邻两档由 SQL 的 ``LAG`` 配对,不让调用方拿着计数列表自己错位相减;
+    * ``peak=True`` → 只回一行(计数降序、并列取 bucket 升序),SQL 里 ``LIMIT 1``;
+    * ``task`` 档按任务名分组,列里不含 ``task_count``。
+    """
+    momentum = grouping in ("month", "quarter") and not peak
+    if momentum:
+        sql, params = tpl.progress_momentum(
+            None, date_from, date_to, limit=limit, date_field=date_field, by=grouping
+        )
+    else:
+        sql, params = tpl.progress_range_grouped(
+            None,
+            date_from,
+            date_to,
+            limit=limit,
+            date_field=date_field,
+            by=grouping,
+            peak=peak,
+        )
+    label = {"month": "月", "quarter": "季", "task": "任务"}[grouping]
+    caliber = base_caliber + f";按 {grouping} 分组计数"
+    if momentum:
+        caliber += (
+            f";prev_count 是上一{label}的条数、mom_change 是本{label}减上一{label},"
+            "两列由服务端按时序 LAG 算好,环比直接读 mom_change,不要自己把行错位相减;"
+            f"首{label}的 prev_count 与 mom_change 为空是对的(没有上一{label}可比);"
+            f"问「降幅最大的那一个{label}」取 mom_change 最小(最负)的那行,不是绝对值最大;"
+            f"prev_count 只在本次窗口内取上一{label}:问「某一年的环比」要把窗口限定在该年"
+            "(传 date_from / date_to),不限定则首档会取到上一年的数,那是跨年口径,不是该年的环比"
+        )
+    elif peak:
+        # 全角分号写成转义序列:直接写字面量会触发 RUF001,而换半角就不是同一段文案了
+        # (与 `_short_window_hint` 同法)。
+        caliber += "\uff1b已按计数降序、并列取 bucket 升序,首行即峰值,勿另行比较"
+    result = envelope(sql=sql, params=params, caliber=caliber, limit=limit, cap_last_param=True)
+    result["date_from"] = date_from
+    result["date_to"] = date_to
+    result["date_field"] = date_field
+    if grouping == "task" and not peak:
+        result["group_by"] = "task"
+    # 无周期日的已发布进展不进任何时间档。不报出来,调用方看到"各月之和 < 明细总数"
+    # 会以为分组漏了行 —— 差额本身就是数据质量信号,显式给出。
+    if grouping != "task":
+        usql, uparams = tpl.progress_range_unbucketed(None, date_from, date_to)
+        ub = envelope(sql=usql, params=uparams, caliber="无周期日自检", limit=1)
+        unbucketed = ((ub.get("rows") or [{}])[0]).get("unbucketed_rows") or 0
+        if unbucketed:
+            result["unbucketed_rows"] = unbucketed
+            result["caliber"] += (
+                f";另有 {unbucketed} 行正式进展的 progress_date 为空(按 report_time 落在本次窗口内),"
+                "它们进不了任何时间档,故各档之和会小于明细行数;"
+                "要问那批行改用 weekly_progress_range(不带 by)直接列明细,"
+                "但注意明细按 progress_date 卡窗口时也不含它们(比较空周期日恒为假)"
+            )
+    if not result.get("row_count") and span is not None and span < 15:
         result["caliber"] += _short_window_hint()
     return result
 
@@ -1839,11 +1964,6 @@ def _year_goal_stats(args: dict[str, Any]) -> dict[str, Any] | None:
 
     gap_scope = scope in tpl.YEAR_GOAL_GAP_SCOPES
     whole_table = include_informal and not gap_scope
-    if scope == "span" and year:
-        # 演示实现里 span 的 SQL **不带年度条件** —— year 传进去是被静默丢掉的
-        # (docstring 也只说 by_year/span 不必给 year,没说给了会怎样)。正式源在这里
-        # 按年度过滤就会返回一个范围更小的答案,所以带着 year 的 span 一律回落演示路径。
-        return None
     if whole_table:
         # 目标表没有孤儿行(全表 387 = INNER JOIN 后 387),所以放开闸门就够。
         base = (
@@ -1865,17 +1985,27 @@ def _year_goal_stats(args: dict[str, Any]) -> dict[str, Any] | None:
     # span:均值与清单是两条查询,均值另给(分母只含设过目标的任务)
     if scope == "span":
         rows_sql, rows_params = tpl.year_goal_span_rows(
-            min_years=min_years, board_code=board_code, whole_table=whole_table, limit=top
+            min_years=min_years,
+            board_code=board_code,
+            whole_table=whole_table,
+            limit=top,
+            year=year or None,
         )
+        unit = "个年度" if not year else f"条 {year} 年目标"
         result = envelope(
             sql=rows_sql,
             params=rows_params,
-            caliber=f"{base};至少 {min_years} 个年度(含 {min_years},边界取等);按年度数降序、并列按 task id 升序",
+            caliber=(
+                f"{base};至少 {min_years} {unit}(含 {min_years},边界取等);"
+                "按年度数降序、并列按 task id 升序"
+            ),
             limit=top,
             cap_last_param=True,
             extra={"scope": scope},
         )
-        avg_sql, avg_params = tpl.year_goal_span_avg(board_code=board_code, whole_table=whole_table)
+        avg_sql, avg_params = tpl.year_goal_span_avg(
+            board_code=board_code, whole_table=whole_table, year=year or None
+        )
         avg = envelope(sql=avg_sql, params=avg_params, caliber="span 均值", limit=1)
         result["avg_years_per_task"] = (avg.get("rows") or [{}])[0].get("avg_years")
         result["min_years"] = min_years
@@ -1883,6 +2013,14 @@ def _year_goal_stats(args: dict[str, Any]) -> dict[str, Any] | None:
             ";avg_years_per_task 的分母只含**已设过目标**的任务(没设过的不该拉低均值);"
             "years 是服务端按年度升序拼好的字符串,直接读,不要自己重排"
         )
+        if year:
+            # 带 year 时"跨度"这个词会误导:跨的是**同一年的条数**,不是前后几个年度。
+            # 不点明,调用方会把 year_count=1 读成"这个任务只设过 1 个年度的目标"。
+            result["caliber"] += (
+                f";本档已限定到 {year} 年,故 year_count 是**该年度内的目标条数**"
+                "(不是跨了几个年度),years 也只会有 "
+                f"{year} 这一个值;要问跨年度用不带 year 的 span"
+            )
         return result
 
     sql, params = tpl.year_goal_stats(

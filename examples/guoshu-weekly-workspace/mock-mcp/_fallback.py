@@ -1,4 +1,4 @@
-﻿"""未迁移组合的**可操作报错**:把"连不上演示库"翻译成"这个参数组合没迁"。
+"""未迁移组合的**可操作报错**:把"连不上演示库"翻译成"这个参数组合没迁"。
 
 ## 为什么需要这一层
 
@@ -28,6 +28,15 @@ from __future__ import annotations
 import _formal
 
 MIGRATION_HINT = "请改用已迁移的 scope / 参数(见 CHATBI_o2oa_接入说明.md 的调用建议)"
+
+DEMO_CAUSE = "演示源(weekly_mock)不可用"
+"""为什么不能把演示实现的原因原文贴给调用方。
+
+正式源部署里**根本没有演示库**,原文是 ``cannot reach mysql://weekly_ro@127.0.0.1:3306``
+—— 它看起来像"数据库故障",实际含义只是"这条路回落到演示实现、而演示实现不在本部署里"。
+把"库里有一台 MySQL 连不上"写进国数生产的错误信息,只会把人引去查一个不存在的库。
+真正的原因(那台库的地址与拒绝理由)留在 ``_guard`` 的日志里足够定位。
+"""
 
 CODE = "not_migrated"
 """正式源模式下"该参数组合尚未迁移"的错误码(取代 store_unreachable)。"""
@@ -67,9 +76,17 @@ def migrated(tool: str) -> bool:
     return tool in _formal._HANDLERS
 
 
-def not_migrated_message(tool: str, cause: str) -> str:
+def not_migrated_message(tool: str, cause: str = "") -> str:
+    """``not_migrated`` 的文案。
+
+    **刻意不引用 ``cause``**(参数保留只为兼容调用点):它总是演示源的驱动报错原文,
+    例如 ``cannot reach mysql://weekly_ro@127.0.0.1:3306/weekly_mock: Connection refused``。
+    那句话在国数生产里读起来像"数据库挂了",而事实是"这组参数没有正式源实现,回落到的
+    演示实现不在本部署里" —— 把地址写进给调用方的信封会把人引去查一个不存在的库。
+    原文仍由 ``server._not_migrated_error`` 打进 stderr 日志(排查要用),但不进信封。
+    """
     head = f"{tool} 的这组参数未迁移到正式源" if migrated(tool) else f"{tool} 未迁移到正式源"
-    return f"{head},演示库不可用({cause});{MIGRATION_HINT}"
+    return f"{head},无法回落({DEMO_CAUSE});{MIGRATION_HINT}"
 
 
 def translate_formal_error(tool: str, payload: dict) -> dict:

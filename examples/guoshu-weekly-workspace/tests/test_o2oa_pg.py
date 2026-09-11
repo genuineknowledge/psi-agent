@@ -699,13 +699,142 @@ class TestRankShapes:
         monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
         assert _formal.dispatch("weekly_task_ranking", metric="keyword_hits") is None
 
-    def test_progress_range_unmigrated_arguments_fall_back(self, monkeypatch):
-        """缺一端、要给分档/峰值、或换成填报时间轴,都交给演示路径(不连库即可判定)。"""
+    def test_progress_range_migrated_arguments_reach_the_formal_source(self, monkeypatch):
+        """缺一端、分档、峰值、换填报时间轴 —— **这四档全部已接线**,不再回落演示路径。
+
+        此前这里是反向断言(它们都 None)。翻面是因为放过它们会答错:日期只给一端
+        不是"缺参数"而是"另一端不设限"(参考实现文档写的是 Empty means unbounded),
+        按月分档与峰值问的是另一类问题,report_time 与 progress_date 更不是同一批行
+        —— 回落演示路径的结果是这四档在正式源上直接报 not_migrated。
+        """
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            # 真信封会把 extra 合进顶层、并带 caliber;假信封少了这两样,
+            # 调用方那句 `result["date_from"] = ...` 之后的读数就会 KeyError。
+            seen.append(kwargs)
+            return {
+                "ok": True,
+                "columns": ["x"],
+                "rows": [{"x": 1}],
+                "row_count": 1,
+                "caliber": kwargs.get("caliber", "口径"),
+                **kwargs.get("extra", {}),
+            }
+
         monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
-        assert _formal.dispatch("weekly_progress_range", date_from="2026-08-01") is None
-        assert _formal.dispatch("weekly_progress_range", by="month") is None
-        assert _formal.dispatch("weekly_progress_range", peak=True) is None
-        assert _formal.dispatch("weekly_progress_range", date_field="report_time") is None
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        for kwargs in (
+            {"date_from": "2026-08-01"},
+            {"by": "month"},
+            {"peak": True},
+            {"by": "task"},
+            {"date_field": "report_time"},
+        ):
+            got = _formal.dispatch("weekly_progress_range", **kwargs)
+            assert got is not None and got["ok"] is True, kwargs
+        # 明细档要跟着两个 envelope(明细 + 总数),分组档只有分组那一条
+        assert any("窗口总数" in k["caliber"] for k in seen)
+        assert any("LAG" in k["sql"] for k in seen)  # 月档带环比
+
+    def test_progress_range_unbounded_window_drops_the_date_filters(self, monkeypatch):
+        """无界窗口不能在 SQL 里留下 `>= %s` 的悬空条件(参数会与占位符错位)。"""
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            return {
+                "ok": True,
+                "columns": ["x"],
+                "rows": [{"x": 1}],
+                "row_count": 1,
+                "caliber": kwargs.get("caliber", "口径"),
+                **kwargs.get("extra", {}),
+            }
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        got = _formal.dispatch("weekly_progress_range")
+        assert got is not None and got["ok"] is True
+        detail = seen[0]["sql"]
+        # 无界窗口:两个日期条件都不下发,只剩 LIMIT 那一个占位符
+        assert detail.count("%s") == 1
+        assert got["date_from"] == "" and got["date_to"] == ""
+
+    def test_progress_range_grouped_shapes_match_the_reference(self, monkeypatch):
+        """三档分组的**形状**:月/季带环比列、task 不带 task_count、peak 只回一行。
+
+        分组档之后还会跟一条"无周期日自检",所以不能拿 ``seen[-1]`` 认分组 SQL
+        ——按内容找。
+        """
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            return {
+                "ok": True,
+                "columns": ["x"],
+                "rows": [{"x": 1}],
+                "row_count": 1,
+                "caliber": kwargs.get("caliber", "口径"),
+                **kwargs.get("extra", {}),
+            }
+
+        def last_sql(marker: str) -> str:
+            got = [k["sql"] for k in seen if marker in k["sql"]]
+            assert got, f"没找到含 {marker!r} 的 SQL"
+            return got[-1]
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+
+        _formal.dispatch("weekly_progress_range", by="month")
+        month_sql = last_sql("AS progress_count")
+        assert "mom_change" in month_sql and "LAG(" in month_sql
+        _formal.dispatch("weekly_progress_range", by="quarter")
+        assert "mom_change" in last_sql("AS progress_count")
+        _formal.dispatch("weekly_progress_range", by="task")
+        task_sql = last_sql("t.task_name AS bucket")
+        assert "AS task_count" not in task_sql
+        assert "progress_count DESC" in task_sql
+        _formal.dispatch("weekly_progress_range", by="month", peak=True)
+        peak_sql = last_sql("AS progress_count")
+        assert "LIMIT 1" in peak_sql and "mom_change" not in peak_sql
+
+    def test_grouped_buckets_drop_null_periods_and_report_the_count(self, monkeypatch):
+        """无周期日的行不进任何时间档,但必须**报出条数**。
+
+        真库实测:44 行已发布进展的 progress_date 为空。放进分组里它们会挤成一个
+        ``bucket=NULL`` 的档,而计数降序下它排第一 —— 「进展最多的月份」会答成
+        「那 44 行没有周期日的」。所以分组里排除 + 信封里给 ``unbucketed_rows``,
+        让"各档之和 ≠ 明细行数"这件事有解释。
+        """
+        seen: list[dict] = []
+
+        def fake_envelope(**kwargs):
+            seen.append(kwargs)
+            row = {"unbucketed_rows": 44} if "unbucketed_rows" in kwargs["sql"] else {"x": 1}
+            return {
+                "ok": True,
+                "columns": ["x"],
+                "rows": [row],
+                "row_count": 1,
+                "caliber": kwargs.get("caliber", "口径"),
+                **kwargs.get("extra", {}),
+            }
+
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_formal, "envelope", fake_envelope)
+        got = _formal.dispatch("weekly_progress_range", by="month")
+        grouped = next(k["sql"] for k in seen if "AS progress_count" in k["sql"])
+        assert "IS NOT NULL" in grouped  # 空周期档被 HAVING 挡掉
+        assert got["unbucketed_rows"] == 44
+        assert "44 行正式进展的 progress_date 为空" in got["caliber"]
+        # task 档不适用(任务名不会为空),不该多出这条自检
+        seen.clear()
+        got_task = _formal.dispatch("weekly_progress_range", by="task")
+        assert "unbucketed_rows" not in got_task
+        assert not any("unbucketed_rows" in k["sql"] for k in seen)
 
     def test_progress_range_rejects_impossible_windows(self, monkeypatch):
         """不成立的窗口要报口径错,不能静默返回 0 行 —— 0 行的意思是「这段里没有进展」。"""
@@ -718,6 +847,12 @@ class TestRankShapes:
             got = _formal.dispatch("weekly_progress_range", **kwargs)
             assert got is not None and got["ok"] is False, kwargs
             assert got["error"]["code"] == "invalid_argument", kwargs
+
+    def test_progress_range_unknown_values_still_fall_back(self, monkeypatch):
+        """值域错(不认识的 date_field / by)交给参考实现自己报 —— 它的消息里带可用取值。"""
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        assert _formal.dispatch("weekly_progress_range", date_field="created_at") is None
+        assert _formal.dispatch("weekly_progress_range", by="week") is None
 
 
 class TestProgressRangeTemplates:
@@ -746,6 +881,82 @@ class TestProgressRangeTemplates:
         assert "latest_progress_date" in sql and "published_rows" in sql
         assert "is_published = 1" in sql
         assert params == ()
+
+    def test_unbounded_window_drops_both_date_conditions(self):
+        """空串是"这一端不设限",不是"缺参数" —— SQL 里不能留悬空的比较条件。"""
+        sql, params = o2.progress_range(None, "", "")
+        assert ">= %s" not in sql and "<= %s" not in sql
+        assert params == (200,)
+        # 只给一端:另一端照样不设限
+        sql_one, params_one = o2.progress_range(None, "2026-08-01", "")
+        assert sql_one.count("%s") == 2 and params_one == ("2026-08-01", 200)
+
+    def test_report_time_axis_sorts_and_filters_on_that_column(self):
+        sql, _params = o2.progress_range(None, "", "", date_field="report_time")
+        assert "ORDER BY (p.report_time)::timestamp DESC" in sql
+        # lag_days 恒为"上报日 - 周期日",不随轴变
+        assert "AS lag_days" in sql
+
+    def test_unknown_date_field_and_grouping_raise(self):
+        with pytest.raises(ValueError, match="date_field"):
+            o2.progress_range(None, "", "", date_field="created_at")
+        with pytest.raises(ValueError, match="不支持的 by"):
+            o2.progress_range_grouped(None, "", "", by="week")
+
+    def test_month_and_quarter_buckets_are_text_keys(self):
+        """分档键必须是可排序的文本(2026-07 / 2026Q3),不能是裸日期或月份整数。"""
+        month_sql, _ = o2.progress_range_grouped(None, "", "", by="month")
+        assert "substr(to_char(" in month_sql and "'YYYY-MM-DD'), 1, 7)" in month_sql
+        quarter_sql, _ = o2.progress_range_grouped(None, "", "", by="quarter")
+        assert "'Q' ||" in quarter_sql
+        # 季度算式:(month - 1) / 3 + 1 —— 多一个 +1 会把 1 月算成 Q1 之外的值
+        assert "extract(month from" in quarter_sql and "/ 3) + 1)" in quarter_sql
+
+    def test_momentum_wraps_the_grouping_without_its_limit(self):
+        """环比把分组查询包成子查询:内层若留着 LIMIT,环比会被截成"前 N 档"。"""
+        sql, params = o2.progress_momentum(None, "", "", limit=200, by="month")
+        assert sql.count("LIMIT %s") == 1  # 只有外层那一个
+        assert "LAG(progress_count) OVER (ORDER BY bucket)" in sql
+        assert "mom_change" in sql
+        assert params == (200,)
+
+    def test_task_grouping_has_no_task_count_and_peak_returns_one_row(self):
+        task_sql, task_params = o2.progress_range_grouped(None, "", "", by="task")
+        assert "AS task_count" not in task_sql
+        assert "ORDER BY progress_count DESC, bucket" in task_sql
+        assert task_params == (200,)
+        peak_sql, peak_params = o2.progress_range_grouped(None, "", "", by="month", peak=True)
+        assert "LIMIT 1" in peak_sql and "mom_change" not in peak_sql
+        # peak 那档的 LIMIT 写在 SQL 里,所以**不能**再多一个 limit 参数
+        assert peak_params == ()
+
+    def test_grouped_queries_keep_placeholder_and_param_counts_equal(self):
+        """占位符与参数必须逐档配平 —— 差一个就是运行期的驱动报错。"""
+        cases = [
+            o2.progress_range(None, "2026-01-01", "2026-02-01"),
+            o2.progress_range_totals(None, "2026-01-01", "2026-02-01"),
+            o2.progress_range_grouped(None, "2026-01-01", "2026-02-01", by="month"),
+            o2.progress_range_grouped(None, "2026-01-01", "2026-02-01", by="task"),
+            o2.progress_range_grouped(None, "2026-01-01", "2026-02-01", by="month", peak=True),
+            o2.progress_momentum(None, "2026-01-01", "2026-02-01", by="quarter"),
+            o2.year_goal_span_rows(year=2026),
+            o2.year_goal_span_avg(year=2026),
+            o2.year_goal_span_rows(board_code="tech", year=2026),
+        ]
+        for sql, params in cases:
+            assert sql.count("%s") == len(params), sql[:120]
+
+    def test_span_year_filter_narrows_the_counted_goals(self):
+        """带 year 的 span:清单按 g.year 过滤,均值用 FILTER 只数那一年的条数。"""
+        rows_sql, rows_params = o2.year_goal_span_rows(year=2026, min_years=3)
+        assert "AND g.year = %s" in rows_sql
+        assert rows_params == (2026, 3, 200)
+        avg_sql, avg_params = o2.year_goal_span_avg(year=2026)
+        assert "count(*) FILTER (WHERE g.year = %s)" in avg_sql
+        assert avg_params == (2026,)
+        # 不带 year 的形状一个字都不能变
+        plain_rows, plain_params = o2.year_goal_span_rows(min_years=3)
+        assert "g.year = %s" not in plain_rows and plain_params == (3, 200)
 
 
 class TestFreshnessRouting:
@@ -1000,11 +1211,31 @@ class TestYearGoalStatsRouting:
         monkeypatch.setattr(_formal, "envelope", fake_envelope)
         return seen
 
-    def test_span_with_year_falls_back(self, monkeypatch):
-        """演示实现的 span 把 year 静默丢掉:正式源按年度过滤会返回范围更小的答案。"""
-        self._capture(monkeypatch)
-        assert _formal.dispatch("weekly_year_goal_stats", scope="span", year=2026) is None
-        assert _formal.dispatch("weekly_year_goal_stats", scope="span", min_years=3) is not None
+    def test_span_with_year_is_migrated(self, monkeypatch):
+        """带 year 的 span 已接线:**限定到该年度**只数那一年的目标条数。
+
+        此前这一档回落演示路径,理由是"演示实现把 year 静默丢掉,按年度过滤会返回一个
+        范围更小的答案"。翻面的依据是口径本身:给了 year,"每个任务有几个目标"的分母
+        本来就该收窄到这一年 —— 收窄不是"答窄了",是把问题答对了。caliber 里必须点明
+        year_count 的含义变了(是**该年度内的条数**,不是跨了几个年度),否则调用方会把
+        1 读成"这个任务只设过一个年度的目标"。
+        """
+        seen = self._capture(monkeypatch)
+        got = _formal.dispatch("weekly_year_goal_stats", scope="span", year=2026)
+        assert got is not None and got["ok"] is True
+        # 清单与均值两条查询都带上年度条件
+        assert "g.year = %s" in seen[0]["sql"]
+        assert any("FILTER (WHERE g.year = %s)" in k["sql"] for k in seen)
+        assert "该年度内的目标条数" in got["caliber"]
+
+    def test_span_without_year_keeps_the_cross_year_semantics(self, monkeypatch):
+        """不带 year 的老档一个字都不能变:跨年度计数 + "至少 N 个年度"。"""
+        seen = self._capture(monkeypatch)
+        got = _formal.dispatch("weekly_year_goal_stats", scope="span", min_years=3)
+        assert got is not None and got["ok"] is True
+        assert "g.year = %s" not in seen[0]["sql"]
+        assert "该年度内的目标条数" not in got["caliber"]
+        assert "个年度" in seen[0]["caliber"]
 
     def test_board_name_is_resolved_on_the_formal_side(self, monkeypatch):
         """看板名字在正式源侧解析(问句说的就是名字);认不出来的报值域错,不回落。"""
@@ -2140,9 +2371,24 @@ class TestNotMigratedFallback:
         unwired = _fallback.not_migrated_message("weekly_not_a_tool", "cause")
         assert "这组参数" not in unwired and "未迁移到正式源" in unwired
         for text in (wired, unwired):
-            assert "演示库不可用" in text
+            assert "无法回落" in text
             assert "CHATBI_o2oa_接入说明.md" in text  # 指路,否则 agent 只能盲试
             assert "store_unreachable" not in text
+
+    def test_message_does_not_leak_the_demo_datasource(self):
+        """不能把演示源的驱动报错写进给调用方的文案 —— 连显式传进来的也不行。
+
+        正式源部署里没有那台 MySQL,``cannot reach mysql://weekly_ro@127.0.0.1:3306``
+        读起来像"库挂了",会把人引去查一个不存在的库。原因串只进 stderr 日志。
+        """
+        cause = "cannot reach mysql://weekly_ro@127.0.0.1:3306/weekly_mock: Connection refused"
+        text = _fallback.not_migrated_message("weekly_task_query", cause)
+        assert "mysql" not in text.lower()
+        assert "127.0.0.1" not in text
+        assert "refused" not in text.lower()
+        # 不传 cause 的调用点也一样
+        assert "mysql" not in _fallback.not_migrated_message("weekly_task_query").lower()
+        assert _fallback.DEMO_CAUSE in text
 
 
 class TestSecondWaveScopes:

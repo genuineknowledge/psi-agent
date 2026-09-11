@@ -298,28 +298,106 @@ LIMIT %s
     return sql, tuple(params)
 
 
+PROGRESS_DATE_FIELDS = ("progress_date", "report_time")
+"""``weekly_progress_range`` 的时间轴字段(与参考实现的 ``_PROGRESS_DATE_FIELDS`` 同域)。
+
+两个字段答的不是同一个问题:``progress_date`` 是**所报周期**,``report_time`` 是
+**交上来的时刻**。补报时后者晚于前者,所以「什么时候交的」必须能切到 report_time
+—— 拿 progress_date 答它会把补报的那批算到它们所属的周期上。
+"""
+
+PROGRESS_GROUPINGS = ("month", "quarter", "task")
+"""``by=`` 的三个分组轴,与参考实现的 ``_PROGRESS_GROUPINGS`` 同域同序。
+
+``month`` / ``quarter`` 不带 ``peak`` 时要**环比**(相邻两档并排),这不是修饰:
+只给各月计数,调用方自己错位相减会把上一档记错(参考实现为此吃过 K3-03 那轮返工)。
+"""
+
+
+def progress_date_expr(date_field: str) -> str:
+    """时间轴字段的**可比较时序表达式**(窗口过滤与排序都用它)。
+
+    两列在库里的存储形状不同(period 是 date、report_time 是时间戳或文本),所以
+    一律先 ``::timestamp`` 再比较 —— 直接比原列在文本存储的环境里是字典序比较。
+    """
+    if date_field not in PROGRESS_DATE_FIELDS:
+        raise ValueError(
+            f"不支持的 date_field:{date_field};支持 {', '.join(PROGRESS_DATE_FIELDS)}"
+        )
+    return adm.parse_ts_sql(f"p.{date_field}")
+
+
+def _progress_window_clause(
+    date_field: str, date_from: str, date_to: str
+) -> tuple[str, list[object]]:
+    """窗口条件(含两端的闭区间)。**两端都可以为空** —— 这就是"无界"。
+
+    参考实现的 ``date_from`` / ``date_to`` 文档写的是 "Empty means unbounded",
+    所以空串不是"没给参数"而是"这一端不设限":把它当成必须值会让
+    ``weekly_progress_range()`` 这个**默认档**在正式源上无法回答(此前正是回落的一档)。
+    """
+    expr = progress_date_expr(date_field)
+    clauses: list[str] = []
+    params: list[object] = []
+    if date_from:
+        clauses.append(f"AND {expr} >= %s")
+        params.append(date_from)
+    if date_to:
+        clauses.append(f"AND {expr} <= %s")
+        params.append(date_to)
+    return " ".join(clauses), params
+
+
+def _progress_bucket_expr(by: str, date_field: str) -> str:
+    """分组表达式(``bucket`` 这个 SELECT 别名是下游排序的锚点)。"""
+    if by == "month":
+        # substr 取 YYYY-MM:与参考实现的 DATE_FORMAT('%Y-%m') 同一形状、同序
+        return f"substr(to_char(({progress_date_expr(date_field)}), 'YYYY-MM-DD'), 1, 7)"
+    if by == "quarter":
+        # 2026Q1:与参考实现的 CONCAT(YEAR, 'Q', QUARTER) 同形
+        expr = progress_date_expr(date_field)
+        return (
+            f"to_char(({expr}), 'YYYY') || 'Q' || "
+            f"(((extract(month from ({expr}))::int - 1) / 3) + 1)::text"
+        )
+    if by == "task":
+        return "t.task_name"
+    raise ValueError(f"不支持的 by:{by};支持 {', '.join(PROGRESS_GROUPINGS)}")
+
+
 def progress_range(
     board_code: str | None,
     date_from: str,
     date_to: str,
     limit: int = 200,
+    date_field: str = "progress_date",
+    by: str = "",
 ) -> tuple[str, tuple]:
-    """某时间窗内的正式进展(rule 2:只取展示版本),按进展日期倒序。
+    """某时间窗内的正式进展(rule 2:只取展示版本),按时间轴字段倒序。
 
-    ``progress_date`` 是 date 类型,窗口参数直接比较;这里的价值在于**窗口过滤发生在
-    正式版本上**,而不是拿到历史/草稿版本再筛 —— 后者会把没进公示的进展答给用户。
+    两个轴都可为**空**(无界),与参考实现一致:空串表示这一端不设限,不是"缺参数"。
 
     列集合照抄参考查询:``task_id / task_name / version_no / progress_date /
     report_time / lag_days``。进展正文(latest_progress / next_work)与填报人不在
     这个工具的返回里 —— 它答的是"哪些任务在窗口内报过",列正文只会把 200 行的
     回包撑成几万字,而正文有专门的逐任务出口。
-    ``lag_days`` = 上报日 - 周期日(补报更早周期时为正)。
+    ``lag_days`` 恒为 ``上报日 - 周期日``(补报更早周期时为正),**不随 date_field 变**:
+    它答的就是"报的是哪一期、什么时候交的"这组关系,切轴只换过滤与排序的轴。
+
+    ``by`` 走 :func:`progress_range_grouped` —— 分组是另一张表,列也不同。
     """
+    grouping = (by or "").strip().lower()
+    if grouping:
+        return progress_range_grouped(board_code, date_from, date_to, limit, date_field, grouping)
+
     code, hint = adm.check_board_code(board_code) if board_code else (None, None)
     if hint:
         raise ValueError(hint)
     board_clause = "AND b.code = %s" if code else ""
     params: list[object] = [code] if code else []
+    window, window_params = _progress_window_clause(date_field, date_from, date_to)
+    params.extend(window_params)
+    expr = progress_date_expr(date_field)
     sql = f"""
 SELECT t.id AS task_id, t.task_name, p.version_no,
        {adm.normalize_date_sql("p.progress_date")} AS progress_date,
@@ -331,12 +409,11 @@ JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
 WHERE {adm.sql_task_admission("pg", "t")}
   {board_clause}
   AND {adm.sql_published_progress("pg", "p")}
-  AND {adm.parse_ts_sql("p.progress_date")} >= %s
-  AND {adm.parse_ts_sql("p.progress_date")} <= %s
-ORDER BY p.progress_date DESC, t.sort_order
+  {window}
+ORDER BY {expr} DESC, t.id
 LIMIT %s
 """
-    params.extend([date_from, date_to, int(limit)])
+    params.append(int(limit))
     return sql, tuple(params)
 
 
@@ -344,18 +421,21 @@ def progress_range_totals(
     board_code: str | None,
     date_from: str,
     date_to: str,
+    date_field: str = "progress_date",
 ) -> tuple[str, tuple]:
     """同一窗口的**总数**:行数与涉及任务数。
 
     单列出来是因为它们必须活过截断:"今年以来报了多少期"是 366 行,取到 200 行 +
     ``has_more`` 之后调用方无法还原真值,只能报"至少 200"。与参考查询同法(先查总数,
-    再查明细)。
+    再查明细)。窗口两端同样可为空(无界)。
     """
     code, hint = adm.check_board_code(board_code) if board_code else (None, None)
     if hint:
         raise ValueError(hint)
     board_clause = "AND b.code = %s" if code else ""
     params: list[object] = [code] if code else []
+    window, window_params = _progress_window_clause(date_field, date_from, date_to)
+    params.extend(window_params)
     sql = f"""
 SELECT count(*) AS total_rows, count(DISTINCT p.task_id) AS total_tasks
 FROM task_progress p
@@ -364,11 +444,183 @@ JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
 WHERE {adm.sql_task_admission("pg", "t")}
   {board_clause}
   AND {adm.sql_published_progress("pg", "p")}
-  AND {adm.parse_ts_sql("p.progress_date")} >= %s
-  AND {adm.parse_ts_sql("p.progress_date")} <= %s
+  {window}
 """
-    params.extend([date_from, date_to])
     return sql, tuple(params)
+
+
+def _progress_grouped_base(
+    board_code: str | None,
+    date_from: str,
+    date_to: str,
+    date_field: str,
+    grouping: str,
+) -> tuple[str, list[object]]:
+    """分组查询的公共部分(闸门 + 窗口 + ``GROUP BY bucket``),**不带 ORDER BY / LIMIT**。
+
+    抽出来是因为环比档要把它整段当子查询包一层。``progress_momentum`` 不能回头调
+    ``progress_range_grouped(peak=False)``:那条路径对 month/quarter 正是"去取环比",
+    会立刻递归回自己 —— 实测就是这么炸的(RecursionError)。所以"基础查询"与
+    "要不要包环比"必须是两层,不能互相调。
+    """
+    code, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    board_clause = "AND b.code = %s" if code else ""
+    params: list[object] = [code] if code else []
+    window, window_params = _progress_window_clause(date_field, date_from, date_to)
+    params.extend(window_params)
+
+    bucket = _progress_bucket_expr(grouping, date_field)
+    select = f"{bucket} AS bucket, count(*) AS progress_count"
+    if grouping != "task":
+        select += ", count(DISTINCT p.task_id) AS task_count"
+    # 周期日为空的行走不进任何时间档:库里有 44 行已发布进展的 progress_date 是 NULL,
+    # 分组时它们会挤成一个 bucket = NULL 的档 —— 而那个档在计数降序下会冲到第一,
+    # 「进展最多的月份」于是答成「那 44 行没有周期日的」。它不是"某个时间段的计数",
+    # 是**口径外的行**,所以分组里排除掉,并由 progress_range_unbucketed 单独报数
+    # (见 _formal 的 caliber)。用 HAVING 而不是 WHERE:bucket 是 SELECT 别名,
+    # WHERE 里不认,而 month/quarter 档还会把整段包成子查询。
+    null_gate = ""
+    if grouping != "task" and date_field == "progress_date":
+        null_gate = f"HAVING {bucket} IS NOT NULL\n"
+    sql = f"""
+SELECT {select}
+FROM task_progress p
+JOIN task t     ON t.id = p.task_id
+JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
+WHERE {adm.sql_task_admission("pg", "t")}
+  {board_clause}
+  AND {adm.sql_published_progress("pg", "p")}
+  {window}
+GROUP BY bucket
+{null_gate}"""
+    return sql, params
+
+
+def progress_range_grouped(
+    board_code: str | None,
+    date_from: str,
+    date_to: str,
+    limit: int = 200,
+    date_field: str = "progress_date",
+    by: str = "month",
+    peak: bool = False,
+) -> tuple[str, tuple]:
+    """按 ``by`` 分组的**计数**档(month / quarter / task)。
+
+    与参考实现同形状,并且同样把两处判断留在服务端:
+
+    * ``month`` / ``quarter`` 不带 ``peak`` 时回**环比**列(``prev_count`` /
+      ``mom_change``),见 :func:`progress_momentum` —— 相邻两档该由 SQL 配对,
+      不该让调用方拿着计数列表自己错位相减;
+    * ``peak=True`` 时只回**一行**(计数降序、并列取 bucket 升序),``LIMIT 1`` 写进
+      SQL 而不是靠 ``limit`` 截断 —— 靠截断会带出 ``has_more=True``,看着像
+      "还有行没给",与"首行即答案"相冲。
+
+    ``task`` 档按任务名分组,故列里没有 ``task_count``(一个任务名就是一组,
+    再数一次任务数是恒等于 1 的假信息)。
+    """
+    grouping = (by or "").strip().lower()
+    if grouping not in PROGRESS_GROUPINGS:
+        raise ValueError(f"不支持的 by:{by};支持 {', '.join(PROGRESS_GROUPINGS)}")
+    if grouping in ("month", "quarter") and not peak:
+        return progress_momentum(
+            board_code, date_from, date_to, limit, date_field, grouping
+        )
+
+    sql, params = _progress_grouped_base(
+        board_code, date_from, date_to, date_field, grouping
+    )
+    order = "progress_count DESC, bucket" if grouping == "task" or peak else "bucket"
+    if peak:
+        # LIMIT 1 写进 SQL:靠 limit 参数截断会带出 has_more=True,与"首行即答案"相冲。
+        # 这一档**不加** limit 参数,占位符与参数必须配平(多一个参数就是运行期报错)。
+        sql += f"ORDER BY {order} LIMIT 1\n"
+        return sql, tuple(params)
+    sql += f"ORDER BY {order}\nLIMIT %s\n"
+    params.append(int(limit))
+    return sql, tuple(params)
+
+
+def progress_range_unbucketed(
+    board_code: str | None,
+    date_from: str,
+    date_to: str,
+) -> tuple[str, tuple]:
+    """**窗口内**周期日为空的正式进展行数(自检用,不进任何时间档)。
+
+    这是一条"自检"查询,与短窗口自检同一用途:分组档把无周期的行排除在外(见
+    ``_progress_grouped_base`` 的说明)。不报出这个数,调用方看到"各月之和"与
+    "明细 total_count" 对不上时会以为分组漏了行 —— 差额本身是数据质量信号。
+
+    **窗口用 ``report_time`` 判,不用 ``progress_date``** —— 这一档的定义就是
+    "没有周期日",拿 period 去卡窗口会把它们全部挡掉(比较 NULL 恒为假),于是
+    自检在有界窗口下恒为 0、与明细的 population 也对不上。用 ``report_time``
+    才是同一批行:明细按 period 卡窗口时确实不含它们,而自检要回答的是
+    "这段里交上来的、却没说属于哪一期的进展有多少"。
+    """
+    code, hint = adm.check_board_code(board_code) if board_code else (None, None)
+    if hint:
+        raise ValueError(hint)
+    board_clause = "AND b.code = %s" if code else ""
+    params: list[object] = [code] if code else []
+    expr = adm.parse_ts_sql("p.report_time")
+    clauses = ["p.progress_date IS NULL"]
+    if date_from:
+        clauses.append(f"{expr} >= %s")
+        params.append(date_from)
+    if date_to:
+        clauses.append(f"{expr} <= %s")
+        params.append(date_to)
+    gate = "\n  AND ".join(clauses)
+    sql = f"""
+SELECT count(*) AS unbucketed_rows
+FROM task_progress p
+JOIN task t     ON t.id = p.task_id
+JOIN task_board b ON b.id = t.board_id AND {adm.sql_soft_delete("b")}
+WHERE {adm.sql_task_admission("pg", "t")}
+  {board_clause}
+  AND {adm.sql_published_progress("pg", "p")}
+  AND {gate}
+"""
+    return sql, tuple(params)
+
+
+def progress_momentum(
+    board_code: str | None,
+    date_from: str,
+    date_to: str,
+    limit: int = 200,
+    date_field: str = "progress_date",
+    by: str = "month",
+) -> tuple[str, tuple]:
+    """月/季分组 + **环比**列:``bucket / progress_count / task_count /
+    prev_count / mom_change``。
+
+    ``LAG`` 在服务端按时序取上一档:首档的 ``prev_count`` 与 ``mom_change`` 为
+    NULL 是**对的**(没有上一档可比),填 0 会凭空造出一个 100% 下跌。
+
+    注意 ``prev_count`` 只在**本次窗口内**取上一档:问"2026 年的环比"必须把窗口
+    限定在该年(``date_from=2026-01-01``、``date_to=2026-12-31``),否则首档会拿到
+    上一年的数 —— 那是跨年口径,不是该年的环比。这条写进 ``caliber``(见 ``_formal``)。
+    """
+    grouping = (by or "").strip().lower()
+    if grouping not in ("month", "quarter"):
+        raise ValueError(f"环比只适用于 month / quarter,收到:{by}")
+    # 用基础查询而不是 progress_range_grouped:后者对 month/quarter 又回环比,会递归。
+    inner_sql, inner_params = _progress_grouped_base(
+        board_code, date_from, date_to, date_field, grouping
+    )
+    sql = f"""
+SELECT bucket, progress_count, task_count,
+       LAG(progress_count) OVER (ORDER BY bucket) AS prev_count,
+       progress_count - LAG(progress_count) OVER (ORDER BY bucket) AS mom_change
+FROM ({inner_sql}) buckets
+ORDER BY bucket
+LIMIT %s
+"""
+    return sql, (*inner_params, int(limit))
 
 
 def published_progress_recency(board_code: str | None = None) -> tuple[str, tuple]:
@@ -4283,25 +4535,33 @@ WHERE {gate}{extra}
 def year_goal_span_avg(
     board_code: str | None = None,
     whole_table: bool = False,
+    year: int | str | None = None,
 ) -> tuple[str, tuple]:
     """``span`` 的均值:分母只含**已设过目标**的任务(没设过的不该拉低均值)。
 
-    刻意**不收 year**:演示实现里 span 的 SQL 只带任务闸门与看板,`year` 传进来
-    是被静默丢掉的。正式源在这里按年度过滤就会返回一个范围更小的答案 ——
-    所以调用方(``_formal``)在 span 带 year 时直接回落演示路径,不猜。
+    ``year`` 给了就是**只数该年度内的目标条数**(``count(*) FILTER (WHERE g.year = %s)``):
+    没给是"这个任务前后设了几个年度的目标",给了是"这个任务在该年度设了几条目标"。
+    两者都是"每个任务有几条目标"的均值,只是分母口径随窗口收窄 —— 所以带 year 的
+    span 能答,而不是回落(此前正是回落的一档:旧实现把 year 静默丢掉,按年度过滤后
+    会返回一个范围更小的答案,于是干脆不接)。
     """
     gate, gate_params = _year_goal_gate(board_code, whole_table)
+    counted = "count(*)"
+    params: list[object] = []
+    if year:
+        counted = "count(*) FILTER (WHERE g.year = %s)"
+        params.append(int(year))
     sql = f"""
 SELECT round(avg(yr_cnt)::numeric, 2) AS avg_years
 FROM (
-    SELECT count(*) AS yr_cnt
+    SELECT {counted} AS yr_cnt
     FROM task_year_goal g
     JOIN task t ON t.id = g.task_id
     WHERE {gate}
     GROUP BY g.task_id
 ) x
 """
-    return sql, gate_params
+    return sql, (*gate_params, *params)
 
 
 def year_goal_span_rows(
@@ -4309,6 +4569,7 @@ def year_goal_span_rows(
     board_code: str | None = None,
     whole_table: bool = False,
     limit: int = 200,
+    year: int | str | None = None,
 ) -> tuple[str, tuple]:
     """``span`` 的逐任务清单:至少 ``min_years`` 个年度(边界取等)。
 
@@ -4316,10 +4577,16 @@ def year_goal_span_rows(
     ``string_agg(g.year::text, ',' ORDER BY g.year)`` —— ``year`` 是整数,
     不转文本会报 ``function string_agg(integer, unknown) does not exist``。
 
-    同样刻意不收 year,理由见 ``year_goal_span_avg``。
+    ``year`` 的语义与 :func:`year_goal_span_avg` 同一处收窄:给了就把目标限定在该年度,
+    于是 ``year_count`` 变成"该年度设了几条目标"(故 ``min_years`` 此时也是按**条数**比)。
+    这层变化写进 ``caliber``(见 ``_formal``),不让调用方以为它还是"跨了几个年度"。
     """
     gate, gate_params = _year_goal_gate(board_code, whole_table)
     threshold = max(1, int(min_years))
+    params: list[object] = []
+    if year:
+        gate = f"{gate}\n  AND g.year = %s"
+        params.append(int(year))
     sql = f"""
 SELECT t.id AS task_id, t.task_name, count(*) AS year_count,
        string_agg(g.year::text, ',' ORDER BY g.year) AS years
@@ -4331,7 +4598,8 @@ HAVING count(*) >= %s
 ORDER BY year_count DESC, t.id
 LIMIT %s
 """
-    return sql, (*gate_params, threshold, max(1, int(limit)))
+    return sql, (*gate_params, *params, threshold, max(1, int(limit)))
+
 
 
 def year_goal_multi_year_total(
