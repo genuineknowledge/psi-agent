@@ -673,6 +673,22 @@
   opacity: 0.5;
 }
 
+/* Export (any layer): download the skill as a zip. Neutral look, hover brand
+   like reveal -- exporting is a safe, positive action. */
+.hub-skill-export {
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.hub-skill-export:hover {
+  color: var(--brand-600);
+  border-color: rgba(var(--brand-rgb), 0.45);
+}
+
 .hub-skill-preview {
   margin: 8px 0 0;
   padding: 12px;

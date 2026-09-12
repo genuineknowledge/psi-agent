@@ -288,6 +288,40 @@ export async function enableSkill(name: string) {
   return api<{ name: string; disabled: boolean }>('POST', `/workspace/skills/${encodeURIComponent(name)}/enable`)
 }
 
+/** GET /workspace/skills/{name}/export -- download the skill as a zip. Raw fetch
+ *  (not api<>) because the response is binary; triggers a browser download via an
+ *  object URL + a temporary <a download>, then revokes the URL. */
+export async function exportSkill(name: string): Promise<void> {
+  const r = await fetch(`${G()}/workspace/skills/${encodeURIComponent(name)}/export`)
+  if (!r.ok) {
+    const e = (await r.json().catch(() => ({ error: r.statusText }))) as { error?: string }
+    throw new Error(e.error || `HTTP ${r.status}`)
+  }
+  const blob = await r.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${name}.zip`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+/** POST /workspace/skills/import -- upload a skill zip (multipart field 'file').
+ *  Raw fetch (not api<>): FormData sets its own multipart Content-Type with a
+ *  boundary, so we must NOT set application/json here. */
+export async function importSkill(file: File): Promise<{ name: string; ok: boolean }> {
+  const fd = new FormData()
+  fd.append('file', file)
+  const r = await fetch(`${G()}/workspace/skills/import`, { method: 'POST', body: fd })
+  if (!r.ok) {
+    const e = (await r.json().catch(() => ({ error: r.statusText }))) as { error?: string }
+    throw new Error(e.error || `HTTP ${r.status}`)
+  }
+  return (await r.json()) as { name: string; ok: boolean }
+}
+
 export async function streamChat(
   sessionId: string,
   formData: FormData,

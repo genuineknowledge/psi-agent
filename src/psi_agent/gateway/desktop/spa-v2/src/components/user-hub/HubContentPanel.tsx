@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, Eye, EyeOff, FileText, FolderOpen, Layers, Plus, Trash2 } from 'lucide-react'
+import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronDown, ChevronRight, Download, Eye, EyeOff, FileText, FolderOpen, Layers, Plus, Trash2, Upload } from 'lucide-react'
 import type { SkillItem } from '../../services/api'
-import { deleteSkill, disableSkill, enableSkill, listSkills, readWorkspaceFile, revealWorkspacePath } from '../../services/api'
+import { deleteSkill, disableSkill, enableSkill, exportSkill, importSkill, listSkills, readWorkspaceFile, revealWorkspacePath } from '../../services/api'
 import { useI18n } from '../../i18n'
 import HubDialog from './HubDialog'
 
@@ -37,6 +37,8 @@ export default function HubContentPanel({ show, onClose, onToast, onNewSkill }: 
   /** Path of the row expanded for read-only preview, plus its decoded body. */
   const [expanded, setExpanded] = useState<string | null>(null)
   const [preview, setPreview] = useState('')
+  /** Hidden file input behind the toolbar "import" button (zip upload). */
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (!show) return
@@ -137,6 +139,31 @@ export default function HubContentPanel({ show, onClose, onToast, onNewSkill }: 
     }
   }
 
+  const handleExport = async (s: SkillItem) => {
+    // Any layer can be exported (decision 2): exportSkill zips the winning dir
+    // and triggers the browser download itself.
+    try {
+      await exportSkill(s.name)
+      onToast?.(t('content.exported', { name: s.name }))
+    } catch (e) {
+      onToast?.(e instanceof Error ? e.message : t('content.exportFailed'))
+    }
+  }
+
+  const handleImport = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    try {
+      if (!file) return
+      const result = await importSkill(file)
+      onToast?.(t('content.imported', { name: result.name }))
+      setSkills(await listSkills())  // refresh so the imported skill shows up
+    } catch (err) {
+      onToast?.(err instanceof Error ? err.message : t('content.importFailed'))
+    } finally {
+      e.target.value = ''  // reset so re-picking the same file re-fires onChange
+    }
+  }
+
   return (
     <HubDialog
       show={show}
@@ -179,6 +206,21 @@ export default function HubContentPanel({ show, onClose, onToast, onNewSkill }: 
           aria-label={t('content.search')}
           onChange={(e) => setQuery(e.target.value)}
         />
+        <button
+          type="button"
+          className="hub-btn"
+          onClick={() => fileInputRef.current?.click()}
+          title={t('content.import')}
+        >
+          <Upload size={15} /> {t('content.import')}
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".zip"
+          hidden
+          onChange={(e) => void handleImport(e)}
+        />
       </div>
 
       <section className="hub-section">
@@ -213,6 +255,15 @@ export default function HubContentPanel({ show, onClose, onToast, onNewSkill }: 
                     {s.source === 'official' && s.tombstoned && (
                       <span className="hub-badge hub-badge-disabled">{t('content.badge.disabled')}</span>
                     )}
+                  </button>
+                  <button
+                    type="button"
+                    className="hub-skill-export"
+                    onClick={() => void handleExport(s)}
+                    aria-label={t('content.export')}
+                    title={t('content.export')}
+                  >
+                    <Download size={15} />
                   </button>
                   {s.source === 'global' && (
                     <>
