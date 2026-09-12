@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { bindAppdataFingerprint } from './appdataScope'
 import {
   addPendingDeliveries,
   clearPendingDeliveries,
@@ -6,9 +7,9 @@ import {
   remapPendingDeliveries,
 } from './pendingDeliveries'
 
-function stubLocalStorage() {
+function stubWindowLocalStorage() {
   const store = new Map<string, string>()
-  vi.stubGlobal('localStorage', {
+  const localStorage = {
     getItem: (k: string) => store.get(k) ?? null,
     setItem: (k: string, v: string) => {
       store.set(k, String(v))
@@ -19,12 +20,14 @@ function stubLocalStorage() {
     clear: () => {
       store.clear()
     },
-  })
+  }
+  vi.stubGlobal('window', { localStorage })
 }
 
 describe('remapPendingDeliveries', () => {
   beforeEach(() => {
-    stubLocalStorage()
+    stubWindowLocalStorage()
+    bindAppdataFingerprint('test0001')
     clearPendingDeliveries('old')
     clearPendingDeliveries('new')
   })

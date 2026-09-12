@@ -2,11 +2,14 @@ import { useCallback, useEffect, useState } from 'react'
 import WorkspaceGate, { type PathPickKind } from './components/WorkspaceGate'
 import HaiTunAgentWorkspace from './haitun-agent/HaiTunAgentWorkspace'
 import { browseWorkspace, fetchDefaults } from './services/api'
+import {
+  appdataFingerprint,
+  bindAppdataFingerprint,
+  readScopedItem,
+  writeScopedItem,
+} from './services/appdataScope'
 import { BrandLogo } from './haitun-agent/primitives'
 import { useI18n } from './i18n'
-
-const LS_WORKSPACE = 'gw-v2-workspace'
-const LS_AGENT = 'gw-v2-agent'
 
 /** Paths that were agent packages, not user workspaces — treat as unset. */
 function isLegacyWorkspacePath(path: string): boolean {
@@ -21,9 +24,9 @@ function isLegacyWorkspacePath(path: string): boolean {
   return false
 }
 
-function readSavedWorkspace(): string {
+function readSavedWorkspace(fp: string): string {
   try {
-    const raw = window.localStorage.getItem(LS_WORKSPACE)?.trim() || ''
+    const raw = readScopedItem(window.localStorage, 'workspace', fp)?.trim() || ''
     if (isLegacyWorkspacePath(raw)) return ''
     return raw
   } catch {
@@ -31,22 +34,20 @@ function readSavedWorkspace(): string {
   }
 }
 
-function readSavedAgent(): string {
+function readSavedAgent(fp: string): string {
   try {
-    return window.localStorage.getItem(LS_AGENT)?.trim() || ''
+    return readScopedItem(window.localStorage, 'agent', fp)?.trim() || ''
   } catch {
     return ''
   }
 }
 
-function writeSavedAgent(path: string) {
-  try {
-    const clean = path.trim()
-    if (clean) window.localStorage.setItem(LS_AGENT, clean)
-    else window.localStorage.removeItem(LS_AGENT)
-  } catch {
-    /* ignore quota */
-  }
+function writeSavedAgent(fp: string, path: string) {
+  writeScopedItem(window.localStorage, 'agent', path.trim() || null, fp)
+}
+
+function writeSavedWorkspace(fp: string, path: string) {
+  writeScopedItem(window.localStorage, 'workspace', path.trim() || null, fp)
 }
 
 async function pathExistsAsDir(path: string): Promise<boolean> {
@@ -60,15 +61,18 @@ async function pathExistsAsDir(path: string): Promise<boolean> {
 
 /**
  * spa-v2 root:
- * - Boot from GET /defaults (+ localStorage overrides for workspace / agent).
+ * - Boot from GET /defaults (+ AppData-scoped localStorage for workspace / agent).
+ * - Remount workbench when AppData fingerprint changes (not on workspace switch).
  * - Pass agent into POST /sessions via HaiTunAgentWorkspace.
- * - Settings can switch workspace or agent package (same PathPicker flow).
  */
 export default function App() {
   const { t } = useI18n()
   const [workspace, setWorkspace] = useState('')
   const [defaultAgent, setDefaultAgent] = useState('')
+  const [appdataPath, setAppdataPath] = useState('')
+  const [appdataFp, setAppdataFp] = useState('')
   const [bootstrapping, setBootstrapping] = useState(true)
+  const [bootError, setBootError] = useState('')
   const [pickingKind, setPickingKind] = useState<PathPickKind | null>(null)
 
   useEffect(() => {
@@ -78,18 +82,34 @@ export default function App() {
         const d = await fetchDefaults()
         if (cancelled) return
 
-        const savedAgent = readSavedAgent()
+        const appdata = (d.appdata || '').trim()
+        if (!appdata) {
+          setBootError(t('app.appdataMissing'))
+          setBootstrapping(false)
+          return
+        }
+        const fp = appdataFingerprint(appdata)
+        if (!fp) {
+          setBootError(t('app.appdataMissing'))
+          setBootstrapping(false)
+          return
+        }
+        bindAppdataFingerprint(fp)
+        setAppdataPath(appdata)
+        setAppdataFp(fp)
+
+        const savedAgent = readSavedAgent(fp)
         let agent = ''
         if (savedAgent && (await pathExistsAsDir(savedAgent))) {
           agent = savedAgent
         } else if ((d.agent || '').trim()) {
           agent = d.agent.trim()
-          if (savedAgent && savedAgent !== agent) writeSavedAgent('')
+          if (savedAgent && savedAgent !== agent) writeSavedAgent(fp, '')
         }
         if (!cancelled) setDefaultAgent(agent)
 
         const fromDefaults = (d.workspace || '').trim()
-        const saved = readSavedWorkspace()
+        const saved = readSavedWorkspace(fp)
         let chosen = ''
         if (saved && (await pathExistsAsDir(saved))) {
           chosen = saved
@@ -100,12 +120,7 @@ export default function App() {
         }
         if (cancelled) return
         if (saved && saved !== chosen) {
-          try {
-            if (chosen) window.localStorage.setItem(LS_WORKSPACE, chosen)
-            else window.localStorage.removeItem(LS_WORKSPACE)
-          } catch {
-            /* ignore */
-          }
+          writeSavedWorkspace(fp, chosen)
         }
         if (chosen) {
           setWorkspace(chosen)
@@ -124,26 +139,22 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [t])
 
   const readyWorkspace = useCallback((path: string) => {
     const clean = path.trim()
-    try {
-      window.localStorage.setItem(LS_WORKSPACE, clean)
-    } catch {
-      /* ignore quota */
-    }
+    if (appdataFp) writeSavedWorkspace(appdataFp, clean)
     setWorkspace(clean)
     setPickingKind(null)
     setBootstrapping(false)
-  }, [])
+  }, [appdataFp])
 
   const readyAgent = useCallback((path: string) => {
     const clean = path.trim()
-    writeSavedAgent(clean)
+    if (appdataFp) writeSavedAgent(appdataFp, clean)
     setDefaultAgent(clean)
     setPickingKind(null)
-  }, [])
+  }, [appdataFp])
 
   const changeWorkspace = useCallback(() => {
     setPickingKind('workspace')
@@ -159,6 +170,17 @@ export default function App() {
         <div className="workspace-gate-card">
           <BrandLogo size="hero" />
           <p>{t('app.connecting')}</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (bootError) {
+    return (
+      <div className="workspace-gate">
+        <div className="workspace-gate-card">
+          <BrandLogo size="hero" />
+          <p role="alert">{bootError}</p>
         </div>
       </div>
     )
@@ -186,11 +208,14 @@ export default function App() {
     )
   }
 
-  // 刻意为之: do not remount on workspace switch — settings workspace/agent are
-  // create-time defaults only; the sidebar lists all Gateway sessions.
+  // Remount only when AppData fingerprint changes (Vite GATEWAY_ORIGIN → other
+  // --appdata). 刻意为之: do not remount on workspace switch — settings
+  // workspace/agent are create-time defaults; sidebar lists all Gateway sessions.
   return (
     <HaiTunAgentWorkspace
+      key={appdataFp}
       workspace={workspace}
+      appdataPath={appdataPath}
       defaultAgent={defaultAgent}
       onChangeWorkspace={changeWorkspace}
       onChangeAgent={changeAgent}

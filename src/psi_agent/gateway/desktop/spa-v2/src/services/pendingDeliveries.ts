@@ -1,8 +1,9 @@
 /**
  * Local-only record of deliverable basenames that arrived but were not yet
  * saved to 成果库. Survives refresh; cleared only by explicit acceptance.
+ * Keys are AppData-scoped (see ``appdataScope``).
  */
-const LS_KEY = 'spa-v2-pending-deliveries'
+import { readScopedItem, writeScopedItem } from './appdataScope'
 
 type PendingMap = Record<string, string[]>
 
@@ -25,18 +26,14 @@ function parsePending(raw: string | null): PendingMap {
 
 export function readPendingDeliveries(): PendingMap {
   try {
-    return parsePending(localStorage.getItem(LS_KEY))
+    return parsePending(readScopedItem(window.localStorage, 'pending'))
   } catch {
     return {}
   }
 }
 
 function writePendingDeliveries(map: PendingMap): void {
-  try {
-    localStorage.setItem(LS_KEY, JSON.stringify(map))
-  } catch {
-    // ignore quota / private mode
-  }
+  writeScopedItem(window.localStorage, 'pending', JSON.stringify(map))
 }
 
 export function pendingDeliveriesFor(taskId: string): string[] {

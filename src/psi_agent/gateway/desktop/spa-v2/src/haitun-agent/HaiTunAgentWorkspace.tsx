@@ -155,6 +155,8 @@ import { useI18n } from "../i18n";
 
 type Props = {
   workspace: string;
+  /** Memory-area root from ``GET /defaults.appdata`` (settings display). */
+  appdataPath?: string;
   /** Step 2: from GET /defaults.agent — passed to POST /sessions (not tool I/O). */
   defaultAgent?: string;
   onChangeWorkspace?: () => void;
@@ -163,6 +165,7 @@ type Props = {
 
 export default function HaiTunAgentWorkspace({
   workspace,
+  appdataPath = "",
   defaultAgent = "",
   onChangeWorkspace,
   onChangeAgent,
@@ -170,7 +173,7 @@ export default function HaiTunAgentWorkspace({
   const { t, language } = useI18n();
   const quickActions = [t("quickAction.blockers"), t("quickAction.nudge"), t("quickAction.conclusion")];
   const [tasks, setTasks] = useState<Task[]>([]);
-  /** Client-only pin order for sidebar history (localStorage `gw-v2-pinned-task-ids`). */
+  /** Client-only pin order for sidebar history (AppData-scoped localStorage). */
   const [pinnedTaskIds, setPinnedTaskIds] = useState<string[]>(() => loadPinnedTaskIds());
   const [templates, setTemplates] = useState<TaskTemplate[]>(INITIAL_TEMPLATES);
   const [aiId, setAiId] = useState<string | null>(null);
@@ -607,7 +610,7 @@ export default function HaiTunAgentWorkspace({
       cancelled = true;
       for (const controller of Object.values(abortByCardRef.current)) controller.abort();
     };
-  }, [showToast]);
+  }, [showToast, t, language]);
 
   // Refresh landing: with history tasks open new task/chat directly; with none stay on the empty workspace.
   useEffect(() => {
@@ -822,7 +825,7 @@ export default function HaiTunAgentWorkspace({
     if (currentIndex >= cards.length) setCurrentIndex(cards.length - 1);
   }, [cards.length, currentIndex]);
 
-  // Drop stale pins after boot when the session list shrinks (delete / workspace switch).
+  // Drop stale pins after boot when the session list shrinks (delete / relocate).
   // 刻意为之: 等 bootReady 再 prune——冷启动 tasks=[] 时若立刻 prune 会把 localStorage 置顶清空。
   useEffect(() => {
     if (!bootReady) return;
@@ -2648,6 +2651,7 @@ export default function HaiTunAgentWorkspace({
             onChangeWorkspace={onChangeWorkspace}
             agent={defaultAgent}
             onChangeAgent={onChangeAgent}
+            appdata={appdataPath}
             onToast={showToast}
             // 门禁未落定 / 登录窗还开着时不要自动弹模型池，两层弹窗会叠在一起
             openModelsOnMount={bootReady && authGate === "passed" && openModelsOnce}

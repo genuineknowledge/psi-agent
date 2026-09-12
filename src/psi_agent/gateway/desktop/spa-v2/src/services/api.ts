@@ -36,6 +36,8 @@ export type SessionInfo = {
 export type GatewayDefaults = {
   agent: string
   workspace: string
+  /** Memory-area root (todos / history / Gateway state). Used to scope UI prefs. */
+  appdata?: string
   /** Effective app UI language from the Gateway (zh-CN / en-US). */
   language?: string
 }

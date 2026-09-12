@@ -47,6 +47,8 @@
   "app.accountDevices": "Account & devices",
   "app.login": "Sign in",
   "app.switchWorkspace": "Switch Haitun Studio workspace",
+  "app.appdataLabel": "Memory area (AppData)",
+  "app.appdataMissing": "Gateway did not return an AppData path. Upgrade Gateway or check the deployment.",
   "app.selectLocalDir": "Choose a local folder",
   "app.workspacePath": "No Haitun Studio workspace",
   "app.workspaceFoot": "This only sets the default folder for new tasks. The sidebar lists every task on this Gateway. To move an existing task, use Migrate in the sidebar.",

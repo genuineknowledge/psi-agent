@@ -5,14 +5,23 @@ export function normalizeWorkspacePath(path: string): string {
 
 /**
  * Whether a Session belongs in the current workbench list.
- * Empty session.workspace matches any open folder (legacy / unset).
+ *
+ * 刻意为之: empty ``session.workspace`` matches **only** when the open folder
+ * equals the Gateway default workspace — otherwise orphan rows (created without
+ * a workspace) would appear in every non-default folder's sidebar.
  */
 export function sessionMatchesWorkspace(
   sessionWorkspace: string | undefined | null,
   workspaceNorm: string,
+  defaultsWorkspaceNorm?: string,
 ): boolean {
   const w = normalizeWorkspacePath(sessionWorkspace || '')
-  return !w || w === workspaceNorm
+  if (!w) {
+    const defaults = normalizeWorkspacePath(defaultsWorkspaceNorm ?? '')
+    if (!defaults) return true
+    return workspaceNorm === defaults
+  }
+  return w === workspaceNorm
 }
 
 export function sessionBackendId(session: {
