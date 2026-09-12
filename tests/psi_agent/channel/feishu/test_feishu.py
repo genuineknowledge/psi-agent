@@ -33,6 +33,7 @@ from psi_agent.channel.feishu.client import (
     _mentions_line,
     _parse_instance_detail,
     _register_approval_processor,
+    _register_ignored_processors,
     _remove_reaction,
     _SeenEvents,
     run_feishu,
@@ -1232,6 +1233,48 @@ def test_register_approval_processor_degrades_without_processor_map():
     assert _register_approval_processor(channel, lambda _e: None) is False
 
 
+def test_register_ignored_processors_covers_every_event_and_schema():
+    """不消费的平台事件必须都有处理器 —— 没有就是 SDK 的 processor not found ERROR。"""
+    proc_map: dict = {}
+    channel = SimpleNamespace(dispatcher=SimpleNamespace(_processorMap=proc_map))
+
+    count = _register_ignored_processors(channel)
+
+    assert count == 2 * len(client._IGNORED_PLATFORM_EVENTS)
+    for event_type in client._IGNORED_PLATFORM_EVENTS:
+        for schema in ("p1", "p2"):
+            assert f"{schema}.{event_type}" in proc_map
+
+
+def test_register_ignored_processors_swallows_the_event():
+    """处理器必须能把事件吞下去而不抛 —— 抛了 SDK 还会再记一条。"""
+    proc_map: dict = {}
+    channel = SimpleNamespace(dispatcher=SimpleNamespace(_processorMap=proc_map))
+    _register_ignored_processors(channel)
+
+    processor = proc_map[f"p2.{client._IGNORED_PLATFORM_EVENTS[0]}"]
+    processor.do(SimpleNamespace(event={"anything": 1}))  # 不抛即通过
+
+
+def test_register_ignored_processors_keeps_a_real_consumer():
+    """已有处理器的键不许被覆盖: 真消费方优先。"""
+    event_type = client._IGNORED_PLATFORM_EVENTS[0]
+    existing = object()
+    proc_map: dict = {f"p2.{event_type}": existing}
+    channel = SimpleNamespace(dispatcher=SimpleNamespace(_processorMap=proc_map))
+
+    count = _register_ignored_processors(channel)
+
+    assert proc_map[f"p2.{event_type}"] is existing
+    assert count == 2 * len(client._IGNORED_PLATFORM_EVENTS) - 1
+    assert f"p1.{event_type}" in proc_map
+
+
+def test_register_ignored_processors_degrades_without_processor_map():
+    channel = SimpleNamespace(dispatcher=SimpleNamespace())  # no _processorMap
+    assert _register_ignored_processors(channel) == 0
+
+
 @pytest.mark.anyio
 async def test_run_feishu_registers_approval_processor(monkeypatch):
     channel = MagicMock()
@@ -1584,6 +1627,57 @@ def _driving_channel() -> MagicMock:
 
     channel.stream = AsyncMock(side_effect=_stream)
     return channel
+
+
+@pytest.mark.anyio
+async def test_stream_reply_never_shows_internal_markers(monkeypatch, tmp_path):
+    """出站净化: 模型照抄的省略句柄 / SEND / RECV 标记不得出现在飞书回复里。
+
+    真实事故(2026-09-10): 回复末尾挂出 ``[已省略1334字符, 句柄 assistant#425952]``
+    —— 句柄只在请求侧保留, 用户可见的那一份必须剥掉; 被流式切开的句柄也不许漏。
+    """
+    appended: list[str] = []
+
+    async def _stream(chat_id: str, payload: dict, options: dict | None = None) -> None:
+        stream = SimpleNamespace(append=AsyncMock(side_effect=lambda t: appended.append(t)))
+        await payload["markdown"](stream)
+
+    channel = _fake_channel()
+    channel.stream = AsyncMock(side_effect=_stream)
+
+    handle = "[已省略 1334 字符, 句柄 assistant#425952]"
+
+    async def _post(chunks):
+        yield TextChunk("已完成两场会议的检查。")
+        yield TextChunk(handle)
+
+    core = cast(ChannelCore, SimpleNamespace(post=_post))
+    await client._stream_reply(channel, core, "oc_1", [], reply_to=None, sender_open_id="ou_1")
+    assert "".join(appended) == "已完成两场会议的检查。"
+    assert "已省略" not in "".join(appended)
+
+    # 被切开也一样: 前半截先扣住, 后半截到达后整段丢弃
+    appended.clear()
+    split, rest = handle[:5], handle[5:]
+
+    async def _split_post(chunks):
+        yield TextChunk("结论。")
+        yield TextChunk(split)
+        yield TextChunk(rest)
+
+    core = cast(ChannelCore, SimpleNamespace(post=_split_post))
+    await client._stream_reply(channel, core, "oc_1", [], reply_to=None, sender_open_id="ou_1")
+    assert "".join(appended) == "结论。"
+
+    # 整条回复只有标记 → 当作空回复抑制, 不弹卡
+    appended.clear()
+
+    async def _marker_only(chunks):
+        yield TextChunk(handle)
+
+    core = cast(ChannelCore, SimpleNamespace(post=_marker_only))
+    await client._stream_reply(channel, core, "oc_1", [], reply_to=None, sender_open_id="ou_1")
+    assert appended == []
 
 
 @pytest.mark.anyio

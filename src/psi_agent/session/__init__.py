@@ -12,6 +12,7 @@ from psi_agent._logging import setup_logging
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.history_display import (
     KIND_CHAT,
+    VisibleMarkerFilter,
     extract_send_paths,
     is_displayable_chat_message,
     message_kind,
@@ -36,6 +37,7 @@ __all__ = [
     "KIND_CHAT",
     "Session",
     "SessionAgent",
+    "VisibleMarkerFilter",
     "extract_send_paths",
     "is_displayable_chat_message",
     "message_kind",

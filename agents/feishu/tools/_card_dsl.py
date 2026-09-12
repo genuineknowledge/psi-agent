@@ -29,6 +29,10 @@ Vocabulary (first version, open brick-box — assemble per scene, grow on demand
 
     card        title / template          root container (title + header color)
     info        label / value             display line (owner, deadline, ...)
+    section     title / text              read-only section (report/summary card):
+                                          bold title + body in one markdown; both
+                                          empty = placeholder, the section vanishes
+    divider     —                         horizontal rule between sections
     score       min / max / rounds /
                 bind-record / selected    score button group (multi-round re-pick)
     comment     placeholder / bind-record comment input (multi-edit)
@@ -324,8 +328,25 @@ def _compile(
                         "columns": columns,
                     }
                 )
+        elif tag == "section":
+            # 只读分节(报告/总结卡): 小标题 + 正文合一个 markdown 元素。
+            # title 与 text 都为空 = 模板空占位, 整节不渲染(与 {note} 同语义)。
+            section_title = (child.get("title") or "").strip()
+            section_text = (child.get("text") or "").strip()
+            if not section_title and not section_text:
+                continue
+            parts: list[str] = []
+            if section_title:
+                parts.append(f"**{section_title}**")
+            if section_text:
+                parts.append(section_text)
+            elements.append({"tag": "markdown", "content": "\n\n".join(parts)})
+        elif tag == "divider":
+            elements.append({"tag": "hr"})
         else:
-            raise ValueError(f"unknown element <{tag}> — vocabulary: card/info/score/comment/action-row/button")
+            raise ValueError(
+                f"unknown element <{tag}> — vocabulary: card/info/section/divider/score/comment/action-row/button"
+            )
 
     card: dict[str, Any] = {
         "schema": "2.0",

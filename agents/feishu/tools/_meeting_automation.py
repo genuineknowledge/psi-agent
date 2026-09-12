@@ -1,9 +1,12 @@
 """Shared meeting automation primitives.
 
-Meeting jobs are deliberately code-owned rather than user-configured.  The
-workspace created by :func:`provision_meeting_workspace` only contains the
-normal ``TASK.md`` schedule files; meeting artifacts live in AppData so every
-Feishu Session can read the same source and analysis results.
+Meeting jobs are deliberately code-owned rather than user-configured.  Their
+schedules ship as static company seed tasks under ``agents/feishu/schedules``
+(one ``TASK.md`` per job and per retry, projected from :data:`MEETING_JOBS` by
+:func:`meeting_schedule_files`); the generic SchedulerManager seed mechanism
+drops them into the configured company workspace and owns the scheduler
+Session.  Meeting artifacts live in AppData so every Feishu Session can read
+the same source and analysis results.
 """
 
 from __future__ import annotations
@@ -11,17 +14,79 @@ from __future__ import annotations
 import json
 import os
 import re
+import uuid
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+import anyio
+import yaml
+
 from psi_agent._appdata import resolve_appdata_root
 
-MEETING_SESSION_ID = "meeting-session"
-MEETING_WORKSPACE_NAME = ".meeting-session"
-TRANSCRIPT_CHUNK_CHARS = 8_000
-MAIN_MEETING_GROUP_NAME = "HaiTun Agent主战场"
+_AGENT_ROOT = Path(__file__).resolve().parent.parent
+#: 会议自动化运行口径 (config/meeting-automation.yaml, 契约同 todo-sop.yaml)。
+#: 硬边界: 白名单 (name/code/cron/retry/token_env 配对) 一律留代码, 见
+#: ``_MEETING_JOBS_WHITELIST`` 与加载器对覆盖键的白名单校验。
+MEETING_AUTOMATION_CONFIG_PATH = _AGENT_ROOT / "config" / "meeting-automation.yaml"
+_MEETING_OVERLAY_KEYS = frozenset(
+    {
+        "title",
+        "summary_recipients",
+        "overview_recipients",
+        "analysis_sop_skills",
+        "alert_recipients",
+    }
+)
+_WHITELIST_ONLY_KEYS = frozenset(
+    {"name", "meeting_code", "cron", "retry_crons", "fire", "tool_name", "tool_args", "token_env"}
+)
+#: 收件人解析表允许的目标键(见 ``notify_recipients``): person/chat 走解析, 其余是显式 id 类型。
+_RECIPIENT_TARGET_KEYS = ("person", "chat", "open_id", "user_id", "union_id", "chat_id", "email")
+
+
+def load_meeting_automation_config(path: str | Path | None = None) -> dict[str, Any]:
+    """读取并契约校验 ``meeting-automation.yaml``; 缺失/解析失败/越权键一律显式报错。"""
+    config_path = Path(path) if path is not None else MEETING_AUTOMATION_CONFIG_PATH
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"会议自动化配置缺失: {config_path}: {exc}") from exc
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise RuntimeError(f"会议自动化配置无法解析: {config_path}: {exc}") from exc
+    if not isinstance(data, dict) or not all(
+        isinstance(data.get(key), dict) for key in ("meetings", "runtime", "resources")
+    ):
+        raise RuntimeError(f"会议自动化配置不符合契约(需 meetings/runtime/resources 段): {config_path}")
+    meetings = data["meetings"]
+    for name, overlay in meetings.items():
+        if not isinstance(overlay, dict):
+            raise RuntimeError(f"meetings.{name} 必须是对象: {config_path}")
+        extra = set(overlay) - _MEETING_OVERLAY_KEYS
+        if extra:
+            hint = "授权(白名单/token_env/调度)不可经配置文件修改" if extra & _WHITELIST_ONLY_KEYS else "未知字段"
+            raise RuntimeError(f"meetings.{name} 含不允许的键 {sorted(extra)} ({hint}): {config_path}")
+    return data
+
+
+MEETING_AUTOMATION_CONFIG = load_meeting_automation_config()
+
+
+def automation_runtime() -> dict[str, Any]:
+    """meeting-automation.yaml 的 ``runtime`` 段 (引擎运行参数)。"""
+    return MEETING_AUTOMATION_CONFIG["runtime"]
+
+
+def automation_resources() -> dict[str, Any]:
+    """meeting-automation.yaml 的 ``resources`` 段 (相对 agent 包根的引用路径)。"""
+    return MEETING_AUTOMATION_CONFIG["resources"]
+
+
+#: 引擎常量: 单一来源为 yaml (runtime.analysis.chunk_chars); 此处仅为同值导出, 测试可覆写。
+TRANSCRIPT_CHUNK_CHARS = int(MEETING_AUTOMATION_CONFIG["runtime"]["analysis"]["chunk_chars"])
 
 
 @dataclass(frozen=True)
@@ -30,39 +95,143 @@ class MeetingJob:
     meeting_code: str
     cron: str
     title: str
-    recipients: tuple[str, ...]
     retry_crons: tuple[str, ...] = ()
-    summary_recipients: tuple[str, ...] = ("程秀秀",)
-    overview_recipients: tuple[str, ...] = ("罗霖",)
+    # 投递收件人一律来自 meeting-automation.yaml: 代码里不留任何具体人名/群名,
+    # 缺收件人的 job 在模块导入时就报错(见 _validate_recipients), 不会静默变成
+    # "没人收"。改人/改群只改配置, 不需要动代码。
+    summary_recipients: tuple[str, ...] = ()
+    overview_recipients: tuple[str, ...] = ()
+    # Versioned SOP skill(s) whose text is injected verbatim into scheduled
+    # analysis prompts ("meeting-sop/<name>").  Missing file is a hard error.
+    analysis_sop_skills: tuple[str, ...] = ()
+    # Ops contacts notified when a run fails (prepare/analysis/notify).
+    alert_recipients: tuple[str, ...] = ()
     token_env: str = "TENCENT_MEETING_TOKEN"
     fire: str = "tool"
     tool_name: str = "meeting_pipeline_run"
     tool_args: tuple[tuple[str, str], ...] = ()
 
 
-MEETING_JOBS: tuple[MeetingJob, ...] = (
+#: 代码权威白名单: name/meeting_code/cron/retry/token_env 配对 (授权门) 只能改这里。
+#: 投递收件人与告警收件人**不在代码里**: 它们必须由 meeting-automation.yaml 的
+#: meetings 段给出(缺了直接报错)。SOP skill 与展示标题属结构性口径, 仍留代码。
+_MEETING_JOBS_WHITELIST: tuple[MeetingJob, ...] = (
     MeetingJob(
         name="weekday-alignment",
         meeting_code="57152787045",
         cron="0 12 * * 1,3,5",
         title="周中对齐会",
-        recipients=(MAIN_MEETING_GROUP_NAME, "罗霖"),
-        summary_recipients=(MAIN_MEETING_GROUP_NAME,),
+        retry_crons=(),
+        analysis_sop_skills=("meeting-sop/weekday-alignment",),
         tool_args=(("meeting_name", "weekday-alignment"), ("meeting_code", "57152787045")),
     ),
     MeetingJob(
         name="weekday-alignment-1100",
         meeting_code="42654699903",
-        cron="0 12 * * 1,3,5",
+        cron="0 13 * * 1,3,5",
         title="日会",
-        recipients=("张浩", "王金旺", "罗霖"),
-        retry_crons=("30 17 * * 1,3,5",),
-        summary_recipients=("张浩", "王金旺"),
-        overview_recipients=("罗霖",),
+        retry_crons=(),
+        analysis_sop_skills=("meeting-sop/weekday-alignment",),
         token_env="TENCENT_MEETING_TOKEN_42654699903",
         tool_args=(("meeting_name", "weekday-alignment-1100"), ("meeting_code", "42654699903")),
     ),
 )
+
+
+def _meeting_jobs_with_overlay() -> tuple[MeetingJob, ...]:
+    """白名单 (代码) + yaml meetings 覆盖 (仅允许的五个口径键) 合并出运行时会议列表。
+
+    yaml 里出现的会议名必须全部命中代码白名单 (授权不可经配置文件扩展); 白名单中的
+    会议也必须有 yaml 条目 (防止误删后口径悄然回退代码缺省)——收件人正是靠这一条
+    从代码里搬进了配置。
+    """
+    meetings: dict[str, Any] = MEETING_AUTOMATION_CONFIG["meetings"]
+    whitelist_names = {job.name for job in _MEETING_JOBS_WHITELIST}
+    extra = set(meetings) - whitelist_names
+    if extra:
+        raise RuntimeError(f"meeting-automation.yaml 含白名单外会议, 授权不可经配置文件扩展: {sorted(extra)}")
+    merged: list[MeetingJob] = []
+    for job in _MEETING_JOBS_WHITELIST:
+        overlay = meetings.get(job.name)
+        if overlay is None:
+            raise RuntimeError(f"代码白名单会议 {job.name} 缺少 meeting-automation.yaml 的 meetings.{job.name} 条目")
+        kwargs: dict[str, Any] = {}
+        for key, value in overlay.items():
+            kwargs[key] = tuple(value) if isinstance(value, list) else value
+        merged.append(replace(job, **kwargs))
+    jobs = tuple(merged)
+    _validate_recipients(jobs)
+    return jobs
+
+
+def _validate_recipients(jobs: tuple[MeetingJob, ...]) -> None:
+    """每场会议都必须有投递收件人; 缺了在导入期报错, 而不是发不出去才被发现。
+
+    收件人只从 meeting-automation.yaml 来(代码不再留缺省)。空的收件人清单会让整条
+    流水线「跑成功但不投递」—— 报告里看不见、日志里也不报错, 所以这里 fail-fast。
+    """
+    for job in jobs:
+        pairs = (("summary_recipients", job.summary_recipients), ("overview_recipients", job.overview_recipients))
+        for field, values in pairs:
+            if not values:
+                raise RuntimeError(
+                    f"meeting-automation.yaml 的 meetings.{job.name} 缺少 {field}: 收件人只从配置来, "
+                    f"代码不留缺省: {MEETING_AUTOMATION_CONFIG_PATH}"
+                )
+            for value in values:
+                if not isinstance(value, str) or not value.strip():
+                    raise RuntimeError(f"meetings.{job.name}.{field} 含空收件人: {values!r}")
+
+
+def notify_recipients() -> dict[str, dict[str, str]]:
+    """``runtime.notify.recipients`` —— 收件人解析表(键 → 目标)。
+
+    键就是调用方传给 ``meeting_session_notify`` 的 recipient 字符串。目标**恰好一个**:
+    ``person``(姓名, 走通讯录拿当前应用的 open_id)、``chat``(群名, 走群名解析)、或一个
+    显式 id 类型 ``open_id`` / ``user_id`` / ``union_id`` / ``chat_id`` / ``email``
+    (直接使用, **不做任何姓名解析**)。
+
+    **免解析优先用租户级 ``user_id``**: ``open_id``/``chat_id`` 按应用隔离(换个应用就
+    失效, 飞书报 99992361), ``user_id``/``union_id`` 是租户级的、跨应用不变。
+
+    表缺失 = 空表(此时只剩"直接给 id"与"按姓名解析"两条路), 但**形状写错一律显式报错**
+    —— 一个写错的收件人不能静默失效。
+    """
+    notify_section = MEETING_AUTOMATION_CONFIG["runtime"].get("notify", {})
+    table = notify_section.get("recipients", {}) if isinstance(notify_section, dict) else {}
+    if not isinstance(table, dict):
+        raise RuntimeError(f"runtime.notify.recipients 必须是「键 → 对象」的映射: {MEETING_AUTOMATION_CONFIG_PATH}")
+    parsed: dict[str, dict[str, str]] = {}
+    for key, entry in table.items():
+        name = str(key).strip()
+        if not name:
+            raise RuntimeError(f"runtime.notify.recipients 含空键: {MEETING_AUTOMATION_CONFIG_PATH}")
+        if isinstance(entry, str):
+            entry = {"person": entry}
+        if not isinstance(entry, dict):
+            raise RuntimeError(f"runtime.notify.recipients.{name} 必须是对象(或直接写姓名): {entry!r}")
+        unknown = set(entry) - set(_RECIPIENT_TARGET_KEYS)
+        if unknown:
+            raise RuntimeError(
+                f"runtime.notify.recipients.{name} 含未知键 {sorted(unknown)}; 只允许 {list(_RECIPIENT_TARGET_KEYS)}"
+            )
+        targets = {k: str(entry.get(k) or "").strip() for k in _RECIPIENT_TARGET_KEYS}
+        filled = [k for k, value in targets.items() if value]
+        if len(filled) != 1:
+            raise RuntimeError(
+                f"runtime.notify.recipients.{name} 必须**恰好**给一个目标({list(_RECIPIENT_TARGET_KEYS)}), "
+                f"现在给了 {filled or '零个'}: {entry!r}"
+            )
+        parsed[name] = targets
+    return parsed
+
+
+#: 导入期就校验一次收件人解析表: 表写错 = 启动即失败, 而不是等到某天发纪要才发现。
+#: 调用方仍用 ``notify_recipients()`` 取当前表(测试可 monkeypatch 该函数)。
+NOTIFY_RECIPIENTS: dict[str, dict[str, str]] = notify_recipients()
+
+
+MEETING_JOBS: tuple[MeetingJob, ...] = _meeting_jobs_with_overlay()
 
 
 def meeting_credential_env(meeting_name: str, meeting_code: str) -> str:
@@ -87,12 +256,6 @@ def meeting_job_for(meeting_name: str, meeting_code: str) -> MeetingJob:
         if job.name == name and job.meeting_code == code:
             return job
     raise ValueError(f"meeting {name!r} and code {code!r} does not match a fixed meeting")
-
-
-def meeting_workspace(default_workspace: str | Path) -> Path:
-    """Return the stable, separate workspace used by the meeting Session."""
-
-    return Path(default_workspace).expanduser().resolve() / MEETING_WORKSPACE_NAME
 
 
 def meeting_store_root(appdata_root: str = "") -> Path:
@@ -370,17 +533,69 @@ def should_process_recording(record: dict[str, Any], processed_ids: set[str]) ->
     return True
 
 
-def _task_body(job: MeetingJob, *, name: str | None = None, cron: str | None = None) -> str:
+#: 补偿重跑条目在 description 与正文里都自报身份: 否则「有哪些定时任务」看到的 4 条
+#: 里, 两条主任务与两条补偿重跑描述一模一样, 读不出哪条是兜底 (2026-09-11 评审)。
+_RETRY_NOTE = "补偿重跑"
+
+
+def _cron_clock(cron: str) -> str:
+    """``"30 17 * * 1,3,5"`` → ``"17:30"`` —— 只给人读的时点文案, 解析失败原样返回。"""
+    fields = cron.split()
+    if len(fields) < 2 or not (fields[0].isdigit() and fields[1].isdigit()):
+        return cron
+    return f"{int(fields[1]):02d}:{int(fields[0]):02d}"
+
+
+def _task_body(
+    job: MeetingJob,
+    *,
+    name: str | None = None,
+    cron: str | None = None,
+    retry: bool = False,
+) -> str:
+    """渲染一条 seed ``TASK.md``。
+
+    ``fire: tool`` 的正文不进入模型 (调度器直接调工具, 见
+    ``psi_agent.session.schedule_registry._fire_tool``), 但它是读文件的人与调度历史
+    里唯一的自述, 所以写清 做什么 / 口径在哪 / 失败了怎么补。
+
+    正文是给人和调度历史读的中文文案, 全角标点刻意保留, 逐行豁免 RUF001 (与
+    ``_card_dsl`` 的卡片文案同一处理)。
+    """
     tool_args = json.dumps(dict(job.tool_args), ensure_ascii=False, separators=(",", ":"))
+    schedule_cron = cron or job.cron
+    description = f"会后自动获取{job.title}原始全文转写并分析, 产出本场评价与后续建议"
+    lines = [
+        f"本任务由调度器直接调用 {job.tool_name}（fire: {job.fire}，不经过模型）；"  # noqa: RUF001
+        "上面的 tool_args 即全部入参。",
+        "",
+        f"- 做什么：取「{job.title}」最新已完成场次的原始转写，"  # noqa: RUF001
+        "按 config/meeting-sop.yaml 的生效条目逐条判定；"  # noqa: RUF001
+        "产出「本场 SOP 判定 + 本场会议评价 + 后续建议」，"  # noqa: RUF001
+        "投递给 config/meeting-automation.yaml 的收件人。",
+        "- 口径在哪：config/meeting-sop.yaml（可编辑的判定条目，改口径只改这里）+ "  # noqa: RUF001
+        "skills/meeting-sop/weekday-alignment/SKILL.md（判定纪律与输出结构）。",  # noqa: RUF001
+        "- 失败怎么办：按 record_file_id 去重；失败告警发给 alert_recipients；"  # noqa: RUF001
+        "补跑/补发用 meeting_pipeline_replay(meeting_name, record_file_id)。",
+    ]
+    if retry:
+        description += f"（{_cron_clock(schedule_cron)} {_RETRY_NOTE}，主任务已投递则自动跳过）"  # noqa: RUF001
+        lines.append(
+            f"- 本条是 {_cron_clock(schedule_cron)} 的{_RETRY_NOTE}："  # noqa: RUF001
+            f"主任务（{job.cron}）已成功投递时，"  # noqa: RUF001
+            "本次按 record 去重自动跳过，不重复投递。"  # noqa: RUF001
+        )
     return f"""---
 name: {name or job.name}
-description: 会后自动获取{job.title}原始全文转写并分析
-cron: \"{cron or job.cron}\"
+description: {description}
+cron: \"{schedule_cron}\"
 visibility: silent
 fire: {job.fire}
 tool: {job.tool_name}
 tool_args: {tool_args}
 ---
+
+{chr(10).join(lines)}
 """
 
 
@@ -395,64 +610,84 @@ def _job_schedules(job: MeetingJob) -> list[tuple[str, str]]:
     return schedules
 
 
-async def provision_meeting_workspace(default_workspace: str | Path) -> Path:
-    """Create the meeting workspace and its schedule files idempotently."""
+def meeting_schedule_files() -> dict[str, str]:
+    """Project ``MEETING_JOBS`` onto static seed TASK.md files.
 
-    workspace = meeting_workspace(default_workspace)
-    schedules = workspace / "schedules"
-    active_names = {name for job in MEETING_JOBS for name, _cron in _job_schedules(job)}
-    if schedules.is_dir():
-        # This workspace is code-owned. Remove only obsolete TASK.md files so
-        # schedules deleted from MEETING_JOBS cannot continue firing.
-        for task_dir in schedules.iterdir():
-            if not task_dir.is_dir() or task_dir.name in active_names:
-                continue
-            stale_task = task_dir / "TASK.md"
-            if stale_task.is_file():
-                stale_task.unlink()
-                with suppress(OSError):
-                    task_dir.rmdir()
+    Returns ``{schedule directory name: TASK.md content}`` for every job cron
+    and every retry cron.  The committed files under
+    ``agents/feishu/schedules/<name>/TASK.md`` must equal this projection —
+    the scheduler seeds them into the company workspace verbatim (only when
+    missing), and the consistency test pins both sides to this single source.
+    """
+    files: dict[str, str] = {}
     for job in MEETING_JOBS:
         for schedule_name, cron in _job_schedules(job):
-            task_dir = schedules / schedule_name
-            task_dir.mkdir(parents=True, exist_ok=True)
-            task_path = task_dir / "TASK.md"
-            body = _task_body(job, name=schedule_name, cron=cron)
-            if not task_path.exists() or task_path.read_text(encoding="utf-8") != body:
-                task_path.write_text(body, encoding="utf-8")
-    return workspace
-
-
-async def ensure_meeting_scheduler(
-    scheduler: Any, default_workspace: str | Path, *, ai_id: str = "", agent: str = ""
-) -> str:
-    """Provision the fixed meeting schedules and hand ownership to SchedulerManager."""
-    workspace = await provision_meeting_workspace(default_workspace)
-    return await scheduler.ensure(str(workspace), ai_id=ai_id, agent=agent, session_id=MEETING_SESSION_ID)
+            files[schedule_name] = _task_body(job, name=schedule_name, cron=cron, retry=cron != job.cron)
+    return files
 
 
 def json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+_PATH_LOCKS: dict[str, anyio.Lock] = {}
+_PATH_LOCKS_GUARD = anyio.Lock()
+
+
+async def path_lock(path: str | Path) -> anyio.Lock:
+    """进程内按路径去重的互斥锁 (读-改-写同一产物文件时使用)。
+
+    跨进程仍依赖「同一 Gateway 只 watch 一份」的单实例约定 (与 notify 的回执锁
+    同思路); 锁只防同进程内定时触发与手动重跑并发。
+    """
+    key = str(path)
+    async with _PATH_LOCKS_GUARD:
+        lock = _PATH_LOCKS.get(key)
+        if lock is None:
+            lock = anyio.Lock()
+            _PATH_LOCKS[key] = lock
+        return lock
+
+
+async def atomic_write_text(path: str | Path, text: str) -> None:
+    """原子写文本文件: 同目录临时文件 + ``os.replace``, 读方永远不会看到半截内容。
+
+    写失败时清理临时文件并把异常原样抛出 (不静默)。
+    """
+    target = Path(path)
+    await anyio.Path(str(target.parent)).mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        await anyio.Path(str(tmp)).write_text(text, encoding="utf-8")
+        await anyio.to_thread.run_sync(os.replace, str(tmp), str(target))  # ty: ignore
+    finally:
+        if tmp.exists():
+            with suppress(OSError):
+                tmp.unlink()
+
+
 __all__ = [
-    "MAIN_MEETING_GROUP_NAME",
+    "MEETING_AUTOMATION_CONFIG_PATH",
     "MEETING_JOBS",
-    "MEETING_SESSION_ID",
+    "NOTIFY_RECIPIENTS",
     "MeetingJob",
     "async_meeting_store_root",
+    "atomic_write_text",
+    "automation_resources",
+    "automation_runtime",
     "chunk_text",
-    "ensure_meeting_scheduler",
     "extract_latest_transcript_record",
     "extract_paragraph_ids",
     "extract_paragraph_items",
     "json_text",
+    "load_meeting_automation_config",
     "meeting_artifact_root",
     "meeting_credential_env",
     "meeting_job_for",
+    "meeting_schedule_files",
     "meeting_store_root",
-    "meeting_workspace",
-    "provision_meeting_workspace",
+    "notify_recipients",
+    "path_lock",
     "read_meeting_manifest",
     "render_transcript_paragraphs",
     "should_process_recording",

@@ -61,7 +61,7 @@ category: productivity
 2. 不要重复输出卡片已经完整展示的详情，也不要让接收者等待模型重新组织同一份内容。
 3. 明确区分事实、假设和待确认事项；缺失信息只标成缺口，不补写成事实。
 4. 接收者确认收到时，调用 `assignment_accept`。成功后不再经 `feishu_api` 另建 task v2 任务（`POST /open-apis/task/v2/tasks`），也不再调用 `assignment_transition`，避免重复任务和重复状态迁移。
-5. 需要方案时：先按 [`proposal-need-remind`](../proposal-need-remind/SKILL.md) 做中事/大事提醒(可跳过)；用户同意写方案后再用 [`proposal-writing-standard`](../proposal-writing-standard/SKILL.md) 协助形成可评审草案(多方案+分析；结构与硬闸门按该 skill)。不要在未提醒分级的情况下直接当成普通转达。
+5. 需要方案时：先按 [`proposal-need-remind`](../proposal-need-remind/SKILL.md) 做中事/大事提醒(可跳过)；用户同意写方案后再用 [`proposal-writing-standard`](../proposal-writing-standard/SKILL.md) 协助形成可评审草案(多方案+分析；权威为 **执行跟进与验收 SOP v2.0** 四期骨架与硬闸门，不是旧 RFC+11 章；通过后同步 `prop-<id>-*` 定时)。不要在未提醒分级的情况下直接当成普通转达。
 6. 接收者确认方案后，调用 `assignment_transition`，其中 `transition_type: "submit_plan"`，并把方案写入 `plan`。
 7. 如果接收者明确不形成方案或任务不需要方案，调用 `assignment_transition`，其中 `transition_type: "close"`，并写入 `closure_reason`。不要调用 `closed_without_plan`，Memory 没有这个 transition。
 
@@ -76,8 +76,9 @@ category: productivity
 
 可评审方案要求：
 
+- 权威骨架见 [`proposal-writing-standard`](../proposal-writing-standard/SKILL.md)（**执行跟进与验收 SOP v2.0** 四期）；本文不复制四期正文。
 - 说明接收者对任务的理解，而不是替安排者新增事实。
-- 列出准备采用的步骤、交付物和验收方式。
+- 列出准备采用的步骤、交付物和验收方式（实施期须能落到绝对 DDL + 验收门时，由 writing-standard 硬闸门兜）。
 - 标出仍需安排者或评审人决策的问题。
 - 不开始实施，除非用户明确要求进入实施。
 - 如果方案基于假设，必须把假设放在单独小节。

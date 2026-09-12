@@ -16,6 +16,7 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 import _feishu_impl as _f
+from _positive_negative_list.dedupe import release_source_key
 from _positive_negative_list.drafts import delete_draft_body, save_draft
 from _positive_negative_list.models import CaseDraft
 from _positive_negative_list.notifications import (
@@ -32,6 +33,10 @@ from psi_agent.session.runtime_context import get_session_id
 TABLE_ADAPTER: TableAdapter | Any | None = None
 table_adapter: TableAdapter | Any | None = None
 _CONFIRM_LOCKS: dict[tuple[int, str, str], asyncio.Lock] = {}
+
+#: 记录确认卡的两个按钮: 写入 / 取消录入(不写表)。
+ACTION_CONFIRM = "positive_negative_case_confirm"
+ACTION_CANCEL = "positive_negative_case_cancel"
 
 
 def _preview_digest(case: CaseDraft) -> str:
@@ -116,6 +121,70 @@ async def _send_subject_notice(
     return await NotificationSender(root).send_subject_notice(case, public_record_id)
 
 
+async def _cancel_unlocked(card_action_json: str = "", user_key: str = "") -> str:
+    """取消录入: 不写任何表、不留正式记录, 释放同源占位以便重新发起。
+
+    - 只有该案件的写入者本人(可信身份)能取消; 卡片回调不可伪造他人身份。
+    - 已写入正式总表的案件不可取消(提示走更正/申诉渠道), 绝不回删已入库记录。
+    - 重复点击幂等: 返回 ``already_cancelled``; 草稿正文保留到 7 天清理,
+      作为"已取消"墓碑, 防止旧卡片重复触发。
+    """
+    try:
+        payload = json.loads(card_action_json)
+    except TypeError, json.JSONDecodeError:
+        return _f.dumps_result({"ok": False, "status": "invalid_callback"})
+    if not isinstance(payload, dict) or not user_key.strip():
+        return _f.dumps_result({"ok": False, "status": "unauthorized"})
+    context = _context(payload)
+    case_id = str(context.get("case_id") or "").strip()
+    supplied_digest = str(context.get("preview_digest") or context.get("digest") or "").strip()
+    if not case_id:
+        return _f.dumps_result({"ok": False, "status": "invalid_callback"})
+
+    root = await resolve_appdata_root()
+    receipt = _read_receipt(root, case_id)
+    if receipt is not None:
+        if str(receipt.get("writer_user_key") or "") != user_key:
+            return _f.dumps_result({"ok": False, "status": "unauthorized"})
+        return _f.dumps_result(
+            {
+                "ok": False,
+                "status": "already_written",
+                "case_id": case_id,
+                "public_record_id": receipt.get("public_record_id", ""),
+                "message": "该条已写入正负面清单正式总表, 不能取消; 如需更正请联系 HR 走复核/申诉。",
+            }
+        )
+
+    session_id = get_session_id()
+    case = _find_any_draft(root, session_id, case_id)
+    if case is None:
+        return _f.dumps_result(
+            {"ok": False, "status": "draft_not_found", "message": "草稿不存在或已处理(已取消/已写入)。"}
+        )
+    if case.writer_user_key != user_key:
+        return _f.dumps_result({"ok": False, "status": "unauthorized"})
+    if case.workflow == "cancelled":
+        return _f.dumps_result({"ok": True, "status": "already_cancelled", "case_id": case_id})
+    if case.workflow not in {"ready_for_confirmation", "writing"}:
+        return _f.dumps_result({"ok": False, "status": "not_pending_confirmation"})
+    if supplied_digest and supplied_digest != _preview_digest(case):
+        return _f.dumps_result({"ok": False, "status": "digest_mismatch"})
+
+    cancelled = CaseDraft.from_mapping(case.to_mapping() | {"workflow": "cancelled"})
+    save_draft(root, user_key, session_id, case_id, cancelled)
+    released = release_source_key(root, case.source_key, case_id) if case.source_key else False
+    return _f.dumps_result(
+        {
+            "ok": True,
+            "status": "cancelled",
+            "case_id": case_id,
+            "source_released": released,
+            "message": "已取消录入: 未写入任何表, 可以重新发起记录。",
+        }
+    )
+
+
 async def _confirm_unlocked(card_action_json: str = "", user_key: str = "") -> str:
     """Confirm one card snapshot and create at most one public record."""
     try:
@@ -124,7 +193,10 @@ async def _confirm_unlocked(card_action_json: str = "", user_key: str = "") -> s
         return _f.dumps_result({"ok": False, "status": "invalid_callback"})
     if not isinstance(payload, dict) or not user_key.strip():
         return _f.dumps_result({"ok": False, "status": "unauthorized"})
-    if _action_name(payload) != "positive_negative_case_confirm":
+    action = _action_name(payload)
+    if action == ACTION_CANCEL:
+        return await _cancel_unlocked(card_action_json, user_key)
+    if action != ACTION_CONFIRM:
         return _f.dumps_result({"ok": False, "status": "invalid_callback"})
 
     context = _context(payload)
@@ -265,7 +337,10 @@ async def _confirm_unlocked(card_action_json: str = "", user_key: str = "") -> s
 
 
 async def positive_negative_case_confirm(card_action_json: str = "", user_key: str = "") -> str:
-    """Serialize confirmation side effects for one case within this process."""
+    """处理记录确认卡回调: 「确认写入」= 写正式总表; 「取消录入」= 不写表并释放占位。
+
+    Serialize confirmation side effects for one case within this process.
+    """
     try:
         payload = json.loads(card_action_json)
     except TypeError, json.JSONDecodeError:
@@ -273,7 +348,7 @@ async def positive_negative_case_confirm(card_action_json: str = "", user_key: s
     if (
         not isinstance(payload, dict)
         or not user_key.strip()
-        or _action_name(payload) != "positive_negative_case_confirm"
+        or _action_name(payload) not in (ACTION_CONFIRM, ACTION_CANCEL)
     ):
         return await _confirm_unlocked(card_action_json, user_key)
     context = _context(payload)

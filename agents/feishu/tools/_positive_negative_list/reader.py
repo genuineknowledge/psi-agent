@@ -169,10 +169,19 @@ def _condition(field_name: str, operator: str, value: str) -> dict[str, Any]:
 def build_filter(query: LedgerQuery, field_names: Mapping[str, str] | None = None) -> str:
     names = {**_FIELD_NAMES, **dict(field_names or {})}
     conditions: list[dict[str, Any]] = []
+    # 人员字段(涉事人/报告人)在飞书里是**多选**, 一条记录可以挂多个人。这里必须用
+    # ``contains``: 生产事故 (2026-09-10) —— 用 ``is`` 查「员工姓名 is [高博]」只匹配
+    # "列表恰好只有高博"的行, 含两人的行(092 = [董修奇, 高博]) 被静默跳过, 接口返回
+    # "0 条"而不是报错, agent 于是把"查不到"当成"没有"。换成 contains 后 3 条全出来。
     for key, field_name in (
-        ("record_id", names["record_id"]),
         ("subject_user_key", names["subject_user_key"]),
         ("reporter_user_key", names["reporter_user_key"]),
+    ):
+        value = getattr(query, key)
+        if value:
+            conditions.append(_condition(field_name, "contains", value))
+    for key, field_name in (
+        ("record_id", names["record_id"]),
         ("nature", names["nature"]),
         ("category", names["category"]),
     ):

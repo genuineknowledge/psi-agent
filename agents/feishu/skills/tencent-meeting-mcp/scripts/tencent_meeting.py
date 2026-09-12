@@ -191,7 +191,10 @@ def main():
             # 服务端返回业务错误时，结构为 {"error": {"code": ..., "message": ...}}，无 content 字段
             if "error" in inner:
                 error = inner["error"]
+                # 业务错误以非零退出码 + stderr 表达: 外层适配器据此显式失败/重试,
+                # 不再依赖 stdout 前缀字符串判断 (前缀约定脆弱, 见错误字典)。
                 print(f"[错误] {error.get('message', json.dumps(error, ensure_ascii=False))}")
+                sys.exit(1)
             elif "content" in inner:
                 for item in inner["content"]:
                     if item.get("type") == "text":

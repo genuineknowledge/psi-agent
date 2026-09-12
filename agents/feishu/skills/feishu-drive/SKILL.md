@@ -18,6 +18,13 @@ description: 飞书云盘（drive）接口表 —— 文档元数据、建文件
 - `file_type` 必须跟 token 的真实类型一致，写错飞书会报"找不到"而不是纠正你。
 - `comment_id` 是**一条评论主楼**的 id，从评论列表里取；主楼底下的每条回复另有 `reply_id`。
 
+## 调用面约束（防空转）
+
+- 本 skill 的「接口 / 端点」表**不是**可直接 call 的 Session 工具名。无专用工具时用 `feishu_api(method, uri, …)`；专用工具名必须出现在本回合 `tools` 列表（可用 `tool_search`）。
+- **禁止**发明 `feishu_*` 函数名（例如把 URI 路径改成 `feishu_user_get`）并换名连打。
+- 参数名以专用工具 schema 或本 skill / `feishu_api` 参数表为准，勿猜 keyword。
+- 若返回 `Tool … not found`、非法 JSON 参数、`unexpected keyword` / missing required：**立刻停止换名或微调参数重试**；重新扫描本回合 `tools` 与目标参数 schema（或本 skill 参数表）确认正确性后再调。连续两次此类失败时运行时会拒绝继续调用并下发说明。
+
 ## 评论
 
 | 要做的事 | method | endpoint | 关键参数 |

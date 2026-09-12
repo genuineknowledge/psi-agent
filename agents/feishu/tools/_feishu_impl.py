@@ -141,6 +141,17 @@ _PERMISSION_MSG_HINTS = (
 )
 
 
+# User-level authorization revoked/downgraded on the Feishu side. Observed as
+# 99991679 on user-token calls after console-side permission changes or silent
+# authorization expiry. This is NOT the same class as the plain per-resource
+# denials above: a revoked grant makes the offline capability ledger stale, so
+# the fix is to shrink the ledger and ask the user to authorize again — never to
+# fall back to the tenant token (that would silently produce bot-owned content
+# the user believes they created). The set is code-based on purpose: message
+# text varies and generic hints would clear grants on unrelated failures.
+_USER_AUTH_REVOKED_CODES = {99991679}
+
+
 def _is_permission_error(res: dict[str, Any]) -> bool:
     """True if ``res`` is a Feishu permission/authorization failure (so a UAT retry
     could help). Distinct from transport errors or empty-but-ok responses."""
@@ -230,7 +241,11 @@ async def _send_as_user(request: Any, user_key: str) -> dict[str, Any] | None:
         resp = await client.arequest(_fresh(request), option)
     except Exception as exc:  # SDK/transport failure
         return _error(f"Feishu request failed: {type(exc).__name__}: {exc}")
-    return _resp_to_result(resp)
+    result = _resp_to_result(resp)
+    # A user-token call is the ground truth for the offline capability ledger:
+    # success proves the grant, 99991679 proves Feishu-side revocation. Keep the
+    # two reconciliations here so every domain benefits without per-domain hooks.
+    return _reconcile_user_result(result, user_key, capabilities=capabilities_for(request))
 
 
 _RATE_LIMIT_STATUS = 429
@@ -403,6 +418,11 @@ async def _invoke_write(request: Any, key: str, identity: str, capabilities: lis
         # No usable token at all: the user chose to own this, so ask them to
         # authorize rather than producing it under the bot's name behind their back.
         return _error(_AUTH_PROMPT, need_auth=True, need_capabilities=needed)
+    if user_res.get("need_auth"):
+        # 99991679-class revocation: the user's authorization died on the Feishu
+        # side. Re-authorizing is the only fix — never silently finish under the
+        # bot's identity when the user chose to own this result.
+        return user_res
     if not _is_permission_error(user_res):
         return user_res
     # The user authorized the app, but Feishu refuses their identity on THIS resource
@@ -675,6 +695,93 @@ def missing_capabilities(user_key: str, needed: list[str]) -> list[str]:
     return [c for c in needed if c in _SCOPE_CATALOG and c not in have]
 
 
+def _write_json_map(path: str, data: dict[str, Any]) -> None:
+    """Persist a ``{user_key: value}`` map; a failed write must not break the caller."""
+    with contextlib.suppress(OSError), open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+
+
+def _drop_granted_capabilities(user_key: str) -> bool:
+    """Remove every capability the offline ledger claims for ``user_key``.
+
+    Called when Feishu answers with a user-authorization-revoked error: the
+    ledger only ever grows (see ``_feishu.auth._record_granted_capabilities``),
+    so a console-side revocation would otherwise keep the offline check green
+    while every real call fails. Returns True when a record was removed.
+    """
+    path = _granted_scopes_path()
+    data = _read_json_map(path)
+    key = _norm_user_key(user_key)
+    if key not in data:
+        return False
+    data.pop(key, None)
+    _write_json_map(path, data)
+    return True
+
+
+def _record_observed_capabilities(user_key: str, capabilities: list[str]) -> None:
+    """Union newly *observed* capabilities into the offline ledger.
+
+    The flip side of the ledger drift: a successful user-token call proves the
+    grant exists even when the ledger never recorded it (written before this
+    capability shipped, or refreshed from a token whose ``scope`` echo was
+    empty). Offline checks then stop re-prompting for something already granted.
+    """
+    caps = [c for c in capabilities if c in _SCOPE_CATALOG]
+    if not caps:
+        return
+    path = _granted_scopes_path()
+    data = _read_json_map(path)
+    key = _norm_user_key(user_key)
+    stored = data.get(key)
+    merged = (
+        {c for c in [*stored, *caps] if isinstance(c, str) and c in _SCOPE_CATALOG}
+        if isinstance(stored, list)
+        else set(caps)
+    )
+    data[key] = [c for c in scope_catalog_keys() if c in merged]
+    _write_json_map(path, data)
+
+
+def _is_user_auth_revoked(res: dict[str, Any]) -> bool:
+    """True when Feishu says the user-level authorization itself is no longer valid."""
+    if res.get("ok"):
+        return False
+    code = res.get("code")
+    return isinstance(code, int) and code in _USER_AUTH_REVOKED_CODES
+
+
+def _reconcile_user_result(
+    result: dict[str, Any], user_key: str, *, capabilities: list[str] | None = None
+) -> dict[str, Any]:
+    """Sync the offline capability ledger with one user-token call's outcome.
+
+    Success: union the inferred capabilities into ``granted_scopes.json`` so a
+    missing offline record stops causing false ``need_auth`` prompts.
+    Revocation (99991679): drop the user's whole ledger entry so the next call
+    re-prompts with the right capabilities instead of claiming permissions that
+    Feishu no longer honors, and annotate the result so callers surface a
+    re-authorization request rather than a raw API error.
+    """
+    if result.get("ok"):
+        if capabilities:
+            _record_observed_capabilities(user_key, capabilities)
+        return result
+    if not _is_user_auth_revoked(result):
+        return result
+    dropped = _drop_granted_capabilities(user_key)
+    annotated = dict(result)
+    note = (
+        "该用户授权已在飞书侧失效(99991679); "
+        + ("本地能力记录已清除, " if dropped else "")
+        + "请按 need_auth 引导重新授权。"
+    )
+    base = str(annotated.get("msg") or annotated.get("message") or "")
+    annotated["msg"] = f"{base} {note}".strip()
+    annotated["need_auth"] = True
+    return annotated
+
+
 _IDENTITY_USER = "user"
 _IDENTITY_BOT = "bot"
 _IDENTITY_CHOICES = (_IDENTITY_USER, _IDENTITY_BOT)
@@ -717,6 +824,23 @@ def _reset_uat_state() -> None:
 
 
 _REFRESH_URL = "https://open.feishu.cn/open-apis/authen/v1/refresh_access_token"
+
+#: Per-user refresh locks — the same refresh_token must never be refreshed
+#: concurrently (two paths — a scheduled task and a chat turn — can both touch
+#: one user's token; Feishu may invalidate the old refresh_token on either use).
+_refresh_locks: dict[str, Any] = {}
+
+
+def _refresh_lock(user_key: str) -> Any:
+    import asyncio  # noqa: PLC0415
+
+    lock = _refresh_locks.get(user_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _refresh_locks[user_key] = lock
+    return lock
+
+
 _APP_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
 
 
@@ -772,17 +896,27 @@ async def _get_valid_uat(user_key: str = "") -> Any:
     uat = await store.get(key)
     if uat is None:
         return None
+    old_scopes = list(uat.scopes or [])
     if uat_needs_refresh(uat) and uat.refresh_token:
-        app_token = await _get_app_access_token()
-        if app_token is not None:
-            payload = await _post_json(
-                _REFRESH_URL,
-                {"grant_type": "refresh_token", "refresh_token": uat.refresh_token},
-                headers={"Authorization": f"Bearer {app_token}"},
-            )
-            if payload.get("code") in (0, None) and (payload.get("data") or payload).get("access_token"):
-                uat = _uat_from_token_response(payload)
-                await store.set(key, uat)
+        async with _refresh_lock(key):
+            # 锁内重读:并发等待者进来时 token 可能已被上一家刷新好
+            uat = await store.get(key)
+            if uat is None or not uat_needs_refresh(uat) or not uat.refresh_token:
+                return uat
+            app_token = await _get_app_access_token()
+            if app_token is not None:
+                payload = await _post_json(
+                    _REFRESH_URL,
+                    {"grant_type": "refresh_token", "refresh_token": uat.refresh_token},
+                    headers={"Authorization": f"Bearer {app_token}"},
+                )
+                if payload.get("code") in (0, None) and (payload.get("data") or payload).get("access_token"):
+                    uat = _uat_from_token_response(payload)
+                    if not uat.scopes and old_scopes:
+                        # 刷新响应通常不回显 scope(首次授权才带);清空会让授权
+                        # 卡片等展示层误以为权限丢了,保留旧值只回填展示信息。
+                        uat.scopes = old_scopes
+                    await store.set(key, uat)
     return uat
 
 
@@ -891,6 +1025,7 @@ from _feishu.contact import (  # noqa: E402,F401
     _build_group_member_request,
     _child_department_ids,
     _child_departments,
+    _classify_names,
     _department_record,
     _members_of_department,
     _split_contacts,
@@ -899,6 +1034,7 @@ from _feishu.contact import (  # noqa: E402,F401
     find_users_by_contact_impl,
     get_users_batch_impl,
     list_department_members_impl,
+    member_status_check_impl,
     user_group_members_impl,
 )
 from _feishu.doc import (  # noqa: E402,F401
@@ -1027,10 +1163,21 @@ from _feishu.leave import (  # noqa: E402,F401
     _widgets,
     query_leave_impl,
 )
-from _feishu.mentor_ledger import (  # noqa: E402,F401
+
+# Only the inert half of the mentor-ledger domain is re-exported here. Importing
+# anything from ``_feishu.mentor_ledger`` would rebuild the import cycle: that module
+# imports *this* one as ``_core``, so whenever it loads first (tool-registry glob
+# order decides) it is only partially initialized by the time this line runs, and
+# every name defined below its own import fails with "cannot import name ... from
+# partially initialized module". ``ledger_schema`` imports nothing from the tools
+# tree, so it is safe to depend on from either direction.
+# ``mentor_ledger_ensure_impl`` is reached directly by its one caller,
+# ``feishu_mentor_ledger_ensure.py``, rather than through this re-export.
+from _feishu.ledger_schema import (  # noqa: E402,F401
+    _LEDGER_NAME_PREFIX,
     _LEDGER_SCHEMA_FIELDS,
     _build_list_tables_request,
-    mentor_ledger_ensure_impl,
+    _ledger_base_name,
 )
 from _feishu.message import (  # noqa: E402,F401
     _ANNOUNCEMENT_ERROR_HINTS,
@@ -1148,10 +1295,22 @@ from _feishu.sheet import (  # noqa: E402,F401
     read_sheet_range_impl,
     write_sheet_impl,
 )
+from _feishu.strike import (  # noqa: E402,F401
+    _col_letter,
+    _norm_name,
+    _parse_cell_strikes,
+    sheet_strike_read_impl,
+)
 from _feishu.task import (  # noqa: E402,F401
     _build_create_task_request,
     _due_to_ms,
     create_task_impl,
+)
+from _feishu.todo_sop import (  # noqa: E402,F401
+    _build_buckets,
+    _find_col,
+    load_todo_sop,
+    todo_fill_status_impl,
 )
 from _feishu.worktree import (  # noqa: E402,F401
     _node_text,

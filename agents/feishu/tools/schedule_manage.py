@@ -38,7 +38,10 @@ def _schedules_dir(workspace: str = "") -> anyio.Path:
 
 def _validate_schedule_name(schedule_name: str) -> str | None:
     if not schedule_name.strip():
-        return "Invalid schedule name: name cannot be empty."
+        return (
+            "Invalid schedule name: name cannot be empty. "
+            "Pass schedule_name=… (not trigger_name — that is for trigger_manage)."
+        )
     if "/" in schedule_name or "\\" in schedule_name:
         return f"Invalid schedule name {schedule_name!r}: must not contain path separators."
     if ".." in schedule_name:
@@ -184,13 +187,28 @@ def _validate_fire_tool(*, fire: str, tool: str, tool_args: dict[str, object]) -
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", tool.strip()):
         return f"Invalid tool name {tool!r}."
     # Feishu IM reminders: require the usual keys when targeting that tool.
-    if tool.strip() == "feishu_message_send":
+    name = tool.strip()
+    if name == "feishu_message_send":
         rid = tool_args.get("receive_id")
         text = tool_args.get("text")
         if not isinstance(rid, str) or not rid.strip():
             return "feishu_message_send tool_args need non-empty string receive_id."
         if not isinstance(text, str) or not text.strip():
             return "feishu_message_send tool_args need non-empty string text."
+        lowered = rid.casefold()
+        if lowered in {"oc_xxx", "ou_xxx"} or "replace" in lowered or rid.startswith("<"):
+            return "tool_args.receive_id still looks like a placeholder; use real chat_id/open_id."
+    # 方案跟进: 到点必须文字催办 + 进度卡(刻意为之; 裸 message_send 不够).
+    if name == "feishu_proposal_nudge":
+        rid = tool_args.get("receive_id")
+        text = tool_args.get("text")
+        items = tool_args.get("items_json")
+        if not isinstance(rid, str) or not rid.strip():
+            return "feishu_proposal_nudge tool_args need non-empty string receive_id."
+        if not isinstance(text, str) or not text.strip():
+            return "feishu_proposal_nudge tool_args need non-empty string text."
+        if not isinstance(items, str) or not items.strip():
+            return "feishu_proposal_nudge tool_args need non-empty string items_json (card rows)."
         lowered = rid.casefold()
         if lowered in {"oc_xxx", "ou_xxx"} or "replace" in lowered or rid.startswith("<"):
             return "tool_args.receive_id still looks like a placeholder; use real chat_id/open_id."
@@ -277,6 +295,7 @@ async def schedule_manage(
     tool: str = "",
     tool_args: str = "",
     workspace: str = "",
+    trigger_name: str = "",
 ) -> str:
     """Create, patch, view, list, or delete workspace scheduled tasks.
 
@@ -311,6 +330,8 @@ async def schedule_manage(
     Args:
         action: One of "list", "view", "create", "patch", or "delete".
         schedule_name: Schedule directory name for view/create/patch/delete.
+            Prefer this key. Do not use ``trigger_name`` for schedules — that
+            belongs to ``trigger_manage`` (event triggers).
         cron: Cron expression for recurring create, or to change it on patch.
         description: One-line description used on create/patch.
         content: TASK.md body for ``fire=prompt`` — the firing turn's only input,
@@ -326,10 +347,17 @@ async def schedule_manage(
             card must put that person's schedules under *their* workspace, not HR's,
             or the fired tool reads HR's state and syncs the wrong person.
         tool_args: JSON object string of kwargs when ``fire=tool``.
+        trigger_name: Alias for ``schedule_name`` when the model confuses this
+            tool with ``trigger_manage``. Used only if ``schedule_name`` is empty.
 
     Returns:
         A result message, list output, or TASK.md content.
     """
+    # 刻意为之: accept trigger_name as alias — twin APIs share fire/tool_args shape;
+    # models often pass the wrong name key and previously got empty-name failures.
+    if not schedule_name.strip() and trigger_name.strip():
+        schedule_name = trigger_name.strip()
+
     schedules_dir = _schedules_dir(workspace)
     action = action.strip().lower()
 

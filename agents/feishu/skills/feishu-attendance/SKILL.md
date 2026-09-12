@@ -26,6 +26,13 @@ description: 飞书考勤（attendance）接口表 —— 读考勤组（考勤�
 两个 list 接口都**只返回 id + 名字**（班次多给 `punch_times` / `is_flexible`），
 规则一律要读详情接口才有。别指望 list 一次拿全。
 
+## 调用面约束（防空转）
+
+- 本 skill 的「接口 / 端点」表**不是**可直接 call 的 Session 工具名。无专用工具时用 `feishu_api(method, uri, …)`；专用工具名必须出现在本回合 `tools` 列表（可用 `tool_search`）。
+- **禁止**发明 `feishu_*` 函数名（例如把 URI 路径改成 `feishu_user_get`）并换名连打。
+- 参数名以专用工具 schema 或本 skill / `feishu_api` 参数表为准，勿猜 keyword。
+- 若返回 `Tool … not found`、非法 JSON 参数、`unexpected keyword` / missing required：**立刻停止换名或微调参数重试**；重新扫描本回合 `tools` 与目标参数 schema（或本 skill 参数表）确认正确性后再调。连续两次此类失败时运行时会拒绝继续调用并下发说明。
+
 ## 考勤组（考勤组配置）
 
 | 要做的事 | method | endpoint | 关键参数 |

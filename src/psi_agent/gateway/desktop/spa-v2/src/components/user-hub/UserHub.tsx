@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { Bot, ClipboardList, ExternalLink, Layers, LogIn, Settings2, UserCog, UserRound } from 'lucide-react'
+import { Bot, ClipboardList, ExternalLink, Layers, LogIn, Settings2, UserCog } from 'lucide-react'
 import type { AiInfo } from '../../services/api'
 import { listAis } from '../../services/api'
 import { useI18n } from '../../i18n'
 import { surveyUrlFor } from '../../haitun-agent/surveyLinks'
-import { readStoredAvatar, readStoredName } from '../../services/userProfile'
+import { readStoredAvatar, readStoredName, USER_PROFILE_EVENT } from '../../services/userProfile'
+import { resolveAccountDisplayName } from '../../services/accountDisplayName'
 import { dedupeAisForDisplay, readStoredAiId } from '../../services/bootstrapAi'
 import { useAuthAccount } from '../../services/useAuthAccount'
 import HubAdvancedPanel from './HubAdvancedPanel'
@@ -12,11 +13,10 @@ import HubAdvancedSettingsPanel from './HubAdvancedSettingsPanel'
 import HubContentPanel from './HubContentPanel'
 import HubLoginPanel from './HubLoginPanel'
 import HubModelsPanel from './HubModelsPanel'
-import HubProfilePanel from './HubProfilePanel'
 import HubSettingsPanel from './HubSettingsPanel'
 import './user-hub.css'
 
-export type HubPanel = 'profile' | 'models' | 'content' | 'login' | 'settings' | 'settingsAdvanced' | 'advanced' | null
+export type HubPanel = 'models' | 'content' | 'login' | 'settings' | 'settingsAdvanced' | 'advanced' | null
 
 type Props = {
   selectedAiId: string | null
@@ -53,7 +53,8 @@ type Props = {
 }
 
 /**
- * 侧栏账户区：头像直达我的资料，模型池与设置分入口。
+ * 侧栏账户区：头像菜单进账号；模型池与设置分入口。
+ * 「我的资料」已并进账号面板，不再单独开一栏（刻意为之）。
  */
 export default function UserHub({
   selectedAiId,
@@ -73,7 +74,7 @@ export default function UserHub({
   onLoginStateChanged,
 }: Props) {
   const { t, language } = useI18n()
-  // 头像改成弹菜单(资料 / 登录)后需要这两个: rootRef 判点击是否落在菜单外。
+  // 头像弹菜单(账号)用 rootRef 判点击是否落在菜单外。
   const rootRef = useRef<HTMLDivElement | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [panel, setPanel] = useState<HubPanel>(null)
@@ -82,6 +83,19 @@ export default function UserHub({
   const [aiCount, setAiCount] = useState(0)
   const [freeModelNoticeOpen, setFreeModelNoticeOpen] = useState(false)
   const auth = useAuthAccount()
+
+  useEffect(() => {
+    const sync = () => {
+      setUserName(readStoredName())
+      setUserAvatar(readStoredAvatar())
+    }
+    window.addEventListener(USER_PROFILE_EVENT, sync)
+    window.addEventListener('storage', sync)
+    return () => {
+      window.removeEventListener(USER_PROFILE_EVENT, sync)
+      window.removeEventListener('storage', sync)
+    }
+  }, [])
 
   useEffect(() => {
     if (!openModelsOnMount) return
@@ -155,11 +169,16 @@ export default function UserHub({
     return () => window.removeEventListener('keydown', onKey)
   }, [freeModelNoticeOpen, panel, menuOpen, loginRequired])
 
-  /* 云端账号优先于本地昵称: 登录后侧栏必须显示账号身份, 否则用户看不出自己
-   * 已登录(原型 D4「侧栏账户区就地更新为已登录」)。未登录时回落本地昵称。 */
+  /* 云端真实昵称优先；若云端把手机号/邮箱塞进 displayName（常见默认），
+   * 视为未设置，回落本地 gw-user-name，避免登录后侧栏一直显示手机号。 */
   const loggedIn = Boolean(auth.status?.available && auth.status?.loggedIn)
-  const cloudName = auth.user?.displayName?.trim() ?? ''
-  const shownName = (loggedIn && cloudName) || userName.trim()
+  const shownName = resolveAccountDisplayName({
+    loggedIn,
+    cloudName: auth.user?.displayName,
+    identities: auth.identities,
+    localName: userName,
+    fallback: t('app.defaultUser'),
+  })
   const initial = shownName.charAt(0).toUpperCase()
   const displayName = shownName || t('app.defaultUser')
 
@@ -231,9 +250,6 @@ export default function UserHub({
 
       {menuOpen && (
         <div className="user-hub-menu" role="menu">
-          <button type="button" role="menuitem" onClick={() => openPanel('profile')}>
-            <UserRound size={15} /> {t('app.profile')}
-          </button>
           {/* 已登录后这一项要变成「账户」: 仍写「登录账号」会让用户以为没登上,
               点进去却是账户面板 —— 入口与落点对不上。 */}
           <button type="button" role="menuitem" onClick={() => openPanel('login')}>
@@ -243,15 +259,6 @@ export default function UserHub({
         </div>
       )}
 
-      <HubProfilePanel
-        show={panel === 'profile'}
-        onClose={() => setPanel(null)}
-        onToast={onToast}
-        onSaved={(name, avatar) => {
-          setUserName(name)
-          setUserAvatar(avatar)
-        }}
-      />
       <HubModelsPanel
         show={panel === 'models'}
         onClose={() => setPanel(null)}

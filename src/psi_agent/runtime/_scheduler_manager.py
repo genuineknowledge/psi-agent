@@ -95,18 +95,21 @@ class SchedulerManager:
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
         return f"scheduler-{digest}"
 
-    async def ensure(self, workspace: str, *, ai_id: str = "", agent: str = "", session_id: str = "") -> str:
+    async def ensure(self, workspace: str, *, ai_id: str = "", agent: str = "") -> str:
         """确保 *workspace* 有且仅有一个调度 Session; 返回其 session id (跳过时 ``""``)。
 
         幂等: 已存在则直接返回。``schedules/`` 不存在或为空时**不** spawn (按需),
         但有可用 AI 时把 workspace 记入 ``_pending``, 由 ``watch_loop`` 稍后自动拉起
         —— 首个定时任务无需任何外部事件即可生效。任何异常都只记 warning 并返回
         ``""`` —— 调度起不来不该拖垮建会话 / 收消息的主链路。
+
+        session id 一律由 workspace 派生 (``scheduler-<sha256 前缀>``), 调用方不指定:
+        组织级任务用哪个 Session 由公司 seed workspace 决定, 不依赖某个固定字符串。
         """
         if not workspace.strip():
             return ""
         try:
-            return await self._do_ensure(workspace, ai_id=ai_id, agent=agent, session_id=session_id)
+            return await self._do_ensure(workspace, ai_id=ai_id, agent=agent)
         except Exception as e:
             logger.warning(f"SchedulerManager: failed to ensure scheduler for {workspace!r}: {e!r}")
             return ""
@@ -148,9 +151,9 @@ class SchedulerManager:
             logger.info(f"SchedulerManager: seeded schedule {task_dir.name!r} from agent package into {workspace!r}")
         return seeded
 
-    async def _do_ensure(self, workspace: str, *, ai_id: str, agent: str, session_id: str = "") -> str:
+    async def _do_ensure(self, workspace: str, *, ai_id: str, agent: str) -> str:
         key = await self._workspace_key(workspace)
-        sid = session_id.strip() or self._session_id_from_key(key)
+        sid = self._session_id_from_key(key)
         async with self._lock:
             logger.debug(f"SchedulerManager: acquired lock for ensure {workspace!r}")
             # 公司级种子任务随 agent 包部署: 每次 ensure 都幂等补一遍 (已 spawn 的
@@ -232,13 +235,13 @@ class SchedulerManager:
     async def _sweep_once(self) -> None:
         """一轮 pending 重查: 有 schedules 的 workspace 立即拉起调度 Session。
 
-        同时兜底 seed workspace 的冷启动 —— 它可能从没被任何用户消息 ensure 过
-        (不在 ``_pending`` 里), 不在这里主动 ensure 的话, 部署后种子任务永远不落盘。
+        同时每轮都对 seed workspace 跑一次幂等 ``ensure``: 冷启动兜底 (它可能从没被
+        任何用户消息 ensure 过, 不在 ``_pending`` 里) 之外, 也保证**后续部署**新增的
+        公司级种子任务最迟一个轮询周期内落盘 —— 重启后调度 Session 由 state 恢复、
+        不复走 spawn 路径, 旧「只在会话缺失时补种」会让新任务一直等不到 seed。
         """
         if self.seed_workspace.strip():
-            seed_sid = self._session_id_from_key(await self._workspace_key(self.seed_workspace))
-            if not self._sm.has(seed_sid):
-                await self.ensure(self.seed_workspace, ai_id=self._ai_id, agent=self.seed_agent)
+            await self.ensure(self.seed_workspace, ai_id=self._ai_id, agent=self.seed_agent)
         for key, (workspace, ai_id, agent) in list(self._pending.items()):
             sid = self._session_id_from_key(key)
             if self._sm.has(sid):

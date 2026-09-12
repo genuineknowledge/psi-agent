@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import builtins
 import sys
 import textwrap
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -686,16 +689,103 @@ async def test_refresh_mixed_changes(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_get_last_file_wins(tmp_path: Path) -> None:
-    """get() searches files in insertion order, returns first match."""
-    tools_dir = tmp_path / "tools"
-    await anyio.Path(tools_dir).mkdir()
-    await anyio.Path(tools_dir / "a.py").write_text("async def echo() -> str:\n    return 'a'\n", encoding="utf-8")
-    await anyio.Path(tools_dir / "b.py").write_text("async def echo() -> str:\n    return 'b'\n", encoding="utf-8")
-    tr = await ToolRegistry.load(tools_dir)
+async def test_get_last_file_wins() -> None:
+    """get() resolves a duplicate name to the last-registered file."""
+
+    async def echo_a() -> str:
+        return "a"
+
+    async def echo_b() -> str:
+        return "b"
+
+    tr = ToolRegistry(
+        files={
+            "a.py": FileEntry(
+                file_hash="h1",
+                tools={"echo": ToolFunction.from_callable(echo_a)},
+                funcs={"echo": echo_a},
+            ),
+            "b.py": FileEntry(
+                file_hash="h2",
+                tools={"echo": ToolFunction.from_callable(echo_b)},
+                funcs={"echo": echo_b},
+            ),
+        }
+    )
     func = tr.get("echo")
     assert func is not None
-    assert await func() in ("a", "b")  # glob order is filesystem-dependent
+    assert await func() == "b"
+
+
+@pytest.mark.anyio
+async def test_duplicate_name_metadata_and_callable_come_from_same_file(tmp_path: Path) -> None:
+    """A name defined in two files resolves to one layer, not two.
+
+    ``tools`` (what the model sees) is built by overwriting per file, so
+    the last-loaded file wins there.  ``get()`` (what actually runs) has
+    to land on that same file — otherwise the model is shown one layer's
+    description and schema while a different layer's body executes.
+    """
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "a_official.py").write_text(
+        textwrap.dedent("""\
+        async def echo() -> str:
+            \"\"\"OFFICIAL DOC.\"\"\"
+            return 'OFFICIAL'
+    """),
+        encoding="utf-8",
+    )
+    await anyio.Path(tools_dir / "z_personal.py").write_text(
+        textwrap.dedent("""\
+        async def echo() -> str:
+            \"\"\"PERSONAL DOC.\"\"\"
+            return 'PERSONAL'
+    """),
+        encoding="utf-8",
+    )
+    tr = await ToolRegistry.load(tools_dir)
+
+    func = tr.get("echo")
+    assert func is not None
+    # Both sides name the same layer: "PERSONAL DOC." ↔ "PERSONAL".
+    assert tr.tools["echo"].description.split()[0] == await func()
+    # And that layer is the last-loaded file, matching ``tools``' overwrite order.
+    assert await func() == "PERSONAL"
+
+
+@pytest.mark.anyio
+async def test_get_reaches_tools_shadowed_by_a_later_file(tmp_path: Path) -> None:
+    """Losing a name collision must not make a file's other tools unreachable."""
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "a_official.py").write_text(
+        textwrap.dedent("""\
+        async def echo() -> str:
+            return 'OFFICIAL'
+        async def official_only() -> str:
+            return 'official_only'
+    """),
+        encoding="utf-8",
+    )
+    await anyio.Path(tools_dir / "z_personal.py").write_text(
+        textwrap.dedent("""\
+        async def echo() -> str:
+            return 'PERSONAL'
+        async def personal_only() -> str:
+            return 'personal_only'
+    """),
+        encoding="utf-8",
+    )
+    tr = await ToolRegistry.load(tools_dir)
+
+    for name in ("echo", "official_only", "personal_only"):
+        assert tr.get(name) is not None, f"{name} became unreachable"
+    official_only = tr.get("official_only")
+    personal_only = tr.get("personal_only")
+    assert official_only is not None and personal_only is not None
+    assert await official_only() == "official_only"
+    assert await personal_only() == "personal_only"
 
 
 # ── bare-name private helper imports ─────────────────────────────────────────
@@ -869,3 +959,259 @@ async def test_refresh_preserves_private_helper_module_state(tmp_path: Path) -> 
     remember_after = tr.get("remember")
     assert remember_after is not None
     assert await remember_after("two") == 2, "private helper state was reset by refresh"
+
+
+# ── process-wide compiled-module cache ───────────────────────────────────────
+#
+# ``ToolRegistry.load()`` builds a fresh instance with ``old_files=None``, so the
+# per-instance hash comparison never fires across sessions and every session
+# re-compiled every tool file.  A process-wide cache keyed on
+# ``(layer_id, file_hash)`` makes the second load reuse the module object.
+
+
+@contextmanager
+def _count_compiles(tools_dir: Path) -> Iterator[list[str]]:
+    """Record every ``compile()`` whose filename lives under *tools_dir*."""
+    calls: list[str] = []
+    real_compile = builtins.compile
+    root = str(Path(tools_dir).resolve())
+
+    def counting_compile(source: Any, filename: Any, mode: str, *args: Any, **kwargs: Any) -> Any:
+        try:
+            under_tools = str(Path(str(filename)).resolve()).startswith(root)
+        except OSError:
+            under_tools = False
+        if under_tools:
+            calls.append(str(filename))
+        return real_compile(source, filename, mode, *args, **kwargs)
+
+    builtins.compile = counting_compile  # ty: ignore
+    try:
+        yield calls
+    finally:
+        builtins.compile = real_compile
+
+
+@pytest.mark.anyio
+async def test_second_load_of_same_dir_reuses_compiled_modules(tmp_path: Path) -> None:
+    """A second ``load()`` of an unchanged dir compiles nothing.
+
+    ``load()`` passes ``old_files=None``, so without a process-wide cache the
+    second load re-compiles every file even though the bytes are identical.
+    """
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    for name in ("a", "b", "c"):
+        await anyio.Path(tools_dir / f"{name}.py").write_text(
+            f"async def tool_{name}() -> str:\n    return {name!r}\n", encoding="utf-8"
+        )
+
+    with _count_compiles(tools_dir) as first:
+        tr_first = await ToolRegistry.load(tools_dir, "session-one")
+    with _count_compiles(tools_dir) as second:
+        tr_second = await ToolRegistry.load(tools_dir, "session-two")
+
+    assert len(first) == 3, f"first load should compile every file, compiled {first}"
+    assert len(second) == 0, f"second load re-compiled {len(second)} file(s): {second}"
+    assert set(tr_first.tools) == set(tr_second.tools) == {"tool_a", "tool_b", "tool_c"}
+    reused = tr_second.get("tool_a")
+    assert reused is not None
+    assert await reused() == "a"
+
+
+@pytest.mark.anyio
+async def test_changed_file_is_recompiled_despite_cache(tmp_path: Path) -> None:
+    """A content change (new hash) must miss the cache and re-compile."""
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "a.py").write_text("async def foo() -> str:\n    return 'first'\n", encoding="utf-8")
+
+    tr = await ToolRegistry.load(tools_dir, "s")
+    first = tr.get("foo")
+    assert first is not None
+    assert await first() == "first"
+
+    await anyio.Path(tools_dir / "a.py").write_text("async def foo() -> str:\n    return 'second'\n", encoding="utf-8")
+
+    with _count_compiles(tools_dir) as calls:
+        tr_again = await ToolRegistry.load(tools_dir, "s")
+    assert len(calls) == 1, "changed file was served from cache instead of re-compiled"
+    again = tr_again.get("foo")
+    assert again is not None
+    assert await again() == "second"
+
+
+@pytest.mark.anyio
+async def test_cache_does_not_share_identical_files_across_dirs(tmp_path: Path) -> None:
+    """Byte-identical files in two tools dirs get their own module.
+
+    Same bytes mean the same ``file_hash``, so a cache keyed on hash alone
+    would hand the second dir the first dir's module — and with it the first
+    dir's private helper binding.
+    """
+    source = "import _priv_helper\n\nasync def which() -> str:\n    return _priv_helper.MARKER\n"
+    first_dir, second_dir = tmp_path / "ws_a" / "tools", tmp_path / "ws_b" / "tools"
+    for tools_dir, marker in ((first_dir, "ws-a"), (second_dir, "ws-b")):
+        await anyio.Path(tools_dir).mkdir(parents=True)
+        await anyio.Path(tools_dir / "_priv_helper.py").write_text(f"MARKER = {marker!r}\n", encoding="utf-8")
+        await anyio.Path(tools_dir / "same.py").write_text(source, encoding="utf-8")
+
+    tr_a = await ToolRegistry.load(first_dir, "a")
+    with _count_compiles(second_dir) as calls:
+        tr_b = await ToolRegistry.load(second_dir, "b")
+
+    # Only ``same.py`` is under test; the private helper is compiled by
+    # importlib on its own schedule and would blur the count.
+    same_compiles = [call for call in calls if Path(call).name == "same.py"]
+    assert len(same_compiles) == 1, "identical bytes in another dir were served from the first dir's cache"
+    func_a, func_b = tr_a.get("which"), tr_b.get("which")
+    assert func_a is not None and func_b is not None
+    assert await func_a() == "ws-a"
+    assert await func_b() == "ws-b", "second dir got the first dir's cached module"
+
+
+# ── deterministic load order ─────────────────────────────────────────────────
+#
+# The scan used to iterate ``glob("*.py")`` raw, so load order was whatever the
+# filesystem returned.  That made order a hidden input to other behaviour: 59
+# tool files once failed to load because glob order put a file that carries its
+# own ``sys.path`` preamble *after* the files depending on it, and one A1 probe
+# criterion was structurally unable to fail because the first of three
+# same-layer importers bound the submodule as an attribute on the parent for
+# the other two.
+#
+# "Load twice, compare" cannot judge this: one filesystem returns one order, so
+# such a test is green whether or not the code sorts.  The criteria below drive
+# the load through a glob whose order is deliberately *not* the target order and
+# assert on the exec order actually observed, which is the layer the fix is in.
+# Reading the ``tools`` dict instead would prove nothing — it is a dict, and
+# these files contribute the same entries in any order.
+
+
+@contextmanager
+def _shuffled_glob(order: str) -> Iterator[None]:
+    """Make ``anyio.Path.glob`` yield in *order* — the opposite of the target.
+
+    ``"reverse"`` yields reverse-sorted, ``"rotate"`` moves the last name to the
+    front.  Both differ from sorted order for the inputs used here, so a raw
+    scan visibly inherits this order and a sorting scan visibly does not.
+    """
+    real_glob = anyio.Path.glob
+
+    def fake_glob(self: anyio.Path, pattern: str) -> Any:
+        async def gen() -> Any:
+            found = [p async for p in real_glob(self, pattern)]
+            found.sort(key=lambda p: p.name, reverse=True)
+            if order == "rotate":
+                found = found[-1:] + found[:-1]
+            for item in found:
+                yield item
+
+        return gen()
+
+    anyio.Path.glob = fake_glob  # ty: ignore
+    try:
+        yield
+    finally:
+        anyio.Path.glob = real_glob
+
+
+@contextmanager
+def _record_exec_order() -> Iterator[list[str]]:
+    """Record the tool-file basenames reaching ``compile()``, in exec order.
+
+    ``compile()`` is the narrowest observation point for *load* order: it is
+    called once per file actually exec'd, before that file's body runs.  Its
+    ``filename`` argument is the tool path the scan passed in.
+    """
+    seen: list[str] = []
+    real_compile = builtins.compile
+
+    def recording_compile(source: Any, filename: Any, mode: str, *args: Any, **kwargs: Any) -> Any:
+        name = Path(str(filename)).name
+        if name.endswith(".py"):
+            seen.append(name)
+        return real_compile(source, filename, mode, *args, **kwargs)
+
+    builtins.compile = recording_compile  # ty: ignore
+    try:
+        yield seen
+    finally:
+        builtins.compile = real_compile
+
+
+async def _write_numbered_tools(tools_dir: Path, stems: tuple[str, ...]) -> None:
+    """One trivially-loadable tool per stem, each contributing a distinct name."""
+    await anyio.Path(tools_dir).mkdir(parents=True)
+    for stem in stems:
+        await anyio.Path(tools_dir / f"{stem}.py").write_text(
+            f"async def tool_{stem}() -> str:\n    return {stem!r}\n", encoding="utf-8"
+        )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("glob_order", ["reverse", "rotate"])
+async def test_files_exec_in_sorted_order_not_glob_order(tmp_path: Path, glob_order: str) -> None:
+    """Files exec in sorted-by-name order even when glob yields another order.
+
+    Uses a unique session id so the process-wide module cache cannot serve
+    these files and skip the ``compile()`` this criterion observes.
+    """
+    stems = ("alpha", "bravo", "charlie", "delta")
+    tools_dir = tmp_path / "tools"
+    await _write_numbered_tools(tools_dir, stems)
+
+    with _shuffled_glob(glob_order), _record_exec_order() as order:
+        tr = await ToolRegistry.load(tools_dir, f"order-{glob_order}-{tmp_path.name}")
+
+    loaded = [name for name in order if Path(name).stem in stems]
+    assert loaded == [f"{stem}.py" for stem in stems], (
+        f"files exec'd in {loaded}, not sorted order — load order is inheriting glob order"
+    )
+    assert set(tr.tools) == {f"tool_{stem}" for stem in stems}
+
+
+@pytest.mark.anyio
+async def test_registry_file_keys_follow_sorted_order(tmp_path: Path) -> None:
+    """``_files`` is keyed in sorted order, so ``get()``'s last-wins is defined.
+
+    ``get()`` resolves duplicate names by walking ``_files`` in reverse
+    insertion order.  That rule only names one winner if insertion order is
+    itself fixed; under a raw glob the "last" file is whatever the filesystem
+    happened to return last.
+    """
+    stems = ("alpha", "bravo", "charlie", "delta")
+    tools_dir = tmp_path / "tools"
+    await _write_numbered_tools(tools_dir, stems)
+
+    with _shuffled_glob("reverse"):
+        tr = await ToolRegistry.load(tools_dir, f"keys-{tmp_path.name}")
+
+    keys = [Path(path).name for path in tr._files]
+    assert keys == [f"{stem}.py" for stem in stems], f"_files keyed in {keys}, not sorted order"
+
+
+@pytest.mark.anyio
+async def test_duplicate_name_winner_is_the_last_in_sorted_order(tmp_path: Path) -> None:
+    """A name in two files resolves to the sorted-last file, whatever glob says.
+
+    This is the consequence users see: with glob order deciding, the same two
+    files could resolve either way on a different filesystem.  Both files
+    define ``pick``, so the winner is observable by calling it.
+    """
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir(parents=True)
+    for stem in ("a_early", "z_late"):
+        await anyio.Path(tools_dir / f"{stem}.py").write_text(
+            f'async def pick() -> str:\n    """From {stem}."""\n    return {stem!r}\n', encoding="utf-8"
+        )
+
+    with _shuffled_glob("reverse"):
+        tr = await ToolRegistry.load(tools_dir, f"dupe-{tmp_path.name}")
+
+    winner = tr.get("pick")
+    assert winner is not None
+    assert await winner() == "z_late", "duplicate-name winner followed glob order, not sorted order"
+    # Metadata and callable have to name the same file, so the description is
+    # checked too — a distinct docstring per file makes the source observable.
+    assert tr.tools["pick"].description == "From z_late."

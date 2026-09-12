@@ -74,8 +74,25 @@ class McpProxy:
             method="POST"
         )
 
+        # 显式超时: 上游挂起时让本代理快速失败 (外层适配器有重试与总超时兜底)。
+        # 超时值读 config/meeting-automation.yaml 的 runtime.tencent.http_timeout_seconds;
+        # 文件缺失/解析失败回退 30s (vendor 脚本不因主仓配置问题而崩)。
+        http_timeout_seconds = 30.0
         try:
-            with urllib.request.urlopen(req) as response:
+            import yaml as _config_yaml
+            from pathlib import Path as _ConfigPath
+
+            _config_file = _ConfigPath(__file__).resolve().parents[3] / "config" / "meeting-automation.yaml"
+            if _config_file.is_file():
+                http_timeout_seconds = float(
+                    _config_yaml.safe_load(_config_file.read_text(encoding="utf-8"))["runtime"]["tencent"][
+                        "http_timeout_seconds"
+                    ]
+                )
+        except Exception:
+            http_timeout_seconds = 30.0
+        try:
+            with urllib.request.urlopen(req, timeout=http_timeout_seconds) as response:
                 response_data = response.read().decode("utf-8")
                 return json.loads(response_data)
         except urllib.error.URLError as e:

@@ -6,7 +6,7 @@ existing ledger base, so a cycle's report opens onto only that cycle's rows —
 mentor scores / comments from earlier cycles stay in their own tables and can
 never leak into a later cycle's report.
 
-Schema is owned by ``_feishu/mentor_ledger.py`` (``_LEDGER_SCHEMA_FIELDS``), the
+Schema is owned by ``_feishu/ledger_schema.py`` (``_LEDGER_SCHEMA_FIELDS``), the
 same fixed column definition used for first-time provisioning, so every cycle
 table starts with identical columns. Single-select options (层级/父项) come
 empty from creation — company-todo-sync syncs them before writing rows, exactly

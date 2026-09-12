@@ -37,6 +37,21 @@ def test_long_structured_deliverables_are_file_first() -> None:
     assert "do not draft the full artifact in chat first" in sections.DELIVERABLES_AS_FILES_SECTION
 
 
+def test_internal_markers_are_never_pasted_into_replies() -> None:
+    """回归(2026-09-10 生产): 回复末尾挂出 `[已省略1334字符, 句柄 assistant#425952]`。
+
+    模型照抄了提示里读到的省略句柄。提示词必须点名这些内部标记: 需要内容用
+    `history_recall` 捞回后改写, 不许粘贴句柄、不许向用户解释标记/内部字段。
+    """
+    guidance = sections.INTERNAL_MARKERS_SECTION
+
+    assert "[已省略" in guidance and "句柄" in guidance
+    assert "history_recall" in guidance
+    assert "[SEND:" in guidance and "[RECV:" in guidance
+    assert "open_id" in guidance and "case_id" in guidance and "msop.*" in guidance
+    assert "Never paste the handle" in guidance
+
+
 def test_delivery_forbids_using_feishu_tools_as_the_transport() -> None:
     """File delivery is ``[SEND:]`` on every channel, never a ``feishu_*`` call.
 

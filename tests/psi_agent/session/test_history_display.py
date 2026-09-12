@@ -5,6 +5,7 @@ from psi_agent.session.history_display import (
     KIND_CHAT,
     KIND_SCHEDULE_DISPLAY,
     KIND_SCHEDULE_SILENT,
+    VisibleMarkerFilter,
     extract_send_paths,
     is_displayable_chat_message,
     message_kind,
@@ -14,6 +15,37 @@ from psi_agent.session.history_display import (
     with_chat_type,
     with_kind,
 )
+
+
+def test_visible_marker_filter_drops_complete_and_split_handles() -> None:
+    """出站过滤: 完整句柄直接剥掉; 被流式切开的句柄一个字都不许漏。"""
+    handle = ELISION_HANDLE_TEMPLATE.format(chars=1334, label="", sent="", handle="assistant#425952")
+    complete = VisibleMarkerFilter()
+    assert complete.feed(f"已完成。{handle}") == "已完成。"
+
+    split = VisibleMarkerFilter()
+    assert split.feed(f"结论 A。{handle[:3]}") == "结论 A。"
+    assert split.feed(handle[3:]) == ""  # 剩下的半边被识别成同一个标记, 不落屏
+    assert split.pending == ""
+
+    # [SEND:]/[RECV:] 同理(文件本身走 FileChunk, 标记只给机器看)
+    transfer = VisibleMarkerFilter()
+    assert transfer.feed("见文件[SEND:") == "见文件"
+    assert transfer.feed("方案.pdf]\n请查收") == "\n请查收"
+
+
+def test_visible_marker_filter_releases_non_marker_brackets_and_drops_dangling_prefix() -> None:
+    """普通方括号只是延迟一拍, 不会被吞; 回合结束时半截标记按碎片丢弃。"""
+    square = VisibleMarkerFilter()
+    assert square.feed("见 [") == "见 "  # 可能是标记开头, "[" 先扣住
+    assert square.feed("附件] 说明") == "[附件] 说明"  # 证明不是标记, 原样放行
+    assert square.pending == ""
+
+    dangling = VisibleMarkerFilter()
+    assert dangling.feed("正常文本[已省") == "正常文本"
+    assert dangling.pending == "[已省"
+    assert dangling.flush() == "[已省"
+    assert dangling.pending == ""
 
 
 def test_with_kind_and_project_history_for_wire() -> None:

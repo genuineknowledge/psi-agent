@@ -1,0 +1,71 @@
+# 公司会议自动化配置 —— 可编辑的运行口径（meeting-automation v0.1）
+# 与 config/todo-sop.yaml 同一契约模式，但层级不同：
+#
+#   ⛔ 硬边界（永不允许经本文件修改，改动必须走代码 PR）：
+#      - 会议白名单 (name + meeting_code)、cron/retry 调度、token_env 配对
+#        （哪场会议用哪个账号凭据 = 授权门，留在 _meeting_automation.py 的
+#        MEETING_JOBS 代码中；加载器发现本文件含这些键会直接报错）
+#      - 腾讯 token 值（永远只从进程环境变量读取）
+#
+#   ✅ 本文件可编辑部分（加载器逐键白名单校验后并入 MeetingJob）：
+#      - 每场会议的展示/投递口径：title、summary/overview 收件人、
+#        analysis_sop_skills（会议 SOP 引擎 skill）、alert_recipients（失败告警）
+#      - runtime：引擎运行参数（分块/温度/超时/重试/告警文案 + 收件人解析表）
+#      - resources：引擎引用的文件路径（相对 agents/feishu 包根）
+#   meetings 段只允许出现代码白名单里存在的会议名，多一个就报错。
+#
+# ⭐ 收件人（人名 / 群名）只写在本文件。代码里一个具体收件人都没有 —— tools/*.py 有
+#    测试钉住「公司人名/群名不得出现在代码里」，所以换人、换群、加人都只改这里，
+#    不需要动代码、不需要新 PR。某场会议的 summary/overview 缺收件人时**启动即报错**，
+#    不会静默变成「没人收」。
+
+meetings:
+  weekday-alignment:
+    title: 周中对齐会
+    # 收件人一律写**租户级 user_id**（跨应用不变）：open_id / chat_id 是按应用隔离的，
+    # 从别处抄来的会报 99992361 open_id cross app。取值：
+    #   feishu_api GET /open-apis/contact/v3/users/find_by_department?department_id=0&user_id_type=user_id
+    summary_recipients: ["user_id:37b6g8e9"]      # 纪要 → 孙逊
+    overview_recipients: ["user_id:98ba56b8"]     # 正负面清单总览 → 罗霖(HR)
+    analysis_sop_skills: ["meeting-sop/weekday-alignment"]
+    alert_recipients: ["user_id:b7c7261f"]        # 失败告警 → 高博
+  weekday-alignment-1100:
+    title: 日会
+    summary_recipients: ["user_id:37b6g8e9"]      # 纪要 → 孙逊
+    overview_recipients: ["user_id:98ba56b8"]     # 正负面清单总览 → 罗霖(HR)
+    analysis_sop_skills: ["meeting-sop/weekday-alignment"]
+    alert_recipients: ["user_id:b7c7261f"]        # 失败告警 → 高博
+
+runtime:
+  analysis:
+    chunk_chars: 8000
+    temperature: 0
+  notify:
+    chunk_chars: 8000
+    # 收件人解析表：键 = 调用方传给 meeting_session_notify 的 recipient 值。目标**恰好一个**：
+    #   person：[姓名]        走通讯录解析成当前应用的 open_id
+    #   chat：  [群名]        走群名解析 —— 群没有租户级 id，只能用名字
+    #   open_id / user_id / union_id / chat_id / email：显式 id，直接发、不做任何姓名解析
+    # ⭐ 想免姓名解析（换人改名、重名、跨应用都不受影响）就写租户级 `user_id`；
+    #    `open_id`/`chat_id` 按应用隔离，换应用即失效（99992361）。
+    # 同一个收件人可以有多个键：YAML 锚点让别名共用一份定义，改一处即可。
+    recipients:
+      hr: &hr_recipient {user_id: 98ba56b8}        # 罗霖(HR)
+      罗霖: *hr_recipient
+      孙逊: {user_id: 37b6g8e9}
+      高博: {user_id: b7c7261f}
+      cheng: {user_id: 88e91212}                   # 程秀秀
+      HaiTun Agent主战场: &main_group {chat: HaiTun Agent主战场}
+      主战场: *main_group
+  tencent:
+    call_timeout_seconds: 60      # 子进程单次调用超时 (TENCENT_MEETING_CALL_TIMEOUT 环境变量可覆盖)
+    http_timeout_seconds: 30      # skill HTTP 代理 urlopen 超时
+    retry_attempts: 3
+    retry_backoff_seconds: [0.5, 1.0, 2.0]
+  alerts:
+    message_prefix: "[会议自动化告警]"
+    error_truncate_chars: 500
+
+resources:
+  positive_rules_file: skills/positive-negative-list/references/analysis_rules.md
+  meeting_sop_config_file: config/meeting-sop.yaml

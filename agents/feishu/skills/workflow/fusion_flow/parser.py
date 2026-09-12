@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from antlr4 import CommonTokenStream, InputStream, Token
@@ -33,6 +34,96 @@ class ParseContext:
 
     concepts: dict[str, Concept]
     operators: dict[str, Operator]
+    concept_supertypes: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def expand_concepts(self, names: tuple[str, ...]) -> tuple[Concept, ...]:
+        """Return declared concepts followed by their catalog supertypes.
+
+        FusionFlow source names only the most specific role.  Operator
+        signatures continue to use their stable base concepts, so the parser
+        materializes the catalog's transitive subtype closure on each
+        ``Constant`` while retaining the concrete role for later lowering.
+        """
+
+        expanded: list[Concept] = []
+        resolved: set[str] = set()
+        active: list[str] = []
+
+        def visit(name: str) -> None:
+            if name in active:
+                cycle = " -> ".join((*active[active.index(name) :], name))
+                raise ValueError(f"Cyclic FusionFlow concept hierarchy: {cycle}.")
+            if name in resolved:
+                return
+            try:
+                concept = self.concepts[name]
+            except KeyError:
+                raise ValueError(f"Unknown FusionFlow concept {name!r}.") from None
+
+            active.append(name)
+            expanded.append(concept)
+            resolved.add(name)
+            for supertype in self.concept_supertypes.get(name, ()):
+                visit(supertype)
+            active.pop()
+
+        for name in names:
+            visit(name)
+        return tuple(expanded)
+
+
+def _clean_artifact_annotation(comment: str) -> str:
+    """Remove comment markers while preserving free-form annotation text."""
+
+    if comment.startswith("--"):
+        return comment[2:].strip()
+    return comment[2:-2].strip()
+
+
+def extract_artifact_annotations(source: str, artifact_ids: Collection[str]) -> dict[str, str]:
+    """Read free-form trailing comments from parsed Artifact declarations."""
+
+    declared = frozenset(artifact_ids)
+    token_stream = CommonTokenStream(FusionFlowLexer(InputStream(source)))
+    token_stream.fill()
+    tokens = token_stream.tokens
+    annotations: dict[str, str] = {}
+    for index, token in enumerate(tokens):
+        if token.type != FusionFlowLexer.CONST or index + 1 >= len(tokens):
+            continue
+        raw_artifact_id = tokens[index + 1].text or ""
+        artifact_id = raw_artifact_id
+        if raw_artifact_id.startswith('"') and raw_artifact_id.endswith('"'):
+            decoded = json.loads(raw_artifact_id)
+            if not isinstance(decoded, str):
+                continue
+            artifact_id = decoded
+        if artifact_id not in declared:
+            continue
+
+        semicolon = next(
+            (candidate for candidate in tokens[index + 2 :] if candidate.type == FusionFlowLexer.SEMICOLON),
+            None,
+        )
+        if semicolon is None:
+            continue
+        cursor = semicolon.stop + 1
+        while cursor < len(source) and source[cursor] in " \t":
+            cursor += 1
+        if source.startswith("--", cursor):
+            end = source.find("\n", cursor + 2)
+            comment = source[cursor : len(source) if end == -1 else end]
+        elif source.startswith("/*", cursor):
+            end = source.find("*/", cursor + 2)
+            if end == -1:
+                continue
+            comment = source[cursor : end + 2]
+        else:
+            continue
+        annotation = _clean_artifact_annotation(comment)
+        if annotation:
+            annotations[artifact_id] = annotation
+    return annotations
 
 
 class _DiagnosticListener:
@@ -113,10 +204,8 @@ class _CoreIRVisitor:
 
     def visit_const_decl(self, context: Any) -> Constant:
         symbol = self._strip_quotes(context.constantName().getText())
-        concepts = tuple(
-            dict.fromkeys(
-                self._resolve_concept(concept.getText()) for concept in context.conceptNameList().conceptName()
-            )
+        concepts = self._context.expand_concepts(
+            tuple(dict.fromkeys(concept.getText() for concept in context.conceptNameList().conceptName()))
         )
         existing = self._constants.get(symbol)
         if existing is not None:

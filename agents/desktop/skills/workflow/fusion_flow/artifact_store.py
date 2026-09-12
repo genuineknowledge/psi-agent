@@ -62,12 +62,17 @@ class ArtifactStore:
         logger.debug(f"FusionFlow Artifact store ready: {artifacts_dir!r}")
         return cls(run_dir, artifacts_dir)
 
-    async def persist(self, values: Mapping[str, object]) -> None:
-        """Atomically write every newly materialized Artifact value."""
+    async def persist(
+        self,
+        values: Mapping[str, object],
+        *,
+        overwrite: bool = False,
+    ) -> None:
+        """Atomically write new values, optionally replacing final outputs."""
 
         written = 0
         for artifact_id in sorted(values):
-            if artifact_id in self._persisted_ids:
+            if artifact_id in self._persisted_ids and not overwrite:
                 continue
             target = self.artifacts_dir / _artifact_filename(artifact_id)
             await atomic_write_text(target, _render_markdown(values[artifact_id]))

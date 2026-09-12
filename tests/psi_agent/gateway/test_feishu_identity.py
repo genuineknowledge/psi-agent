@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from psi_agent.gateway.feishu._feishu_manager import FeishuManager
 from psi_agent.gateway.feishu._identity import (
     is_group_session,
@@ -73,27 +75,49 @@ def test_empty_open_id_owns_nothing(tmp_path: Path) -> None:
     assert owns_session("", "", "", fm) is False
 
 
-def test_meeting_session_is_readable_by_any_authenticated_user(tmp_path: Path) -> None:
+def test_org_session_is_readable_by_any_authenticated_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """配置了组织共享 workspace 后, 其调度 Session 对全体已登录用户只读可见。"""
     fm = FeishuManager(_sm=_NO_SM, _workspace_root=str(tmp_path))
-    meeting_workspace = str(tmp_path / ".meeting-session")
+    org_workspace = str(tmp_path / ".org-session")
+    monkeypatch.setenv("PSI_SEED_SCHEDULES_WORKSPACE", org_workspace)
 
-    assert owns_session("ou_alice", "meeting-session", meeting_workspace, fm) is True
-    assert owns_session("ou_bob", "meeting-session", meeting_workspace, fm) is True
-    assert owns_session("", "meeting-session", meeting_workspace, fm) is False
+    assert owns_session("ou_alice", "scheduler-meeting", org_workspace, fm) is True
+    assert owns_session("ou_bob", "scheduler-meeting", org_workspace, fm) is True
+    assert owns_session("", "scheduler-meeting", org_workspace, fm) is False
 
 
-def test_visible_sessions_includes_public_meeting_session_but_not_other_scheduler(tmp_path: Path) -> None:
+def test_org_visibility_is_workspace_driven_not_id_driven(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """判定认 workspace 不认固定 id: 同一 id 落在别的 workspace 就不可见。
+
+    旧实现按 ``meeting-session`` 字符串放行; 通用化后任何 ``scheduler-*`` id 只要
+    落在配置的 workspace 上即组织共享, 否则一律隐藏。
+    """
+    fm = FeishuManager(_sm=_NO_SM, _workspace_root=str(tmp_path))
+    org_workspace = str(tmp_path / ".org-session")
+    other_workspace = str(tmp_path / "other")
+    monkeypatch.setenv("PSI_SEED_SCHEDULES_WORKSPACE", org_workspace)
+
+    assert owns_session("ou_alice", "scheduler-meeting", org_workspace, fm) is True
+    assert owns_session("ou_alice", "scheduler-meeting", other_workspace, fm) is False
+
+
+def test_visible_sessions_includes_org_session_but_not_other_scheduler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     fm = FeishuManager(_sm=_NO_SM, _workspace_root=str(tmp_path))
     alice_workspace = fm.workspace_for("ou_alice")
+    org_workspace = str(tmp_path / ".org-session")
+    monkeypatch.setenv("PSI_SEED_SCHEDULES_WORKSPACE", org_workspace)
     rows = [
-        _S("meeting-session", str(tmp_path / ".meeting-session")),
+        _S("scheduler-org", org_workspace),
         _S("scheduler-other", alice_workspace),
     ]
 
-    assert [s.id for s in visible_sessions("ou_alice", rows, fm)] == ["meeting-session"]
+    assert [s.id for s in visible_sessions("ou_alice", rows, fm)] == ["scheduler-org"]
 
 
-def test_scheduler_session_is_never_owned(tmp_path: Path) -> None:
+def test_scheduler_session_is_hidden_without_org_config(tmp_path: Path) -> None:
+    """未配置组织共享 workspace 时, 调度 Session 一律隐藏 (默认)。"""
     fm = FeishuManager(_sm=_NO_SM, _workspace_root=str(tmp_path))
     assert owns_session("ou_alice", "scheduler-anything", fm.workspace_for("ou_alice"), fm) is False
 

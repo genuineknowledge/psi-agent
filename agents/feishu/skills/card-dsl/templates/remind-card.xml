@@ -1,0 +1,12 @@
+<!--
+  14:30 填报提醒卡(todo-remind 用,DSL 模板)
+  {key} 为占位符,渲染时由 values_json 填充(值自动 XML 转义)。
+  使用方式:feishu_card_render(template="remind-card", values_json="{...}") → 卡片 JSON → feishu_message_send_card 发送
+  values:name(成员姓名,作首行 label)/ hint(规范要点一句)/ board_link(看板表链接,渲染成可点链接)
+  无交互元素(button 是回调按钮不是 url 跳转,提醒卡不需要),卡内链接走 markdown 语法。
+-->
+<card title="TODO 填报提醒" template="blue">
+  <info label="{name}" value="今天是填报日,你的 TODO list 还没填"/>
+  <info label="要求" value="{hint}"/>
+  <info label="看板表" value="[点这里填写]({board_link})"/>
+</card>

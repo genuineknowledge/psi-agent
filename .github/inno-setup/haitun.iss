@@ -6,7 +6,7 @@
 ;   - (default)        -> HaiTun_Agent_Setup.exe (full install)
 
 #define MyAppName "HaiTun Agent"
-#define MyAppVersion "1.0.13"
+#define MyAppVersion "1.0.15"
 #define MyMsysVersion "env-1"
 #define MyAppPublisher "Hefei Zhenzhi Artificial Intelligence Application Software Co., Ltd"
 #define MyAppExeName "haitun.exe"

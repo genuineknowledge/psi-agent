@@ -197,34 +197,42 @@ async def test_chat_on_someone_elses_session_is_403(tmp_path: str, mock_ai_serve
 
 
 @pytest.mark.anyio
-async def test_meeting_session_history_is_readable_but_chat_is_read_only(
-    tmp_path: str, mock_ai_server: MockAIServer
+async def test_org_session_history_is_readable_but_chat_is_read_only(
+    tmp_path: str, mock_ai_server: MockAIServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The shared meeting Session exposes history but never accepts user prompts."""
+    """组织共享调度 Session (公司级 seed workspace 派生) 只读历史、拒绝任何用户聊天。
+
+    判定按 workspace 配置 (``PSI_SEED_SCHEDULES_WORKSPACE``) 而非固定 session id:
+    换个未配置的 workspace 同名会话立刻回到「普通调度会话 → 隐藏」语义。
+    """
     tg = anyio.create_task_group()
     await tg.__aenter__()
     fx, sm, aim, runner = await _setup(str(tmp_path), mock_ai_server, tg)
+    org_workspace = os.path.join(str(tmp_path), "org-session")
+    monkeypatch.setenv("PSI_SEED_SCHEDULES_WORKSPACE", org_workspace)
     await sm.create(
         ai_id="ai1",
-        id="meeting-session",
-        workspace=os.path.join(str(tmp_path), "meeting-session"),
+        id="scheduler-org-meeting",
+        workspace=org_workspace,
         active_schedules=("*",),
     )
     try:
         async with ClientSession(timeout=ClientTimeout(total=15)) as http:
-            async with http.get(f"{fx.base_url}/feishu/sessions/meeting-session/history", cookies=fx.ck_a) as resp:
+            async with http.get(
+                f"{fx.base_url}/feishu/sessions/scheduler-org-meeting/history", cookies=fx.ck_a
+            ) as resp:
                 assert resp.status == 200
                 assert await resp.json() == []
             async with http.post(
-                f"{fx.base_url}/feishu/sessions/meeting-session/chat",
+                f"{fx.base_url}/feishu/sessions/scheduler-org-meeting/chat",
                 json=CHAT_BODY,
                 cookies=fx.ck_a,
             ) as resp:
                 assert resp.status == 403
-                assert (await resp.json())["error"] == "meeting-session is read-only"
+                assert (await resp.json())["error"] == "org session is read-only"
     finally:
         with anyio.CancelScope(shield=True):
-            await sm.delete("meeting-session")
+            await sm.delete("scheduler-org-meeting")
         await _teardown(fx, sm, aim, runner)
         await tg.__aexit__(None, None, None)
 

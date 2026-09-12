@@ -18,6 +18,10 @@ evals/
 # 测试/手工跑 Gateway 落下的状态快照。里面有明文 api_key, 绝不能进仓库。
 state/
 .tmp-dev/
+
+# 本机凭据文件 (腾讯会议 Token / 其他 secret)。明文机密, 绝不能进仓库;
+# 模板见 deploy/haitun/.env.example
+.env
 # Kanban board data lives on its own branch; only the pointer travels with the code.
 # See .plan/docs/board-branch-decoupling.md and .kanban/board-ref.
 /.kanban/*
@@ -29,3 +33,23 @@ feishu-sessions/
 # python_run 的临时脚本落点。放 workspace 而非系统 temp,是为了让被硬杀
 # 的那次运行留下现场;正常路径下每次跑完即删,目录本身可能空着。
 .psi-scratch/
+
+# 核查/取基线时落在仓库根的中间产物 (md5 清单、失败清单、打包清单等)。
+# 这些是某一次核查的现场,数字随镜像和生产状态漂移,留在仓库里只会被误当基线引用。
+/audit_final.txt
+/baseline-failures.txt
+/chg.txt
+/local_md5.txt
+/prod_md5.txt
+/pack-manifest.txt
+
+# 交付给客户/新人的文档,按约定不入 git (内容会带客户方信息)。
+docs/haitun-delivery/
+docs/onboarding/
+
+# 会话内一次性用的补丁与探针脚本。命名带下划线前缀的不会被工具扫描器收走,
+# 但它们是某次排查的手脚架,不是可复用工具。
+deploy/haitun/_patch_compose.py
+deploy/haitun/_patch_dockerfile.py
+scripts/latency-probe/chain_timing.py
+scripts/latency-probe/threshold_probe.py

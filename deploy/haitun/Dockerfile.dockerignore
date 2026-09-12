@@ -1,0 +1,47 @@
+# 构建上下文排除规则, 配 `deploy/haitun/Dockerfile` 用。
+#
+# 为什么叫这个名字: BuildKit 支持 `<Dockerfile 路径>.dockerignore`, 且它**优先于**上下文根的
+# `.dockerignore`。所以 `docker build -f deploy/haitun/Dockerfile .` 会自动用上本文件, 不需要
+# 往仓库根拷一份 —— 而往根上放 `.dockerignore` 会连带影响别人的构建(同机还有 psi-cloud)。
+# 2026-09-10 在 A 机(buildkit v0.32.2 / docker 29.7.2)实跑验证过它真的生效, 不是照文档推断。
+# ⚠️ 老 builder(未启用 BuildKit 的 legacy builder)不认这个文件名, 那种环境下要么升级
+# builder, 要么手工把本文件拷成上下文根的 `.dockerignore`。判据见
+# tests/deploy/test_build_assets.py。
+#
+# 镜像里只需要 src + pyproject + uv.lock + README。workspace 通过 bind mount 挂载, 不进镜像。
+
+.venv/
+.git/
+.github/
+.opencode/
+.pytest_cache/
+.ruff_cache/
+.gw-run/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# 只排根目录的 Python 构建产物。**不能写成无锚点的 dist/** —— 那会在任意层级匹配,
+# 把三棵前端的产物 (desktop/spa/dist, desktop/spa-v2/dist, feishu/feishu-web/dist)
+# 全部排除掉, 而 add_static 在目录不存在时静默跳过: 栈显示健康, 前端却是 404。
+/dist/
+.coverage
+
+# 前端依赖树。**必须排掉**: 它有几万个文件, 不排会让上下文传输从秒级变成分钟级, 而且
+# 宿主机装的那份可能是别的平台/别的 node 版本 —— 镜像里 feishu-web 的依赖由 Dockerfile
+# 阶段 1 的 `npm ci` 按 lockfile 重新装, 上下文里这份从来不该被用到。
+node_modules/
+
+# 日志
+*.log
+gateway-live.log
+gateway-restart.log
+
+# workspace 目录（单独挂载，不打进镜像）
+examples/
+workspace/
+
+# kanban 的 worktree 挂在仓库内部, 里面是整棵仓库的又一份副本(可能有好几份)。
+# 不排掉会把上下文体积翻几倍, 且构建可能悄悄拿到另一棵树的文件。
+.kanban/

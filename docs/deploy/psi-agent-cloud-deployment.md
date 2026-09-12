@@ -12,25 +12,36 @@
 
 ---
 
-## 0. 先读这一节：编排文件不在本仓
+## 0. 先读这一节：哪些编排文件在本仓，哪些不在
 
-**本仓没有 `Dockerfile`，也没有 `docker-compose.yml`** —— 从未提交过：
+> 🔵 **2026-09-10 更新：`Dockerfile` 一族已收进本仓 `deploy/haitun/`。** 本节初版写的
+> 「本仓没有 `Dockerfile`」当时是对的，现在只对 `docker-compose.yml` 成立。
+>
+> 促成这次入库的是一个实测：境内 A 机 `47.100.84.197` 上
+> `find / -maxdepth 5 -iname 'Dockerfile*'` 只有 psi-cloud / psi-auth-impl / fmbuild 三份，
+> **没有任何 psi-agent 的 Dockerfile**。2026-09-09 搬机时只搬了运行目录
+> `/srv/haitun/psi-agent`（compose + `restart-stack.sh` + `workspace*`），没搬构建目录 ——
+> 而构建目录此前是唯一的存放地。于是 A 机一度只能做 overlay 构建，依赖一变就没法全量 build。
+> 这正是本节初版说的「最大的落地风险」真的发生了一次。
+
+**`docker-compose.yml` 仍不在本仓** —— 从未提交过：
 
 ```console
-$ git log --all --oneline --diff-filter=A -- Dockerfile docker-compose.yml
+$ git log --all --oneline --diff-filter=A -- docker-compose.yml
 (无输出)
 ```
 
-它们只存在于目标机 `/srv/haitun/psi-agent/`。所以「从本仓部署」的准确含义是：
+所以「从本仓部署」的准确含义是：
 
 | 来源 | 内容 |
 |---|---|
 | 本仓（git） | `src/`、`pyproject.toml`、`uv.lock`、`README.md` —— 镜像里 `pip install -e .` 装的那部分 |
-| 本仓（git，后补入库） | `deploy/haitun/oauth-proxy.py`、`deploy/haitun/README.md` |
-| 目标机（不在 git） | `Dockerfile`、`docker-compose.yml`、`launch-gateway.sh`、`config.yml`、`restart-stack.sh`、`workspace/` |
+| 本仓（git，后补入库） | `deploy/haitun/oauth-proxy.py`、`README.md` |
+| 本仓（git，2026-09-10 入库） | `deploy/haitun/Dockerfile`、`Dockerfile.overlay`、两份 `*.dockerignore`、`build-image.sh` |
+| 目标机（不在 git） | `docker-compose.yml`、`launch-gateway.sh`、`config.yml`、`restart-stack.sh`、`workspace/` |
 
-第三组当前是运维资产，无版本控制。第一次部署到全新机器时，这批文件必须从既有目标机
-拷来，或按本文附录重建。**这是本文档最大的落地风险**。
+最后一组仍是运维资产，无版本控制。第一次部署到全新机器时这批文件要从既有目标机拷来，或按
+本文附录重建 —— **这仍是本文档最大的落地风险，只是范围比原先小了一半。**
 
 `oauth-proxy.py` 原本也在第三组，本文初版据此写成「不在 git」；后来它已入库到
 `deploy/haitun/`，所以**仓库里的这份才是准本**，改白名单改这份再拷上机，不要反过来。
@@ -155,33 +166,77 @@ sha256:6f94328331290cbd81edab450664d42da7b64c191416c9346cd5d28c84f76035
 
 11 层与源端一致即判定同一镜像。
 
-### 2.2 路线 B：直接在目标机 build
+### 2.2 路线 B：直接在目标机 build（**2026-09-10 起推荐**）
 
-`docker compose build gateway` 即可，前提是能拉基础镜像与访问 pip/apt 源。
-**境外机器目前会失败**，见下。
+构建资产入库后，在目标机上从干净 clone 直接构建：
 
-### 2.3 ⚠️ 清华源对境外 IP 返回 403（卡 7c367）
+```bash
+cd <干净 clone 目录>
+deploy/haitun/build-image.sh full <commit>       # 依赖/前端变了用这个
+deploy/haitun/build-image.sh overlay <commit>    # 只改了 src，秒级
+```
 
-`Dockerfile` 硬编码了境内镜像源，境外 build 直接死在第 2 层：
+境内 A 机 `47.100.84.197` 实测（2026-09-10，commit `64bac517`）：full **5m11s**，镜像 1.88 GB，
+镜像内 `feishu-web/dist` 7.0 MB；overlay 秒级。
+
+不再走 `docker compose build gateway` —— compose 的 `build:` 段指向目标机上那份不受版本控制的
+`Dockerfile`，而 `build-image.sh` 用的是仓库里那份，两者不是同一个文件。
+
+### 2.3 ⚠️ 镜像源在境内境外**结论相反**，所以它必须是 `ARG`
+
+本节初版记的是境外机的坑（tuna 对境外 IP 返回 **403**，卡 7c367）：
 
 ```text
 => ERROR [gateway 2/7] RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' ...
 2.150 E: Failed to fetch http://mirrors.tuna.tsinghua.edu.cn/debian/dists/trixie/InRelease
         403  Forbidden [IP: 101.6.15.130 80]
-2.150 E: The repository '...' is not signed.
 ```
 
-两处硬编码（行号对应目标机 `/srv/haitun/psi-agent/Dockerfile`）：
+**搬回境内后这些数字全部反转，2026-09-10 在 A 机重量过**：
 
-| 位置 | 内容 | 境外后果 |
+| 源 | trixie InRelease | `simple/aiohttp/`（3.95 MB 索引） |
 |---|---|---|
-| `Dockerfile:3` | `FROM docker.m.daocloud.io/library/python:3.14-slim-trixie` | DaoCloud 加速器，境外可达但非最优 |
-| `Dockerfile:11` | `sed` 把 apt 源换成 `mirrors.tuna.tsinghua.edu.cn` | **403 Forbidden** |
-| `Dockerfile:23` | `PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple` | 同源风险 |
+| `mirrors.aliyun.com` | 200 · 3.58 MB/s · 0.039s | 200 · 14.5 MB/s · 0.235s |
+| `mirrors.cloud.aliyuncs.com` | 200 · 2.79 MB/s · 0.050s | **000**（该机无此 pypi 路径） |
+| `deb.debian.org` / `pypi.org` | 200 · 126 KB/s · 1.112s | 200 · **33 KB/s，120s 未下完** |
+| `mirrors.tuna.tsinghua.edu.cn` | 200 · 95 KB/s · 1.483s | 200 · 1.57 MB/s · 2.168s |
 
-**当前选择**：build 只发生在境内机器，境外只导入，`Dockerfile` 不动。
-长期建议把镜像源提成 `ARG APT_MIRROR` / `ARG PIP_INDEX_URL`（默认留空走官方源），
-因为镜像源域名同样是「环境相关值」—— 搬迁设计的决策五漏掉了这一类。
+对照境外 B 机（2026-09-01 实测）：`deb.debian.org` 比 aliyun **快 146 倍**（20.2 MB/s vs
+138 KB/s）、tuna 403、`pypi.org` 2.70s 优于 tuna 3.72s。
+
+`pypi.org` 那一格值得单独说：境内它**不是 404、不是超时**，而是 200 之后以 33 KB/s 涓流，单个
+索引 120 秒下不完。这种「通但等于不通」最难归因 —— build 卡在装依赖那层，报错长得像网络抽风。
+
+**当前做法**：三个源都提成 `ARG`（`APT_MIRROR` / `PIP_INDEX_URL` / `NPM_REGISTRY`），默认值按
+**境内**取，境外构建显式覆盖：
+
+```bash
+APT_MIRROR= PIP_INDEX_URL=https://pypi.org/simple \
+NPM_REGISTRY=https://registry.npmjs.org \
+deploy/haitun/build-image.sh full <commit>
+```
+
+`APT_MIRROR=` 是**空值，表示不换源**，与「没设」不是一回事（`build-image.sh` 用 `${VAR+x}` 区分）。
+`Dockerfile` 里那句 `if [ -n "${APT_MIRROR}" ]` 是配套的：少了它，空值会把 sources 里的域名 sed
+成空串，`apt-get update` 报一个语法层面的怪错。判据见 `test_apt_mirror_empty_value_means_no_rewrite`。
+
+基础镜像同理是 `ARG BASE_IMAGE`，默认仍走 DaoCloud 加速器 —— A 机实测
+`registry-1.docker.io` 直连 **15 秒无响应**（curl 000），daocloud 与 daemon 里配的
+`registry-mirrors` 都能拉。
+
+> 本节初版的「长期建议」（把镜像源提成 ARG）已落地。当时那句「默认留空走官方源」按现在的实测
+> 是错的：境内留空 = 走 `pypi.org` = 实质不可用。
+
+### 2.4 前端产物由构建阶段产出，不再手工
+
+`feishu-web/dist/` 被 gitignore 排除，而 `_routes.py` 的 `add_static` 在目录不存在时**静默跳过**
+—— 页面 404、日志只有一行 INFO、容器状态一切正常。此前靠镜像外手工 `npm run build` 再叠一层
+`Dockerfile.fw`（B 机 `/srv/haitun/build-34c73c65/Dockerfile.fw` 就是那一层），纯人工步骤。
+
+现在 `Dockerfile` 阶段 1 用 `npm ci` + `npm run build` 产出，阶段 2 `COPY --from` 取过来，且在
+构建期 `test -f .../dist/index.html` 自检。**overlay 不跑 npm**，它的 dist 完全来自基础镜像 ——
+拿 9-10 之前的 `psi-agent-gateway:local` 叠会在构建期直接失败并打印补救办法（实测过），不会
+静默产出一个没有前端的镜像。
 
 ---
 
@@ -192,8 +247,8 @@ sha256:6f94328331290cbd81edab450664d42da7b64c191416c9346cd5d28c84f76035
 ```text
 /srv/haitun/
 ├── psi-agent/
-│   ├── docker-compose.yml      三服务编排
-│   ├── Dockerfile              镜像定义（境内 build）
+│   ├── docker-compose.yml      三服务编排（不在 git，见 0 节）
+│   │                           ⚠️ Dockerfile 已挪进仓库 deploy/haitun/，此处不再有
 │   ├── launch-gateway.sh       gateway 容器入口：双进程
 │   ├── oauth-proxy.py          白名单反代
 │   ├── config.yml              agent 配置
@@ -766,9 +821,11 @@ docker exec psi-agent-gateway python3 -c \
 
 第一次部署到全新机器时，这批文件需从既有目标机 `/srv/haitun/psi-agent/` 拷贝：
 
+> 🔵 **2026-09-10：`Dockerfile` 已从这张表移出** —— 它现在在仓库 `deploy/haitun/Dockerfile`，
+> 随 clone 一起到位，不需要拷。把它留在这张表里正是搬机时漏搬构建目录的成因之一。
+
 | 文件 | 作用 |
 |---|---|
-| `Dockerfile` | 镜像定义。境内 build，注意 2.3 的镜像源 |
 | `docker-compose.yml` | 三服务编排 |
 | `launch-gateway.sh` | gateway 双进程入口。内含 `AI_ID` 与 `FALLBACK_SOCK` 常量 |
 | `oauth-proxy.py` | 白名单反代 |

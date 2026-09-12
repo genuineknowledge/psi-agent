@@ -76,7 +76,7 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
    - finish_reason="error" → 回滚到快照 → `raise AgentError(message)`（早期 `commit` 已清快照，**用户行保留**）
    - Stop / 断开 / `aclose` → `_abandon_incomplete_turn` 截掉本回合再向上传播（**用户行不保留**）
    - 其他未捕获异常 → 同 cancel（abandon）或随 `__aexit__` rollback，视是否走过早期 commit
-6. 最多 `max_tool_rounds` 轮 tool call（默认 `DEFAULT_MAX_TOOL_ROUNDS` = 40），达到上限时追加**面向用户**的说明性 assistant 消息 + commit
+6. 最多 `max_tool_rounds` 轮 tool call（默认 `DEFAULT_MAX_TOOL_ROUNDS` = 60），达到上限时追加**面向用户**的说明性 assistant 消息 + commit
 7. **Turn 级别原子性**：``run()`` 所有正常出口调用 ``commit()``（save + clear snapshot）；异常时 ``async with`` 上下文管理器自动 ``rollback()``。内存和磁盘仅在同一检查点同步更新。
 
 **注意**：
@@ -186,7 +186,9 @@ before / after 有内核默认值，`turn_context_fn` 和 `compaction_fn` 的 `N
 
 - AI 连接超时：`ClientTimeout(total=None)` — 语义：不超时，与 channel 一致（由 `AiClient.stream()` 管理）
 - 流式 `delta` 字段可能为 `null`（非缺失 key），`AiClient` 用 `isinstance(delta_data, dict)` 校验后产出 `AiDelta`
-- Tool 模块在 `sys.modules` 中以 `psi_tool_{name}_{session_id}_{file_hash}` 注册（完整 64 位 SHA-256 hash，不截断），同进程多 session 互不冲突
+- Tool 模块在 `sys.modules` 中以 `psi_tool_{name}_{session_id}_{file_hash}` 注册（完整 64 位 SHA-256 hash，不截断）。这个名字**只是注册键，不参与复用判定**——`session_id` 在里面不影响是否重编
+- Tool 文件的 **exec 顺序按文件名排序**，不跟 `glob`。加载顺序是**隐藏输入**而非整洁问题：自带 `sys.path` 前言的文件必须先于依赖它的文件（59 个工具文件曾因此全部加载失败），且第一个 import 带点私有模块的文件会把子模块**绑成父包的属性**给后面的人读——后者于是永远不走包解析。`glob` 给的是文件系统顺序，实测 NTFS 今天就偏离字母序（feishu 130 个文件里 16 个错位，desktop 65 里 13 个）。排序键是纯文件名，所以这是**层内**顺序：分层后每层各 glob 自己的目录，层间由层优先级排、层内由这里排。同名工具当前是 0 个，所以 last-wins 现在不裁决任何东西——排序只是给"谁是最后一个"一个定义
+- 编译复用由**进程级模块缓存** `_module_cache` 决定，键是 `(layer_id, file_hash)`：`load()` 每次新建实例并传 `old_files=None`，实例内的 hash 比对只在 `refresh()` 路径上生效，所以跨 session 的复用必须落在进程级。`layer_id` 当前是 tools 目录的 resolve 后绝对路径（分层落地后换成真正的 layer id）——**键里必须有它**，否则两个 workspace 里同名同内容的文件会共享模块、连带共享对方的 `_priv_helper` 绑定。文件内容变了则 hash 变、必然重编。缓存不淘汰
 - Schedule 加载时捕获各种 per-task 错误（IO、YAML 解析、cron 验证），单个 schedule 失败不影响整体加载
 
 ## 协议适配层
@@ -231,7 +233,7 @@ result = run.result   # 正常耗尽后非 None
 |------|----------|--------------|-----------------------|
 | 模型正常 `stop` | `COMPLETED` | `MODEL_COMPLETED` | `"stop"` |
 | 模型因 `length` 等停止 | `INCOMPLETE` | `MODEL_STOPPED` | 原始值 |
-| 达到 `max_tool_rounds`（默认 40） | `INCOMPLETE` | `AGENT_TURN_LIMIT` | 通常 `"tool_calls"` |
+| 达到 `max_tool_rounds`（默认 60） | `INCOMPLETE` | `AGENT_TURN_LIMIT` | 通常 `"tool_calls"` |
 | 流里从未出现 finish reason | `INCOMPLETE` | `INVALID_MODEL_STREAM` | `None` |
 | 模型 / Session 执行错误 | 不产出 result | 不适用 | 抛 `AgentError` |
 
@@ -398,14 +400,32 @@ provider 只认 `reasoning_content`（any-llm 的 `REASONING_FIELD_NAMES` 首项
 没有」，于是再换一个词，正好是要收的那个环。这与 `truncate_tool_result` 的理由是同一条：不声明自己
 的截断，会被拿去当全量数据作答。
 
-两个计数器，对应事故的两种形状：
+两个计数器加一个回合级闸门，对应事故的三种形状：
 
-- **连续无效，按工具名计数**（`UNPRODUCTIVE_LIMIT = 4`）。换词能绕开任何按参数计数的判据 —— 「换词
+- **连续无效，按工具名计数**（`UNPRODUCTIVE_LIMIT = 5`）。换词能绕开任何按参数计数的判据 —— 「换词
   调 305 次」说的就是这件事，跨这些重试唯一稳定的键是工具名。**计的是连续**：一旦出结果就清零
   （`record`），因为有结果证明这个工具与这个查询形状是通的；终身次数由 `max_tool_rounds` 兜。
+  5 是收紧同参闸后的过渡值，后续可按线上分布再调。
 - **原样重复，按 (工具名, 参数) 计数**（`REPEAT_LIMIT = 3`）。参数键用 `sort_keys=True`：模型发同一个
   查询时 key 顺序会变，不排序则重复计数器永远不触发。3 而非 1 是因为重复并不总是无意义 —— 这里的工具
   会轮询外部状态（正在被编辑的文档、还在跑的后台进程）。
+
+第三个计数器，对应另一类空转（**刻意为之**）：
+
+- **调用面错误，按回合计数**（`CALL_SURFACE_ERROR_LIMIT = 2`）。`Tool … not found`、空工具名、参数不是合法
+  JSON 对象、以及 `Error executing tool …` 里常见的 `unexpected keyword` / missing required 等，说明模型在
+  **猜工具名或参数名**（常见：把 skill 里的飞书 URI / MCP 表名发明成 `feishu_*` / 顶层 `browser_*`）。
+  这类失败**不能**按工具名计连续无效 —— 每次换一个错名都会清零。满 2 次后本回合后续调用一律不发出，
+  顶替字符串（`CALL_SURFACE_NOTICE`）要求重新对照 live `tools` / schema，并点名 `feishu_api` /
+  `browser_call` / `subagent_plan|wait|chat`。  `agent.py` 对 not-found、空名、坏 JSON args 也会
+  `record`（不只记真正 dispatch 的调用），否则闸门永远攒不到证据。
+
+- **有信息后同名再调（只记账，暂不拒发，刻意为之）**：`record` 把「非空 / 非 error 开头 /
+  非空信封」记成该工具名 `_last_had_info=True`；下一次 `refusal_for` 再见到**同名**时
+  `_retry_after_info` +1，并打 INFO `retry-after-info tool=… count=…`。计数挂在
+  `retry_after_info_count(name)`，供后续闸门设计用。刻意**不**据此拒发——合法轮询与
+  「非空但没用」长得一样，阈值与豁免未定前只观测。同波并行的多次 `refusal_for`（尚未
+  `record`）互不计，避免把同轮并行当成「读完再调」。
 
 - **无效判定同时覆盖「成功但空」与「调用失败」**：从调用方看这是同一件事——又一次没推进；驱动失控的是
   重试，不是这两者中哪个发生了。空 JSON 信封（`{"items": []}`、`total: 0`）必须算空，它不是空字符串，

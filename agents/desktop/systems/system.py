@@ -66,6 +66,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
+import _workflow_authoring_context
 
 from psi_agent.session.history_display import message_kind as _message_kind
 
@@ -1590,6 +1591,7 @@ async def system_before_turn(
     agent_raw: str = "",
 ) -> dict[str, Any]:
     """Return namespaced background advice for an eligible learning turn."""
+    _workflow_authoring_context.begin_turn(user_message)
     if not isinstance(user_message, dict):
         return {}
     content = user_message.get("content")
@@ -1745,6 +1747,7 @@ async def system_after_turn(
     agent_raw: str = "",
 ) -> None:
     """Persist profile signals and warm the background supervisor."""
+    _workflow_authoring_context.end_turn()
     workspace = _resolve_workspace(workspace_raw, agent_raw)
     try:
         runtime = await get_runtime(str(workspace))

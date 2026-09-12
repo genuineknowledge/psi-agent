@@ -10,14 +10,17 @@
   ``FeishuManager.session_id_for(open_id)`` 比对。
 * **网页新建的会话** —— id 是随机 uuid, 认不出主人; 靠 **workspace 等于该 open_id 的
   workspace** 认。这是「同一个人的多个会话共享一个 workspace」设计的直接回报。
-* **固定会议 Session** ``meeting-session`` —— 会议纪要是组织共享资料, 所有已登录飞书用户
-  都可读取它的历史; 匿名请求仍拒绝。其他调度 Session 继续隐藏。
+* **调度 Session** ``scheduler-*`` —— 实现细节, 默认对飞书用户隐藏。唯一例外是
+  **组织共享会话**: 公司级种子任务 workspace (``PSI_SEED_SCHEDULES_WORKSPACE``,
+  会议自动化等公司级任务都落在这里) 派生的调度 Session 对全体已登录用户开放
+  **只读历史** (会议纪要为组织共享资料), 匿名请求仍拒绝, 聊天在路由层单独拒绝。
 
 群聊第一版不显示(见 PR #755 讨论), 故群会话恒不拥有。
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from typing import Protocol
 
@@ -29,7 +32,14 @@ from psi_agent.gateway.feishu._feishu_manager import (
 
 GROUP_SESSION_PREFIX = f"{FEISHU_SESSION_PREFIX}chat-"
 SCHEDULER_SESSION_PREFIX = "scheduler-"
-PUBLIC_MEETING_SESSION_ID = "meeting-session"
+SEED_WORKSPACE_ENV = "PSI_SEED_SCHEDULES_WORKSPACE"
+"""公司级种子任务落点 (与 ``gateway/__init__.py`` 构造 SchedulerManager 时读的是
+同一个变量, 别处改名这里必须同步)。
+
+组织可见性是公司级任务的固有属性, 不另设开关: seed workspace 派生的 ``scheduler-*``
+会话对全体已登录飞书用户只读可见; 个人 workspace 的调度会话 (用户自建定时任务) 与
+未启用公司级任务时 (env 空) 一律保持隐藏 —— 与既有默认行为一致。
+"""
 
 
 class SessionLike(Protocol):
@@ -58,6 +68,24 @@ def _same_path(a: str, b: str) -> bool:
     return _same_workspace(a, b)
 
 
+def _seed_workspace() -> str:
+    """公司级种子任务 workspace (每次调用读 env, 便于测试与热改配置)。"""
+    return os.environ.get(SEED_WORKSPACE_ENV, "").strip()
+
+
+def is_org_session(session_id: str, workspace: str) -> bool:
+    """*session_id* 是否属于组织共享调度会话 (对已登录用户只读可见)。
+
+    判定 = 「调度 Session」且「其 workspace == 公司级种子任务 workspace
+    (``PSI_SEED_SCHEDULES_WORKSPACE``)」。不依赖任何固定 session id 字符串 ——
+    组织任务用哪个 Session 由 seed workspace 派生, 与 id 派生规则解耦。
+    """
+    if not session_id.startswith(SCHEDULER_SESSION_PREFIX):
+        return False
+    org_workspace = _seed_workspace()
+    return bool(org_workspace) and _same_workspace(workspace, org_workspace)
+
+
 def owns_session(open_id: str, session_id: str, workspace: str, fm: FeishuManager) -> bool:
     """*open_id* 是否有权看 *session_id*。
 
@@ -65,12 +93,10 @@ def owns_session(open_id: str, session_id: str, workspace: str, fm: FeishuManage
     """
     if not open_id or not session_id:
         return False
-    if session_id == PUBLIC_MEETING_SESSION_ID:
-        return True
-    # Scheduler sessions are implementation details.  The shared meeting
-    # session above is the only scheduler intentionally exposed to Feishu.
     if session_id.startswith(SCHEDULER_SESSION_PREFIX):
-        return False
+        # Scheduler sessions are implementation details; only the configured
+        # org-shared workspace(s) expose their history to Feishu users.
+        return is_org_session(session_id, workspace)
     if is_group_session(session_id):
         return False
     if session_id == fm.session_id_for(open_id):

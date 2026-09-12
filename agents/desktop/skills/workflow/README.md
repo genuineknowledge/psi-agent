@@ -318,8 +318,41 @@ has no scheduling meaning.
 order in each output List, returns empty Lists for empty input, and checkpoints
 each iteration independently. Retry, timeout, resources, and crash recovery are
 per iteration; ordinary terminal failures are collected and raised together.
-Human `foreach`, feedback/input-plus-producer graphs, and circular Artifact or
-explicit control awaits remain fail-closed execution-plan boundaries.
+Human `foreach` remains fail closed. A cyclic graph is executable only when it
+forms one unambiguous declarative feedback region:
+
+- a feedback Artifact is both a workflow input (its epoch-zero seed) and the
+  output of one in-region next-state writer;
+- every read of that Artifact within the region observes the same immutable
+  epoch-`n` snapshot, while its writer stages epoch `n+1`;
+- removing those cross-epoch feedback dependencies leaves an acyclic per-epoch
+  graph;
+- exactly one `TerminalStep` depends on the region and returns one strict
+  `BoolArtifact` (`true`/`false`, with no truthiness coercion).
+
+`TerminalStep` and `BoolArtifact` are catalog subtypes of `Step` and `Artifact`.
+They use the existing declaration and dataflow syntax; there is no `while`,
+`for`, or `termination_signal` operator. The terminal `produces` assertion may
+name one explicit `BoolArtifact`, or it may be omitted entirely so lowering
+creates an internal Boolean result. An explicit empty list is not omission.
+The BoolArtifact produced by the `TerminalStep` is closed loop control: it
+cannot be a workflow output or an input to another Step. Ordinary business
+BoolArtifacts may still flow into the terminal predicate.
+
+Each epoch commits its complete next-state vector at one barrier. `false`
+commits and starts the next epoch; `true` commits that same `n+1` vector, then
+publishes it as the final workflow state. Outside consumers are released only
+after successful termination. `max_loop_epochs` is an embedding/runtime safety
+guard, not FusionFlow source syntax. Multiple/nested feedback regions,
+selectors or foreach combined with feedback, and residual same-epoch cycles
+remain fail closed.
+
+Complete checked sources are available in
+[`examples/loop_engineering.workflow`](examples/loop_engineering.workflow) and
+[`examples/react_loop.workflow`](examples/react_loop.workflow). The ReAct form
+follows `reason(prompt)`, `env.step(action)`, `update(...)`, and `if done`
+directly. Its ordinary `done` Artifact is validated by a separate
+`TerminalStep`, whose closed `loop_done` output controls the feedback loop.
 
 This remains a workspace-local package rather than a wheel dependency. The
 graph interpreter stays in `workflow_execution.py`, while executor behavior is

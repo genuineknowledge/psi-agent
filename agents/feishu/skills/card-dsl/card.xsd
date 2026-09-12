@@ -92,6 +92,19 @@
     </xs:complexType>
   </xs:element>
 
+  <!-- 只读分节:报告/总结卡的小标题+正文(title 与 text 都空 = 占位,整节不渲染) -->
+  <xs:element name="section">
+    <xs:complexType>
+      <xs:attribute name="title" type="xs:string" use="optional"/>
+      <xs:attribute name="text" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- 分隔线:分节之间 -->
+  <xs:element name="divider">
+    <xs:complexType/>
+  </xs:element>
+
   <!-- 待办行:list 的一行;done="true" 的行发卡时即只读(无按钮) -->
   <xs:element name="row">
     <xs:complexType>
@@ -120,6 +133,8 @@
     <xs:complexType>
       <xs:choice minOccurs="0" maxOccurs="unbounded">
         <xs:element ref="info"/>
+        <xs:element ref="section"/>
+        <xs:element ref="divider"/>
         <xs:element ref="score"/>
         <xs:element ref="comment"/>
         <xs:element ref="action-row"/>

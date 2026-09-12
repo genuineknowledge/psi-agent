@@ -70,6 +70,33 @@ The skill's job is to:
 4. If it reaches a Human Step, pass the nested `$fusion_flow/control.request` fields to the existing `clarify` tool, end the turn, and resume from the next user message.
 5. Return only the final workflow output Artifact mapping.
 
+## Artifact Annotations
+
+An Artifact declaration may have a free-form trailing comment. The runner reads
+that comment as the Artifact's annotation and passes it to related Agent, Human,
+and Program Steps. For Agent outputs, the same text is also used as the
+`submit_step_result` property description.
+
+```fusionflow
+const source_document: Artifact; -- Source content; suggested shape: an object with content, language, and metadata.
+const summary_sections: Artifact; /* Ordered section objects with heading, body, and source references. */
+```
+
+The recommended unambiguous placement is a `--` or `/* ... */` comment
+immediately after the declaration's semicolon on the same line. Comments that
+cannot be associated with a declaration remain ordinary comments and never
+cause an error. Everything inside an associated comment is ordinary text. No
+`@Artifact` marker is required: `@Artifact:`, `[object]`, field lists, JSON
+examples, and any other notation are optional writing conventions, not syntax.
+The runner does not parse a type or schema from them, and an unusual or
+incomplete annotation never makes the workflow invalid.
+
+Use annotations to explain meaning, suggested shape, important fields,
+ordering, units, provenance, and empty-value semantics. They provide context;
+they do not validate workflow inputs, Step results, checkpoints, foreach
+aggregates, or Program stdout. When a format must be enforced mechanically,
+use an explicit deterministic Program validation Step.
+
 ## Intent Routing
 
 Natural-language workflow requests map to these actions:
@@ -236,10 +263,29 @@ This is the flagship: turn a natural-language intent into a runnable G4 workflow
 - User edits existing Workflow G4 source and asks you to "rewrite" or "扩展".
 - **User describes a workflow-shaped task without naming "flow"** — anything needing two or more coordinated agents / parallel branches / a multi-step pipeline / per-item work (see "When to Activate"). In that case, don't wait for the word "flow": offer to build one, then run the author loop below.
 
+### Planning contract
+
+Before writing Workflow G4 source, make an internal planning contract for the
+requested workflow. It must identify:
+
+- the user's intent and concrete success condition;
+- every external input and final output Artifact;
+- each Step's single responsibility and its consumed and produced Artifacts;
+- information dependencies and the owner of every material constraint;
+- concurrency, timeout, retry, resource, and user-stated cost limits.
+
+Assign mechanically decidable constraints to graph structure or a deterministic
+Program Step. Assign constraints that require judgment to an Agent Step whose
+instruction names that responsibility. Let dependencies determine execution:
+fan out independent work, keep dependent work sequential, and join branches
+only when a consumer needs all of their results. Keep this contract in the
+authoring context; do not expose framework planning detail to a non-technical
+user.
+
 ### The 5-step author loop
 
 1. **Understand intent** — restate the user's goal in 1 sentence. If genuinely ambiguous, ask **one** clarifying question (don't grill them). Note whether the user looks like a *developer* (asked to edit Workflow G4 source or mentioned operators) — that's the only case where you show technical detail later. Everyone else gets the minimal plain-language summary.
-2. **Model the workflow** — match the intent to one of the executable reference patterns below. Identify inputs, outputs, Agent-, Human-, or Program-backed Steps, Artifacts, dependencies, concurrency, resources, and timeouts. Let information dependencies determine graph depth: add an intermediate aggregation layer only when downstream work needs a coherent result from a distinct group of upstream Artifacts.
+2. **Model the workflow** — complete the planning contract and match the intent to one of the executable reference patterns below. Let information dependencies determine graph depth: add an intermediate aggregation layer only when downstream work needs a coherent result from a distinct group of upstream Artifacts.
 3. **Author one Workflow G4 source** — before writing, read `grammar/FusionFlow.g4` completely and treat it as the sole source of truth for FusionFlow syntax and preset operators. Use only declarations, assertions, terms, and operators documented there. Use the workspace-provided target path; never invent a second copy.
 4. **Static self-check** — compare the source against `grammar/FusionFlow.g4` and the executable guardrails in this Skill. `run_flow` repeats this with its built-in `check_workflow` pass before dispatch; there is no separate validation tool or CLI.
 5. **Start it once** — the user asked you to do a task, not to receive an implementation artifact. After the static self-check, say ONE friendly heads-up line ("🚀 方案定了，正在帮你跑，预计几分钟…" — a notice, NOT a question), then call `run_flow` once. A declared Human Step may later ask its own task-specific question through the Human protocol; that is part of execution, not an extra pre-run gate. **Do NOT ask "要不要跑 / 跑不跑" and do NOT wait for `跑`.** The only exception is when the user explicitly says "只生成别跑 / 先给我看看别执行".
@@ -305,6 +351,7 @@ Read `grammar/FusionFlow.g4` completely before using these patterns. The grammar
 | **Artifact pipeline** | Each Step produces the Artifact consumed by the next Step. Use `max_attempts` only when rerunning that individual Step is safe. | Writing, ETL, and refine-and-check work. |
 | **Per-item map** | Bind one List-valued source Artifact with `foreach_item`; use workflow `max_concurrency` or resources when a limit is needed. | Parallel processing with ordered results; ordinary failures are raised together after siblings finish. |
 | **Named Artifact selection** | Keep every candidate result explicit, then bind `selected_artifact == if(formula, artifact_a, artifact_b)` and use `selected_artifact` in ordinary dataflow. For priority selection, chain named intermediate Artifacts. | Eagerly run all candidate producers, then choose one value for downstream Steps. |
+| **Declarative feedback** | Declare a seeded state as an `input_workflow` Artifact, consume it in the region, and let one Step produce that same Artifact as `state[n+1]`. End the region with one `TerminalStep` whose only result is a strict `BoolArtifact`. | Iterative engineering or agent state transitions with synchronous snapshot reads and final-state publication. |
 | **Composite workflow** | Combine artifact chains, fan-out/fan-in, explicit bounded Agent Steps, and named Artifact selections. | When one simple pattern does not cover the task. |
 
 Before reporting a missing capability for a conditional request, first check whether eager value selection is sufficient. Named Artifact selection runs every candidate producer and only selects the value passed downstream. If the request requires lazy branch activation or guarantees that an unselected producer will not run, report that limitation instead of emitting an approximation. Never invent a keyword or operator to make the source look complete.
@@ -614,6 +661,54 @@ Use free-form quoted text only where the typed catalog expects an `Instruction` 
 7. **Inlining a large source document as an instruction.** Keep the task specification in the instruction and pass source material through an input Artifact.
 8. **Relaying an external tool's secret through workflow source.** Let the tool read its own configuration; never encode credentials in constants.
 9. **Sharing mutable state between parallel branches.** Use artifacts and explicit producer/consumer relations.
+10. **Inventing `while`, `for`, `termination_signal`, or a second feedback-state identity.** The committed feedback state keeps one Artifact identity across epochs. A transient `next_state` produced inside the epoch is valid only when one ordinary commit Step consumes it and remains the unique writer of the original feedback state.
+11. **Using a general Artifact or truthy value as loop control.** A TerminalStep has exactly one `BoolArtifact` output and must return the strict Boolean `true` or `false`.
+
+### Declarative feedback rules
+
+Feedback is a versioned dataflow interpretation, not imperative source syntax.
+Within a valid region, `consumes(step) == [state]` reads `state[n]`, while the
+unique `produces(writer) == [state]` stages `state[n+1]`. All state readers use
+the same snapshot, and all next-state writers commit together.
+
+```fusionflow
+const state: Artifact;
+const evidence: Artifact;
+const done: BoolArtifact;
+const improve: Step;
+const terminal: TerminalStep;
+
+input_workflow(iterative_work) == [state];
+consumes(improve) == [state];
+produces(improve) == [state, evidence];
+consumes(terminal) == [evidence];
+produces(terminal) == [done];
+output_workflow(iterative_work) == [state];
+```
+
+The surrounding workflow still must provide normal Step metadata; the fragment
+only shows the feedback and terminal contracts. The terminal `produces` line
+can be omitted, in which case the compiler creates an internal Boolean output.
+Do not write `[]` to mean omission. The explicit BoolArtifact is traceable loop
+control only; do not consume it from another Step or list it in
+`output_workflow`.
+
+Author feedback only when every state has a workflow input seed and one next
+writer, removing the feedback dependencies makes the epoch graph acyclic, and
+one TerminalStep uniquely depends on the region. The runtime commits `n+1`
+before acting on the predicate: `false` continues and `true` publishes that
+just-committed state. Outside consumers never observe intermediate epochs.
+
+Current execution is intentionally fail closed for multiple/nested feedback
+regions, feedback combined with `if` selection or `foreach`, Human Steps inside
+feedback, and any residual cycle. A host may supply `max_loop_epochs` as a
+safety guard; do not invent an iteration-limit operator in source.
+
+Use `examples/loop_engineering.workflow` and `examples/react_loop.workflow` as
+the complete reference sources. The ReAct example follows the source loop
+literally: `reason` produces `thought` and `action`, `env_step` produces
+`observation` and business `done`, `update` writes the next `prompt`, and a
+separate `TerminalStep` validates `done` as closed loop control.
 
 ### Code template
 
@@ -655,6 +750,7 @@ Before the initial `run_flow` call, inspect the source in order:
 - assertions use `==`, while formulas use comparison operators;
 - each operator uses the documented arity and supported shape;
 - each Step has a supported Agent, Human, or Program executor, name, instruction, and explicit data/control dependencies;
+- the planning contract covers intent, success, interfaces, responsibilities, constraint ownership, dependencies, and operational limits;
 - no residual or unsupported operator is emitted.
 
 This manual source review is not a second tool or CLI invocation. Inside `run_flow`, `check_workflow` requires exactly one workflow, delegates graph semantics to `WorkflowGraphCompiler`, rejects unsupported residual assertions and graph values with explicit concepts that omit `Artifact`, requires every Step instruction and Program path, and rejects untyped or ambiguous executor declarations. Parsing, checking, and compilation all occur before dispatch.

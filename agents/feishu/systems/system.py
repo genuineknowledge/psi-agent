@@ -67,6 +67,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
+import _workflow_authoring_context
 
 try:
     from psi_agent.session.runtime_context import get_agent as _runtime_agent
@@ -122,6 +123,7 @@ from prompt_sections import (
     ERROR_HANDLING_RETRY_SECTION,
     EXECUTION_BIAS_SECTION,
     IDENTITY_LINE,
+    INTERNAL_MARKERS_SECTION,
     LANGUAGE_LOCALIZATION_SECTION,
     PLANNING_PROGRESS_SECTION,
     PSI_AGENT_HELP_GUIDANCE,
@@ -1223,6 +1225,7 @@ this workspace, generated workflows, instruction files, or committed `.env` file
             ("static: tool call style", TOOL_CALL_STYLE_SECTION),
             ("static: system CLI tools", SYSTEM_CLI_TOOLS_SECTION),
             ("static: send files", SEND_FILES_SECTION),
+            ("static: internal markers", INTERNAL_MARKERS_SECTION),
             ("static: deliverables as files", DELIVERABLES_AS_FILES_SECTION),
             ("static: execution bias", EXECUTION_BIAS_SECTION),
             ("static: planning progress", PLANNING_PROGRESS_SECTION),
@@ -1536,6 +1539,7 @@ async def system_before_turn(
     agent_raw: str = "",
 ) -> dict[str, Any]:
     """Return namespaced background advice for an eligible learning turn."""
+    _workflow_authoring_context.begin_turn(user_message)
     if not isinstance(user_message, dict):
         return {}
     content = user_message.get("content")
@@ -1667,6 +1671,7 @@ async def system_after_turn(
     agent_raw: str = "",
 ) -> None:
     """Persist profile signals and warm the background supervisor."""
+    _workflow_authoring_context.end_turn()
     profile_module = importlib.import_module("_user_profile")
     workspace = _resolve_workspace(workspace_raw, agent_raw)
     identity = {

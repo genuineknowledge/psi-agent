@@ -241,6 +241,29 @@ async def test_core_routes_stay_blocked(monkeypatch: pytest.MonkeyPatch) -> None
         await rig.client.close()
 
 
+async def test_feishu_internal_routes_stay_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`/feishu/route` `/feishu/routes` 仍然挡住 —— **同族不等于同待遇**。
+
+    `test_core_routes_stay_blocked` 抓不到这两条: 它列的都是 `/sessions` 一族, 而这两条
+    以 `/feishu/` 开头。会需要单列一条, 是因为白名单里 `/feishu/*` 已经放行了一堆前端接口
+    (`/feishu/jsapi/config` 是最新一条), 下一个人照着补时很容易把「都是 /feishu/ 开头」
+    当成放行理由 —— 而 routes 无鉴权且能 spawn Session, 浏览器一次都不打。
+
+    顺带钉住 `jsapi/config` 放行 + `routes` 挡住**同时**成立: 只断言后者的话, 有人为了
+    让这条绿而把整族撤回白名单也不会响。
+    """
+    rig = await _rig(monkeypatch)
+    try:
+        for method, path in (("GET", "/feishu/route"), ("GET", "/feishu/routes"), ("POST", "/feishu/routes")):
+            resp = await rig.client.request(method, path)
+            assert resp.status == 404, f"{method} {path} 是内部端点, 不许放行, 实得 {resp.status}"
+        assert rig.upstream.hits == [], "未放行的路径一次都不该触达上游"
+        resp = await rig.client.get("/feishu/jsapi/config")
+        assert resp.status == 200, "前端签名接口该放行"
+    finally:
+        await rig.client.close()
+
+
 async def test_unsupported_method_is_405_not_404(monkeypatch: pytest.MonkeyPatch) -> None:
     """白名单内的路径 + 不支持的方法 → 405, 不是 404。
 
