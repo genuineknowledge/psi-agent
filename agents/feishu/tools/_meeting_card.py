@@ -27,14 +27,24 @@ from meeting_session_notify import _read_receipts, _receipt_lock, _resolve_recip
 from psi_agent._appdata import resolve_appdata_root
 
 # 卡片各分区的字符上限(飞书 markdown 单元素有隐性大小约束,控制总量)。
-_SUMMARY_LIMIT = 1200
-_KEY_POINTS_LIMIT = 2200
+# 上限刻意压短: 卡片是给人"扫"的, 长文应该去会议存档看 —— 一屏塞不完的内容
+# 等于没写。
+_SUMMARY_LIMIT = 700
+_KEY_POINTS_LIMIT = 1500
 _EVIDENCE_LIMIT = 160
 _CANDIDATE_LIMIT = 12
 _UNSTRUCTURED_OVERVIEW_LIMIT = 400
+#: 未结构化 overview 分栏后的每栏字符上限(条数另由 ``_CANDIDATE_LIMIT`` 收口)。
+_UNSTRUCTURED_SECTION_LIMIT = 900
 _ELLIPSIS = "\n\n…(内容较长, 已截断, 完整文本见会议存档)"
 
 _CANDIDATE_KEYS = ("positive_candidates", "negative_candidates", "positives", "negatives")
+#: 候选条目的正文键 —— 模型实际用过 ``candidate`` / ``event`` / ``text`` 三种写法,
+#: 只认其中一种会把整栏候选静默丢光(实测 1100 日会: 15 条正面 + 14 条负面全被丢弃,
+#: 卡片上只剩「另有 N 条候选」)。
+_CANDIDATE_TEXT_KEYS = ("candidate", "event", "text", "title", "summary", "item")
+#: 候选条目的分类/分层信息(有就附在要点括号里, 便于 mentor 判断性质)。
+_CANDIDATE_META_KEYS = ("scope", "axis", "fact_layer", "evidence_kind", "kind")
 
 # 「写在代码/规则里的声明」不该出现在给人看的卡片正文里 —— 模型会把系统侧口径复述进
 # 输出(实测: 【用途与边界】本输出仅为候选观察, 不写入正式负面总表、不计分、不进入绩效)。
@@ -60,12 +70,20 @@ _DECLARATION_HINTS = (
 #   「合并口径: 本分析由三段分块分析合并去重…」整段, 与「【合并后分析|会议 ...】」横幅行。
 _MERGE_DECLARATION_RE = re.compile(r"(?m)^\s*合并口径[:\uff1a][^\n]*(?:\n+|$)")
 _META_BANNER_RE = re.compile(r"(?m)^\s*【合并后分析[^\n]*】\s*(?:\n+|$)")
-# 单段超过这个长度就按句号切成分行要点 —— 卡片是给人扫的, 一大段流水文字读不动。
-_PARAGRAPH_BULLET_THRESHOLD = 140
+# 一条要点的目标长度, 也是"要不要拆"的阈值: 超过它就按句号/逗号把短分句攒成多条要点。
+# 数值刻意小 —— 60~140 字符的段落此前原样成行, 那正是"看起来还是一大段"的来源。
+_BULLET_TARGET = 48
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[。\uff1b!?\uff01\uff1f])")
+# 全角标点一律写成 \uffXX 转义(与上面的句子切分同一处理): RUF001 会把字面全角标点
+# 判为 ambiguous unicode, 而这里必须按全角切分中文。
+_CLAUSE_SPLIT_RE = re.compile(r"(?<=[\uff0c,\u3001:\uff1a;\uff1b])")
+_LEADING_BULLET_RE = re.compile(r"^\s*(?:[-\*\u2022\u00b7]|\d+[.\u3001)\uff09]|[\uff08(]\d+[)\uff09])\s*")
 _BRACKET_TITLE_RE = re.compile(r"【([^】]{1,24})】")
 _MD_HEADING_RE = re.compile(r"(?m)^\s*#{1,6}\s*(.+?)\s*$")
 _CN_NUMBERED_HEADING_RE = re.compile(r"(?m)^\s*([一二三四五六七八九十]{1,3}、)\s*(.+?)\s*$")
+# overview 未结构化时, 按【正面候选…】/【负面候选…】这类小标题分栏。
+_POSITIVE_HEADING_RE = re.compile(r"【[^】]{0,12}(?:正面|正向|优点|亮点)[^】]{0,12}】")
+_NEGATIVE_HEADING_RE = re.compile(r"【[^】]{0,12}(?:负面|负向|问题|风险)[^】]{0,12}】")
 
 
 def _strip_declarations(text: str) -> str:
@@ -77,8 +95,40 @@ def _strip_declarations(text: str) -> str:
     return "\n".join(kept).strip()
 
 
+def _bullet_lines(line: str, *, strip_marker: bool) -> list[str]:
+    """把一行整理成若干条 ``- `` 要点; 短行不拆, 长句按标点再切。"""
+    body = _LEADING_BULLET_RE.sub("", line).strip() if strip_marker else line.strip()
+    if not body:
+        return []
+    if len(body) <= _BULLET_TARGET:
+        return [f"- {body}"]
+    pieces: list[str] = []
+    for sentence in (piece.strip() for piece in _SENTENCE_SPLIT_RE.split(body)):
+        if not sentence:
+            continue
+        if len(sentence) <= _BULLET_TARGET:
+            pieces.append(sentence)
+            continue
+        # 句子本身还太长: 按逗号/分号把短分句攒到目标长度, 别让整句挤成一行。
+        current = ""
+        for clause in (part for part in _CLAUSE_SPLIT_RE.split(sentence) if part):
+            if current and len(current) + len(clause) > _BULLET_TARGET:
+                pieces.append(current)
+                current = clause
+            else:
+                current += clause
+        if current.strip():
+            pieces.append(current)
+    return [f"- {piece.strip()}" for piece in pieces if piece.strip()]
+
+
 def _structure(text: str) -> str:
-    """把正文整理成分层结构: 标题独立成行、长段落切成要点、压缩空行。"""
+    """把正文整理成**一句一行**的要点结构。
+
+    卡片是要"扫"的, 所以: 标题独立成行、每行都是 ``- `` 要点、尽量短。此前只对超过
+    140 字符的段落做切分, 模型输出的中等长度段落(60~140 字符)原样成行, 整屏看过去
+    仍是一坨 —— 阈值下调到 60, 并把仍偏长的句子按逗号再切一刀。
+    """
     body = str(text or "").strip()
     if not body:
         return ""
@@ -90,12 +140,12 @@ def _structure(text: str) -> str:
         paragraph = raw_paragraph.strip()
         if not paragraph:
             continue
-        if len(paragraph) < _PARAGRAPH_BULLET_THRESHOLD or paragraph.startswith(("-", "*", ">", "|", "**")):
+        # 标题行/表格行/引用行原样保留(标题拆成要点就不像标题了)
+        if paragraph.startswith(("**", "|", ">")):
             blocks.append(paragraph)
             continue
-        sentences = [piece.strip() for piece in _SENTENCE_SPLIT_RE.split(paragraph) if piece.strip()]
-        blocks.append("\n".join(f"- {sentence}" for sentence in sentences))
-    return re.sub(r"\n{3,}", "\n\n", "\n\n".join(blocks)).strip()
+        blocks.extend(_bullet_lines(paragraph, strip_marker=paragraph.startswith(("-", "*", "•", "·"))))
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(blocks)).strip()
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -124,32 +174,92 @@ def _parse_overview(text: str) -> dict[str, object] | None:
 
 
 def _candidate_lines(candidates: object) -> str:
+    """把一栏候选渲染成要点: 一行一条, 证据缩进一级。
+
+    正文键不写死一种: 模型实际用过 ``candidate`` / ``event`` / ``text`` 三种写法
+    (实测 1100 日会 15 条正面 + 14 条负面因为只认 ``candidate`` 而**全被丢光**,
+    卡片上只剩「另有 N 条候选」)。字符串条目也直接当正文, 不再静默跳过。
+    """
     lines: list[str] = []
     items = candidates if isinstance(candidates, list) else []
     for item in items[:_CANDIDATE_LIMIT]:
-        if not isinstance(item, dict):
+        text = ""
+        meta: list[str] = []
+        evidence = ""
+        if isinstance(item, str):
+            text = item.strip()
+        elif isinstance(item, dict):
+            for key in _CANDIDATE_TEXT_KEYS:
+                value = str(item.get(key) or "").strip()
+                if value:
+                    text = value
+                    break
+            item_id = str(item.get("id") or "").strip()
+            if item_id:
+                meta.append(item_id)
+            for key in _CANDIDATE_META_KEYS:
+                value = str(item.get(key) or "").strip()
+                if value:
+                    meta.append(_truncate(value, 32))
+            evidence = str(item.get("evidence") or "").strip()
+        if not text:
             continue
-        candidate = str(item.get("candidate") or item.get("text") or "").strip()
-        if not candidate:
-            continue
-        prefix = ""
-        item_id = str(item.get("id") or "").strip()
-        if item_id:
-            prefix += f"{item_id} "
-        scope = str(item.get("scope") or "").strip()
-        if scope:
-            prefix += f"({scope}) "
-        line = f"- {prefix}{candidate}" if prefix else f"- {candidate}"
-        evidence = str(item.get("evidence") or "").strip()
-        if evidence:
-            line += f"\n  证据: {_truncate(evidence, _EVIDENCE_LIMIT)}"
-        kind = str(item.get("evidence_kind") or item.get("kind") or "").strip()
-        if kind:
-            line += f"\n  证据类型: {_truncate(kind, 80)}"
-        lines.append(line)
+        # 候选正文本身可能是一整句长话: 与正文同样切成短要点, 别让一条候选占满一行。
+        lines.extend(_bullet_lines(text, strip_marker=False))
+        if meta:
+            lines.append(f"  - 分类: {' · '.join(meta)}")
+        for index, piece in enumerate(_bullet_lines(_truncate(evidence, _EVIDENCE_LIMIT), strip_marker=False)):
+            # 证据常常是一整段原话: 同样切短, 别让一条证据占满一行(实测 150 字符)。
+            fragment = piece[2:] if piece.startswith("- ") else piece
+            lines.append(f"  - 证据: {fragment}" if index == 0 else f"    - {fragment}")
     if len(items) > _CANDIDATE_LIMIT:
         lines.append(f"\n…另有 {len(items) - _CANDIDATE_LIMIT} 条候选, 完整清单见会议存档")
     return "\n".join(lines)
+
+
+def _unstructured_sections(text: str) -> tuple[str, str, str]:
+    """不是 JSON 的 overview: 按【正面候选…】/【负面候选…】小标题分到两栏。
+
+    实测有一场会(周中对齐会 09-09)的 overview 就是这种带小标题的散文 —— 以前整段被
+    截断塞进 footer, 正文两栏空着, 收件人看到的是一整段谁也读不进去的话。
+    条数按 ``_CANDIDATE_LIMIT`` 收口: 卡片只列前若干条, 其余指向会议存档
+    (无上限时实测出现过 113 行的负面候选, 从"读不动"变成"翻不完")。
+    """
+    body = _strip_declarations(text)
+    if not body:
+        return "", "", ""
+    marks = list(re.finditer(r"【([^】]{1,24})】", body))
+    if not marks:
+        return "", "", _truncate(body, _UNSTRUCTURED_OVERVIEW_LIMIT)
+    note = _truncate(body[: marks[0].start()].strip(), 200)
+    positives: list[tuple[str, str]] = []
+    negatives: list[tuple[str, str]] = []
+    neutral = 0
+    for index, mark in enumerate(marks):
+        title = mark.group(1).strip()
+        end = marks[index + 1].start() if index + 1 < len(marks) else len(body)
+        chunk = body[mark.end() : end].strip()
+        if not chunk:
+            continue
+        target = f"【{title}】"
+        if _NEGATIVE_HEADING_RE.search(target):
+            negatives.append((title, chunk))
+        elif _POSITIVE_HEADING_RE.search(target):
+            positives.append((title, chunk))
+        else:
+            neutral += 1
+
+    def _render(entries: list[tuple[str, str]]) -> str:
+        blocks = [f"**{title}**\n{_structure(chunk)}" for title, chunk in entries[:_CANDIDATE_LIMIT]]
+        extra = len(entries) - len(blocks)
+        if extra > 0:
+            blocks.append(f"…另有 {extra} 条, 完整清单见会议存档")
+        return _truncate("\n\n".join(blocks), _UNSTRUCTURED_SECTION_LIMIT)
+
+    if neutral:
+        suffix = f"…另有 {neutral} 条中性/待补充证据条目, 完整清单见会议存档"
+        note = f"{note}\n{suffix}" if note else suffix
+    return _render(positives), _render(negatives), note
 
 
 def _overview_sections(overview_text: str) -> tuple[str, str, str]:
@@ -159,9 +269,8 @@ def _overview_sections(overview_text: str) -> tuple[str, str, str]:
     """
     parsed = _parse_overview(overview_text)
     if parsed is None:
-        # 未结构化: 原文不放正文区(避免破坏分区语义), 截断进 note 供追溯。
-        return "", "", _truncate(overview_text, _UNSTRUCTURED_OVERVIEW_LIMIT)
-    declaration = str(parsed.get("declaration") or "").strip()
+        return _unstructured_sections(overview_text)
+    declaration = str(parsed.get("declaration") or parsed.get("disclaimer") or "").strip()
     note = _truncate(declaration, 240) if declaration else ""
     positives = ""
     negatives = ""
@@ -190,7 +299,7 @@ def render_meeting_summary_card(
     key_points = str(analysis.get("analysis_text") or "").strip()
     overview_text = str(analysis.get("positive_negative_overview") or "").strip()
     positives, negatives, overview_note = _overview_sections(overview_text)
-    footer = f"⚠️ 候选观察: 不进入正式正负面总表 · 不计分 · 不进入绩效 | 会议号 {meeting_code}"
+    footer = f"⚠️ 候选观察: 不进入正式正负面总表 · 不计分 · 不进入绩效\n会议号 {meeting_code}"
     if overview_note:
         footer = f"{overview_note}\n\n{footer}"
     values = {
