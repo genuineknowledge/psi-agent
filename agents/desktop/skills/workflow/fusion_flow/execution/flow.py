@@ -44,6 +44,8 @@ from .model import (
 )
 from .runtime import current_run_context, stable_payload_hash
 
+_PROCESS_JOBS: dict[int, object] = {}
+
 if sys.platform == "win32":
     import ctypes
     from ctypes import wintypes
@@ -427,9 +429,9 @@ async def _terminate_process(process: Any) -> None:
 def _take_process_job(process: Any) -> object | None:
     """取出并清空挂在进程对象上的 Windows Job handle。"""
 
-    job = getattr(process, "_psi_agent_job", None)
+    job = _PROCESS_JOBS.get(id(process))
     if job is not None:
-        process._psi_agent_job = None
+        _PROCESS_JOBS.pop(id(process), None)
     return job
 
 
@@ -462,7 +464,7 @@ def _attach_batch_job(process: Any) -> None:
             return
     finally:
         _kernel32.CloseHandle(handle)
-    process._psi_agent_job = job
+    _PROCESS_JOBS[id(process)] = job
 
 
 async def _run_parallel_tasks[T](

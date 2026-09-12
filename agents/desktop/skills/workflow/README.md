@@ -429,3 +429,8 @@ Commit only `FusionFlowLexer.py` and `FusionFlowParser.py`; the generated `.inte
 9. **Compatibility** exposes the `workflow` Skill identity while preserving the internal `fusion_flow` package, `FusionFlow.g4` grammar, and persisted protocol names; explicit legacy `.flow.ts` requests still route to `fusion-flow-legacy` without implicit translation.
 
 Dependency order: 1 + 2 -> 3 -> 4 -> 5 -> 6; 2 -> 7; 4 + 5 + 7 -> 8. Workstream 9 runs throughout and gates activation.
+
+
+### 宿主 session socket
+
+`set_ai_socket_provider()` 只在当前进程的 async context 中生效；它会被之后创建的子任务继承，但不会跨越已创建任务、线程、subprocess 或其它 agent 进程。函数返回可用于恢复上下文的 token，也可使用 `ai_socket_provider(...)` context manager。provider 返回 `None` 时会回退到宿主默认 socket。跨进程接入必须由宿主在 workflow 进程内显式注册 provider。

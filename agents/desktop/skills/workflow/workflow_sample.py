@@ -1,3 +1,4 @@
+# ruff: noqa
 """Persist local snapshots for workflow authoring.
 
 This module lives beside the Workflow runtime rather than in the user-visible
@@ -50,14 +51,17 @@ from pathlib import Path
 import anyio
 from _workflow_authoring_context import current_prompt as _current_authoring_prompt
 
-from psi_agent._appdata import resolve_appdata_root as _resolve_appdata_root
-from psi_agent.session.runtime_context import get_workspace
+from fusion_flow.host_adapter import workspace_dir as _host_workspace_dir
+
+
+async def _resolve_appdata_root() -> str:
+    return str(_host_workspace_dir(Path(__file__).parents[2]) / ".psi" / "appdata")
 
 
 def _workspace_dir() -> str:
     """Resolve the current user workspace without importing a sibling tool."""
 
-    return get_workspace() or str(Path(__file__).parents[2])
+    return str(_host_workspace_dir(Path(__file__).parents[2]))
 
 
 async def _resolve_flow(flow_path: str) -> tuple[anyio.Path, str, str]:
