@@ -1,13 +1,16 @@
 """Read positive-negative ledger records from a Feishu private-chat request."""
 
-# ruff: noqa: E402
+# ruff: noqa: E402, RUF001
 
 from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
+
+from loguru import logger
 
 TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
@@ -52,11 +55,9 @@ def _normalize_person_filters(raw_query: dict[str, Any], user_key: str) -> dict[
 
 async def positive_negative_case_read(
     query_json: str = "",
-    page_size: int = 100,
-    page_token: str = "",
     user_key: str = "",
 ) -> str:
-    """Read paginated positive-negative records from the configured Feishu table.
+    """Read one page of positive-negative records from the configured Feishu table.
 
     台账调用规范 (务必遵守):
     - 本工具是正负面台账读取的唯一入口, 台账坐标由代码固定:
@@ -75,15 +76,15 @@ async def positive_negative_case_read(
       返回 0 条时如实说"按该条件没有查到", 不要推断为"该人没有记录"。
 
     Args:
-        query_json: JSON object containing optional filters and pagination fields.
-        page_size: Number of rows to request, from 1 to 500.
-        page_token: Cursor returned by a previous page.
+        query_json: JSON object containing optional filters (record id,
+            subject/reporter identities, nature, category, keyword, dates).
         user_key: Trusted Feishu sender identity.
 
     Returns:
         JSON with readable Chinese record fields and a natural-language read
-        status.  The internal pagination cursor is consumed by the tool and is
-        not returned to the chat model.
+        status.  Full-ledger statistics belong to the analyze tool; this tool
+        reads a single page only and never returns a pagination cursor to the
+        chat model.
     """
     try:
         raw_query = json.loads(query_json) if query_json.strip() else {}
@@ -92,18 +93,35 @@ async def positive_negative_case_read(
         _normalize_person_filters(raw_query, user_key)
         query_json = json.dumps(raw_query, ensure_ascii=False)
         adapter = runtime.configured_read_table_adapter()
-        query = reader.parse_query(
+        parsed = reader.parse_query(
             query_json,
-            page_size=page_size,
-            page_token=page_token,
+            page_size=100,
+            page_token="",
             view_id=runtime.configured_read_view_id(),
         )
+        query = replace(parsed, page_size=100, page_token="")
+        actual_names = await reader.list_table_field_names(*runtime.read_target_coordinates())
+        blocker = await reader.reject_unavailable_filters(query, actual_names)
+        if blocker is not None:
+            return _f.dumps_result(blocker)
         result = await reader.read_records(cast(reader.FeishuLedgerClient, adapter._client), query, user_key)
         result = await reader.public_result_with_names(result)
     except (TypeError, ValueError) as exc:
-        result = {"ok": False, "error": str(exc)}
+        logger.warning(f"pnl case_read: query rejected: {type(exc).__name__}: {exc}")
+        result = {
+            "ok": False,
+            "状态": "读取失败",
+            "说明": "查询条件无法解析，请调整后重试。",
+            "error": str(exc),
+        }
     except (OSError, RuntimeError) as exc:
-        result = {"ok": False, "status": "table_read_failed", "error": f"{type(exc).__name__}: {exc}"}
+        logger.warning(f"pnl case_read: read failed: {type(exc).__name__}: {exc}")
+        result = {
+            "ok": False,
+            "状态": "读取失败",
+            "说明": "暂时无法读取正负面清单，请稍后重试。",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
     return _f.dumps_result(result)
 
 

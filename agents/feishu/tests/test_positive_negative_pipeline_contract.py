@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib
 import json
 import os
@@ -131,70 +132,6 @@ def test_public_source_reader_requests_only_columns_known_to_the_table(monkeypat
     asyncio.run(client.list_records(LedgerQuery(), "ou_reader"))
     requested = json.loads(calls[0]["field_names"])
     assert requested == ["员工姓名", "填写人", "正负面归属", "记录日期", "事件描述"]
-
-
-def test_person_filters_use_contains_because_person_fields_are_multi_select() -> None:
-    """生产事故 (2026-09-10): 飞书「人员」字段是多选, 用 ``is`` 查「员工姓名 is [高博]」
-    只匹配"恰好只有高博"的行 —— 含两人的行 (092 = [董修奇, 高博]) 被静默跳过, 接口返回
-    "0 条"而不是报错, 于是把"查不到"当成"没有"。涉事人/报告人必须用 ``contains``;
-    单选字段 (行为性质/分类) 仍用 ``is``。"""
-    reader = importlib.import_module("_positive_negative_list.reader")
-    payload = json.loads(
-        reader.build_filter(
-            LedgerQuery(subject_user_key="ou_gaobo", reporter_user_key="ou_reporter", nature="negative")
-        )
-    )
-    operators = {item["field_name"]: item["operator"] for item in payload["conditions"]}
-    assert operators["涉事人"] == "contains"
-    assert operators["报告人"] == "contains"
-    assert operators["涉事人"] != "is", "回退成 is 就会静默漏掉多人行"
-    assert operators["行为性质"] == "is"
-
-
-def test_multi_person_row_is_found_when_querying_one_of_its_people(monkeypatch) -> None:
-    """同一条记录挂多人时, 按其中一人查询必须能查到 (contains 语义)。"""
-    reader = importlib.import_module("_positive_negative_list.reader")
-    row: dict[str, Any] = {
-        "record_id": "rec_share",
-        "fields": {
-            "事件描述": [{"text": "方案未按优先级排", "type": "text"}],
-            "正负面归属": "负面清单",
-            "员工姓名": [{"id": "ou_dongxiuqi", "name": "董修奇"}, {"id": "ou_gaobo", "name": "高博"}],
-            "记录日期": 1786896000000,
-            "填写人": [{"id": "ou_gaobo", "name": "高博"}],
-        },
-    }
-
-    async def fake_search(**kwargs):
-        conditions = json.loads(kwargs.get("filter_json") or "{}").get("conditions", [])
-        people = [item["id"] for item in row["fields"]["员工姓名"]]
-        for condition in conditions:
-            if condition["field_name"] != "员工姓名":
-                continue
-            target = condition["value"][0]
-            matched = target in people if condition["operator"] == "contains" else people == [target]
-            if not matched:
-                return {"ok": True, "records": [], "has_more": False, "page_token": ""}
-        return {"ok": True, "records": [row], "has_more": False, "page_token": ""}
-
-    monkeypatch.setattr(reader._f, "search_bitable_records_impl", fake_search)
-    client = reader.FeishuLedgerClient(
-        "app",
-        "table",
-        {
-            "nature": "正负面归属",
-            "subject_user_key": "员工姓名",
-            "reporter_user_key": "填写人",
-            "occurred_at": "记录日期",
-            "fact_summary": "事件描述",
-        },
-        strict_field_names=True,
-    )
-    result = asyncio.run(reader.read_records(client, LedgerQuery(subject_user_key="ou_gaobo"), "ou_reader"))
-
-    assert result["ok"] is True
-    assert len(result["records"]) == 1
-    assert "ou_gaobo" in result["records"][0]["subject_user_key"]
 
 
 def test_feishu_rich_text_is_normalized_for_analysis() -> None:
@@ -1390,6 +1327,714 @@ def test_confirmation_writes_only_test_adapter_then_sends_notice_card_without_au
     active = reviews.find_active_reviews(tmp_path, "ou_subject")
     assert active == ()
     assert result["private_review_status"] == "not_started"
+
+
+# ---------------------------------------------------------------------------
+# Reliability hardening: candidate chain (atomic writes / terminal render /
+# idempotent clicks / identity) and prepare field-surface enforcement.
+# ---------------------------------------------------------------------------
+
+
+def test_candidate_kept_row_renders_terminal_state_without_buttons() -> None:
+    batches = importlib.import_module("_positive_negative_list.candidate_batches")
+    card_tool = importlib.import_module("positive_negative_candidate_card")
+    batch = batches.build_candidate_batch(
+        person_open_id="ou_subject",
+        person_name="王炜博",
+        source_label="会议纪要",
+        meeting_date="2026-09-06",
+        candidates=[{"text": "未同步风险"}],
+        source_key="meeting:2026-09-06:terminal",
+    )
+    batch["rows"][0]["status"] = "kept"
+    rendered = json.dumps(card_tool.render_candidate_card(batch), ensure_ascii=False)
+    assert "已纳入候选" in rendered
+    assert "pn_candidate_keep_0" not in rendered
+    assert "pn_candidate_ignore_0" not in rendered
+
+
+def test_candidate_click_without_trusted_user_key_is_rejected(tmp_path, monkeypatch) -> None:
+    batches = importlib.import_module("_positive_negative_list.candidate_batches")
+    card_tool = importlib.import_module("positive_negative_candidate_card")
+    monkeypatch.setattr(batches, "_resolve_appdata_root", lambda: tmp_path)
+    batch = batches.build_candidate_batch(
+        person_open_id="ou_subject",
+        person_name="王炜博",
+        source_label="会议纪要",
+        meeting_date="2026-09-06",
+        candidates=[{"text": "未同步风险"}],
+        source_key="meeting:2026-09-06:no-identity",
+    )
+    asyncio.run(batches.save_batch(batch))
+    callback = json.dumps(
+        {
+            "action": {
+                "value": {
+                    "action": "pn_candidate_keep_0",
+                    "batch_id": batch["batch_id"],
+                    "person_open_id": "ou_subject",
+                }
+            },
+            "message_id": "",
+        }
+    )
+    payload = json.loads(asyncio.run(card_tool.positive_negative_candidate_card(card_action_json=callback)))
+    assert payload["ok"] is False
+    assert payload["status"] == "unauthorized"
+
+
+def test_candidate_click_on_decided_row_returns_already_decided_without_state_change(tmp_path, monkeypatch) -> None:
+    batches = importlib.import_module("_positive_negative_list.candidate_batches")
+    card_tool = importlib.import_module("positive_negative_candidate_card")
+    monkeypatch.setattr(batches, "_resolve_appdata_root", lambda: tmp_path)
+    batch = batches.build_candidate_batch(
+        person_open_id="ou_subject",
+        person_name="王炜博",
+        source_label="会议纪要",
+        meeting_date="2026-09-06",
+        candidates=[{"text": "未同步风险"}],
+        source_key="meeting:2026-09-06:decided",
+    )
+    asyncio.run(batches.save_batch(batch))
+    base_value = {
+        "batch_id": batch["batch_id"],
+        "person_open_id": "ou_subject",
+    }
+    keep_callback = json.dumps({"action": {"value": {**base_value, "action": "pn_candidate_keep_0"}}, "message_id": ""})
+    first = json.loads(
+        asyncio.run(card_tool.positive_negative_candidate_card(card_action_json=keep_callback, user_key="ou_subject"))
+    )
+    assert first["ok"] is True
+    assert first["status"] == "ready_for_analysis"
+    loaded = asyncio.run(batches.load_batch(batch["batch_id"]))
+    assert loaded["rows"][0]["status"] == "kept"
+
+    ignore_callback = json.dumps(
+        {"action": {"value": {**base_value, "action": "pn_candidate_ignore_0"}}, "message_id": ""}
+    )
+    second = json.loads(
+        asyncio.run(card_tool.positive_negative_candidate_card(card_action_json=ignore_callback, user_key="ou_subject"))
+    )
+    assert second["ok"] is True
+    assert second["status"] == "already_decided"
+    assert second["row_status"] == "kept"
+    after = asyncio.run(batches.load_batch(batch["batch_id"]))
+    assert after["rows"][0]["status"] == "kept"
+    assert after["status"] == "ready_for_analysis"
+
+
+def test_candidate_batch_corrupt_file_is_quarantined_not_stuck(tmp_path, monkeypatch) -> None:
+    batches = importlib.import_module("_positive_negative_list.candidate_batches")
+    monkeypatch.setattr(batches, "_resolve_appdata_root", lambda: tmp_path)
+    directory = tmp_path / "positive-negative-list" / "candidate-batches"
+    directory.mkdir(parents=True)
+    broken = directory / "cand_broken.json"
+    broken.write_text('{"truncated": ', encoding="utf-8")
+
+    assert asyncio.run(batches.load_batch("cand_broken")) is None
+    assert not broken.exists()
+    assert any(path.name.endswith(".corrupt") for path in directory.iterdir())
+    assert asyncio.run(batches.find_batch_by_source_key("anything")) is None
+
+
+def test_candidate_card_derives_source_key_when_omitted(tmp_path, monkeypatch) -> None:
+    feishu = importlib.import_module("_feishu_impl")
+    batches = importlib.import_module("_positive_negative_list.candidate_batches")
+    card_tool = importlib.import_module("positive_negative_candidate_card")
+    monkeypatch.setattr(batches, "_resolve_appdata_root", lambda: tmp_path)
+    calls: list[dict[str, Any]] = []
+
+    async def fake_send_card(
+        receive_id,
+        card_json,
+        receive_id_type,
+        user_key=None,
+        business_context_json="{}",
+        action_handlers_json="{}",
+        multi_use=False,
+        **_kwargs,
+    ):
+        calls.append({"receive_id": receive_id, "handlers": json.loads(action_handlers_json or "{}")})
+        return {"ok": True, "message_id": f"om_derived_{len(calls)}"}
+
+    monkeypatch.setattr(feishu, "send_card_impl", fake_send_card)
+    kwargs = {
+        "candidates_json": json.dumps(["未同步风险"], ensure_ascii=False),
+        "person_name": "王炜博",
+        "source_label": "会议纪要",
+        "meeting_date": "2026-09-06",
+        "source_key": "",
+        "receive_id": "ou_subject",
+        "user_key": "ou_subject",
+    }
+    first = json.loads(asyncio.run(card_tool.positive_negative_candidate_card(**kwargs)))
+    assert first["ok"] is True
+    assert first["status"] == "sent"
+    second = json.loads(asyncio.run(card_tool.positive_negative_candidate_card(**kwargs)))
+    assert second["ok"] is True
+    assert second["status"] == "already_sent"
+    assert second["batch_id"] == first["batch_id"]
+    assert len(calls) == 1
+
+
+def test_prepare_rejects_red_line_flag_from_the_model() -> None:
+    positive_negative = importlib.import_module("positive_negative_list")
+    mapping = _negative_case().to_mapping() | {"red_line_candidate": True}
+    payload = json.loads(
+        asyncio.run(
+            positive_negative.positive_negative_case_prepare(
+                json.dumps(mapping, ensure_ascii=False),
+                source_event_id="evt_red_line_injected",
+                user_key="ou_reporter",
+            )
+        )
+    )
+    assert payload["ok"] is False
+    assert payload["status"] == "red_line_state_rejected"
+    assert payload["allowed_case_fields"]
+    assert len(payload["allowed_case_fields"]) == 18
+
+
+# ---------------------------------------------------------------------------
+# R2: crash-window recovery (confirm row recovery, orphan reservation
+# takeover) and six-column alias contains-based deduplication.
+# ---------------------------------------------------------------------------
+
+
+def test_confirm_after_crash_between_create_and_receipt_recovers_existing_row(monkeypatch, tmp_path) -> None:
+    positive_negative = importlib.import_module("positive_negative_list")
+    confirm = importlib.import_module("positive_negative_list_confirm")
+    notifications = importlib.import_module("_positive_negative_list.notifications")
+    feishu = importlib.import_module("_feishu_impl")
+
+    class FakeAdapter:
+        creates = 0
+
+        def __init__(self) -> None:
+            self.lookup = {"rec_recovered"}
+
+        async def preflight(self, user_key):
+            return SimpleNamespace(ok=True, errors=(), schema=object())
+
+        async def find_by_source_key(self, source_key, user_key):
+            if "rec_recovered" in self.lookup:
+                return {"record_id": "rec_recovered"}
+            return None
+
+        async def create_public_record(self, case, user_key):
+            self.creates += 1
+            return {"record_id": "rec_new"}
+
+        def public_record_link(self, record_id):
+            return f"https://feishu.cn/base/app?table=tbl&record={record_id}"
+
+    adapter = FakeAdapter()
+    sent_cards: list[dict[str, Any]] = []
+
+    async def fake_send_card(receive_id, card_json, *args, **kwargs):
+        sent_cards.append({"receive_id": receive_id, "card": json.loads(card_json)})
+        return {"ok": True, "message_id": "msg_notice"}
+
+    async def fake_get_users_batch(user_ids: str, user_id_type: str = "open_id"):
+        names = {"ou_subject": "王炜博", "ou_reporter": "罗霖"}
+        return {"ok": True, "users": [{"open_id": item, "name": names[item]} for item in user_ids.split(",")]}
+
+    async def fake_root():
+        return tmp_path
+
+    monkeypatch.setattr(feishu, "send_card_impl", fake_send_card)
+    monkeypatch.setattr(feishu, "get_users_batch_impl", fake_get_users_batch)
+    monkeypatch.setattr(positive_negative, "_get_session_id", lambda: "session_test")
+    monkeypatch.setattr(positive_negative, "_resolve_appdata_root", fake_root)
+    monkeypatch.setattr(confirm, "get_session_id", lambda: "session_test")
+    monkeypatch.setattr(confirm, "resolve_appdata_root", fake_root)
+    monkeypatch.setattr(confirm, "TABLE_ADAPTER", adapter)
+    monkeypatch.setattr(confirm, "table_adapter", None)
+    monkeypatch.setattr(notifications, "send_card_impl", fake_send_card)
+
+    case = _negative_case().to_mapping() | {"writer_user_key": "ou_reporter", "reporter_user_key": "ou_reporter"}
+    prepared = json.loads(
+        asyncio.run(
+            positive_negative.positive_negative_case_prepare(
+                json.dumps(case, ensure_ascii=False),
+                source_event_id="evt_crash_recover",
+                user_key="ou_reporter",
+            )
+        )
+    )
+    assert prepared["ok"] is True
+    case_id = prepared["case_id"]
+
+    # Simulate the crash window: the draft was persisted as ``writing`` but no
+    # receipt ever landed (process died right after the table row was created).
+    drafts_base = tmp_path / "positive-negative-list" / "drafts"
+    draft_path = next(path for path in drafts_base.glob(f"*/{case_id}.json"))
+    payload = json.loads(draft_path.read_text(encoding="utf-8"))
+    payload["case"]["workflow"] = "writing"
+    draft_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    callback = json.dumps(
+        {
+            "action": {"value": {"action": "positive_negative_case_confirm"}},
+            "business_context": {"case_id": case_id, "preview_digest": prepared["preview_digest"]},
+        },
+        ensure_ascii=False,
+    )
+    result = json.loads(asyncio.run(confirm.positive_negative_case_confirm(callback, user_key="ou_reporter")))
+    assert result["ok"] is True
+    assert result["public_record_id"] == "rec_recovered"
+    assert result["notification_status"] == "notification_sent"
+    assert adapter.creates == 0
+    assert (tmp_path / "positive-negative-list" / "receipts" / f"{case_id}.json").is_file()
+
+    # A second click on the same card must not create or resend anything.
+    again = json.loads(asyncio.run(confirm.positive_negative_case_confirm(callback, user_key="ou_reporter")))
+    assert again["status"] == "already_written"
+    assert adapter.creates == 0
+
+
+def test_prepare_reclaims_orphaned_same_source_reservation(monkeypatch, tmp_path) -> None:
+    positive_negative = importlib.import_module("positive_negative_list")
+    dedupe = importlib.import_module("_positive_negative_list.dedupe")
+    feishu = importlib.import_module("_feishu_impl")
+
+    async def fake_send_card(receive_id, card_json, *args, **kwargs):
+        return {"ok": True, "message_id": "msg_prep"}
+
+    async def fake_get_users_batch(user_ids: str, user_id_type: str = "open_id"):
+        names = {"ou_subject": "王炜博", "ou_reporter": "罗霖"}
+        return {"ok": True, "users": [{"open_id": item, "name": names[item]} for item in user_ids.split(",")]}
+
+    async def fake_root():
+        return tmp_path
+
+    monkeypatch.setattr(feishu, "send_card_impl", fake_send_card)
+    monkeypatch.setattr(feishu, "get_users_batch_impl", fake_get_users_batch)
+    monkeypatch.setattr(positive_negative, "_get_session_id", lambda: "session_test")
+    monkeypatch.setattr(positive_negative, "_resolve_appdata_root", fake_root)
+
+    source_key = dedupe.make_source_key("feishu_private_chat", "evt_orphan_prep")
+    # Simulate a crash after reserve but before the card was sent: the orphaned
+    # reservation references a case that has no draft and no receipt.
+    dedupe.reserve_source_key(str(tmp_path), source_key, "case_orphan_stale")
+
+    case = _negative_case().to_mapping() | {"writer_user_key": "ou_reporter", "reporter_user_key": "ou_reporter"}
+    prepared = json.loads(
+        asyncio.run(
+            positive_negative.positive_negative_case_prepare(
+                json.dumps(case, ensure_ascii=False),
+                source_event_id="evt_orphan_prep",
+                user_key="ou_reporter",
+            )
+        )
+    )
+    assert prepared["ok"] is True
+    reservation_path = tmp_path / "positive-negative-list" / "dedupe" / f"{source_key}.json"
+    reservation = json.loads(reservation_path.read_text(encoding="utf-8"))
+    assert reservation["case_id"] == prepared["case_id"]
+    assert reservation["case_id"] != "case_orphan_stale"
+
+    # A second attempt for the same source is a real duplicate now (draft
+    # exists), so it must keep refusing instead of reclaiming the live case.
+    second = json.loads(
+        asyncio.run(
+            positive_negative.positive_negative_case_prepare(
+                json.dumps(case, ensure_ascii=False),
+                source_event_id="evt_orphan_prep",
+                user_key="ou_reporter",
+            )
+        )
+    )
+    assert second["ok"] is False
+    assert second["status"] == "exact_duplicate"
+
+
+def test_six_column_dedupe_search_uses_contains_operator() -> None:
+    table = importlib.import_module("_positive_negative_list.table")
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, str]] = []
+
+        async def search(self, field_id: str, value: str, user_key: str, operator: str = "is"):
+            self.calls.append((field_id, value, operator))
+            return [{"record_id": "rec_note_hit"}] if operator == "contains" else []
+
+    aliased = SimpleNamespace(
+        deduplication_field_ids={
+            "source_key": "f_note",
+            "canonical_incident_id": "f_note",
+            "cross_source_fingerprint": "f_note",
+        }
+    )
+    client = FakeClient()
+    adapter = table.TableAdapter(client)
+    adapter._schema = aliased
+    asyncio.run(adapter.find_by_source_key("sk-123", "ou_writer"))
+    assert client.calls and client.calls[0][2] == "contains"
+    assert client.calls[0][1] == "sk-123"
+
+    dedicated = SimpleNamespace(
+        deduplication_field_ids={
+            "source_key": "f_sk",
+            "canonical_incident_id": "f_ci",
+            "cross_source_fingerprint": "f_fp",
+        }
+    )
+    client2 = FakeClient()
+    adapter2 = table.TableAdapter(client2)
+    adapter2._schema = dedicated
+    asyncio.run(adapter2.find_by_source_key("sk-456", "ou_writer"))
+    assert client2.calls and client2.calls[0][2] == "is"
+
+
+# ---------------------------------------------------------------------------
+# R3: notification retry fidelity (cards persisted before send, per-target
+# receipts prevent duplicate delivery) and record-id link hygiene.
+# ---------------------------------------------------------------------------
+
+
+def test_notification_retry_reuses_stored_card_after_interrupted_send(monkeypatch, tmp_path) -> None:
+    notifications = importlib.import_module("_positive_negative_list.notifications")
+    sent_cards: list[str] = []
+
+    async def fake_users(user_ids: str, user_id_type: str = "open_id"):
+        return {"ok": True, "users": [{"open_id": "ou_subject", "name": "王炜博"}]}
+
+    async def fail_send(receive_id, card_json, *args, **kwargs):
+        raise TimeoutError("transport down")
+
+    async def ok_send(receive_id, card_json, *args, **kwargs):
+        sent_cards.append(str(card_json))
+        return {"ok": True, "message_id": "msg_retry"}
+
+    monkeypatch.setattr(notifications._feishu_impl, "get_users_batch_impl", fake_users)
+    monkeypatch.setattr(notifications, "send_card_impl", fail_send)
+    sender = notifications.NotificationSender(tmp_path)
+    result = asyncio.run(sender.send_subject_notice(_negative_case(), "rec_pub_1"))
+    assert result.ok is False
+
+    # The case receipt already carries the card and the per-recipient receipt
+    # keeps the exact card JSON for the retry.
+    case_receipt = json.loads(
+        (tmp_path / "positive-negative-list" / "receipts" / "case_test.json").read_text(encoding="utf-8")
+    )
+    assert case_receipt["notification_cards"]["ou_subject"]
+    digest = hashlib.sha256(b"rec_pub_1\nou_subject").hexdigest()
+    record_receipt = json.loads(
+        (tmp_path / "positive-negative-list" / "notification-receipts" / f"{digest}.json").read_text(encoding="utf-8")
+    )
+    stored_card = str(record_receipt["card_json"])
+    assert stored_card
+
+    monkeypatch.setattr(notifications, "send_card_impl", ok_send)
+    retry = asyncio.run(sender.retry_notification("case_test"))
+    assert retry.ok is True
+    assert retry.status == "notification_sent"
+    assert sent_cards and sent_cards[0] == stored_card
+
+
+def test_notification_retry_skips_target_already_sent_before_crash(monkeypatch, tmp_path) -> None:
+    notifications = importlib.import_module("_positive_negative_list.notifications")
+    sent_cards: list[str] = []
+
+    async def fake_users(user_ids: str, user_id_type: str = "open_id"):
+        return {"ok": True, "users": [{"open_id": "ou_subject", "name": "王炜博"}]}
+
+    async def ok_send(receive_id, card_json, *args, **kwargs):
+        sent_cards.append(str(card_json))
+        return {"ok": True, "message_id": "msg_once"}
+
+    monkeypatch.setattr(notifications._feishu_impl, "get_users_batch_impl", fake_users)
+    monkeypatch.setattr(notifications, "send_card_impl", ok_send)
+    sender = notifications.NotificationSender(tmp_path)
+    first = asyncio.run(sender.send_subject_notice(_negative_case(), "rec_pub_2"))
+    assert first.ok is True
+    assert len(sent_cards) == 1
+
+    # Simulate a crash before the case receipt was updated: the case receipt is
+    # still pending, but the per-recipient receipt already says "sent".  The
+    # retry must not deliver a second copy.
+    retry = asyncio.run(sender.retry_notification("case_test"))
+    assert retry.ok is True
+    assert len(sent_cards) == 1
+
+
+def test_notice_text_never_leaks_raw_record_id_as_link() -> None:
+    notifications = importlib.import_module("_positive_negative_list.notifications")
+
+    text = notifications._notice_text(_negative_case(), "rec_raw_123")
+    assert "rec_raw_123" not in text
+    assert "记录链接" not in text
+    linked = notifications._notice_text(_negative_case(), "https://feishu.cn/base/x?table=t&record=rec_raw_123")
+    assert "记录链接" in linked
+
+    def record_with(record_link: str):
+        return notifications.LedgerRecord(
+            record_id="rec_x",
+            case_id="",
+            reporter_user_key="ou_reporter",
+            subject_user_key="ou_subject",
+            occurred_at="2026-09-01",
+            nature="positive",
+            category="分类",
+            fact_summary="行为事实",
+            evidence_sources=(),
+            correct_behavior="",
+            immediate_remedy="",
+            prevention="",
+            review_status="",
+            source_key="",
+            canonical_incident_id="",
+            cross_source_fingerprint="",
+            fields={},
+            record_link=record_link,
+        )
+
+    record_text = notifications._record_notice_text(record_with("rec_x"))
+    assert "rec_x" not in record_text
+    assert "记录链接" not in record_text
+    record_text_linked = notifications._record_notice_text(record_with("https://feishu.cn/base/x?record=rec_x"))
+    assert "记录链接" in record_text_linked
+
+
+# ---------------------------------------------------------------------------
+# R5: read path never reports a silent empty table for unusable filters and
+# the single-page tool no longer invites impossible pagination loops.
+# ---------------------------------------------------------------------------
+
+
+def test_read_rejects_category_filter_when_ledger_has_no_category_column(monkeypatch) -> None:
+    read_tool = importlib.import_module("positive_negative_case_read")
+    reader = importlib.import_module("_positive_negative_list.reader")
+
+    async def fake_read_records(client, query, user_key):
+        raise AssertionError("guard must reject before any read")
+
+    async def fake_names(*args):
+        return frozenset({"事件描述", "正负面归属", "员工姓名", "记录日期", "备注", "填写人", "记录ID"})
+
+    monkeypatch.setattr(reader, "read_records", fake_read_records)
+    monkeypatch.setattr(reader, "list_table_field_names", fake_names)
+    payload = json.loads(
+        asyncio.run(read_tool.positive_negative_case_read(query_json='{"category": "迅速行动、及时反馈"}'))
+    )
+    assert payload["ok"] is False
+    assert payload["状态"] == "读取失败"
+    assert "分类" in payload["说明"]
+    assert "汇总分析" in payload["说明"]
+
+
+def test_read_rejects_person_name_filter_without_identity(monkeypatch) -> None:
+    read_tool = importlib.import_module("positive_negative_case_read")
+    reader = importlib.import_module("_positive_negative_list.reader")
+
+    async def fake_read_records(client, query, user_key):
+        raise AssertionError("guard must reject before any read")
+
+    monkeypatch.setattr(reader, "read_records", fake_read_records)
+    payload = json.loads(
+        asyncio.run(
+            read_tool.positive_negative_case_read(query_json='{"subject_user_key": "王炜博"}', user_key="ou_writer")
+        )
+    )
+    assert payload["ok"] is False
+    assert "姓名" in payload["说明"]
+    assert "涉事人" in payload["说明"]
+
+
+def test_read_accepts_trusted_identity_filter_and_reads(monkeypatch) -> None:
+    read_tool = importlib.import_module("positive_negative_case_read")
+    reader = importlib.import_module("_positive_negative_list.reader")
+    runtime = importlib.import_module("_positive_negative_list.runtime")
+
+    async def fake_read_records(client, query, user_key):
+        assert query.subject_user_key == "ou_subject"
+        assert query.page_size == 100
+        return {"ok": True, "records": [], "has_more": False, "page_token": ""}
+
+    async def fake_public(result):
+        return {"ok": True, "记录": [], "本页记录数": 0, "读取状态": "已读完全部记录"}
+
+    async def fake_names(*args):
+        return frozenset({"事件描述", "正负面归属", "员工姓名", "记录日期", "备注", "填写人", "记录ID"})
+
+    monkeypatch.setattr(runtime, "configured_read_table_adapter", lambda: SimpleNamespace(_client=object()))
+    monkeypatch.setattr(reader, "read_records", fake_read_records)
+    monkeypatch.setattr(reader, "public_result_with_names", fake_public)
+    monkeypatch.setattr(reader, "list_table_field_names", fake_names)
+    payload = json.loads(
+        asyncio.run(
+            read_tool.positive_negative_case_read(query_json='{"subject_user_key": "ou_subject"}', user_key="ou_writer")
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["读取状态"] == "已读完全部记录"
+
+
+def test_read_bad_query_returns_unified_chinese_failure() -> None:
+    read_tool = importlib.import_module("positive_negative_case_read")
+    payload = json.loads(asyncio.run(read_tool.positive_negative_case_read(query_json="not-json")))
+    assert payload["ok"] is False
+    assert payload["状态"] == "读取失败"
+    assert "解析" in payload["说明"]
+
+
+def test_single_page_read_text_points_to_analyze_tool_not_manual_paging() -> None:
+    reader = importlib.import_module("_positive_negative_list.reader")
+    projection = reader._public_result({"ok": True, "records": [], "has_more": True})
+    assert "汇总分析" in projection["读取状态"]
+    assert "下一页" not in projection["读取状态"]
+
+
+# ---------------------------------------------------------------------------
+# Editable PNL reference config (``config/positive-negative-list.yaml``),
+# todo-sop style: values editable, structure a contract, built-ins fallback.
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_config_yaml_overrides_ledger_defaults(monkeypatch, tmp_path) -> None:
+    runtime = importlib.import_module("_positive_negative_list.runtime")
+    paths = importlib.import_module("_runtime_paths")
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "positive-negative-list.yaml").write_text(
+        "\n".join(
+            [
+                "ledger:",
+                "  host: ledger.example.cn",
+                "  app_token: app_custom",
+                "  table_id: tbl_custom",
+                "  view_id: vew_custom",
+                "  columns:",
+                "    nature: 正负面归属",
+                "    subject_user_key: 员工姓名",
+                "    fact_summary: 事件描述",
+                "    occurred_at: 记录日期",
+                "    note: 备注",
+                "    reporter_user_key: 填写人",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(paths, "resolve_agent", lambda: tmp_path)
+
+    assert runtime._target_coordinates({}, "read") == ("app_custom", "tbl_custom", "vew_custom")
+    assert runtime._default_ledger_field_names()["nature"] == "正负面归属"
+    assert runtime._default_ledger_web_host() == "ledger.example.cn"
+    # Built-in constants are untouched and still serve as fallbacks.
+    assert runtime._SOURCE_APP_TOKEN == "RNEvbLIJAaPPdksfv8YceTmjndg"
+
+
+def test_runtime_config_falls_back_to_builtins_when_missing(monkeypatch, tmp_path) -> None:
+    runtime = importlib.import_module("_positive_negative_list.runtime")
+    paths = importlib.import_module("_runtime_paths")
+    monkeypatch.setattr(paths, "resolve_agent", lambda: tmp_path)
+
+    assert runtime._target_coordinates({}, "read") == (
+        runtime._SOURCE_APP_TOKEN,
+        runtime._SOURCE_TABLE_ID,
+        runtime._SOURCE_VIEW_ID,
+    )
+    assert runtime._default_ledger_field_names() == dict(runtime._LEDGER_FIELD_NAMES)
+    assert runtime._default_ledger_web_host() == runtime._SOURCE_WEB_HOST
+
+
+def test_runtime_config_falls_back_when_malformed(monkeypatch, tmp_path) -> None:
+    runtime = importlib.import_module("_positive_negative_list.runtime")
+    paths = importlib.import_module("_runtime_paths")
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "positive-negative-list.yaml").write_text("ledger: [broken", encoding="utf-8")
+    monkeypatch.setattr(paths, "resolve_agent", lambda: tmp_path)
+
+    assert runtime._target_coordinates({}, "read") == (
+        runtime._SOURCE_APP_TOKEN,
+        runtime._SOURCE_TABLE_ID,
+        runtime._SOURCE_VIEW_ID,
+    )
+
+
+def test_record_links_use_tenant_domain_not_generic_feishu() -> None:
+    table = importlib.import_module("_positive_negative_list.table")
+
+    adapter = table.TableAdapter(object())
+    adapter._schema = SimpleNamespace(app_token="app_x", table_id="tbl_y")
+    link = adapter.public_record_link("rec_1")
+    assert link.startswith("https://genuineknowledge.feishu.cn/base/app_x?table=tbl_y&record=rec_1")
+
+    class HostedClient:
+        web_host = "custom.example.feishu.cn"
+
+    adapter_hosted = table.TableAdapter(HostedClient())
+    adapter_hosted._schema = SimpleNamespace(app_token="app_x", table_id="tbl_y")
+    hosted_link = adapter_hosted.public_record_link("rec_1")
+    assert hosted_link.startswith("https://custom.example.feishu.cn/base/app_x?table=tbl_y&record=rec_1")
+    assert "genuineknowledge.feishu.cn" not in hosted_link
+
+
+def test_person_filters_use_contains_because_person_fields_are_multi_select() -> None:
+    """生产事故 (2026-09-10): 飞书「人员」字段是多选, 用 ``is`` 查「员工姓名 is [高博]」
+    只匹配"恰好只有高博"的行 —— 含两人的行 (092 = [董修奇, 高博]) 被静默跳过, 接口返回
+    "0 条"而不是报错, 于是把"查不到"当成"没有"。涉事人/报告人必须用 ``contains``;
+    单选字段 (行为性质/分类) 仍用 ``is``。"""
+    reader = importlib.import_module("_positive_negative_list.reader")
+    payload = json.loads(
+        reader.build_filter(
+            LedgerQuery(subject_user_key="ou_gaobo", reporter_user_key="ou_reporter", nature="negative")
+        )
+    )
+    operators = {item["field_name"]: item["operator"] for item in payload["conditions"]}
+    assert operators["涉事人"] == "contains"
+    assert operators["报告人"] == "contains"
+    assert operators["涉事人"] != "is", "回退成 is 就会静默漏掉多人行"
+    assert operators["行为性质"] == "is"
+
+
+def test_multi_person_row_is_found_when_querying_one_of_its_people(monkeypatch) -> None:
+    """同一条记录挂多人时, 按其中一人查询必须能查到 (contains 语义)。"""
+    reader = importlib.import_module("_positive_negative_list.reader")
+    row: dict[str, Any] = {
+        "record_id": "rec_share",
+        "fields": {
+            "事件描述": [{"text": "方案未按优先级排", "type": "text"}],
+            "正负面归属": "负面清单",
+            "员工姓名": [{"id": "ou_dongxiuqi", "name": "董修奇"}, {"id": "ou_gaobo", "name": "高博"}],
+            "记录日期": 1786896000000,
+            "填写人": [{"id": "ou_gaobo", "name": "高博"}],
+        },
+    }
+
+    async def fake_search(**kwargs):
+        conditions = json.loads(kwargs.get("filter_json") or "{}").get("conditions", [])
+        people = [item["id"] for item in row["fields"]["员工姓名"]]
+        for condition in conditions:
+            if condition["field_name"] != "员工姓名":
+                continue
+            target = condition["value"][0]
+            matched = target in people if condition["operator"] == "contains" else people == [target]
+            if not matched:
+                return {"ok": True, "records": [], "has_more": False, "page_token": ""}
+        return {"ok": True, "records": [row], "has_more": False, "page_token": ""}
+
+    monkeypatch.setattr(reader._f, "search_bitable_records_impl", fake_search)
+    client = reader.FeishuLedgerClient(
+        "app",
+        "table",
+        {
+            "nature": "正负面归属",
+            "subject_user_key": "员工姓名",
+            "reporter_user_key": "填写人",
+            "occurred_at": "记录日期",
+            "fact_summary": "事件描述",
+        },
+        strict_field_names=True,
+    )
+    result = asyncio.run(reader.read_records(client, LedgerQuery(subject_user_key="ou_gaobo"), "ou_reader"))
+
+    assert result["ok"] is True
+    assert len(result["records"]) == 1
+    assert "ou_gaobo" in result["records"][0]["subject_user_key"]
 
 
 def _prepare_with_fakes(monkeypatch, tmp_path, *, source_event_id: str):
