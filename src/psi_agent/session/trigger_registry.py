@@ -20,6 +20,7 @@ import anyio
 from loguru import logger
 
 from psi_agent._yaml import parse_yaml_header
+from psi_agent.session import layer_probe
 from psi_agent.session.event_protocol import (
     MATCH_ALL,
     EventEnvelope,
@@ -180,6 +181,14 @@ class TriggerRegistry:
     @classmethod
     async def load(cls, triggers_dir: Path) -> TriggerRegistry:
         files = await cls._load_from_dir(triggers_dir)
+        # 层来源探针(只读, 见 ``layer_probe``): triggers 目前是**单目录**, 所以这里
+        # 恒报 1 of 1。刻意现在就加 —— 等分层落地后这行会变成 N of M, 而"它一直报
+        # 1 of 1"本身就是"triggers 还没跟着分层"的判据。缺失时报 0 of 1, 与"目录存在
+        # 但没有 trigger"区分得开(后者是 0 from 1 of 1)。
+        seen: list[tuple[str, int]] = []
+        if await anyio.Path(str(triggers_dir)).is_dir():
+            seen.append((layer_probe.root_name(triggers_dir), len(files)))
+        layer_probe.report("triggers", roots_declared=1, per_root=seen)
         return cls(files=files, work_dir=triggers_dir)
 
     async def refresh(self) -> dict[str, str]:

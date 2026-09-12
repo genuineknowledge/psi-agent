@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 import anyio
 from loguru import logger
 
+from psi_agent.session import layer_probe
+
 if TYPE_CHECKING:
     from psi_agent.session.conversation import Conversation
 
@@ -247,7 +249,18 @@ class SystemPrompt:
             file_bytes = await ap.read_bytes()
         except OSError:
             logger.warning(f"No system.py found at {system_py}")
+            # 层来源探针(只读, 见 ``layer_probe``)。systems 是**单值**语义 —— 一个
+            # system.py 赢, 不合并 —— 故用 chosen 报是哪一层赢的。找不到时报 0 of 1
+            # 而不是静默返回: 现在这条路径只有一行 warning, 而分层之后"逐层都没找到"
+            # 与"只查了一层所以没找到"是两件事, 单靠那行 warning 分不出来。
+            layer_probe.report("systems", roots_declared=1, per_root=[])
             return None, None, None, None, None, None
+        layer_probe.report(
+            "systems",
+            roots_declared=1,
+            per_root=[(layer_probe.root_name(workspace_path), 1)],
+            chosen=layer_probe.root_name(workspace_path),
+        )
 
         file_hash = hashlib.sha256(file_bytes).hexdigest()
         module_name = f"psi_system_{session_id}_{file_hash}"

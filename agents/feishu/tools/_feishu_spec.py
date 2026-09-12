@@ -93,6 +93,8 @@ from typing import Any
 
 import yaml
 
+from psi_agent.session import layer_probe
+
 _RULES_BLOCK = re.compile(r"^```rules\s*$(.*?)^```\s*$", re.M | re.S)
 _METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 
@@ -304,7 +306,28 @@ def load_rules(skills_dir: str | pathlib.Path) -> list[Rule]:
 
 @functools.lru_cache(maxsize=8)
 def _cached(skills_dir: str) -> tuple[Rule, ...]:
-    return tuple(load_rules(skills_dir))
+    rules = tuple(load_rules(skills_dir))
+    # 层来源探针(只读, 见 ``layer_probe``)。挂在 *缓存未命中* 上而不是 ``rules_for``
+    # 上: 后者每次飞书 API 调用都过, 会把日志淹掉; 这里每个不同的 skills_dir 只报
+    # 一次, 而"有几个不同的 skills_dir"恰好就是要问的那个问题。
+    #
+    # skills 目录是**两个消费者**: 提示词里的技能索引, 和这里的飞书 API 护栏规则。
+    # 分层若只改了前者, 每人的覆盖会*看起来*生效(索引里能看到), 而真实 API 调用仍
+    # 只受官方规则约束 —— 静默, 且朝着最贵的方向错。故这一处必须单独有判据。
+    # 单根: 恒报 1 of 1; 等分层落地后仍报 1 of 1, 就是"护栏没跟着分层"的判据。
+    #
+    # 目录不存在时 chosen 必须留空: 报 ``chosen=<名字>`` 是在说"这一层赢了", 而一个
+    # 都没读到时没有赢家 —— 那样写会让"护栏规则来自某层"与"护栏规则一条都没加载"
+    # 在日志里同形, 正是本探针要消灭的那种同形。
+    exists = pathlib.Path(skills_dir).is_dir()
+    name = layer_probe.root_name(skills_dir)
+    layer_probe.report(
+        "feishu_api_rules",
+        roots_declared=1,
+        per_root=[(name, len(rules))] if exists else [],
+        chosen=name if exists else "",
+    )
+    return rules
 
 
 def rules_for(skills_dir: str | pathlib.Path, method: str, uri: str) -> Rule | None:
