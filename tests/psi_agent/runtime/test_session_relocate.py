@@ -42,15 +42,9 @@ async def test_copy_session_artifacts_prefers_appdata(tmp_path: object) -> None:
     new_hist = appdata_history_path(appdata, new_id)
     new_todo = appdata_todo_path(appdata, new_id)
     new_segs = appdata_todo_segments_path(appdata, new_id)
-    assert await new_hist.read_text(encoding="utf-8") == await hist.read_text(
-        encoding="utf-8"
-    )
-    assert await new_todo.read_text(encoding="utf-8") == await todo.read_text(
-        encoding="utf-8"
-    )
-    assert await new_segs.read_text(encoding="utf-8") == await segs.read_text(
-        encoding="utf-8"
-    )
+    assert await new_hist.read_text(encoding="utf-8") == await hist.read_text(encoding="utf-8")
+    assert await new_todo.read_text(encoding="utf-8") == await todo.read_text(encoding="utf-8")
+    assert await new_segs.read_text(encoding="utf-8") == await segs.read_text(encoding="utf-8")
 
 
 @pytest.mark.anyio

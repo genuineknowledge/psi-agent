@@ -54,9 +54,7 @@ async def copy_session_artifacts(
     )
     hist_dst = appdata_history_path(appdata_root, new_session_id)
     if await _copy_bytes(hist_src, hist_dst):
-        logger.info(
-            f"Relocate copied history {old_session_id!r} -> {new_session_id!r}"
-        )
+        logger.info(f"Relocate copied history {old_session_id!r} -> {new_session_id!r}")
 
     todo_src = await resolve_todo_read_path(
         appdata_root=appdata_root,
@@ -70,9 +68,7 @@ async def copy_session_artifacts(
     seg_src = appdata_todo_segments_path(appdata_root, old_session_id)
     seg_dst = appdata_todo_segments_path(appdata_root, new_session_id)
     if await _copy_bytes(seg_src, seg_dst):
-        logger.info(
-            f"Relocate copied todo segments {old_session_id!r} -> {new_session_id!r}"
-        )
+        logger.info(f"Relocate copied todo segments {old_session_id!r} -> {new_session_id!r}")
 
 
 async def delete_session_todo_files(
