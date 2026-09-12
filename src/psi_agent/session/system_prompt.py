@@ -6,7 +6,7 @@ import hashlib
 import inspect
 import sys
 import types
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -14,6 +14,7 @@ import anyio
 from loguru import logger
 
 from psi_agent.session import layer_probe
+from psi_agent.session.content_roots import ContentRoot, declared_paths
 
 if TYPE_CHECKING:
     from psi_agent.session.conversation import Conversation
@@ -101,6 +102,50 @@ class SystemPrompt:
             before_turn=before_turn,
             after_turn=after_turn,
             agent_path=workspace_path,
+        )
+
+    @classmethod
+    async def from_content_roots(cls, roots: Sequence[ContentRoot], session_id: str) -> SystemPrompt:
+        """Load ``<root>/systems/system.py`` from the **nearest root that has one**.
+
+        systems is **single-valued**: one ``system.py`` wins outright, nothing is
+        merged. A system module is imperative code exporting six hooks, so
+        "merging" two of them has no meaning short of picking hooks from
+        different files — which would run two authors' halves against each
+        other's assumptions.
+
+        Searched nearest-first, so a personal root's module shadows the official
+        one. ``agent_path`` is set to the **winning root**, not the top root:
+        hooks resolve ``SOUL.md`` / ``USER.md`` relative to it (``_agent_kwargs``),
+        and pointing a module at a root it did not come from is how a module
+        silently reads another layer's identity files.
+        """
+        ordered = sorted(roots, key=lambda root: root.priority, reverse=True)
+        declared = declared_paths(ordered)
+        # 逐层探明"这层有没有 system.py", 与"谁赢了"分开报: 找到第一个就停会让下层
+        # 有没有 system.py 变得不可见, 而"官方那份还在不在"正是回退时要问的。
+        present = [root for root in ordered if await anyio.Path(str(root.path / "systems" / "system.py")).is_file()]
+        layer_probe.report(
+            "systems",
+            roots_declared=len(ordered),
+            per_root=[(root.name, 1) for root in present],
+            chosen=present[0].name if present else "",
+        )
+        if not present:
+            # 与单根路径同形的那行 warning 仍要有: 逐层都没找到是配置问题, 不是无事。
+            logger.warning(f"No system.py found in any of {len(ordered)} content roots")
+            return cls()
+        winner = present[0]
+        loaded = await cls._load_module(winner.path, session_id, declared=declared, report=False)
+        builder, checker, compaction_fn, turn_context_fn, before_turn, after_turn = loaded
+        return cls(
+            builder=builder,
+            checker=checker,
+            compaction_fn=compaction_fn,
+            turn_context_fn=turn_context_fn,
+            before_turn=before_turn,
+            after_turn=after_turn,
+            agent_path=winner.path,
         )
 
     async def ensure(self, conversation: Conversation, user_message: dict[str, Any] | None = None) -> None:
@@ -231,7 +276,10 @@ class SystemPrompt:
 
     @staticmethod
     async def _load_module(
-        workspace_path: Path, session_id: str
+        workspace_path: Path,
+        session_id: str,
+        declared: dict[str, Path] | None = None,
+        report: bool = True,
     ) -> tuple[
         Callable[..., Any] | None,
         Callable[..., Any] | None,
@@ -242,7 +290,14 @@ class SystemPrompt:
     ]:
         """Import ``system_prompt_builder``, ``system_prompt_rebuild_checker``,
         ``compact_history``, and ``turn_context_builder`` from
-        ``workspace/systems/system.py``."""
+        ``workspace/systems/system.py``.
+
+        *report* off when the caller already reported the layer picture
+        (``from_content_roots``): two lines for one load would double-count the
+        kind, and the caller's line is the one that knows how many roots were
+        searched — this one can only see the winner and would report ``1 of 1``,
+        i.e. exactly the "layering did not land" signal, falsely.
+        """
         system_py = workspace_path / "systems" / "system.py"
         ap = anyio.Path(str(system_py))
         try:
@@ -253,14 +308,16 @@ class SystemPrompt:
             # system.py 赢, 不合并 —— 故用 chosen 报是哪一层赢的。找不到时报 0 of 1
             # 而不是静默返回: 现在这条路径只有一行 warning, 而分层之后"逐层都没找到"
             # 与"只查了一层所以没找到"是两件事, 单靠那行 warning 分不出来。
-            layer_probe.report("systems", roots_declared=1, per_root=[])
+            if report:
+                layer_probe.report("systems", roots_declared=1, per_root=[])
             return None, None, None, None, None, None
-        layer_probe.report(
-            "systems",
-            roots_declared=1,
-            per_root=[(layer_probe.root_name(workspace_path), 1)],
-            chosen=layer_probe.root_name(workspace_path),
-        )
+        if report:
+            layer_probe.report(
+                "systems",
+                roots_declared=1,
+                per_root=[(layer_probe.root_name(workspace_path, declared), 1)],
+                chosen=layer_probe.root_name(workspace_path, declared),
+            )
 
         file_hash = hashlib.sha256(file_bytes).hexdigest()
         module_name = f"psi_system_{session_id}_{file_hash}"

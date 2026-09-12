@@ -89,6 +89,7 @@ import copy
 import functools
 import pathlib
 import re
+from collections.abc import Sequence
 from typing import Any
 
 import yaml
@@ -304,6 +305,56 @@ def load_rules(skills_dir: str | pathlib.Path) -> list[Rule]:
     return found
 
 
+def load_rules_layered(skills_dirs: Sequence[tuple[str, str | pathlib.Path]]) -> list[Rule]:
+    """All rules across *skills_dirs*, nearest-wins per endpoint, most specific URI first.
+
+    *skills_dirs* is ``(层名, 目录)`` **ascending** — far to near, same order the
+    prompt index merges in — so a nearer layer's rule for the same endpoint
+    replaces the farther one **entirely**. Whole-rule replacement, not
+    field-level: a rule carries ``refuse`` constraints, ``confirm``, and
+    ``defaults`` together, and merging halves of two authors' rules yields a
+    guardrail neither wrote — on the API-call path, where the failure costs real
+    money and real writes.
+
+    Identity is ``(METHOD, uri)``, not the file it came from: an override lands
+    in a different skill file by construction (a personal layer's own skill dir),
+    so keying on the file would let both rules survive and the
+    stricter-or-looser one win by sort order instead of by layer.
+    """
+    by_endpoint: dict[tuple[str, str], Rule] = {}
+    for _layer, skills_dir in skills_dirs:
+        for rule in load_rules(skills_dir):
+            by_endpoint[(rule.method, rule.uri)] = rule
+    found = list(by_endpoint.values())
+    found.sort(key=lambda r: -r.specificity)
+    return found
+
+
+@functools.lru_cache(maxsize=64)
+def _cached_layered(key: tuple[tuple[str, str], ...]) -> tuple[Rule, ...]:
+    """Parsed rules for one ladder. *key* is ``((层名, 目录), ...)``, ascending.
+
+    Keyed on the **whole ladder** rather than one directory string: under
+    layering the answer is a function of every root and their order, so a
+    per-directory key would serve one layer's rules for another ladder that
+    happens to share its top directory.
+
+    ``maxsize`` up from 8 to 64: the key went from one directory to a ladder, and
+    a ladder is per (deployment layout x user root) — 8 entries thrash once a few
+    dozen users each have their own top root, and a thrashing cache re-parses
+    every SKILL.md on the API-call path.
+    """
+    rules = tuple(load_rules_layered(key))
+    per_root: list[tuple[str, int]] = []
+    for layer, skills_dir in key:
+        if pathlib.Path(skills_dir).is_dir():
+            per_root.append((layer, len(load_rules(skills_dir))))
+    # 单值? 不是 —— 护栏是合并语义(每个 endpoint 各自被最近的层定), 故不报 chosen。
+    # per_root 报各层**贡献**(去重前), 与 total 不等即说明发生了同名 endpoint 覆盖。
+    layer_probe.report("feishu_api_rules", roots_declared=len(key), per_root=per_root)
+    return rules
+
+
 @functools.lru_cache(maxsize=8)
 def _cached(skills_dir: str) -> tuple[Rule, ...]:
     rules = tuple(load_rules(skills_dir))
@@ -343,9 +394,24 @@ def rules_for(skills_dir: str | pathlib.Path, method: str, uri: str) -> Rule | N
     return None
 
 
+def rules_for_layers(skills_dirs: Sequence[tuple[str, str | pathlib.Path]], method: str, uri: str) -> Rule | None:
+    """:func:`rules_for` across a ladder of skills dirs, nearest-wins.
+
+    The layered entry point the API call path uses. Same prefix / advice
+    semantics as the single-root one — layering decides *which* rule governs an
+    endpoint, not how a rule that governs it is applied.
+    """
+    key = tuple((layer, str(path)) for layer, path in skills_dirs)
+    for rule in _cached_layered(key):
+        if rule.matches((method or "").upper(), uri or ""):
+            return rule if rule.governs_exactly(uri or "") else rule.as_advice()
+    return None
+
+
 def reset_cache() -> None:
     """Drop the parsed-rules cache — for tests and for skill hot-reload."""
     _cached.cache_clear()
+    _cached_layered.cache_clear()
 
 
 #: The three buckets a field can be pinned to, for ``in:`` and for ``bucket.name`` keys.

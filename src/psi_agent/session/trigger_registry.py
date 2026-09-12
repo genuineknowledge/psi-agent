@@ -10,7 +10,7 @@ import hashlib
 import inspect
 import json
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +21,7 @@ from loguru import logger
 
 from psi_agent._yaml import parse_yaml_header
 from psi_agent.session import layer_probe
+from psi_agent.session.content_roots import ContentRoot
 from psi_agent.session.event_protocol import (
     MATCH_ALL,
     EventEnvelope,
@@ -180,16 +181,56 @@ class TriggerRegistry:
 
     @classmethod
     async def load(cls, triggers_dir: Path) -> TriggerRegistry:
+        """Load from *triggers_dir* alone — the single-root entry point.
+
+        Kept as-is for every caller that has one directory and no notion of
+        layers (tests, ``run_once``, tools). ``load_content_roots`` is the
+        layered entry point ``SessionAgent`` reaches for.
+        """
         files = await cls._load_from_dir(triggers_dir)
-        # 层来源探针(只读, 见 ``layer_probe``): triggers 目前是**单目录**, 所以这里
-        # 恒报 1 of 1。刻意现在就加 —— 等分层落地后这行会变成 N of M, 而"它一直报
-        # 1 of 1"本身就是"triggers 还没跟着分层"的判据。缺失时报 0 of 1, 与"目录存在
-        # 但没有 trigger"区分得开(后者是 0 from 1 of 1)。
         seen: list[tuple[str, int]] = []
         if await anyio.Path(str(triggers_dir)).is_dir():
             seen.append((layer_probe.root_name(triggers_dir), len(files)))
         layer_probe.report("triggers", roots_declared=1, per_root=seen)
         return cls(files=files, work_dir=triggers_dir)
+
+    @classmethod
+    async def load_content_roots(cls, roots: Sequence[ContentRoot]) -> TriggerRegistry:
+        """Load ``<root>/triggers`` across *roots*, nearest-wins by trigger name.
+
+        Merge semantics, matching skills: a trigger in a nearer root **replaces**
+        the same-named one from a lower root entirely — no field-level merge.
+        Merging fields would synthesise a third trigger nobody wrote, and a
+        trigger carries a ``filter`` and a ``fire`` target, so a half-overridden
+        one fires the wrong thing on the wrong events.
+
+        Identity is the trigger **name**, not the file path. Paths are unique per
+        root by construction, so keying on them (as ``_files`` does) would let
+        both copies live and fire twice — the override would silently *add* a
+        firing rather than replace one.
+
+        *roots* is ascending in priority (see ``content_roots``); the highest
+        root is the one ``refresh()`` reloads and the one ``work_dir`` points at,
+        because it is the only one a user can write to.
+        """
+        ordered = sorted(roots, key=lambda root: root.priority)
+        by_name: dict[str, tuple[str, TriggerEntry]] = {}
+        per_root: list[tuple[str, int]] = []
+        for root in ordered:
+            triggers_dir = root.path / "triggers"
+            loaded = await cls._load_from_dir(triggers_dir)
+            # 只报**存在**的层: "这层没有 triggers 目录"与"有目录但空"是两件事,
+            # 压成同一个 0 就是 B-0 探针存在的那个坑(见 ``layer_probe``)。
+            if await anyio.Path(str(triggers_dir)).is_dir():
+                per_root.append((root.name, len(loaded)))
+            for path, entry in loaded.items():
+                by_name[entry.trigger.name] = (path, entry)
+        files = dict(by_name.values())
+        # per_root 报各层**贡献**(去重前), 与合并后的 total 不等即说明发生了同名
+        # 覆盖 —— 覆盖行为得看得见, 否则"近的赢了"和"远的没被读到"同形。
+        layer_probe.report("triggers", roots_declared=len(ordered), per_root=per_root)
+        work_dir = ordered[-1].path / "triggers" if ordered else None
+        return cls(files=files, work_dir=work_dir)
 
     async def refresh(self) -> dict[str, str]:
         try:

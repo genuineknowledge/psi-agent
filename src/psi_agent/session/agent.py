@@ -33,7 +33,7 @@ from psi_agent.protocol import (
 )
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
-from psi_agent.session.content_roots import ContentRoot, content_roots_from_env
+from psi_agent.session.content_roots import content_roots_from_env, roots_with_agent_top
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.event_protocol import EventProtocolError, parse_event_envelope
 from psi_agent.session.history_display import (
@@ -384,13 +384,15 @@ class SessionAgent:
         # single-dir load, unchanged.
         content_roots = content_roots_from_env()
         if content_roots:
-            top = ContentRoot(
-                name=str(agent_root.resolve()),
-                path=agent_root,
-                priority=max(root.priority for root in content_roots) + 10,
-            )
-            tool_registry = await ToolRegistry.load_content_roots([*content_roots, top], conversation.session_id)
+            # One ladder for every content kind — tools, triggers, systems — so
+            # the three cannot disagree about which roots exist or in what order.
+            # ``roots_with_agent_top`` appends the agent package as the most
+            # specific root; see ``content_roots`` for why its name is a name and
+            # not ``str(agent_root.resolve())``.
+            ladder = roots_with_agent_top(agent_root, content_roots)
+            tool_registry = await ToolRegistry.load_content_roots(ladder, conversation.session_id)
         else:
+            ladder = []
             tool_registry = await ToolRegistry.load(agent_root / "tools", conversation.session_id)
         # 刻意为之: schedules 仍然挂 ``workspace_path``, 不跟着分层走 agent_root/内容根。
         # 日程是「谁的提醒」——属于挂载侧、属于这个用户的 workspace, 内容根答不了这个问题。
@@ -400,8 +402,12 @@ class SessionAgent:
             active_names=active_schedules,
             deactive_names=deactive_schedules,
         )
-        trigger_registry = await TriggerRegistry.load(agent_root / "triggers")
-        system_prompt = await SystemPrompt.from_workspace(agent_root, conversation.session_id)
+        if ladder:
+            trigger_registry = await TriggerRegistry.load_content_roots(ladder)
+            system_prompt = await SystemPrompt.from_content_roots(ladder, conversation.session_id)
+        else:
+            trigger_registry = await TriggerRegistry.load(agent_root / "triggers")
+            system_prompt = await SystemPrompt.from_workspace(agent_root, conversation.session_id)
 
         return cls(
             ai_client=ai_client,

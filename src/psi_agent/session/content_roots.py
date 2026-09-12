@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -152,3 +153,63 @@ def content_roots_from_env(env: dict[str, str] | None = None) -> list[ContentRoo
     """
     source = os.environ if env is None else env
     return parse_content_roots(source.get(CONTENT_ROOTS_ENV, ""))
+
+
+# The name the agent package's own root gets when it is appended on top of the
+# declared roots.  It is a *name*, not a path, for the reason the whole module
+# exists: ``agent.py`` used ``str(agent_root.resolve())`` as the top root's name,
+# which mints a different layer id per workspace and so defeats the compilation
+# reuse ``layer_id`` was introduced for.  Content-wise the agent package is one
+# shipped body, so it declares one name.
+AGENT_ROOT_NAME = "agent"
+
+
+def roots_with_agent_top(agent_root: Path, roots: Sequence[ContentRoot] | None = None) -> list[ContentRoot]:
+    """The declared roots plus *agent_root* on top, ascending in priority.
+
+    The ladder every content kind reads in B-1: declared roots in the order the
+    deployment listed them (``official:enterprise:users``), then the agent
+    package as the most specific root.  Returned **ascending**, so the last
+    entry wins a name collision — the same direction ``load_layers`` exec's
+    layers in and the same direction ``_build_skills_index`` already merges
+    ``~/.agent/skills`` then the agent root.
+
+    Nothing declared → a single root for *agent_root* alone.  That is what keeps
+    the unset-env case byte-identical: every call site walks a one-element list
+    and lands on exactly the directory it used to read.
+
+    An *agent_root* that is already one of the declared roots (by path) is not
+    appended twice; the declared entry keeps its declared name and rank, because
+    a name is an identity and inventing a second one for the same bytes is the
+    cache-splitting failure this module removes.
+    """
+    declared = list(roots if roots is not None else content_roots_from_env())
+    resolved = _resolved(agent_root)
+    for root in declared:
+        if _resolved(root.path) == resolved:
+            return declared
+    top_priority = max((root.priority for root in declared), default=-10) + 10
+    return [*declared, ContentRoot(name=AGENT_ROOT_NAME, path=agent_root, priority=top_priority)]
+
+
+def _resolved(path: Path) -> Path:
+    """*path* with symlinks / ``..`` collapsed; the raw path when that fails.
+
+    Resolution can raise on Windows for a path whose drive is not present, and a
+    root that cannot be resolved must not make the ladder unbuildable — the
+    comparison it feeds only decides whether a duplicate entry is appended.
+    """
+    try:
+        return path.resolve()
+    except OSError:  # pragma: no cover — unmountable drive / permission
+        return path
+
+
+def declared_paths(roots: Sequence[ContentRoot]) -> dict[str, Path]:
+    """``{layer name: root path}`` for ``layer_probe.root_name``.
+
+    The probe reports *declared* names rather than directory basenames, and this
+    is the mapping it needs.  Built here so the four call sites do not each
+    rebuild it slightly differently.
+    """
+    return {root.name: root.path for root in roots}
