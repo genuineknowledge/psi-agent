@@ -33,18 +33,26 @@ seed 的两条硬规则写在 `SchedulerManager._seed_missing_schedules` 里，�
 | TASK.md | 会议 | Cron | 行为 |
 |---|---|---|---|
 | `weekday-alignment/TASK.md` | 周中对齐会 `57152787045`（周一/三/五 10:00） | `0 12 * * 1,3,5` | `meeting_pipeline_run`：取最新已完成转写 → 分块分析 → 按路由发送 |
+| `weekday-alignment-retry-1730/TASK.md` | 周中对齐会（补偿重跑） | `30 17 * * 1,3,5` | 同上；主任务已投递时按 `record_file_id` 自动跳过 |
 | `weekday-alignment-1100/TASK.md` | 日会 `42654699903`（周一/三/五 11:00） | `0 13 * * 1,3,5` | 同上 |
+| `weekday-alignment-1100-retry-1730/TASK.md` | 日会（补偿重跑） | `30 17 * * 1,3,5` | 同上；主任务已投递时按 `record_file_id` 自动跳过 |
 
-两条会议任务的正文由 `meeting_schedule_files()` 从 `MEETING_JOBS` 投影生成，
+四条会议任务（两场主任务 + 各自的 17:30 补偿重跑）的正文由 `meeting_schedule_files()` 从 `MEETING_JOBS` 投影生成，
 **静态文件必须与投影逐字一致**，由 `test_committed_meeting_schedule_files_match_projection`
 强制（文件不齐时该判据跳过，齐了即恢复强制）。
-改 `MEETING_JOBS` 的 cron／retry／参数，必须同步改这两个文件。
+改 `MEETING_JOBS` 的 cron／retry／参数，必须同步改这些文件。
 
 按录制 `record_file_id` 幂等：同一场次重复触发不会重复投递。
 
-> 17:30 的两条补偿重跑（`weekday-alignment-retry-1730` / `weekday-alignment-1100-retry-1730`）
-> 已于 2026-09-11 下线（#914 移除代码、#916 补带到 main），只保留两场主任务。
-> 线上真正停掉仍需按开头那个「两步」来。
+> **补偿重跑为什么必须有**：腾讯的文字转写是**异步**产出的，主跑时常常还没生成
+> （实测 2026-09-11 周中会：12:00 主跑取不到转写，21:59 才生成）。而管道只认**最新
+> occurrence** —— 下一场主跑时最新已经是下一场，当天没赶上就**永久丢失**。故**两场会各留
+> 一条 17:30 的补偿重跑**（周中会 `weekday-alignment-retry-1730`、日会
+> `weekday-alignment-1100-retry-1730`）。
+> 幂等由 `record_file_id` 保证：主任务已成功投递时，重跑只跳过、不重复投卡。
+>
+> 历史：2026-09-11 曾把两条 17:30 补偿重跑一起下线（#914 移除代码、#916 补带到 main）；
+> 2026-09-12 复盘迟到转写后恢复，并把口径统一成「每场会一条 17:30」，22:30 那一档不再保留。
 
 ### 运维
 
