@@ -17,6 +17,7 @@ import re
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass, replace
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -440,6 +441,51 @@ def extract_latest_transcript_record(payload: Any, processed_ids: set[str] | Non
     return max(candidates, key=_record_sort_key) if candidates else None
 
 
+def _record_day(record: dict[str, Any]) -> date | None:
+    """记录所属的日历日 (腾讯返回的是带时区的 ISO 时间戳)。解析不出来返回 ``None``。"""
+    raw = str(record.get("media_start_time") or record.get("record_start_time") or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+
+
+def same_day_record_candidates(
+    payload: Any, record: dict[str, Any], *, processed_ids: set[str] | None = None
+) -> list[dict[str, Any]]:
+    """同一天里其他**已完成且未处理**的记录 —— 主记录取不到正文时的回退候选 (新到旧)。
+
+    为什么需要这个: 腾讯**不保证每场会都产出「文字转写」记录**。实测 2026-09-11 周中会:
+    当天唯一那条「文字转写」属于一段 46 秒的杂散录制 (21:59:58-22:01:34), 在腾讯侧没有
+    内容 —— 段落索引 ``total=0``、详情 ``HTTP 500``、智能纪要 ``500260 会议无有效转写内容``;
+    而那场真会 (09:48 起, 14 人) 的正文只挂在它的**云录制**记录上。管道原先只认「文字转写」,
+    于是"明明有转写却报 prepare_failed"。
+
+    只取**同一日历日**: 退到前一天的记录等于把上一场当今天发出去 —— 那是另一个已经修过的
+    问题 (见 ``meeting_pipeline_run`` 的 ``_NO_NEW_TRANSCRIPT_STATUSES``)。
+    """
+    anchor_day = _record_day(record)
+    if anchor_day is None:
+        return []
+    selected_id = str(record.get("record_file_id") or "").strip()
+    processed = processed_ids or set()
+    candidates: list[dict[str, Any]] = []
+    for candidate in _record_candidates(payload):
+        record_file_id = str(candidate.get("record_file_id") or candidate.get("file_id") or "").strip()
+        if not record_file_id or record_file_id == selected_id:
+            continue
+        if _record_day(candidate) != anchor_day:
+            continue
+        normalized = dict(candidate)
+        normalized["record_file_id"] = record_file_id
+        if not should_process_recording(normalized, processed):
+            continue
+        candidates.append(normalized)
+    return sorted(candidates, key=_record_sort_key, reverse=True)
+
+
 def _paragraph_id(item: dict[str, Any]) -> str:
     return str(item.get("pid") or item.get("paragraph_id") or item.get("id") or "").strip()
 
@@ -702,5 +748,6 @@ __all__ = [
     "path_lock",
     "read_meeting_manifest",
     "render_transcript_paragraphs",
+    "same_day_record_candidates",
     "should_process_recording",
 ]

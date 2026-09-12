@@ -434,6 +434,166 @@ async def test_prepare_saves_full_transcript_and_returns_manifest(
     assert "x" * 6000 in saved_text
 
 
+def test_same_day_record_candidates_only_same_day_completed_and_unprocessed() -> None:
+    """回退候选: 只取**同一天**、已完成、未处理过的其它记录, 且从新到旧。
+
+    实测 2026-09-11: 当天唯一的「文字转写」属于一段 46 秒杂散录制 (腾讯侧是空的),
+    而那场真会的正文挂在同一天的云录制记录上 —— 前一天/未完成/已处理的都不能进候选
+    (退回前一天就等于把上一场当今天发出去)。
+    """
+    payload = {
+        "record_meetings": [
+            {
+                "media_start_time": "2026-09-11T21:59:55+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "文字转写",
+                "state_int": 3,
+                "record_files": [{"record_file_id": "transcript_empty"}],
+            },
+            {
+                "media_start_time": "2026-09-11T21:59:55+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "云录制",
+                "state_int": 3,
+                "record_files": [{"record_file_id": "cloud_already_processed"}],
+            },
+            {
+                "media_start_time": "2026-09-11T09:48:33+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "云录制",
+                "state_int": 3,
+                "record_files": [{"record_file_id": "cloud_real_meeting"}],
+            },
+            {
+                "media_start_time": "2026-09-11T13:23:47+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "云录制",
+                "state_int": 1,
+                "record_files": [{"record_file_id": "cloud_still_transcoding"}],
+            },
+            {
+                "media_start_time": "2026-09-09T09:52:52+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "云录制",
+                "state_int": 3,
+                "record_files": [{"record_file_id": "previous_day"}],
+            },
+        ]
+    }
+    record = extract_latest_transcript_record(payload, set())
+    assert record is not None
+    assert record["record_file_id"] == "transcript_empty"
+
+    candidates = ma.same_day_record_candidates(payload, record, processed_ids={"cloud_already_processed"})
+
+    assert [item["record_file_id"] for item in candidates] == ["cloud_real_meeting"]
+
+
+@pytest.mark.anyio
+async def test_prepare_falls_back_to_the_same_day_recording_when_the_transcript_record_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """主记录取不到正文时, 回退到同一天的其它记录, 而不是直接报 prepare_failed。
+
+    实测 2026-09-11 周中会: 管道选中的「文字转写」在腾讯侧是空的 (段落索引 ``total=0``、
+    详情 ``HTTP 500``), 而那场真会 (09:48 起, 14 人) 的正文挂在同一天的**云录制**记录上。
+    """
+    records = {
+        "record_meetings": [
+            {
+                "media_start_time": "2026-09-11T21:59:55+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "文字转写",
+                "state_int": 3,
+                "record_files": [{"record_file_id": "transcript_empty"}],
+            },
+            {
+                "media_start_time": "2026-09-11T09:48:33+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "云录制",
+                "state_int": 3,
+                "record_files": [{"record_file_id": "cloud_real_meeting"}],
+            },
+        ]
+    }
+
+    async def fake_call(name: str, arguments: dict[str, object], *, token_env: str) -> object:
+        if name == "get_records_list":
+            return records
+        if arguments.get("record_file_id") == "transcript_empty":
+            if name == "get_transcripts_paragraphs":
+                return {"total": 0}
+            raise RuntimeError("Tencent Meeting HTTP 500")
+        if name == "get_transcripts_paragraphs":
+            return {"paragraphs": [{"pid": "0"}]}
+        if name == "get_transcripts_details":
+            return {"paragraphs": [{"pid": "0", "speaker": "孙逊", "content": "本场周会正文"}]}
+        if name == "get_smart_minutes":
+            return {"summary": "参考纪要"}
+        raise AssertionError((name, arguments))
+
+    monkeypatch.setattr(transcript_prepare, "_call", fake_call)
+
+    result = json.loads(
+        await meeting_transcript_prepare(
+            meeting_code="57152787045", meeting_name="weekday-alignment", appdata_root=str(tmp_path)
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["record_file_id"] == "cloud_real_meeting", "正文应取自同一天那条有内容的记录"
+    assert result["fallback_from"] == "transcript_empty", "回退来源要自报, 排障才不用猜"
+    manifest = read_meeting_manifest(tmp_path, "weekday-alignment")
+    assert set(manifest["processed_record_file_ids"]) == {"cloud_real_meeting", "transcript_empty"}
+
+
+@pytest.mark.anyio
+async def test_prepare_names_every_record_it_tried_when_none_has_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """全都取不到正文时, 报错要说清试了哪几条、各自为什么失败 —— 不再只有一句 HTTP 500。"""
+    records = {
+        "record_meetings": [
+            {
+                "media_start_time": "2026-09-11T21:59:55+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "文字转写",
+                "state_int": 3,
+                "record_files": [{"record_file_id": "transcript_empty"}],
+            },
+            {
+                "media_start_time": "2026-09-11T09:48:33+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "云录制",
+                "state_int": 3,
+                "record_files": [{"record_file_id": "cloud_also_empty"}],
+            },
+        ]
+    }
+
+    async def fake_call(name: str, arguments: dict[str, object], *, token_env: str) -> object:
+        if name == "get_records_list":
+            return records
+        if name == "get_transcripts_paragraphs":
+            return {"total": 0}
+        raise RuntimeError("Tencent Meeting HTTP 500")
+
+    monkeypatch.setattr(transcript_prepare, "_call", fake_call)
+
+    result = json.loads(
+        await meeting_transcript_prepare(
+            meeting_code="57152787045", meeting_name="weekday-alignment", appdata_root=str(tmp_path)
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "transcript_prepare_failed"
+    assert result["record_file_id"] == "transcript_empty", "失败也要带上被选中的记录 id"
+    assert "transcript_empty" in result["error"]
+    assert "cloud_also_empty" in result["error"]
+    assert "Tencent Meeting HTTP 500" in result["error"]
+
+
 @pytest.mark.anyio
 async def test_collect_paragraphs_follows_index_and_detail_cursors(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
