@@ -21,6 +21,7 @@ fire: prompt
 
 ## 流程
 
+0. **先补上轮待补发**:检查 workspace 根目录文件 `pending-pm.txt` 是否有「待补发」行——有则按行拼 `items_json`(open_id 从 `feishu_member_status_check` active 名单取),一次调 `feishu_pm_batch_send(pending_file="pending-pm.txt")` 补发(工具自动改标),然后才进入本轮判定。没有该文件或没有待补发行则跳过。
 1. 先加载三个技能,判定口径以技能为准。
 2. 读表:认表头、定位最新日期列(当期列)、读人名列与 mentor 列。
 3. 逐人判定(全员):
@@ -34,8 +35,14 @@ fire: prompt
      5. 对齐(D6)
      6. 重要全覆盖(D7)
      7. 防复制(技能防复制节)
-     8. 优先级(todo-writing-standard 按优先级规则:成员自标优先,未标海豚判定——紧急轴 deadline+urgency_trap,重要轴 importance 三档+小目标拆解背书;建议排序附每条依据来源;提示级;config `priority` 段)
+     8. 优先级(todo-writing-standard 按优先级规则:成员自标优先,未标海豚判定——紧急轴 deadline+urgency_trap,重要轴 importance 三档+小目标拆解背书;建议排序附每条依据来源;config `priority` 段)。**本类必须判定并产出建议排序,任何时候不得跳过、不得以「避免撞车」等理由裁掉**;**成员自标顺序与判定一致 → 静默通过、不提示不调整;不一致 → 按提示级处理**(提示本人按正确顺序调整,不判违规)
      9. 验收核对(SOP v1.1 删除线 = 上级验收标记,口径以技能为准):对**上期**每条 TODO 调 `feishu_sheet_strike_read` 读删除线——带删除线 = 已验收;上期声明「已完成」但无删除线 → 提示「未见上级验收标记(删除线)」;有删除线但按完成度判定未达标 → 冲突提示(守住「验收一定要守住标准」),不静默放过。
-4. 报告:违规/提示项私聊本人**一次**,所有缺项合在一条消息里按类列全(格式/时间/粒度/价值/对齐/全覆盖/防复制/优先级/验收),每条带依据;合规者不打扰。
-5. **对齐存疑落盘**:把每人"与 mentor 对齐存疑"项追加写进 workspace 根目录文件 `align-pending.txt`(每行:姓名|期次|缺什么依据),供 16:00 任务读取。
-6. 私聊发送一律用 `feishu_message_send`;读表/读技能/查假失败明说,不得顺势判违规。
+4. **先落盘,后私聊**(落盘必须在私聊之前完成,私聊 O(人数) 耗量大,排后):判定完成后立即:
+   - 把每人"与 mentor 对齐存疑"项追加写进 workspace 根目录文件 `align-pending.txt`(每行:姓名|期次|缺什么依据),供 16:00 任务读取;
+   - 把评测结果写进 `.todo-eval/YYYY-MM-DD.json`(person / item / item_type / dimension_hits / verdict / evidence_level / evidence_refs / rules_hit),与 align-pending 一起在私聊前落盘;
+   - 在 workspace 根目录维护 `pending-pm.txt`(每行:姓名|违规项摘要|状态):本轮判定出的违规/提示项**先全部写成「待补发」**,随落盘一起写盘——私聊发不完也不丢账。
+5. 报告:**私聊一律用批量发送工具 `feishu_pm_batch_send`,一次调用发完全部,禁止逐人循环调 `feishu_message_send`**(逐人调用会吃光轮数、后半的人收不到):
+   - 把每个违规/提示者拼成 `items_json`:`[{"name": 姓名, "open_id": 该人 open_id(从 `feishu_member_status_check` active 名单取,禁止手填), "text": 该人所有缺项合在一条消息里按类列全(格式/时间/粒度/价值/对齐/全覆盖/防复制/优先级/验收),每条带依据}, ...]`;
+   - 一次调 `feishu_pm_batch_send(items_json=<名单>, pending_file="pending-pm.txt")`——工具内部循环发完全部,并自动把 `pending-pm.txt` 对应行改标「已发」/「失败:<原因>」;
+   - 工具返回的 `failed` 名单写进收尾报告(带原因),并保持「待补发」状态供下轮第 0 步自动补发。合规者不打扰。
+6. **私聊对象 open_id 一律从 `feishu_member_status_check` 返回的 active 名单里按姓名取**,禁止从会话上下文/历史记录手填;名单里查不到姓名的 → 不私聊,单列「解析失败,需人工」。私聊发送一律用 `feishu_message_send`;读表/读技能/查假失败明说,不得顺势判违规。
