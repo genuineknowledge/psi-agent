@@ -20,6 +20,8 @@ from lark_channel.core.enum import AccessTokenType, HttpMethod
 from lark_channel.core.model import BaseRequest
 from loguru import logger
 
+from _feishu.sheet import _col_letter
+
 _CONFIG_REL = "config/todo-sop.yaml"
 
 
@@ -109,30 +111,45 @@ async def todo_fill_status_impl(
         return _core._error(f"人名列认不出来,表头: {header[:8]}")
     date_col = _find_col(header, (cycle_date,))
 
-    # 4. 名单:人员行 = 人名列非空;mentor 过滤。限列 + 分页,避免预算截断丢行。
-    people: list[dict[str, Any]] = []
+    # 4. 名单:人员行 = 人名列非空;mentor 过滤。
+    #    宽列(A:AZ)整行读会被行边界字符预算截成每页 1 行(一行 20+ 个历史日期
+    #    单元格,文本总和轻易超预算),当期列整列读也会被截成十来行 ——
+    #    拆三段读:人名列+上级列(3 列,轻)分页拿名单;组内行号区间单独读当期列。
+    roster: dict[int, tuple[str, str]] = {}  # sheet 行号 -> (name, mentor)
     start_row = 2  # 表头占第 1 行
     for _ in range(8):  # 最多翻 8 页(400 行)
         grid = await read_sheet_grid_impl(
-            obj_token, range_="!A1:AZ400", max_rows=50, start_row=start_row, user_key=user_key
+            obj_token, range_="!A1:C400", max_rows=50, start_row=start_row, user_key=user_key
         )
         if not grid.get("ok"):
             return grid
-        for row in grid.get("rows", []) or []:
+        for i, row in enumerate(grid.get("rows", []) or []):
             if len(row) <= person_col:
                 continue
-            name = str(row[person_col]).strip()
+            name = _norm_name(str(row[person_col]))
             if not name:
                 continue
-            if mentor_name:
-                m = str(row[mentor_col]).strip() if mentor_col >= 0 and len(row) > mentor_col else ""
-                if m != mentor_name:
-                    continue
-            cell = str(row[date_col]).strip() if date_col >= 0 and len(row) > date_col else ""
-            people.append({"name": name, "filled": bool(cell)})
+            m = _norm_name(str(row[mentor_col])) if mentor_col >= 0 and len(row) > mentor_col else ""
+            roster[start_row + i] = (name, m)
         if not grid.get("has_more"):
             break
         start_row = grid.get("next_start_row") or start_row + 1
+    group_rows = [r for r, (_, m) in roster.items() if not mentor_name or m == _norm_name(mentor_name)]
+    fill_map: dict[int, bool] = {}
+    if group_rows and date_col >= 0:
+        col_letter = _col_letter(date_col)
+        lo, hi = min(group_rows), max(group_rows)
+        fg = await read_sheet_grid_impl(
+            obj_token, range_=f"!{col_letter}{lo}:{col_letter}{hi}",
+            max_rows=hi - lo + 1, user_key=user_key,
+        )
+        if fg.get("ok"):
+            for i, row in enumerate(fg.get("rows", []) or []):
+                if row:
+                    fill_map[lo + i] = bool(str(row[0]).strip())
+    people: list[dict[str, Any]] = [
+        {"name": roster[r][0], "filled": fill_map.get(r, False)} for r in group_rows
+    ]
 
     # 5. 离职/在职分类(确定性)
     classified = await member_status_check_impl([p["name"] for p in people], user_key)
@@ -208,6 +225,11 @@ async def _leave_code() -> str:
 
 
 _LEAVE_CODE_FALLBACK = "99EEC396-536A-4C7A-8B2D-412584E35CE3"
+
+
+def _norm_name(cell: str) -> str:
+    """看板人名列/上级列常带 ``@`` 前缀(如 ``@孙逊``),匹配前两边都剥掉。"""
+    return cell.strip().lstrip("@").strip()
 
 
 def _find_col(header: list[str], candidates: tuple[str, ...]) -> int:

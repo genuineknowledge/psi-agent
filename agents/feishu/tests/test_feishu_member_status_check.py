@@ -63,3 +63,10 @@ def test_no_status_defaults_to_active() -> None:
     )
     assert out["active"] == [{"name": "张三", "open_id": "ou_a"}]
     assert out["resigned"] == ["赵六"]
+
+
+def test_norm_name_strips_at_prefix() -> None:
+    f = importlib.import_module("_feishu_impl")
+    assert f._norm_name("@赵胜迪") == "赵胜迪"
+    assert f._norm_name(" 赵胜迪 ") == "赵胜迪"
+    assert f._norm_name("@赵胜迪") == f._norm_name("赵胜迪")
