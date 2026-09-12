@@ -58,6 +58,16 @@ If any of these is missing, ask — do not guess a pay rule.
    employee_type=...)` — `user_ids` is a comma-separated string, ≤50 per call, so
    chunk larger rosters. You get per-person-per-day check-in/out time, result
    (Normal/Late/Early/Lack), and location.
+
+   **One call per chunk. Never repeat a chunk with the same arguments** — these are
+   stored records, so a repeat returns byte-identical data (`retry_will_return_identical_data`
+   says so). Three returns read like failures but are answers: `Normal` with no punch
+   timestamp (the common case), an empty `results` (no attendance task that range — a
+   non-working day or the person was not yet in the 考勤组), and a range where only some
+   days have rows. In all three, take the data and move on; if you need *why* a day is
+   Lack/Late, read the 考勤组/班次 config with `feishu_api` — re-querying will not add
+   anything. Use the precomputed `unsettled_days` / `settled_days` for per-range counts
+   instead of re-deriving them from `results`.
 3. **Aggregate** per person for the period: present days, late/lack counts, and
    whatever the user's formula needs (e.g. total valid work hours if available).
 4. **Apply the user's formula** exactly as given to compute each person's fee.

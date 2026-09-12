@@ -34,6 +34,7 @@ from psi_agent.protocol import (
 )
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
+from psi_agent.session.content_roots import content_roots_from_env, roots_with_agent_top
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.event_protocol import EventProtocolError, parse_event_envelope
 from psi_agent.session.history_display import (
@@ -60,7 +61,8 @@ from psi_agent.session.runtime_context import runtime_scope
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.system_prompt import SystemPrompt
 from psi_agent.session.tool_convergence import ToolCallConvergence  # refusal notices + call-surface gate
-from psi_agent.session.tool_defs import ToolDefsCache, build_tool_defs, tmpfix_m2_gate
+from psi_agent.session.tool_defs import ToolDefsCache, build_tool_defs
+from psi_agent.session.tool_exposure import select_exposed, tier_from_env
 from psi_agent.session.tool_registry import ToolRegistry
 from psi_agent.session.trigger_registry import TriggerRegistry
 
@@ -302,6 +304,11 @@ class SessionAgent:
         # re-read every turn — so the array is frozen per Session rather than
         # rebuilt. See ``session/tool_defs.py``.
         self._tool_defs_cache = ToolDefsCache()
+        # Read once per Session, not per turn: the array is frozen after its first
+        # assembly anyway, so re-reading the env mid-Session could only produce a
+        # gear that the frozen array no longer reflects — a switch that appears to
+        # do nothing is worse than one that takes effect on the next Session.
+        self._exposure_tier = tier_from_env()
 
     @property
     def workspace_path(self) -> Path | None:
@@ -371,14 +378,38 @@ class SessionAgent:
             session_id,
             appdata_root=appdata_root,
         )
-        tool_registry = await ToolRegistry.load(agent_root / "tools", conversation.session_id)
+        # Content roots, when the deployment declares any, are the tool layers:
+        # the agent package becomes the top (most specific) root so a user's own
+        # tools still override the shared ones, and the shared roots below it are
+        # identified by name — which is what lets many workspaces mount one
+        # official root and compile it once. Nothing declared → the previous
+        # single-dir load, unchanged.
+        content_roots = content_roots_from_env()
+        if content_roots:
+            # One ladder for every content kind — tools, triggers, systems — so
+            # the three cannot disagree about which roots exist or in what order.
+            # ``roots_with_agent_top`` appends the agent package as the most
+            # specific root; see ``content_roots`` for why its name is a name and
+            # not ``str(agent_root.resolve())``.
+            ladder = roots_with_agent_top(agent_root, content_roots)
+            tool_registry = await ToolRegistry.load_content_roots(ladder, conversation.session_id)
+        else:
+            ladder = []
+            tool_registry = await ToolRegistry.load(agent_root / "tools", conversation.session_id)
+        # 刻意为之: schedules 仍然挂 ``workspace_path``, 不跟着分层走 agent_root/内容根。
+        # 日程是「谁的提醒」——属于挂载侧、属于这个用户的 workspace, 内容根答不了这个问题。
+        # 顺手统一成 agent_root 会静默丢掉所有用户日程。
         schedule_registry = await ScheduleRegistry.load(
             workspace_path / "schedules",
             active_names=active_schedules,
             deactive_names=deactive_schedules,
         )
-        trigger_registry = await TriggerRegistry.load(agent_root / "triggers")
-        system_prompt = await SystemPrompt.from_workspace(agent_root, conversation.session_id)
+        if ladder:
+            trigger_registry = await TriggerRegistry.load_content_roots(ladder)
+            system_prompt = await SystemPrompt.from_content_roots(ladder, conversation.session_id)
+        else:
+            trigger_registry = await TriggerRegistry.load(agent_root / "triggers")
+            system_prompt = await SystemPrompt.from_workspace(agent_root, conversation.session_id)
 
         return cls(
             ai_client=ai_client,
@@ -797,10 +828,22 @@ class SessionAgent:
                         # Frozen after the first non-empty assembly: a tool that shows
                         # up mid-Session would otherwise rewrite this array and
                         # re-prefill every cached turn behind it.
-                        # TMPFIX-20260902 (M2), deploy-only: see ``tool_defs`` module.
-                        _gated_tools = tmpfix_m2_gate(self._tool_registry.tools)
-                        tool_defs = self._tool_defs_cache.freeze(build_tool_defs(_gated_tools))
-                        logger.info(f"TMPFIX-M2 tools_exposed={len(tool_defs)} of {len(self._tool_registry.tools)}")
+                        #
+                        # Narrowed per content layer first (``tool_exposure``): what
+                        # each layer declares exposed, plus the discovery tools.
+                        # Dispatch below still resolves through the registry, so a
+                        # tool left out of the array stays callable.
+                        _all_tools = self._tool_registry.tools
+                        _exposed = select_exposed(
+                            _all_tools,
+                            tier=self._exposure_tier,
+                            layer_of=self._tool_registry.layer_of_tool,
+                            manifests=self._tool_registry.exposure_manifests,
+                        )
+                        tool_defs = self._tool_defs_cache.freeze(build_tool_defs(_exposed))
+                        logger.info(
+                            f"tools_exposed={len(tool_defs)} of {len(_all_tools)} tier={self._exposure_tier.value}"
+                        )
 
                         # Logged next to the prompt breakdown, not inside it: these
                         # schemas are their own request field, so they are a

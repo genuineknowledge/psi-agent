@@ -160,6 +160,18 @@ service tools:
 
 ## Tools (`tools/`)
 
+### `EXPOSED.txt`——进 `tools` 数组的名字（新增工具要改两处）
+
+本包出厂 227 个工具（137 个文件，实测），但 `tools` 数组是每回合固定成本、还参与上游前缀缓存键，所以
+默认只把 `EXPOSED.txt` 声明的 62 个名字交给模型（`#` 注释和空行忽略）。**没声明的工具不是不能用**：派发走
+`ToolRegistry.get()` 不走数组，模型经 `tool_search` 认识之后照样能调。机制、档位开关
+（`PSI_TOOL_EXPOSURE`）与判据都在 `src/psi_agent/session/AGENTS.md`「工具暴露分层」。
+
+**所以加一个要让模型直接看见的工具，是加文件 + 往 `EXPOSED.txt` 加一行。** 清单刻意放在这里而不是内核
+里：内核名单必然漂移——上一版硬编码名单在 2026-09 两批工具上线后数天才更新（期间模型看不见新工具），
+且迁移时发现 64 个名字里 2 个背后早已没有工具。清单与它描述的工具同目录同版本才有人维护。只加文件不加
+清单不会报错，只是模型得先 `tool_search` 才知道它存在——这是刻意的默认，别当 bug 修。
+
 ### Path roots（workspace / agent ContextVar + AppData）
 
 当 Session `agent ≠ workspace` 时，工具必须分清两根目录。统一入口：

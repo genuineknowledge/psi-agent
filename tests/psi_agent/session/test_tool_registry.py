@@ -909,6 +909,78 @@ async def test_two_workspaces_bind_their_own_private_helper(tmp_path: Path) -> N
     assert await func_b() == "ws-b", "second workspace bound the first workspace's helper"
 
 
+async def _write_dotted_helper_workspace(tools_dir: Path, marker: str) -> None:
+    """A tools dir whose public tool imports a private *package* submodule.
+
+    The shape ``agents/feishu/tools/_feishu/`` ships (15 modules), as opposed to
+    ``_priv_helper.py``'s bare name.
+    """
+    package = tools_dir / "_priv_pkg"
+    await anyio.Path(package).mkdir(parents=True)
+    await anyio.Path(package / "__init__.py").write_text("", encoding="utf-8")
+    await anyio.Path(package / "sub.py").write_text(f"MARKER = {marker!r}\n", encoding="utf-8")
+    await anyio.Path(tools_dir / "aaa_first.py").write_text(
+        textwrap.dedent(
+            """
+            from _priv_pkg.sub import MARKER
+
+            async def which_marker() -> str:
+                return MARKER
+            """
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.anyio
+async def test_two_workspaces_bind_their_own_dotted_private_helper(tmp_path: Path) -> None:
+    """Same-named private *packages* in two tools dirs must not cross-contaminate.
+
+    The dotted counterpart of
+    ``test_two_workspaces_bind_their_own_private_helper``, and a defect this
+    fixture caught: ``_stash_private_modules`` used to skip every module name
+    containing a dot, so a private package's submodules were never stashed and
+    stayed in ``sys.modules`` after the scope closed.  The second workspace's
+    ``from _priv_pkg.sub import MARKER`` then read the *first* workspace's file.
+
+    Nothing about layering is involved — the two dirs load one after the other,
+    each with its own scope, which is how production loads two workspaces today.
+    That is why this criterion belongs here rather than with the layered ones:
+    those pass with the defect reinstated, because their import hook resolves
+    private names before ``sys.modules`` is ever consulted.
+    """
+    first = tmp_path / "ws_a" / "tools"
+    second = tmp_path / "ws_b" / "tools"
+    await _write_dotted_helper_workspace(first, "ws-a")
+    await _write_dotted_helper_workspace(second, "ws-b")
+
+    tr_a = await ToolRegistry.load(first, "a")
+    tr_b = await ToolRegistry.load(second, "b")
+
+    func_a, func_b = tr_a.get("which_marker"), tr_b.get("which_marker")
+    assert func_a is not None and func_b is not None
+    assert await func_a() == "ws-a"
+    assert await func_b() == "ws-b", "second workspace bound the first workspace's dotted private helper"
+
+
+@pytest.mark.anyio
+async def test_dotted_private_submodules_do_not_survive_the_scope(tmp_path: Path) -> None:
+    """A private package's submodules leave ``sys.modules`` when the scope closes.
+
+    The residue behind the cross-contamination above, asserted directly: a
+    ``_priv_pkg.sub`` left behind is what the *next* load of an unrelated dir
+    would bind.  Names are checked rather than values because the residue itself
+    is the subject here.
+    """
+    tools_dir = tmp_path / "ws" / "tools"
+    await _write_dotted_helper_workspace(tools_dir, "scoped")
+
+    await ToolRegistry.load(tools_dir, "s1")
+
+    leaked = sorted(name for name in sys.modules if name == "_priv_pkg" or name.startswith("_priv_pkg."))
+    assert leaked == [], f"dotted private modules left in sys.modules: {leaked}"
+
+
 @pytest.mark.anyio
 async def test_refresh_preserves_private_helper_module_state(tmp_path: Path) -> None:
     """Module-level state in a private helper survives a refresh.
@@ -1215,3 +1287,113 @@ async def test_duplicate_name_winner_is_the_last_in_sorted_order(tmp_path: Path)
     # Metadata and callable have to name the same file, so the description is
     # checked too — a distinct docstring per file makes the source observable.
     assert tr.tools["pick"].description == "From z_late."
+
+
+# ── load order on the real filesystem ────────────────────────────────────────
+#
+# The three criteria above stub ``glob`` so they can drive a known-bad order.
+# That is the only way to observe the sorting layer, but it also means they say
+# nothing about what any *actual* filesystem returns: they are equally green on
+# NTFS, ext4 and APFS because none of those filesystems is consulted.
+#
+# The fix exists for a cross-filesystem difference, so at least one criterion
+# has to let the real filesystem answer.  The two below do, by writing files in
+# an order deliberately unlike sorted order and never touching ``glob``:
+#
+# * On a filesystem that returns creation order (ext4 for small directories),
+#   the raw order here is reverse-sorted and the sorting layer is what makes
+#   the assertion hold.
+# * On a filesystem that hashes names (NTFS, ext4 with dir_index on larger
+#   directories), the raw order is that hash order — also not sorted.
+#
+# Neither of those is asserted, because which one a runner has is not this
+# repository's business.  What is asserted is the property the preamble case
+# needs: whatever the filesystem says, the file that installs ``sys.path``
+# precedes the file consuming it, and exec order is sorted order.
+#
+# ``scripts/check_tool_glob_order.py`` reports the raw-vs-sorted distance as a
+# number for the record; these criteria judge the consequence.
+
+
+@pytest.mark.anyio
+async def test_real_filesystem_glob_does_not_decide_exec_order(tmp_path: Path) -> None:
+    """Exec order is sorted order with the real filesystem in the loop.
+
+    Files are *created* in reverse-sorted order so that creation order and
+    sorted order disagree maximally.  A raw scan on a creation-order
+    filesystem would then exec them backwards; a hashing filesystem yields
+    some third order.  Sorted order is the only outcome consistent with both.
+    """
+    stems = ("alpha", "bravo", "charlie", "delta", "echo_", "foxtrot")
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir(parents=True)
+    for stem in sorted(stems, reverse=True):
+        await anyio.Path(tools_dir / f"{stem}.py").write_text(
+            f"async def tool_{stem}() -> str:\n    return {stem!r}\n", encoding="utf-8"
+        )
+
+    with _record_exec_order() as order:
+        tr = await ToolRegistry.load(tools_dir, f"realfs-{tmp_path.name}")
+
+    loaded = [name for name in order if Path(name).stem in stems]
+    assert loaded == [f"{stem}.py" for stem in sorted(stems)], (
+        f"files exec'd in {loaded} on this filesystem, not sorted order"
+    )
+    assert set(tr.tools) == {f"tool_{stem}" for stem in stems}
+
+
+@pytest.mark.anyio
+async def test_real_filesystem_loads_preamble_file_before_its_consumer(tmp_path: Path) -> None:
+    """The production failure shape, judged against the real filesystem.
+
+    ``a_preamble.py`` is the file that puts the tools dir on ``sys.path``;
+    ``z_consumer.py`` imports a private helper by bare name and can only load
+    after it.  This is what took down 59 tool files.  Both files are created
+    consumer-first, so on a creation-order filesystem a raw scan reaches the
+    consumer while ``sys.path`` is still missing the dir.
+
+    The verdict is read from the loaded tool set rather than from a log:
+    a file that fails to load is skipped with an ERROR and contributes no
+    tool, so a missing name *is* the failure.
+    """
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir(parents=True)
+
+    # Created first, must load last.  Nothing else puts the dir on sys.path.
+    await anyio.Path(tools_dir / "z_consumer.py").write_text(
+        textwrap.dedent(
+            """
+            from _preamble_helper import MARKER
+
+            async def consumer_marker() -> str:
+                return MARKER
+            """
+        ),
+        encoding="utf-8",
+    )
+    await anyio.Path(tools_dir / "_preamble_helper.py").write_text('MARKER = "via-preamble"\n', encoding="utf-8")
+    await anyio.Path(tools_dir / "a_preamble.py").write_text(
+        textwrap.dedent(
+            """
+            import sys
+            from pathlib import Path
+
+            _here = str(Path(__file__).resolve().parent)
+            if _here not in sys.path:
+                sys.path.insert(0, _here)
+
+            async def preamble_marker() -> str:
+                return "preamble"
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    tr = await ToolRegistry.load(tools_dir, f"preamble-{tmp_path.name}")
+
+    consumer = tr.get("consumer_marker")
+    assert consumer is not None, (
+        "z_consumer.py did not load: its bare-name helper import ran before a_preamble.py "
+        "put the tools dir on sys.path — this is the 59-file production failure"
+    )
+    assert await consumer() == "via-preamble"

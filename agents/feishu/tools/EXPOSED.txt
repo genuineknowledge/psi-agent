@@ -1,0 +1,95 @@
+# 本层向模型「暴露」的工具名 —— 一行一个, ``#`` 起注释。
+#
+# 这份清单收窄的是**发现面, 不是能力**: dispatch 走 ToolRegistry.get(), 不看这个文件,
+# 所以没列在这里的工具仍然可调 —— 模型用 tool_search / tool_describe 搜到名字即可。
+# 这两个工具由内核无条件暴露 (``tool_exposure.DISCOVERY_TOOLS``), 不靠本文件列出:
+# 一份忘了列它们的清单会把「没被发现」静默变成「不可达」。
+#
+# 为什么这份清单是内容而不是内核常量: 它随它命名的工具一起改。原来这批名字写在
+# ``session/tool_defs.py`` 的 TMPFIX_M2_CORE_TOOLS 里, 结果 2026-09-07 与 09-10 两批
+# 新工具都是先上线、几天后才补进名单, 期间模型看不见; 迁移时还查出名单里有两个
+# **根本不存在的工具名** (feishu_message_list、feishu_permission_list_members ——
+# #612 之后已删, 见 tests/test_feishu_ghost_tools.py 的 MIGRATED_AWAY), 名单跟着内核走
+# 就是这么和本层漂开的。现在两者同一个目录、同一个 commit。
+#
+# 名字来自 2026-09 生产实测 (3 小时流量, 496 次调用 / 44 个 distinct) 加产品要求的
+# 两条链路, 不是猜的。加工具时想让模型直接看见就在这里加一行; 不加也能用, 只是要搜。
+#
+# 判据: tests/psi_agent/session/test_feishu_pack_manifest.py (名字必须真实存在,
+# 且体积必须仍然显著小于全量)。
+
+# ── 基础文件与执行 ────────────────────────────────────────────────────────────
+bash
+read
+edit
+write
+list_dir
+find_files
+search_content
+fetch
+todo
+clarify
+
+# ── 工具发现 (tool_search / tool_describe 另由内核保底) ──────────────────────
+tool_search
+tool_describe
+tool_search_code
+
+# ── 检索与文档解析 ───────────────────────────────────────────────────────────
+serper_google_search
+wiki_search
+describe_image
+read_document
+read_pdf
+write_word
+write_word_from_markdown
+
+# ── 会话与记忆 ───────────────────────────────────────────────────────────────
+session_keyword_search
+sessions_history
+session_status
+memory_search
+memory_answer_context
+
+# ── 飞书 ─────────────────────────────────────────────────────────────────────
+feishu_api
+feishu_attendance_query
+feishu_doc_read
+feishu_doc_update_block
+feishu_doc_list_blocks
+feishu_doc_append_content
+feishu_doc_create
+feishu_docs_search
+feishu_sheet_read
+feishu_sheet_write
+feishu_sheet_read_grid
+feishu_sheet_find_columns
+feishu_wiki_list_nodes
+feishu_wiki_list_spaces
+feishu_message_send
+feishu_image_get
+feishu_identity_get
+feishu_department_members
+trigger_manage
+
+# ── 正负面清单链路 (2026-09-07 产品要求) ─────────────────────────────────────
+positive_negative_rules
+positive_negative_case_prepare
+positive_negative_case_confirm
+positive_negative_case_read
+positive_negative_case_analyze
+positive_negative_case_remind
+positive_negative_case_review_start
+positive_negative_case_review_submit
+positive_negative_candidate_analyze
+positive_negative_candidate_card
+
+# ── 会议链路 (2026-09-07 / 09-10 产品要求) ───────────────────────────────────
+meeting_pipeline_run
+meeting_session_notify
+meeting_session_read
+meeting_session_write
+meeting_transcript_prepare
+meeting_record_export
+meeting_records_list
+meeting_pipeline_replay

@@ -38,10 +38,25 @@ async def feishu_attendance_query(
 ) -> str:
     """Query attendance clock-in/out results for users over a date range (read-only).
 
+    **One call answers the whole range. Never call this twice with the same arguments** —
+    it reads stored records for past dates, so a repeat returns byte-identical data. The
+    response says so in ``retry_will_return_identical_data``. If the answer looks
+    incomplete, the missing thing is not in this endpoint: read the 考勤组 / 班次 config
+    with ``feishu_api`` (see the ``feishu-attendance`` skill) instead of re-querying.
+
     Returns per-user-per-day results: ``check_in_time`` / ``check_out_time`` (local
-    time), ``check_in_result`` / ``check_out_result`` (Normal / Early / Late / Lack …),
-    and locations. Also returns ``invalid_user_ids`` / ``unauthorized_user_ids`` for
-    users that couldn't be resolved or aren't in the app's data scope.
+    time, or a note saying the response carried no timestamp for that day),
+    ``check_in_result`` / ``check_out_result`` (Normal / Early / Late / Lack …), and
+    locations. A result of ``Normal`` with no timestamp is normal and not a
+    contradiction — most days come back that way.
+
+    The range-level judgement is precomputed so it does not have to be re-derived:
+    ``unsettled_days`` (days with a Lack/Late/Early — empty means the range is clear),
+    ``settled_days``, ``days_returned``, and ``per_day_results``. An empty ``results``
+    means no attendance task existed for that range (non-working day, or the person was
+    not in the 考勤组 yet) — that is an answer, not a failure. Also returns
+    ``invalid_user_ids`` / ``unauthorized_user_ids`` for users that couldn't be resolved
+    or aren't in the app's data scope.
 
     Args:
         user_ids: Comma-separated user IDs (max 50), matching ``employee_type``.

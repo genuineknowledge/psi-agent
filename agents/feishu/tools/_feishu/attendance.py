@@ -38,6 +38,47 @@ def _fmt_check_time(rec: Any) -> str:
     return str(ts)
 
 
+#: Result codes that mean "the day is settled, nothing is owed". Everything else that is
+#: not one of these is a day the caller has to look at. Kept as a frozenset rather than a
+#: check against ``Lack`` so an unfamiliar code is treated as *needs attention* instead of
+#: silently passing as clear.
+_SETTLED_RESULTS = frozenset({"Normal", "NoNeedCheck", "SystemCheck"})
+
+#: A result code with no timestamp behind it. Observed in production at scale: 800 rows of
+#: ``Normal`` with ``check_in_time == ""`` against 12 rows that carried a time. The absent
+#: timestamp is what the response contains, not a lookup that failed — saying so on the row
+#: keeps the pair from reading as a contradiction worth re-querying.
+_NO_TIMESTAMP = "no punch timestamp in the response for this day"
+
+
+def _day_verdict(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Roll the per-day rows up into the judgement callers actually ask for.
+
+    Every consumer of this tool asks a question about a *date range* ("is the 缺卡 cleared
+    for 8/17-8/19?"), never about a single row. Leaving that roll-up to the model means the
+    answer is derived fresh each time from rows that do not state it, and a range where
+    some days are settled and some are not reads as ambiguous — which in production drove
+    754 byte-identical retries of the same query. Stating the verdict makes it a fact in
+    the response instead of an inference over it.
+    """
+    days: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        day = str(row.get("day", ""))
+        results = [row.get("check_in_result", ""), row.get("check_out_result", "")]
+        unsettled = sorted({r for r in results if r and r not in _SETTLED_RESULTS})
+        prior = days.get(day, {"settled": True, "results": []})
+        days[day] = {
+            "settled": prior["settled"] and not unsettled,
+            "results": sorted({*prior["results"], *(r for r in results if r)}),
+        }
+    return {
+        "days_returned": sorted(days),
+        "unsettled_days": sorted(d for d, v in days.items() if not v["settled"]),
+        "settled_days": sorted(d for d, v in days.items() if v["settled"]),
+        "per_day_results": {d: v["results"] for d, v in sorted(days.items())},
+    }
+
+
 def _build_user_tasks_query_request(
     user_ids: list[str], check_date_from: int, check_date_to: int, employee_type: str, need_overtime: bool
 ) -> BaseRequest:
@@ -88,18 +129,40 @@ async def query_attendance_impl(
                     "user_id": r.get("user_id", ""),
                     "name": r.get("employee_name", ""),
                     "day": r.get("day", ""),
-                    "check_in_time": _fmt_check_time(cin),
+                    "check_in_time": _fmt_check_time(cin) or _NO_TIMESTAMP,
                     "check_in_result": rec.get("check_in_result", ""),
                     "check_in_location": cin.get("location_name", ""),
-                    "check_out_time": _fmt_check_time(cout),
+                    "check_out_time": _fmt_check_time(cout) or _NO_TIMESTAMP,
                     "check_out_result": rec.get("check_out_result", ""),
                     "check_out_location": cout.get("location_name", ""),
                 }
             )
+    verdict = _day_verdict(results)
     return {
         "ok": True,
         "results": results,
         "count": len(results),
         "invalid_user_ids": data.get("invalid_user_ids", []),
         "unauthorized_user_ids": data.get("unauthorized_user_ids", []),
+        **verdict,
+        # The two facts that make a re-query pointless, stated rather than left to be
+        # inferred. This is a stored read of a settled past date range: the same arguments
+        # return the same rows, so a repeat call cannot turn up data this one missed.
+        "query_is_complete": True,
+        "retry_will_return_identical_data": True,
+        "next_step": (
+            "This is the whole answer for the range — do NOT call feishu_attendance_query again with these "
+            "same arguments, the response cannot change. "
+            + (
+                f"Unsettled days needing attention: {', '.join(verdict['unsettled_days'])}."
+                if verdict["unsettled_days"]
+                else "No unsettled days in the returned range."
+            )
+            + (
+                ""
+                if results
+                else " Zero rows came back: that means no attendance task exists for this range (a "
+                "non-working day, or the person was outside the 考勤组 then) — it is an answer, not a failure."
+            )
+        ),
     }

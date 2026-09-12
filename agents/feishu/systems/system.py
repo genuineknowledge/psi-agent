@@ -57,6 +57,7 @@ import importlib
 import json
 import logging
 import os
+import pathlib
 import platform
 import re
 import types
@@ -110,6 +111,15 @@ def _resolve_agent(agent_raw: str = "") -> anyio.Path:
 # fallback here could only be a shim that silently drops the itemisation — the
 # one number this section exists to produce.
 from psi_agent.session.prompt_budget import PromptBudget
+
+# 同上, 硬导入: 探针只写日志, 兜底成 no-op 反而正好抹掉它要报的那件事。
+from psi_agent.session import layer_probe
+
+# 同一套内容根解析, 不另发明一份: 层名来自声明而非路径, 而 skills 的层序必须与
+# tools / triggers / systems 完全一致 —— 各自解析一遍就是让四类内容悄悄分岔。
+from psi_agent.session.content_roots import AGENT_ROOT_NAME as _AGENT_ROOT_NAME
+from psi_agent.session.content_roots import content_roots_from_env as _content_roots_from_env
+from psi_agent.session.content_tombstone import is_tombstone as _is_tombstone
 
 from prompt_sections import (
     BOOTSTRAP_PENDING_SECTION,
@@ -497,32 +507,125 @@ async def _load_soul_md(workspace_dir: anyio.Path) -> str:
 async def _collect_skill_dirs(skills_dir: anyio.Path) -> list[tuple[str, anyio.Path]]:
     """Return (name, SKILL.md) pairs for every skill dir under ``skills_dir``.
 
-    Returns an empty list if the directory is missing or unreadable.
+    Empty list when the directory is missing — a normal shape under layering, as
+    not every root ships skills.
+
+    Empty list **with a warning** when it exists but cannot be read. The two used
+    to be indistinguishable (``suppress(OSError)`` swallowed the second), which
+    is the exact failure ``layer_probe`` was built for: a read-only or
+    wrong-permission layer contributed zero skills and looked like a layer that
+    simply had none. Still not raised — one unreadable layer must not take down
+    the whole prompt — but no longer silent.
     """
     entries: list[tuple[str, anyio.Path]] = []
     if not await skills_dir.exists():
         return entries
-    with contextlib.suppress(OSError):
+    try:
         async for entry in skills_dir.iterdir():
             if await entry.is_dir():
                 skill_md = entry / "SKILL.md"
                 if await skill_md.exists():
                     entries.append((entry.name, skill_md))
+    except OSError as e:
+        logger.warning("Skills dir %s exists but could not be read: %r", skills_dir, e)
     return entries
 
 
-async def _build_skills_index(workspace_dir: anyio.Path) -> str:
-    skills_dir = workspace_dir / "skills"
+async def _is_tombstoned(skill_md: anyio.Path) -> bool:
+    """该 SKILL.md 是不是墓碑(B-2 的"删除只读层内容", 见 ``content_tombstone``)。
 
-    # Merge global (~/.agent/skills) with workspace skills. Workspace skills
-    # override globals on name conflict, so collect globals first and let the
-    # workspace pass replace them. This keeps the "nearest wins" convention
-    # consistent with AGENTS.md/CLAUDE.md context lookup.
+    读不出来当**不是**墓碑: 默认反过来会让一个 IO 抖动把某个 skill 从提示词里静默拿掉。
+    """
+    try:
+        raw = await skill_md.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    header: dict[str, str] = {}
+    if raw.startswith("---"):
+        end = raw.find("\n---", 3)
+        if end != -1:
+            for line in raw[3:end].splitlines():
+                if ":" in line:
+                    key, _, value = line.partition(":")
+                    header[key.strip()] = value.strip().strip('"').strip("'")
+    return _is_tombstone(header)
+
+
+async def _skill_roots(workspace_dir: anyio.Path) -> list[tuple[str, anyio.Path]]:
+    """``(层名, skills 目录)`` 由远及近: global, 声明的内容根..., agent 根。
+
+    skills 本来就是**两根合并**(``~/.agent/skills`` + agent 根), B-1 只是把中间
+    那段从"无"扩成"部署声明了几个就是几个"。顺序仍是升序 = 近者在后, 与
+    ``content_roots`` 和 ``load_layers`` 同向, 所以后写入 dict 的赢。
+
+    global 根留在最远处不动: 它是开发机上的个人目录, 语义上比任何部署内容层都
+    更"个人", 但它**不在部署的声明里**, 而分层的优先级由声明顺序定 —— 把它塞进
+    声明序列中间会让同一份代码在开发机和生产上有不同的层序。
+    """
+    roots: list[tuple[str, anyio.Path]] = [("global", _GLOBAL_AGENT_SKILLS_DIR)]
+    declared = _content_roots_from_env()
+    for root in declared:
+        roots.append((root.name, anyio.Path(str(root.path / "skills"))))
+    # agent 根始终是最近的一层。已在声明里(按路径)时不重复追加, 免得同一目录
+    # 报成两层、计数翻倍 —— 那会让"覆盖了几个"这个数字失去意义。
+    agent_skills = workspace_dir / "skills"
+    already = any(_same_dir(path, agent_skills) for _, path in roots[1:])
+    if not already:
+        roots.append((_agent_layer_name(declared, workspace_dir), agent_skills))
+    return roots
+
+
+def _same_dir(left: anyio.Path, right: anyio.Path) -> bool:
+    """两个路径是否指同一目录(折叠 ``..`` 与符号链接); 解析失败时按原样比。"""
+    try:
+        return pathlib.Path(str(left)).resolve() == pathlib.Path(str(right)).resolve()
+    except OSError:  # pragma: no cover — 盘不可达 / 无权限
+        return str(left) == str(right)
+
+
+def _agent_layer_name(declared: list[Any], workspace_dir: anyio.Path) -> str:
+    """agent 根这一层的层名 —— 声明了内容根时用统一的 ``agent``, 否则退回目录名。
+
+    单根世界(未声明)保持原来的目录名, 这样现有日志与判据逐字不变。
+    """
+    if declared:
+        return _AGENT_ROOT_NAME
+    return layer_probe.root_name(str(workspace_dir))
+
+
+async def _build_skills_index(workspace_dir: anyio.Path) -> str:
+    # Merge across roots, far to near: ~/.agent/skills, then each declared
+    # content root, then the agent package. A nearer root's same-named skill
+    # replaces the farther one **entirely** (no field-level merge — that would
+    # produce a third skill nobody wrote), which keeps the "nearest wins"
+    # convention consistent with AGENTS.md/CLAUDE.md context lookup.
+    roots = await _skill_roots(workspace_dir)
     skill_md_by_name: dict[str, anyio.Path] = {}
-    for name, skill_md in await _collect_skill_dirs(_GLOBAL_AGENT_SKILLS_DIR):
-        skill_md_by_name[name] = skill_md
-    for name, skill_md in await _collect_skill_dirs(skills_dir):
-        skill_md_by_name[name] = skill_md
+    layer_by_name: dict[str, str] = {}
+    per_root: list[tuple[str, int]] = []
+    for layer_name, skills_dir in roots:
+        found = await _collect_skill_dirs(skills_dir)
+        for name, skill_md in found:
+            # 墓碑(B-2): 近的那层说"这个名字停用了", 于是它**整个消失**, 而不是被替换成
+            # 墓碑那份内容。放进索引会让模型看到一个 description 写着"已删除"的 skill;
+            # 只 pop 不 continue 会让更近的层没机会再放回来 —— 但 roots 是由远及近的,
+            # 更近的层还在后面, 所以 pop 之后照常继续: 若真有更近的一层放了内容, 它会
+            # 在后续轮次把这个名字重新写进来, 这正是 nearest-wins 该有的行为。
+            if await _is_tombstoned(skill_md):
+                skill_md_by_name.pop(name, None)
+                layer_by_name.pop(name, None)
+                continue
+            skill_md_by_name[name] = skill_md
+            layer_by_name[name] = layer_name
+        # 层来源探针(只读, 见 ``layer_probe``)。
+        # per_root 报的是**各层贡献的条目数**, 而 total 是合并去重后的; 两者不等即说明
+        # 发生了同名覆盖, 这正是 nearest-wins 该有的表现。
+        # 只报存在的层: ``_collect_skill_dirs`` 对"目录不存在"和"目录读不了(OSError)"
+        # 都返回空列表, 二者不可区分 —— 这是本探针存在的原始动机之一, 故这里显式
+        # 用 is_dir() 把"不存在"与"存在但空/读不了"分开。
+        if await skills_dir.is_dir():
+            per_root.append((layer_name, len(found)))
+    layer_probe.report("skills", roots_declared=len(roots), per_root=per_root)
 
     skill_entries: list[tuple[str, anyio.Path]] = sorted(skill_md_by_name.items())
 
@@ -536,7 +639,13 @@ async def _build_skills_index(workspace_dir: anyio.Path) -> str:
         if content is None:
             continue
         skill_contents[name] = content
-        manifest[name] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        # 清单里带**层名**: 只记 sha256 时"同名同字节但来自不同层"不可区分, 于是层序
+        # 一变(个人层加了个与官方逐字相同的副本, 或个人层那份被删)快照仍然命中, 提示词
+        # 里继续渲染上一次的索引。字节相同则内容确实相同, 但"哪一层赢了"是 B-2 派生
+        # 要写进 frontmatter 的信息, 现在就把它钉进缓存键, 免得 B-2 上线时才发现缓存
+        # 认不出层变化。
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        manifest[name] = f"{layer_by_name.get(name, '')}:{digest}"
 
     if not skill_contents:
         return ""

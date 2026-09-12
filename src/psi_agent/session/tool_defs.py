@@ -14,10 +14,14 @@ were first used logged ``tools_exposed=53 of 210`` against a 49-entry list, i.e.
 the array had already changed at least four times in one Session.
 
 So the array is frozen: assembled once, then reused verbatim for the life of
-the Session. Freezing is deliberately *not* trimming — the first array is sent
-whole, all 210 tools of it. Reducing the tool count is a separate change with
-its own capability-loss risk; this one only stops the array from moving, which
-is free.
+the Session.
+
+Freezing is not trimming, and this module does not trim. *Which* tools are in
+the array is decided per content layer by ``tool_exposure``, which runs before
+``freeze`` — the two are separate because they answer separate questions
+(``freeze``: does the array move? ``tool_exposure``: what went into it?) and
+because freezing is free while narrowing carries a discovery cost that has to be
+argued layer by layer.
 """
 
 from __future__ import annotations
@@ -49,105 +53,6 @@ def build_tool_defs(tools: Mapping[str, _ToolLike]) -> list[dict[str, Any]]:
         }
         for tool in tools.values()
     ]
-
-
-# TMPFIX-20260902 (M2), deploy-only — NOT part of the merged batch.
-#
-# Kept because production measured 285566 → 83725 chars, 省 70.7% with this gate
-# on, and the merged batch deliberately scoped trimming out (see this module's
-# docstring: "Freezing is deliberately *not* trimming"). Deploying without it
-# would hand that 70.7% back on every turn.
-#
-# Correctness does not depend on this list: dispatch resolves names through
-# ``ToolRegistry``, not through the ``tools`` array, so an omitted tool stays
-# callable once ``tool_search`` surfaces its name. What narrows is discovery,
-# not capability. Names measured from 3h of production traffic (496 calls, 44
-# distinct). Remove together with the rest of tmpfix-20260902.
-TMPFIX_M2_CORE_TOOLS = frozenset(
-    {
-        "bash",
-        "read",
-        "edit",
-        "write",
-        "list_dir",
-        "find_files",
-        "search_content",
-        "fetch",
-        "todo",
-        "clarify",
-        "tool_search",
-        "tool_describe",
-        "tool_search_code",
-        "serper_google_search",
-        "wiki_search",
-        "describe_image",
-        "read_document",
-        "read_pdf",
-        "write_word",
-        "write_word_from_markdown",
-        "session_keyword_search",
-        "sessions_history",
-        "session_status",
-        "memory_search",
-        "memory_answer_context",
-        "feishu_api",
-        "feishu_attendance_query",
-        "feishu_doc_read",
-        "feishu_doc_update_block",
-        "feishu_doc_list_blocks",
-        "feishu_doc_append_content",
-        "feishu_doc_create",
-        "feishu_docs_search",
-        "feishu_sheet_read",
-        "feishu_sheet_write",
-        "feishu_sheet_read_grid",
-        "feishu_sheet_find_columns",
-        "feishu_wiki_list_nodes",
-        "feishu_wiki_list_spaces",
-        "feishu_message_list",
-        "feishu_message_send",
-        "feishu_image_get",
-        "feishu_identity_get",
-        "feishu_department_members",
-        "feishu_permission_list_members",
-        "trigger_manage",
-        # 2026-09-07 扩展 (产品需要): 正负面清单链路 + 会议候选/纪要链路,
-        # 飞书私聊与会议场景需直接可见这些工具; 仍只收窄发现面, 不动 dispatch。
-        "positive_negative_rules",
-        "positive_negative_case_prepare",
-        "positive_negative_case_confirm",
-        "positive_negative_case_read",
-        "positive_negative_case_analyze",
-        "positive_negative_case_remind",
-        "positive_negative_case_review_start",
-        "positive_negative_case_review_submit",
-        "positive_negative_candidate_analyze",
-        "positive_negative_candidate_card",
-        "meeting_pipeline_run",
-        "meeting_session_notify",
-        "meeting_session_read",
-        "meeting_session_write",
-        "meeting_transcript_prepare",
-        # 2026-09-10: 会议资料包导出 —— 读一场会议的转写/纪要/分析 + 云录制链接,
-        # 打包成可交付目录; 生产上 agent 曾自写拉取脚本, 这条给的是受控入口。
-        "meeting_record_export",
-        # 2026-09-10: 历史场次清单 + 按 record_file_id 补跑/补发 —— 管道只跟最新一场,
-        # 更早未完成/未投递的场次需要显式补, 否则永远补不上。
-        "meeting_records_list",
-        "meeting_pipeline_replay",
-    }
-)
-
-
-def tmpfix_m2_gate(tools: Mapping[str, _ToolLike]) -> dict[str, _ToolLike]:
-    """Narrow a registry to the M2 core set, leaving dispatch untouched.
-
-    Returns the registry unchanged when no core tool is present at all — that
-    is the async-load window where the registry is still filling, and gating it
-    there would freeze a Session onto a near-empty array.
-    """
-    kept = {name: tool for name, tool in tools.items() if name in TMPFIX_M2_CORE_TOOLS}
-    return kept or dict(tools)
 
 
 class ToolDefsCache:
