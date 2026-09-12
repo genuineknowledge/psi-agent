@@ -19,7 +19,15 @@ async def read(file_path: str, offset: int = 0, limit: int = 0) -> str:
     Returns:
         File contents as a string, or an error message if the file cannot be read.
     """
-    path = _paths.resolve_user_path(file_path)
+    stripped = file_path.strip()
+    # skills/ goes through layered resolution (global personal -> official);
+    # other relative paths still land in the workspace (deliverables etc). Only
+    # the read side branches; resolve_user_path is untouched, so the other 6
+    # tools are unaffected.
+    if stripped.startswith("skills/"):
+        path = await _paths.resolve_skill_path(file_path)
+    else:
+        path = _paths.resolve_user_path(file_path)
     if not await path.exists():
         return f"[Error] File not found: {path}"
     if not await path.is_file():

@@ -80,3 +80,45 @@ def resolve_under(root: str | anyio.Path | Path, path: str) -> anyio.Path:
 def resolve_user_path(path: str, *, workspace_raw: str = "") -> anyio.Path:
     """Resolve a tool file path against the user workspace."""
     return resolve_under(workspace_dir(workspace_raw), path)
+
+
+# Global personal-layer root ~/.agent. A module-level str constant (rather than
+# expanduser at each call site) so tests can monkeypatch it and redirect to a
+# tmp_path, never touching the real home. Same convention as the anyio.Path
+# _GLOBAL_AGENT_HOME in systems/system.py -- keep the literals in sync. Skills
+# live only in the official layer (agent package) + this global layer, never in
+# the workspace.
+_GLOBAL_AGENT_HOME = os.path.expanduser("~/.agent")
+
+
+def global_skills_dir() -> anyio.Path:
+    """Global personal skill layer ~/.agent/skills (skill_manage write / list scan)."""
+    return anyio.Path(_GLOBAL_AGENT_HOME) / "skills"
+
+
+async def resolve_skill_path(path: str) -> anyio.Path:
+    """Resolve a skills/... relative path by layer: global (~/.agent) first,
+    official (agent package) as fallback.
+
+    Skills live only in the global personal layer and the official layer, never
+    in the workspace. When the model reads a skill by relative path
+    (read("skills/<name>/SKILL.md")) or its sibling support files
+    (scripts/ references/), it must hit the winning layer. Same priority as the
+    index: the global personal layer wins (first hit). Absolute paths pass
+    through unchanged. A missing directory is normal -- await exists() tolerates
+    it, so an absent global layer falls back to the official layer.
+
+    **async**: layer resolution must do existence checks (IO), following the
+    project rule of "everything async, no pathlib IO"; deliberately unlike the
+    synchronous resolve_user_path (pure path join, no IO).
+    """
+    raw = (path or "").strip()
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        return anyio.Path(str(candidate))
+    official_root = agent_dir()  # str; official-layer root (agent package)
+    for root in (_GLOBAL_AGENT_HOME, official_root):  # global first, official fallback -> global wins
+        hit = anyio.Path(root) / raw
+        if await hit.exists():
+            return hit
+    return anyio.Path(official_root) / raw  # neither exists -> official path (stable error)

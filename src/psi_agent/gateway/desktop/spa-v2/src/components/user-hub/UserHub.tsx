@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Bot, ClipboardList, ExternalLink, LogIn, Settings2, UserCog } from 'lucide-react'
+import { Bot, ClipboardList, ExternalLink, Layers, LogIn, Settings2, UserCog } from 'lucide-react'
 import type { AiInfo } from '../../services/api'
 import { listAis } from '../../services/api'
 import { useI18n } from '../../i18n'
@@ -10,12 +10,13 @@ import { dedupeAisForDisplay, readStoredAiId } from '../../services/bootstrapAi'
 import { useAuthAccount } from '../../services/useAuthAccount'
 import HubAdvancedPanel from './HubAdvancedPanel'
 import HubAdvancedSettingsPanel from './HubAdvancedSettingsPanel'
+import HubContentPanel from './HubContentPanel'
 import HubLoginPanel from './HubLoginPanel'
 import HubModelsPanel from './HubModelsPanel'
 import HubSettingsPanel from './HubSettingsPanel'
 import './user-hub.css'
 
-export type HubPanel = 'models' | 'login' | 'settings' | 'settingsAdvanced' | 'advanced' | null
+export type HubPanel = 'models' | 'content' | 'login' | 'settings' | 'settingsAdvanced' | 'advanced' | null
 
 type Props = {
   selectedAiId: string | null
@@ -26,6 +27,8 @@ type Props = {
   onChangeAgent?: () => void
   onToast?: (message: string) => void
   onAisChanged?: (ais: AiInfo[]) => void
+  /** "+ new skill" from the content panel: jump into the chat composer prefilled. */
+  onNewSkill?: () => void
   /** Open models panel on first mount (e.g. empty AI pool). */
   openModelsOnMount?: boolean
   /** Fired once after auto-opening models so the parent can clear the one-shot flag. */
@@ -62,6 +65,7 @@ export default function UserHub({
   onChangeAgent,
   onToast,
   onAisChanged,
+  onNewSkill,
   openModelsOnMount = false,
   onModelsAutoOpened,
   openPanelRequest,
@@ -225,6 +229,15 @@ export default function UserHub({
           </button>
           <button
             type="button"
+            className={`user-hub-shortcut${panel === 'content' ? ' active' : ''}`}
+            title={t('app.content')}
+            aria-label={t('app.content')}
+            onClick={() => openPanel('content')}
+          >
+            <Layers size={16} />
+          </button>
+          <button
+            type="button"
             className={`user-hub-shortcut${panel === 'settings' || panel === 'settingsAdvanced' ? ' active' : ''}`}
             title={t('app.settings')}
             aria-label={t('app.settings')}
@@ -258,6 +271,12 @@ export default function UserHub({
           setAiCount(dedupeAisForDisplay(ais, selectedAiId).length)
           onAisChanged?.(ais)
         }}
+      />
+      <HubContentPanel
+        show={panel === 'content'}
+        onClose={() => setPanel(null)}
+        onToast={onToast}
+        onNewSkill={onNewSkill}
       />
       <HubLoginPanel
         /* 硬门禁期间强制显示, 不受 panel 影响: 否则用户点侧栏别的入口
