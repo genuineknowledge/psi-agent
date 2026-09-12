@@ -137,18 +137,28 @@ async def todo_fill_status_impl(
     group_rows = [r for r, (_, m) in roster.items() if not mentor_name or m == _norm_name(mentor_name)]
     fill_map: dict[int, bool] = {}
     if group_rows and date_col >= 0:
-        col_letter = _col_letter(date_col)
+        # sheet._col_letter 是 1-based(1→A),date_col 是 0-based 表头下标 → +1
+        col_letter = _col_letter(date_col + 1)
         lo, hi = min(group_rows), max(group_rows)
-        fg = await read_sheet_grid_impl(
-            obj_token,
-            range_=f"!{col_letter}{lo}:{col_letter}{hi}",
-            max_rows=hi - lo + 1,
-            user_key=user_key,
-        )
-        if fg.get("ok"):
+        # range 里的行号会被 read_sheet_grid_impl 忽略,分页只认 start_row ——
+        # 从 lo 起读,行号才与 roster 的 sheet 行号对齐(否则整体错位一格)。
+        start_row = lo
+        for _ in range(4):  # 组内行数有限,翻 4 页兜底(预算截断时续读)
+            fg = await read_sheet_grid_impl(
+                obj_token,
+                range_=f"!{col_letter}1:{col_letter}400",
+                max_rows=hi - lo + 1,
+                start_row=start_row,
+                user_key=user_key,
+            )
+            if not fg.get("ok"):
+                break
             for i, row in enumerate(fg.get("rows", []) or []):
                 if row:
-                    fill_map[lo + i] = bool(str(row[0]).strip())
+                    fill_map[start_row + i] = bool(str(row[0]).strip())
+            if not fg.get("has_more") or start_row >= hi:
+                break
+            start_row = fg.get("next_start_row") or start_row + 1
     people: list[dict[str, Any]] = [{"name": roster[r][0], "filled": fill_map.get(r, False)} for r in group_rows]
 
     # 5. 离职/在职分类(确定性)
