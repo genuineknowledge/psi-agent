@@ -25,6 +25,7 @@ fire: prompt
    - 审批中(skipped_not_approved)/日期读不出(needs_fix)→ 不提醒,但记录;
    - 无请假 → **未写**。
 5. 对每个未写的人,用 DSL 提醒卡(模板 remind-card)私聊发卡——**不要自己拼卡片 JSON,不要发纯文本**:
+   - **私聊对象 open_id 一律从 `feishu_member_status_check` 返回的 active 名单里按姓名取**,禁止从会话上下文/历史记录手填;查不到姓名的 → 不私聊,标记「解析失败,需人工」;
    - `feishu_card_render(template="remind-card", values_json="{\"name\":\"<姓名>\",\"hint\":\"<规范要点一句>\",\"board_link\":\"https://genuineknowledge.feishu.cn/wiki/H6icwLWn1iwpXAk73QMcA6MgnWc\"}")` 渲染拿卡片 JSON;
    - hint 规范要点一句(按 todo-writing-standard schema 段概括:三层结构 大目标/小目标/TODO;每条 TODO 带时间与标准、有 deadline;不超过 5 条),不复述全文;
    - `feishu_message_send_card(receive_id=<该人 open_id>, receive_id_type="open_id", card_json=<渲染结果>)` 私聊发送。
