@@ -553,14 +553,31 @@ export default function HaiTunAgentWorkspace({
     return () => window.clearInterval(id);
   }, [streamingCards, refreshTodos, refreshTodoSegments]);
 
+  const acknowledgeNewDeliverables = useCallback((taskId: string) => {
+    clearPendingDeliveries(taskId);
+    setTasks((current) => current.map((item) => {
+      if (item.id !== taskId || !item.newDeliverables.length) return item;
+      return {
+        ...item,
+        newDeliverables: [],
+        // Keep generating if still streaming; otherwise dim the chest until next blob.
+        deliveryState: item.deliveryState === "generating" ? "generating" : "none",
+      };
+    }));
+  }, []);
+
   const openArtifact = useCallback((task: Task, fileName?: string, listMode?: "new" | "history") => {
     void ensureHistory(task.id);
+    const hadNew = task.newDeliverables.length > 0;
+    // 刻意为之: 点开宝箱查看即熄灭金色（不再依赖无效的「保存到成果库」）。
+    if (hadNew) acknowledgeNewDeliverables(task.id);
     const mode = listMode
-      ?? (fileName ? "history" : (task.newDeliverables.length ? "new" : "history"));
-    setArtifactListMode(mode);
+      ?? (fileName ? "history" : (hadNew ? "new" : "history"));
+    // newDeliverables 已清空，「new」列表会空——改看本会话历史（含刚查看的文件）。
+    setArtifactListMode(hadNew && mode === "new" ? "history" : mode);
     setArtifactInitialFile(fileName);
     setArtifactTask(task);
-  }, [ensureHistory]);
+  }, [acknowledgeNewDeliverables, ensureHistory]);
 
   const closeArtifact = useCallback(() => {
     setArtifactTask(null);
@@ -1960,34 +1977,6 @@ export default function HaiTunAgentWorkspace({
     window.setTimeout(() => setToast(null), 2400);
   };
 
-  const saveArtifact = (task: Task) => {
-    clearPendingDeliveries(task.id);
-    setTasks((current) => current.map((item) => item.id === task.id
-      ? {
-          ...item,
-          newDeliverables: [],
-          deliveryState: "saved",
-          updated: t("app.updatedSavedDeliverables"),
-        }
-      : item));
-    setMessages((current) => ({
-      ...current,
-      [task.id]: [...(current[task.id] ?? []), { role: "agent", text: t("app.deliverablesSavedDetail") }],
-    }));
-    closeArtifact();
-    setToast(t("app.toastDeliverablesSaved"));
-    window.setTimeout(() => setToast(null), 2600);
-  };
-
-  const reviseArtifact = (task: Task) => {
-    setTasks((current) => current.map((item) => item.id === task.id
-      ? { ...item, status: "working", statusLabel: t("app.statusRevising"), deliveryState: "generating", progress: Math.min(item.progress, 92), updated: t("app.updatedReviseRequest") }
-      : item));
-    closeArtifact();
-    setToast(t("app.toastReviseSent"));
-    window.setTimeout(() => setToast(null), 2600);
-  };
-
   useEffect(() => {
     document.documentElement.dataset.haptics = "on";
   }, []);
@@ -2815,8 +2804,6 @@ export default function HaiTunAgentWorkspace({
             messages[liveArtifactTask.id] ?? [],
           )}
           onClose={closeArtifact}
-          onSave={saveArtifact}
-          onRevise={reviseArtifact}
         />
       )}
       {firstRunOpen && (

@@ -1,6 +1,7 @@
 /**
  * Local-only record of deliverable basenames that arrived but were not yet
- * saved to 成果库. Survives refresh; cleared only by explicit acceptance.
+ * viewed in the treasure chest. Survives refresh; cleared when the user opens
+ * the chest (or otherwise acknowledges new deliverables).
  * Keys are AppData-scoped (see ``appdataScope``).
  */
 import { readScopedItem, writeScopedItem } from './appdataScope'

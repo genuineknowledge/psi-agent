@@ -29,7 +29,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-from psi_agent._send_markers import iter_send_paths
+from psi_agent._send_markers import iter_recv_paths, iter_send_paths
 
 KIND_CHAT = "chat"
 KIND_SCHEDULE_SILENT = "schedule.silent"
@@ -653,6 +653,19 @@ def extract_send_paths(text: str) -> list[str]:
     if not isinstance(text, str) or not text:
         return []
     return [path for path, _ in iter_send_paths(text)]
+
+
+def extract_recv_paths(text: str) -> list[str]:
+    """Return ``[RECV:…]`` paths in order (stripped); empty / whitespace skipped.
+
+    Symmetry with ``extract_send_paths``: Channel encodes uploads as ``[RECV:]``
+    in the user JSONL row; Gateway ``/history`` projects them as ``recvs`` so
+    SPA chips survive refresh / session switch (markers themselves stay stripped
+    from visible ``text``).
+    """
+    if not isinstance(text, str) or not text:
+        return []
+    return [path for path, _ in iter_recv_paths(text)]
 
 
 def render_sent_files_note(text: str) -> str:

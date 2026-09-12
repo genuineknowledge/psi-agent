@@ -66,11 +66,58 @@ describe('historyToChat', () => {
     ])
   })
 
+  it('attaches file stubs from user recvs (upload chips survive refresh)', () => {
+    expect(
+      historyToChat([
+        {
+          role: 'user',
+          text: '看图',
+          recvs: ['/Downloads/.psi/a.png', '/Downloads/.psi/a.png'],
+        },
+        { role: 'assistant', text: '收到' },
+        {
+          role: 'user',
+          text: '',
+          recvs: ['/tmp/only.pdf'],
+        },
+      ]),
+    ).toEqual([
+      {
+        role: 'user',
+        text: '看图',
+        files: [{ name: 'a.png', data: '', path: '/Downloads/.psi/a.png' }],
+      },
+      { role: 'agent', text: '收到' },
+      {
+        role: 'user',
+        text: '',
+        files: [{ name: 'only.pdf', data: '', path: '/tmp/only.pdf' }],
+      },
+    ])
+  })
+
+  it('keeps assistant SEND-only chip rows (DeepSeek-style)', () => {
+    expect(
+      historyToChat([
+        { role: 'user', text: '导出' },
+        { role: 'assistant', text: '', sends: ['/ws/only.html'] },
+      ]),
+    ).toEqual([
+      { role: 'user', text: '导出' },
+      {
+        role: 'agent',
+        text: '',
+        files: [{ name: 'only.html', data: '', path: '/ws/only.html' }],
+      },
+    ])
+  })
+
   it('drops schedule.silent and empty rows', () => {
     expect(
       historyToChat([
         { role: 'user', text: '# Heartbeat', kind: 'schedule.silent' },
         { role: 'assistant', text: 'HEARTBEAT_OK', kind: 'schedule.silent' },
+        // Raw marker text without ``recvs`` (Gateway never emits this after strip).
         { role: 'user', text: '[RECV:/x]' },
         { role: 'assistant', text: '日报', kind: 'schedule.display' },
         { role: 'user', text: '你好' },

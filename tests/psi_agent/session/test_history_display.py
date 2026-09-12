@@ -193,6 +193,16 @@ def test_extract_send_paths() -> None:
     assert extract_send_paths("") == []
 
 
+def test_extract_recv_paths() -> None:
+    from psi_agent.session.history_display import extract_recv_paths
+
+    assert extract_recv_paths("看图\n[RECV:/tmp/a.png]\n[RECV: b.pdf ]") == ["/tmp/a.png", "b.pdf"]
+    assert extract_recv_paths("see\n[ RECV:/tmp/a.png ]") == ["/tmp/a.png"]
+    assert extract_recv_paths("[SEND:/x]") == []
+    assert extract_recv_paths("[RECV:]") == []
+    assert extract_recv_paths("") == []
+
+
 def test_assistant_reasoning_goes_out_as_reasoning_content() -> None:
     """We store ``reasoning``; providers only read ``reasoning_content``.
 

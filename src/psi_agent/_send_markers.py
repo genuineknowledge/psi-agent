@@ -24,6 +24,9 @@ from collections.abc import Iterator
 # **未闭合**的 ``[SEND:`` 一路吞到下几行的 ``]`` —— 丢掉后面真正的路径, 并把一条
 # 带换行的字符串交给 ``_send_file`` 去上传。
 SEND_RE = re.compile(r"\[\s*SEND\s*:\s*([^\]\n]*?)\s*\]", re.IGNORECASE)
+# 与 SEND 同形: Channel ``encode_input`` 写入的 ``[RECV:/path]``, Gateway
+# ``/history`` 投影成 user 行的 ``recvs`` (对称 assistant ``sends``)。
+RECV_RE = re.compile(r"\[\s*RECV\s*:\s*([^\]\n]*?)\s*\]", re.IGNORECASE)
 
 
 def iter_send_paths(text: str) -> Iterator[tuple[str, int]]:
@@ -36,6 +39,18 @@ def iter_send_paths(text: str) -> Iterator[tuple[str, int]]:
     ``match_end`` 是标记末尾的偏移, 供流式调用方推进扫描指针, 不必重新求一次匹配。
     """
     for match in SEND_RE.finditer(text):
+        path = match.group(1).strip()
+        if path:
+            yield path, match.end()
+
+
+def iter_recv_paths(text: str) -> Iterator[tuple[str, int]]:
+    """逐个产出 ``[RECV:…]`` 里的真实路径与 ``(path, match_end)``。
+
+    空路径跳过, 与 ``iter_send_paths`` 同纪律。Gateway 用它把用户上传投影成
+    ``recvs``, 刷新/切会话后气泡芯片才能还原 (DeepSeek 同款显示)。
+    """
+    for match in RECV_RE.finditer(text):
         path = match.group(1).strip()
         if path:
             yield path, match.end()
