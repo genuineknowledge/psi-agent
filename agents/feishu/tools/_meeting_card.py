@@ -222,7 +222,7 @@ async def notify_meeting_card(
         base = await resolve_appdata_root(appdata_root)
         artifact = meeting_artifact_root(base, meeting_name)
         artifact.mkdir(parents=True, exist_ok=True)
-        identity, display_name = await _resolve_recipient(recipient, user_key)
+        identity, display_name, receive_id_type = await _resolve_recipient(recipient, user_key)
         if not identity:
             return json.dumps(
                 {"ok": False, "status": "recipient_unresolved", "recipient": recipient, "error": display_name},
@@ -243,7 +243,7 @@ async def notify_meeting_card(
                     },
                     ensure_ascii=False,
                 )
-            delivery = "direct" if identity.startswith("ou_") else "chat"
+            delivery = "chat" if receive_id_type == "chat_id" else "direct"
             content_hash = hashlib.sha256(card_json.encode()).hexdigest()
             if isinstance(previous, dict) and previous.get("text_sha256") not in (None, "", content_hash):
                 return json.dumps(
@@ -259,7 +259,8 @@ async def notify_meeting_card(
                     ensure_ascii=False,
                 )
             try:
-                sent = await _f.send_card_impl(identity, card_json, "open_id", user_key or None)
+                # 类型由解析结果给出: 租户级 user_id 没有前缀, 写死 "open_id" 会被判 230001。
+                sent = await _f.send_card_impl(identity, card_json, receive_id_type, user_key or None)
             except Exception as exc:
                 sent = {"ok": False, "message": f"{type(exc).__name__}: {exc}"}
             if not isinstance(sent, dict) or not sent.get("ok"):

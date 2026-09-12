@@ -52,7 +52,7 @@ metadata:
 - 要**给人一份会议资料包**（转写 + 段落 + 智能纪要 + 分析 + 云录制观看链接 + 场次信息）时调用 `meeting_record_export`：省略 `record_file_id` 取最新一场，给了就读该场的永久归档；它只读管道产物、写到 `meeting-exports/`，然后用 `[SEND:]` 把文件发给用户。**禁止自写拉取/分页脚本**去复制这条路（生产上出现过：脚本绕过幂等/审计，还会因为只读一页制造"假完整"转写）；工具确实缺能力时，先提需求，不要就地造脚本。
 - 可读取 `smart_minutes` 作为上下文参考，但不得用智能纪要替代原始转写。会议分析应同时参考正负面清单 SOP 和对应会议 SOP。
 - 分析结果写入共享的会议存储（AppData 下 `meeting-session/` 目录）时调用 `meeting_session_write`；该链路仅保存分析和通知回执，明确不写正式正负面总表、不计分、不进入绩效。
-- 会议 `57152787045` 的纪要在 `HaiTun Agent主战场` 群创建原生话题发布、正负面清单总览发 HR 罗霖；会议 `42654699903` 的纪要发张浩和王金旺、正负面清单总览发 HR 罗霖。使用 `meeting_session_notify`，收件人解析失败时不猜测 open_id、不向触发者兜底发送；同一 `record_file_id` 和收件人身份只发送一次。
+- 纪要/清单的**收件人来自 `config/meeting-automation.yaml`，不写在本技能里**（改人只改配置，不需要代码 PR）：每场会议的 `summary_recipients`（纪要）与 `overview_recipients`（正负面清单总览）就是权威名单（会议 `57152787045` 与 `42654699903` 各一组）；失败告警发给同文件的 `alert_recipients`。调用 `meeting_session_notify` 时 `recipient` 传该文件里的值（`ou_`/`oc_`/`user_` 开头的 id 可直接传；**群收件人**要在 `runtime.notify.recipients` 里声明成 `{chat: 群名}`，人名可直接写姓名，也可用表里的别名键如 `hr`）。**先读配置再发**，不要照记忆或历史对话里的名单发；收件人解析失败时**不猜测 open_id、不向触发者兜底发送**，如实报错并说明要去配置里补什么；同一 `record_file_id` 和收件人身份只发送一次。
 - 任务通过 cron 定时触发，不使用十分钟轮询。若会议结束时间变化，只调整任务调度时间；不要在普通会话中自行创建重复的会议轮询任务。
 - 会议产物保存在共享会议存储，与个人 workspace 隔离；运行历史落在组织调度 Session（公司级种子 workspace `PSI_SEED_SCHEDULES_WORKSPACE` 派生的调度会话）上，飞书网页对所有已登录用户开放该 Session 的只读历史，其他调度 Session 仍隐藏，且任何用户都不能对该 Session 发消息。
 
