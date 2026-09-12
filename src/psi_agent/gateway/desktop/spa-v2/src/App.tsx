@@ -186,9 +186,10 @@ export default function App() {
     )
   }
 
+  // 刻意为之: do not remount on workspace switch — settings workspace/agent are
+  // create-time defaults only; the sidebar lists all Gateway sessions.
   return (
     <HaiTunAgentWorkspace
-      key={workspace}
       workspace={workspace}
       defaultAgent={defaultAgent}
       onChangeWorkspace={changeWorkspace}

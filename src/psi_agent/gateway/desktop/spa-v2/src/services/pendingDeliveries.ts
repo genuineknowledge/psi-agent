@@ -60,3 +60,16 @@ export function clearPendingDeliveries(taskId: string): void {
   delete next[taskId]
   writePendingDeliveries(next)
 }
+
+/** Move pending-delivery keys when a Session id changes (relocate). */
+export function remapPendingDeliveries(oldTaskId: string, newTaskId: string): void {
+  if (!oldTaskId || !newTaskId || oldTaskId === newTaskId) return
+  const all = readPendingDeliveries()
+  const names = all[oldTaskId]
+  if (!names?.length) return
+  const next = { ...all }
+  delete next[oldTaskId]
+  const merged = [...new Set([...(next[newTaskId] ?? []), ...names])]
+  next[newTaskId] = merged
+  writePendingDeliveries(next)
+}

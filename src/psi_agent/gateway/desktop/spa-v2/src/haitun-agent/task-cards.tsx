@@ -3,6 +3,7 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  FolderInput,
   Pin,
   Trash2,
 } from "lucide-react";
@@ -64,6 +65,7 @@ export function TaskRow({
   onPrefetch,
   onOpenArtifact,
   onDelete,
+  onMigrate,
   onTogglePin,
 }: {
   task: Task;
@@ -73,6 +75,7 @@ export function TaskRow({
   onPrefetch?: () => void;
   onOpenArtifact: (task: Task, fileName?: string) => void;
   onDelete?: (task: Task) => void;
+  onMigrate?: (task: Task) => void;
   onTogglePin?: (task: Task) => void;
 }) {
   const { t } = useI18n();
@@ -114,6 +117,20 @@ export function TaskRow({
             }}
           >
             <Pin size={14} fill={pinned ? "currentColor" : "none"} />
+          </button>
+        )}
+        {onMigrate && (
+          <button
+            type="button"
+            className="task-row-migrate"
+            title={t("task.migrateTask")}
+            aria-label={t("task.migrateTaskAria", { title: task.title })}
+            onClick={(event) => {
+              event.stopPropagation();
+              onMigrate(task);
+            }}
+          >
+            <FolderInput size={14} />
           </button>
         )}
         {onDelete && (
