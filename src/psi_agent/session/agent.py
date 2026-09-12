@@ -58,7 +58,7 @@ from psi_agent.session.request_assembly import RequestAssembler
 from psi_agent.session.runtime_context import runtime_scope
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.system_prompt import SystemPrompt
-from psi_agent.session.tool_convergence import ToolCallConvergence
+from psi_agent.session.tool_convergence import ToolCallConvergence  # refusal notices + call-surface gate
 from psi_agent.session.tool_defs import ToolDefsCache, build_tool_defs
 from psi_agent.session.tool_exposure import select_exposed, tier_from_env
 from psi_agent.session.tool_registry import ToolRegistry
@@ -1003,25 +1003,29 @@ class SessionAgent:
                                                 )
 
                                     # Refused calls are decided *before* the task
-                                    # group so the tool never runs, and are tracked
-                                    # by index so their outcome is not fed back into
-                                    # the counters as if it were a real attempt.
+                                    # group so the tool never runs.  Call-surface
+                                    # refusals must win even for empty names /
+                                    # bad JSON args (those never reach the registry).
+                                    # Every non-refusal outcome is recorded —
+                                    # including not-found and argument errors —
+                                    # so inventing feishu_* / wrong kwargs trips
+                                    # the turn-level gate (see tool_convergence).
                                     executed: list[tuple[int, str, dict[str, Any]]] = []
                                     async with anyio.create_task_group() as tg:
                                         for i, _tc, func_name, args, argument_error in tool_args:
-                                            if not func_name:
-                                                results[i] = "Error: empty tool call name"
-                                            elif argument_error is not None:
-                                                results[i] = argument_error
-                                            elif (refusal := convergence.refusal_for(func_name, args)) is not None:
+                                            if (refusal := convergence.refusal_for(func_name, args)) is not None:
                                                 # Stated, not silent: the notice is
                                                 # the tool result the model reads.
                                                 results[i] = refusal
+                                            elif not func_name:
+                                                results[i] = "Error: empty tool call name"
+                                            elif argument_error is not None:
+                                                results[i] = argument_error
                                             else:
                                                 executed.append((i, func_name, args))
                                                 tg.start_soon(_execute_one, i, func_name, args, results)
 
-                                    for i, func_name, args in executed:
+                                    for i, _tc, func_name, args, _argument_error in tool_args:
                                         convergence.record(func_name, args, results[i])
 
                                     # yield results in order, save

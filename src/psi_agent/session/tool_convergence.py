@@ -16,7 +16,8 @@ being closed.  This is the same reasoning
 `history_display.truncate_tool_result` already records for truncation: a cut
 that does not announce itself gets answered from partial data.
 
-Two counters, because the incident had two shapes:
+Three refusal counters, because the incidents had three shapes, plus one
+**observe-only** counter for a fourth shape (no refuse yet):
 
 - **Consecutive futility, keyed by tool name.**  Rewording defeats any
   argument-keyed counter -- that is what "换词调 305 次" means.  Only the tool
@@ -24,6 +25,16 @@ Two counters, because the incident had two shapes:
 - **Verbatim repetition, keyed by tool name and arguments.**  Re-issuing a call
   that already ran cannot produce a new answer; here the arguments are the
   point, and the count is kept whether or not the result was productive.
+- **Call-surface errors, keyed to the turn.**  ``Tool not found`` / illegal
+  JSON args / ``unexpected keyword`` while *inventing* ``feishu_*`` /
+  ``browser_*`` names resets every per-tool streak; a turn-level counter is
+  what stops that family of idle loops.
+- **Retry-after-info, keyed by tool name (record only).**  A non-empty /
+  non-error result came back, then the model called the **same** tool again.
+  That is the implicit "prior result was not enough" signal.  Legitimate
+  polling looks the same, so this counter does **not** refuse yet -- it only
+  logs and exposes :meth:`ToolCallConvergence.retry_after_info_count` for a
+  future gate.
 
 **Scope is one turn.**  The tracker is created per `run()` and dies with it, so
 counters cannot leak between unrelated questions -- and a user who follows up
@@ -41,28 +52,43 @@ from typing import Any
 
 from loguru import logger
 
-UNPRODUCTIVE_LIMIT = 4
+UNPRODUCTIVE_LIMIT = 5
 """Consecutive empty / failed results from one tool before its next call is refused.
 
 Above the useful range of retrying and well below a runaway.  Rewording a query
-two or three times is ordinary research behaviour and stays untouched; the
-observed pathology ran to 305.  The limit counts *consecutive* futility, so a
-tool that starts producing results gets a clean slate (see
-:meth:`ToolCallConvergence.record`).
+a few times is ordinary research behaviour and stays untouched; the observed
+pathology ran to 305.  The limit counts *consecutive* futility, so a tool that
+starts producing results gets a clean slate (see
+:meth:`ToolCallConvergence.record`).  Five is the interim production value
+(raised from 4 when REPEAT was tightened to 3); revisit with live distributions.
 """
 
 REPEAT_LIMIT = 3
 """Identical (tool, arguments) attempts allowed before the next one is refused.
 
-Higher than it looks like it needs to be, deliberately: a repeat is not always
-pointless.  Tools here poll external state (a Feishu document that is being
-edited, a background process that is still running), so the second and third
-identical call can legitimately return something new.  The fourth is where the
-evidence for "this will keep returning the same thing" outweighs that.
+Higher than a bare 1, deliberately: a repeat is not always pointless.  Tools
+here poll external state (a Feishu document that is being edited, a background
+process that is still running, meeting transcripts still generating), so a
+couple of identical calls can legitimately return something new.  Three is
+enough headroom for that; a fourth identical call is treated as a stuck process
+or a model that is not reading prior results.
 """
 
+CALL_SURFACE_ERROR_LIMIT = 2
+"""Turn-level cap on *call-surface* failures (wrong tool name / invalid args).
+
+Unlike :data:`UNPRODUCTIVE_LIMIT`, this counter is **not** keyed by tool name:
+inventing ``feishu_user_get`` then ``feishu_user_search`` would otherwise reset
+every streak.  Two such failures in one turn are enough evidence the model is
+guessing names or parameters; further calls are refused until it re-reads the
+live ``tools`` list / schema (see :data:`CALL_SURFACE_NOTICE`).
+"""
+
+# No RETRY_AFTER_INFO_LIMIT yet: counting only.  Polling and "non-empty but
+# useless" retries share this shape; a refuse threshold needs a separate design.
+
 REFUSAL_PREFIX = "[本次调用未执行]"
-"""Sentinel opening both notices, so a notice can be recognized as one.
+"""Sentinel opening refusal notices, so a notice can be recognized as one.
 
 Serves the same purpose as ``history_display._TRUNCATION_MARKER``: a string this
 module produced must be identifiable when it comes back, because it travels as
@@ -98,6 +124,25 @@ history the model is reading, so restating them here would spend budget to say
 something twice.
 """
 
+CALL_SURFACE_NOTICE = (
+    f"{REFUSAL_PREFIX} 本回合已连续 {{count}} 次因**工具名不存在或参数非法**失败"
+    "(Tool not found / 参数不是合法 JSON 对象 / unexpected keyword 等)."
+    "这一次的调用没有真正发出。"
+    "请立刻停止换名或微调参数重试: "
+    "重新对照本回合请求里的 tools 列表与目标工具的参数 schema (或 skill 参数表), "
+    "确认确切工具名与参数名后再调; "
+    "飞书能力不要发明 feishu_* (多数走 feishu_api); "
+    "browser MCP 表内名走 browser_call; "
+    "subagent 只用 subagent_plan / subagent_wait / subagent_chat。"
+    "若仍不确定, 用 tool_search (如有) 或改用文档写明的入口, 不要继续连打。"
+)
+"""Turn-level stop after guessed tool names / bad parameters.
+
+Must not read as another empty search hit: it names the failure class and the
+recovery action (re-scan the live tool list), which is what stops prefix-family
+invention loops that per-tool futility cannot see.
+"""
+
 _EMPTY_JSON_HINTS = ("items", "data", "results", "records", "files", "entities", "matches")
 """Keys whose empty list marks a structurally empty payload.
 
@@ -124,6 +169,16 @@ these phrases as futile, and refusing a working tool is worse than allowing one
 extra retry.
 """
 
+_CALL_SURFACE_PARAM_MARKERS = (
+    "unexpected keyword",
+    "required keyword",
+    "missing",
+    "got an unexpected",
+    "takes no arguments",
+    "required positional",
+    "arguments must be",
+)
+
 
 def _args_key(args: dict[str, Any]) -> str:
     """Order-independent identity for an argument set.
@@ -143,6 +198,29 @@ def _args_key(args: dict[str, Any]) -> str:
 def is_refusal_notice(result: str) -> bool:
     """Whether this string is one of this module's own notices."""
     return result.lstrip().startswith(REFUSAL_PREFIX)
+
+
+def is_call_surface_error(result: str) -> bool:
+    """Whether the failure is a wrong tool name or illegal / mismatched args.
+
+    Distinct from "the tool ran and found nothing": recovery is re-reading the
+    live tool list / schema, not rewording a query.  Matched against the strings
+    ``SessionAgent`` actually writes for not-found, empty name, bad JSON args,
+    and common ``TypeError`` shapes from ``func(**args)``.
+    """
+    text = result.strip()
+    if not text:
+        return False
+    lowered = text.casefold()
+    if "tool '" in lowered and "not found" in lowered:
+        return True
+    if "empty tool call name" in lowered:
+        return True
+    if "arguments must be" in lowered:
+        return True
+    if lowered.startswith("error executing tool"):
+        return any(marker in lowered for marker in _CALL_SURFACE_PARAM_MARKERS)
+    return False
 
 
 def is_unproductive_result(result: str) -> bool:
@@ -194,16 +272,43 @@ class ToolCallConvergence:
 
     unproductive_limit: int = UNPRODUCTIVE_LIMIT
     repeat_limit: int = REPEAT_LIMIT
+    call_surface_error_limit: int = CALL_SURFACE_ERROR_LIMIT
     _unproductive: dict[str, int] = field(default_factory=dict)
     _attempts: dict[tuple[str, str], int] = field(default_factory=dict)
+    _call_surface_errors: int = 0
+    _last_had_info: dict[str, bool] = field(default_factory=dict)
+    """Whether the latest recorded result for this tool name carried usable data.
+
+    ``True`` after a productive (non-unproductive) result; ``False`` after empty /
+    error / call-surface.  Used only to detect the next same-name call.
+    """
+    _retry_after_info: dict[str, int] = field(default_factory=dict)
+    """How often the model re-invoked this tool after a prior info-bearing result.
+
+    Incremented in :meth:`refusal_for` (the moment of "继续调用"), not in
+    :meth:`record`, so parallel same-wave calls do not count each other.
+    """
+
+    def retry_after_info_count(self, name: str) -> int:
+        """Observe-only: same-tool re-calls after a non-empty prior result."""
+        return self._retry_after_info.get(name, 0)
 
     def refusal_for(self, name: str, args: dict[str, Any]) -> str | None:
         """The notice to return instead of dispatching, or ``None`` to dispatch.
 
-        Futility is checked before verbatim repetition: when both apply it is
-        the more informative of the two, since it explains that rewording is
-        the thing that will not help.
+        Order: call-surface (turn-level) → futility → verbatim repeat.  Call-surface
+        is checked even when ``name`` is empty so a blank tool call after two
+        not-found failures still gets the recovery notice.
+
+        Before those checks, a same-name call after an info-bearing result bumps
+        :meth:`retry_after_info_count` (log only; does not refuse).
         """
+        if name and self._last_had_info.get(name):
+            self._retry_after_info[name] = self._retry_after_info.get(name, 0) + 1
+            logger.info(f"retry-after-info tool={name!r} count={self._retry_after_info[name]}")
+        if self._call_surface_errors >= self.call_surface_error_limit:
+            logger.warning(f"Refusing tool call ({name!r}): {self._call_surface_errors} call-surface errors this turn")
+            return CALL_SURFACE_NOTICE.format(count=self._call_surface_errors)
         if not name:
             return None
         futile = self._unproductive.get(name, 0)
@@ -217,27 +322,38 @@ class ToolCallConvergence:
         return None
 
     def record(self, name: str, args: dict[str, Any], result: str) -> None:
-        """Fold one executed call's outcome into the counters.
+        """Fold one outcome into the counters.
 
-        Only executed calls are recorded.  Counting a refusal would let the
-        counters climb on their own and turn a threshold into a permanent ban
-        on the tool for the rest of the turn.
+        Call for every finished slot (including argument-parse failures that
+        never dispatched).  Only *dispatched* productive/unproductive paths
+        update the per-tool futility and repeat maps; call-surface errors always
+        bump the turn-level counter.  Productive vs empty also updates
+        ``_last_had_info`` for the retry-after-info observer.
 
-        The caller already skips refusals, and this guard makes that skip
-        structural rather than a convention: the notices classify as
-        unproductive by their own wording ("没有查到" appears in one of them), so
-        a caller that fed them back would keep the counter climbing on evidence
-        this module invented.  Verified as load-bearing by mutation -- feeding
-        refusals back was *not* detectable without it.
+        Refusals are never recorded (see :func:`is_refusal_notice`).
         """
-        if not name or is_refusal_notice(result):
+        if is_refusal_notice(result):
+            return
+        if is_call_surface_error(result):
+            self._call_surface_errors += 1
+            # Still count toward per-name futility when we have a name: same wrong
+            # tool called four times should trip that gate too.
+            if name:
+                self._unproductive[name] = self._unproductive.get(name, 0) + 1
+                key = (name, _args_key(args))
+                self._attempts[key] = self._attempts.get(key, 0) + 1
+                self._last_had_info[name] = False
+            return
+        if not name:
             return
         key = (name, _args_key(args))
         self._attempts[key] = self._attempts.get(key, 0) + 1
         if is_unproductive_result(result):
             self._unproductive[name] = self._unproductive.get(name, 0) + 1
+            self._last_had_info[name] = False
         else:
             # A productive result proves the tool and this query shape work, so
             # the futility streak is over.  The counter measures a *streak*, not
             # lifetime volume -- lifetime volume is bounded by max_tool_rounds.
             self._unproductive.pop(name, None)
+            self._last_had_info[name] = True

@@ -1,6 +1,6 @@
 ---
 name: proposal-acceptance-poc
-description: "POC/评测节点验收建议(非 binding). LOAD when user submits POC test report/检测文档/评测结果 against a proposal step, or after a writing-standard POC 索要卡 and they paste the POC doc link. Check scenario+samples+pass criteria vs report → short suggestion; human decides. NEVER 组织验收通过. NOT for 普通交付文档对照(proposal-acceptance-doc). NOT for 只催进度/建定时(proposal-writing-standard). NOT for 形成期 v2.0 四期结构检查(proposal-writing-standard)."
+description: "POC/评测节点验收建议(非 binding). LOAD when user submits POC test report against a proposal step. Specializations: (1) Haitun-feature → haitun-feature-uat clean Session B; (2) 人事/法务/行政/财务 AI-native 业务 POC → 按部门口径审样本归属·基线·HITL·误过误拦, 禁止供应商Demo单证过关. NEVER 组织验收通过. NOT for 普通交付文档对照(proposal-acceptance-doc)."
 category: productivity
 ---
 
@@ -14,11 +14,60 @@ category: productivity
 共享对照纪律见 [`proposal-acceptance-suggest`](../proposal-acceptance-suggest/SKILL.md);
 本文是 **POC 材料到达后的特化入口**.
 
+### 特化 · 海豚功能 POC(自对话 UAT · 刻意为之)
+
+当本步 POC **测的是海豚自己的功能模块**(方案提醒/撰写检查/卡片闭环/飞书能力等, 而非外部业务系统)时,
+**只读用户交来的检测文档不够** —— 那是 L1 文证, 省不掉「人跟海豚聊一遍」的真实验法.
+
+1. **优先跑 A→B 对话验收** —— 加载 [`haitun-feature-uat`](../haitun-feature-uat/SKILL.md),
+   调 `poc_feature_uat`(默认剧本或方案约定的 playbook).
+   **禁止**对**当前** Session 同步 `subagent_chat` / chat(会死锁; 根因见该 skill).
+2. **目标选对再跑**(与 feature-uat 同表): 已部署 defaults → 默认;
+   同机 WIP 包 → `agent=`; 另一套 Gateway → `target_gateway_url=`; 已有干净 Session → `target_session_id=`.
+3. **自动追问**(用户本轮已答清可不再盘问, 但仍须写进建议报告):
+   - **为什么用这套及格线/样本判定「过」?**(相对方案契约 + 可选友商/业界评测口径)
+   - **这份证据为什么有价值?**(对话 UAT 命中了什么; 文档对照补了什么; 还缺哪段可复跑)
+4. **接线/复现声称** —— 用户或报告声称「已复现 / 数据已验真 / L2」时,
+   另走 [`poc-l2-reproduce`](../poc-l2-reproduce/SKILL.md) / `poc_l2_probe`;
+   **不得**仅凭 method_text 说验真.
+5. **报告合并** —— 建议报告须同时写: 文档对照结论 + (若已跑) `poc_feature_uat` 的 `verdict`/失败案 gaps;
+   仍 **非 binding**, 文末请人拍板.
+
+非海豚功能的外部业务 POC: 仍以检测文档对照为主; 不强制开 feature-uat.
+可在追问里对照友商/替代评测做法(有则写, 无则「未找对照·待验证」), **禁止编造**友商数字.
+
+### 特化 · 业务部门 AI-native POC 审核(人事/法务/行政/财务 · 刻意为之)
+
+**视角:** 审的是**这些部门同事写的 Agent/AI 化方案**交来的评测报告 —— 不是海豚在该场景自测,
+也不是研发岗接口 POC. 方案侧口径见 writing-standard「业务部门 AI-native」表; 本文只做材料到达后的对照.
+
+命中条件同 writing-standard(标题/用户/业务流/作者角色). 与「海豚功能」可同时命中:
+先分清报告测的是**业务结果**还是**海豚能力包**; 后者另跑 feature-uat, 前者走下方清单.
+
+#### 审核时按部门加检(在通用三者齐全之外)
+
+| 部门 | 报告里必须能指到 | 常见「假过关」→ 建议看法 |
+|------|------------------|--------------------------|
+| **人事** | 本公司脱敏样本; 相对基线的 cycle/错误/工时或首次解决率; 涉评分则有偏见/误杀误放抽检; HITL 谁签 | 仅供应商 Demo 准确率 / 仅满意度 → **无法判断·证据不合格** |
+| **法务** | 本公司合同金标; **召回+精确**(或等价分任务表); 引用 grounding; 幻觉/无出处计数; 律师抽检 | 单数准确率不拆任务 / 直接抄厂商 benchmark → **冲突或无法判断** |
+| **行政** | 案例集含坏事案; 分级动作一致率; **大事误自动过**计数; 审计字段 | 「全自动、无升级」或只有幸福路径 → **未达/冲突** |
+| **财务** | 本公司难例票; 分字段+整单; touchless/例外; 导出或过账是否干净; 最好有多日趋势 | 厂商样张 / 只评 UI / 只抽干净票 → **证据不合格** |
+
+#### 自动追问(业务部门 POC · 报告含糊时)
+
+- **样本是不是咱们自己的?** 体积/难例占比? 若是供应商包 → 要求补自有集或降档为「演示级、不可作 go」.
+- **及格线相对哪条基线?** 误过与误拦哪个更贵、阈值有没有对齐?
+- **谁在回路签字?** 录用/盖章/付款/自动批假有没有无人确认路径?
+
+引擎步骤 0 扩展: 海豚功能 → feature-uat 路径; **业务部门** → 上表加检 + 追问;
+都不是 → 通用文档对照.
+
 ## When to use
 
 - 「POC 报告在这 / 检测文档链接 / 评测跑完了, 帮看过没过」.
 - 跟进索要 POC 材料之后, 用户丢回文档或说明.
 - 方案步骤门类型为 POC, 且本回合有检测材料.
+- 「帮我用干净 Session 把方案两能力/某功能 POC 打一遍」→ 本 skill 分流到 feature-uat.
 
 ## When not to use
 
@@ -26,36 +75,45 @@ category: productivity
   [`proposal-acceptance-doc`](../proposal-acceptance-doc/SKILL.md).
 - 还没交材料, 只要催 / 方案还在写 → [`proposal-writing-standard`](../proposal-writing-standard/SKILL.md).
 - 要 binding「验收通过可上线」→ **拒绝盖章**, 只出建议报告.
-- 要按实验方法**重跑/验数据真实性（接线断言）** → [`poc-l2-reproduce`](../poc-l2-reproduce/SKILL.md)
-- 要**海豚功能对话 UAT**（自然语境用例打干净 Session）→ [`haitun-feature-uat`](../haitun-feature-uat/SKILL.md)
+- 要按实验方法**重跑/验数据真实性（接线断言）**且用户不谈「功能对话 UAT」→
+  [`poc-l2-reproduce`](../poc-l2-reproduce/SKILL.md)
+- 用户**只要**对话 UAT、不谈方案契约对照 → 可直开 [`haitun-feature-uat`](../haitun-feature-uat/SKILL.md);
+  若同时要「对照方案及格线」仍以**本文**为入口再调 feature-uat.
 
 ## 纪律(硬)
 
 1. **非 binding** — 禁止「POC 验收通过」「组织认定合格」; 文末固定请人拍板.
 2. **三者齐全才谈客观对照** — 方案侧须能定位: **场景 + 样本(或样本指针) + 及格线**;
    缺任一 → 报告写「无法完成 POC 对照 + 缺什么」, 不假装跑过.
-3. **禁止编造跑批结果** — 没读到的数字/用例不得填写; 标「材料未提及」.
-4. **检测文档优先** — 证据以用户提交的 POC 文档为准; 对话口述可作补充但要标明.
-5. **不加人第二套长表** — 建议几分钟读完.
+3. **禁止编造跑批结果** — 没读到的数字/用例不得填写; 标「材料未提及」;
+   feature-uat 未跑成功不得编造 Pass.
+4. **检测文档优先于口述** — 证据以用户提交的 POC 文档为准; 对话口述可作补充但要标明.
+5. **海豚功能 POC 不得跳过 A→B 机会** — 用户拒绝跑 UAT 须在报告写明「未跑对话 UAT, 仅文证」;
+   不得把文证说成「已自测通过」.
+6. **业务部门 POC 不得用演示集单证过关** — 命中人事/法务/行政/财务特化时, 仅供应商 Demo/
+   厂商样张/单数准确率/无 HITL 的「全自动」→ 建议看法不得写成达到及格线.
+7. **不加人第二套长表** — 建议几分钟读完.
 
 ## 输入
 
 | 输入 | 必需? |
 |------|--------|
-| 方案中该步的场景/样本/及格线(或章节指针) | **是** |
-| POC 检测文档(链接或正文) | **是**(缺则只列待交清单, 不判) |
+| 方案中该步的场景/样本/及格线(或章节指针) | **是**(谈客观对照时) |
+| POC 检测文档(链接或正文) **或** 明确要跑对话 UAT | **是**(二者至少其一; 都缺则只列待交清单) |
 | 步骤名 / 方案链接 | 建议有 |
+| 是否海豚功能 POC / playbook 路径 | 海豚功能时建议有; 缺省可用方案两能力自然语境剧本 |
+| 是否业务部门(人事/法务/行政/财务)方案 | 命中特化时从方案元信息推断; 报告须填业务加检行 |
 
 ## 引擎
 
 ```text
+0. 判定特化
+   → 海豚功能: 先对齐目标, 提议或直接跑 poc_feature_uat; 追问及格线/证据价值; 接线声称 → poc_l2_probe
+   → 业务部门(人事/法务/行政/财务): 按部门加检表审样本归属·基线·HITL·误过误拦; 追问三句; 不强制 feature-uat
+   → 都不是: 通用文档对照
 1. 固定 POC 契约: 场景列表、样本指针、及格线(摘自方案)
-2. 读检测文档(feishu_doc_read / 粘贴)
-3. 逐场景对照:
-   - 已覆盖且数字/结论可指回报告
-   - 未跑 / 未提及
-   - 与及格线冲突或口径不一致
-   - 无法判断(缺权限、报告含糊、样本对不上)
+2. 读检测文档(feishu_doc_read / 粘贴) — 有则对照; 无文档但已跑 UAT → 以 UAT 为证据源并标明
+3. 逐场景对照 + (若业务部门)部门加检列
 4. 输出「POC 验收建议报告」(下方模板)
 5. 可选: 请用户 1–5 分评价本建议是否有用(评海豚, 非盖章交付)
 ```
@@ -64,8 +122,11 @@ category: productivity
 
 | 档 | 本版 |
 |----|------|
-| 对照用户提交的 POC 文档 vs 方案契约 | **要做** |
-| Agent 自己搭环境重跑题库 | **不做**(L2); 用户要求复现/验真 → [`poc-l2-reproduce`](../poc-l2-reproduce/SKILL.md) |
+| 对照用户提交的 POC 文档 vs 方案契约 | **要做**(有文档时) |
+| 海豚功能: A→B `poc_feature_uat` | **特化要做**(用户拒绝则报告注明) |
+| 业务部门: 样本归属/基线/HITL/假过关识别 | **特化要做**(命中部门时) |
+| 接线/静态可操作断言 `poc_l2_probe` | **声称复现时要做** |
+| Agent 自己搭外部业务环境重跑题库 | **不做**(外部 L2 仍按 poc-l2-reproduce 边界) |
 
 ## 报告模板
 
@@ -73,12 +134,16 @@ category: productivity
 POC 验收建议 — <步骤名>
 
 方案契约: 场景 / 样本 / 及格线 ← <章节或摘录>
-检测文档: <链接>
+检测文档: <链接或「未交」>
+特化: <无 / 海豚功能 / 业务部门:<人事|法务|行政|财务> / 二者皆有>
+对话 UAT: <未跑 / verdict=…>(海豚功能必填)
+业务加检: 样本归属=…; 基线=…; HITL=…; 误过误拦=…(业务部门必填)
+及格线/证据价值(追问纪要): …
 
 对照:
 | 场景或用例 | 建议看法 | 依据 |
 |------------|----------|------|
-| ... | 达到及格线迹象 / 未跑 / 冲突 / 无法判断 | 摘录+出处 |
+| ... | 达到及格线迹象 / 未跑 / 冲突 / 无法判断·证据不合格 | 摘录+出处 |
 
 缺口: ...
 说明: 以上为 Agent 建议, 是否通过由 <验收人> 决定.
@@ -87,10 +152,16 @@ POC 验收建议 — <步骤名>
 ## 成功标准
 
 - 无三者齐全时不假装客观通过.
-- 有材料时每条能对上场景或及格线.
+- 有材料或 UAT 时每条能对上场景或及格线.
+- 海豚功能 POC: 未跑 UAT 不得写成「已自测通过」.
+- 业务部门 POC: 演示集/无 HITL 全自动不得写成达到及格线.
 - 无 binding 盖章句.
 ---
 
-## 特化预留
+## 与相关 skill
 
-可复跑题库批处理、自动从方案抽出及格线表 —— 后续优化.
+| Skill | 关系 |
+|-------|------|
+| [`haitun-feature-uat`](../haitun-feature-uat/SKILL.md) | 海豚功能 POC 的**执行器** |
+| [`poc-l2-reproduce`](../poc-l2-reproduce/SKILL.md) | 接线/静态复现; 与对话 UAT 正交 |
+| [`proposal-writing-standard`](../proposal-writing-standard/SKILL.md) | 业务部门实验期口径与硬闸门「业务POC」; 场景闭环到点催材料后进本文 |

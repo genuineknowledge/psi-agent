@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # Local meeting tools intentionally load from the agent package rather than an installed package.
 # ruff: noqa: E402
+import ast
 import inspect
 import json
 import sys
@@ -73,46 +74,57 @@ async def test_private_tencent_call_injects_selected_environment_token(
 
 
 def test_meeting_jobs_use_fixed_post_meeting_crons() -> None:
+    """cron / meeting_code / token_env 是代码白名单的事实。
+
+    收件人**不在这里断言**: 它们是配置事实(见下面 ``test_every_job_gets_recipients_from_the_config_yaml``),
+    钉在这条用例里等于换一次人就要改一次测试。
+    """
     jobs = {job.name: job for job in MEETING_JOBS}
     assert jobs["weekday-alignment"].meeting_code == "57152787045"
     assert jobs["weekday-alignment"].cron == "0 12 * * 1,3,5"
-    assert jobs["weekday-alignment"].retry_crons == ("30 17 * * 1,3,5",)
-    assert jobs["weekday-alignment"].summary_recipients == ("HaiTun Agent主战场",)
-    assert jobs["weekday-alignment"].overview_recipients == ("罗霖",)
+    assert jobs["weekday-alignment"].retry_crons == ()
     assert jobs["weekday-alignment-1100"].meeting_code == "42654699903"
-    assert jobs["weekday-alignment-1100"].cron == "0 12 * * 1,3,5"
-    assert jobs["weekday-alignment-1100"].retry_crons == ("30 17 * * 1,3,5",)
-    assert jobs["weekday-alignment-1100"].recipients == ("张浩", "王金旺", "罗霖")
+    assert jobs["weekday-alignment-1100"].cron == "0 13 * * 1,3,5"
+    assert jobs["weekday-alignment-1100"].retry_crons == ()
     assert jobs["weekday-alignment-1100"].token_env == "TENCENT_MEETING_TOKEN_42654699903"
-    assert jobs["weekday-alignment-1100"].summary_recipients == ("张浩", "王金旺")
-    assert jobs["weekday-alignment-1100"].overview_recipients == ("罗霖",)
     assert len(jobs) == 2
     assert jobs["weekday-alignment"].fire == "tool"
     assert jobs["weekday-alignment"].tool_name == "meeting_pipeline_run"
 
 
-def test_meeting_schedule_files_cover_every_job_and_retry() -> None:
+def test_meeting_schedule_files_cover_every_job() -> None:
+    """投影只包含两场主任务: 17:30 补偿重跑已下线 (2026-09-11)。
+
+    生成器仍保留 retry 渲染能力 (见下一条判据), 但没有任何 job 声明 ``retry_crons``,
+    所以静态文件、投影与线上 runner 都只应有两场主任务。
+    """
     files = meeting_schedule_files()
-    assert set(files) == {
-        "weekday-alignment",
-        "weekday-alignment-1100",
-        "weekday-alignment-1100-retry-1730",
-        "weekday-alignment-retry-1730",
-    }
+    assert set(files) == {"weekday-alignment", "weekday-alignment-1100"}
+    assert [name for name in files if "-retry-" in name] == []
     for job in MEETING_JOBS:
+        assert job.retry_crons == (), f"{job.name} 不应再声明补偿重跑 cron"
         body = files[job.name]
         assert f"name: {job.name}" in body
         assert f'cron: "{job.cron}"' in body
         assert job.meeting_code in body
         assert "原始全文转写" in body
-    retry = files["weekday-alignment-1100-retry-1730"]
-    assert 'cron: "30 17 * * 1,3,5"' in retry
-    assert '"meeting_name":"weekday-alignment-1100"' in retry
-    assert '"meeting_code":"42654699903"' in retry
-    retry = files["weekday-alignment-retry-1730"]
-    assert 'cron: "30 17 * * 1,3,5"' in retry
-    assert '"meeting_name":"weekday-alignment"' in retry
-    assert '"meeting_code":"57152787045"' in retry
+
+
+def test_retry_entry_renders_when_a_job_declares_retry_crons() -> None:
+    """若将来某场会议重新声明 ``retry_crons``, 补偿重跑条目仍能渲染身份与跳过语义。"""
+    job = replace(MEETING_JOBS[0], retry_crons=("30 17 * * 1,3,5",))
+    schedules = dict(ma._job_schedules(job))
+    assert schedules == {
+        "weekday-alignment": "0 12 * * 1,3,5",
+        "weekday-alignment-retry-1730": "30 17 * * 1,3,5",
+    }
+
+    body = ma._task_body(job, name="weekday-alignment-retry-1730", cron="30 17 * * 1,3,5", retry=True)
+    header, _, note = body.partition("---\n\n")
+    assert "补偿重跑" in header, "retry 条目的 description 未自报补偿重跑"
+    assert "补偿重跑" in note, "retry 条目的正文未自报补偿重跑"
+    assert "自动跳过" in note, "retry 条目未写去重跳过语义"
+    assert "meeting_pipeline_replay" in note, "retry 条目未写补跑工具"
 
 
 def test_meeting_schedule_task_declares_review_and_followups() -> None:
@@ -123,6 +135,20 @@ def test_meeting_schedule_task_declares_review_and_followups() -> None:
     """
     for name, body in meeting_schedule_files().items():
         assert "产出本场评价与后续建议" in body, f"{name}/TASK.md 未声明评价与后续建议产出"
+
+
+def test_meeting_schedule_files_self_describe_recovery() -> None:
+    """每条定时任务文件必须自述身份与补救路径。
+
+    ``fire: tool`` 的正文不进入模型 (调度器直接调工具), 但对读文件的人与调度历史
+    是唯一的自述: 正文不写补救路径, 出事只能靠翻代码找补跑工具。
+    """
+    files = meeting_schedule_files()
+    for name, body in files.items():
+        _, _, note = body.partition("---\n\n")
+        assert "meeting_pipeline_replay" in note, f"{name}/TASK.md 未写补跑工具"
+        assert "config/meeting-sop.yaml" in note, f"{name}/TASK.md 未写口径来源"
+        assert "补偿重跑" not in body, f"{name}/TASK.md 是主任务, 不应自称补偿重跑"
 
 
 def test_committed_meeting_schedule_files_match_projection() -> None:
@@ -547,7 +573,114 @@ async def test_daily_meeting_pipeline_runs_each_stage_once(tmp_path: Path, monke
     assert [name for name, _ in calls] == ["prepare", "read", "read", "analyze", "write", "notify", "notify", "write"]
     assert calls[2][1]["chunk_index"] == 1
     assert calls[3][1]["transcript"] == "原始片段0原始片段1"
-    assert {call[1]["recipient"] for call in calls if call[0] == "notify"} == {"罗霖", "HaiTun Agent主战场"}
+    # 收件人是配置事实: 断言与 yaml 一致, 而不是把某个人名钉在这里(换人只改配置)。
+    weekly = next(job for job in MEETING_JOBS if job.name == "weekday-alignment")
+    assert {call[1]["recipient"] for call in calls if call[0] == "notify"} == {
+        *weekly.summary_recipients,
+        *weekly.overview_recipients,
+    }
+
+
+@pytest.mark.anyio
+async def test_pipeline_does_not_resend_old_analysis_without_new_transcript(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """今天这场只有云录制(无文字转写)时: 不得回退到上一场已处理的转写重算重发。"""
+    calls: list[str] = []
+
+    async def fake_prepare(**_kwargs: object) -> str:
+        calls.append("prepare")
+        return json.dumps({"ok": True, "status": "already_processed"})
+
+    async def fake_analyze(*_args: object, **_kwargs: object) -> dict[str, str]:
+        calls.append("analyze")
+        return {"analysis_text": "x", "meeting_summary": "x", "positive_negative_overview": "x"}
+
+    async def fake_notify(**_kwargs: object) -> str:
+        calls.append("notify")
+        return json.dumps({"ok": True, "status": "sent"})
+
+    monkeypatch.setattr(pipeline, "meeting_transcript_prepare", fake_prepare)
+    monkeypatch.setattr(pipeline, "_analyze_meeting_transcript", fake_analyze)
+    monkeypatch.setattr(pipeline, "meeting_session_notify", fake_notify)
+
+    async def resolve_root(_root: str = "") -> str:
+        return _root or str(tmp_path)
+
+    monkeypatch.setattr(pipeline, "resolve_appdata_root", resolve_root)
+
+    result = json.loads(
+        await pipeline.meeting_pipeline_run(
+            meeting_name="weekday-alignment", meeting_code="57152787045", appdata_root=str(tmp_path)
+        )
+    )
+    assert result["status"] == "already_processed"
+    assert result["notified"] is False
+    assert calls == ["prepare"]
+
+
+@pytest.mark.anyio
+async def test_pipeline_retries_only_delivery_for_unresolved_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """没有新转写但旧 record 仍有未送达回执: 只补投递, 不重新分析。"""
+    artifact = tmp_path / "meeting-session" / "weekday-alignment"
+    artifact.mkdir(parents=True, exist_ok=True)
+    (artifact / "manifest.json").write_text(
+        json.dumps({"record_file_id": "record-old", "chunk_count": 1, "transcript_chars": 5}),
+        encoding="utf-8",
+    )
+    (artifact / "pipeline_state.json").write_text(
+        json.dumps(
+            {
+                "record_file_id": "record-old",
+                "status": "notifications_pending",
+                "source_chunks": [0],
+                "analysis_text": "旧分析",
+                "meeting_summary": "旧纪要",
+                "positive_negative_overview": "旧总览",
+                "recipient_receipts": {"罗霖": {"ok": False, "status": "send_failed"}},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    calls: list[object] = []
+
+    async def fake_prepare(**_kwargs: object) -> str:
+        calls.append("prepare")
+        return json.dumps({"ok": True, "status": "already_processed"})
+
+    async def fake_analyze(*_args: object, **_kwargs: object) -> dict[str, str]:
+        calls.append("analyze")
+        return {"analysis_text": "新", "meeting_summary": "新", "positive_negative_overview": "新"}
+
+    async def fake_notify(**kwargs: object) -> str:
+        calls.append(("notify", kwargs["recipient"]))
+        return json.dumps({"ok": True, "status": "sent", "recipient": kwargs["recipient"]})
+
+    def fake_render_card(**_kwargs: object) -> dict[str, object]:
+        return {"ok": False}
+
+    monkeypatch.setattr(pipeline, "meeting_transcript_prepare", fake_prepare)
+    monkeypatch.setattr(pipeline, "_analyze_meeting_transcript", fake_analyze)
+    monkeypatch.setattr(pipeline, "meeting_session_notify", fake_notify)
+    monkeypatch.setattr(pipeline, "render_meeting_summary_card", fake_render_card)
+
+    async def resolve_root(_root: str = "") -> str:
+        return _root or str(tmp_path)
+
+    monkeypatch.setattr(pipeline, "resolve_appdata_root", resolve_root)
+
+    result = json.loads(
+        await pipeline.meeting_pipeline_run(
+            meeting_name="weekday-alignment", meeting_code="57152787045", appdata_root=str(tmp_path)
+        )
+    )
+    assert result["prepare_status"] == "already_processed"
+    assert "analyze" not in calls
+    assert any(isinstance(call, tuple) and call[0] == "notify" for call in calls)
 
 
 @pytest.mark.anyio
@@ -647,7 +780,12 @@ async def test_daily_meeting_pipeline_retries_notifications_without_reanalyzing(
         )
     )
     assert result["status"] == "completed"
-    assert calls == ["prepare", "notify:HaiTun Agent主战场", "notify:罗霖", "write"]
+    weekly = next(job for job in MEETING_JOBS if job.name == "weekday-alignment")
+    assert calls == [
+        "prepare",
+        *(f"notify:{recipient}" for recipient in (*weekly.summary_recipients, *weekly.overview_recipients)),
+        "write",
+    ]
 
 
 @pytest.mark.anyio
@@ -754,11 +892,13 @@ async def test_daily_meeting_pipeline_keeps_pending_when_a_notification_fails(
         return '{"ok":true,"status":"already_processed"}'
 
     calls: list[str] = []
+    weekly = next(job for job in MEETING_JOBS if job.name == "weekday-alignment")
+    fail_recipient = weekly.overview_recipients[0]
 
     async def fake_notify(**kwargs: object) -> str:
         recipient = str(kwargs["recipient"])
         calls.append(recipient)
-        if recipient == "罗霖":
+        if recipient == fail_recipient:
             return json.dumps({"ok": False, "status": "send_failed", "recipient": recipient})
         return json.dumps({"ok": True, "status": "sent", "recipient": recipient})
 
@@ -795,13 +935,12 @@ async def test_daily_meeting_pipeline_keeps_pending_when_a_notification_fails(
     )
 
     assert result["status"] == "notifications_pending"
-    # 通知部分失败 → 收尾后向 alert_recipients (张浩/王金旺) 各发一条失败告警 (P3)。
+    # 通知部分失败 → 收尾后向 alert_recipients 各发一条失败告警 (P3)。名单来自配置。
     assert calls == [
-        "HaiTun Agent主战场",
-        "罗霖",
+        *weekly.summary_recipients,
+        *weekly.overview_recipients,
         "write:notifications_pending",
-        "张浩",
-        "王金旺",
+        *weekly.alert_recipients,
     ]
 
 
@@ -869,7 +1008,8 @@ async def test_second_daily_meeting_routes_summary_to_two_recipients(
     )
 
     assert result["status"] == "completed"
-    assert recipients == ["张浩", "王金旺", "罗霖"]
+    daily = next(job for job in MEETING_JOBS if job.name == "weekday-alignment-1100")
+    assert recipients == [*daily.summary_recipients, *daily.overview_recipients]
 
 
 @pytest.mark.anyio
@@ -882,7 +1022,6 @@ async def test_meeting_session_notify_is_idempotent_for_fixed_recipient(
         sent.append((identity, text, receive_id_type))
         return {"ok": True, "message_id": "om_1"}
 
-    monkeypatch.setattr(notify, "_configured_hr_identity", lambda: "ou_hr")
     monkeypatch.setattr(notify._f, "send_message_impl", fake_send)
 
     first = json.loads(
@@ -907,7 +1046,8 @@ async def test_meeting_session_notify_is_idempotent_for_fixed_recipient(
     assert first["status"] == "sent"
     assert second["status"] == "already_sent"
     assert second["recipient"] == "罗霖"
-    assert sent == [("ou_hr", "会议分析总览", "open_id")]
+    # hr 与 罗霖 是同一个收件人(表里同一个定义): 收敛成一次投递, 且类型是租户级 user_id。
+    assert sent == [("98ba56b8", "会议分析总览", "user_id")]
 
 
 @pytest.mark.anyio
@@ -925,7 +1065,6 @@ async def test_meeting_session_notify_resumes_direct_chunks_after_partial_failur
         sent.append(text)
         return {"ok": True, "message_id": f"om_{attempts}"}
 
-    monkeypatch.setattr(notify, "_configured_hr_identity", lambda: "ou_hr")
     monkeypatch.setattr(notify._f, "send_message_impl", fake_send)
     text = "x" * (notify.MAX_NOTIFICATION_CHARS * 2 + 10)
 
@@ -1034,7 +1173,6 @@ async def test_meeting_session_notify_serializes_same_receipt_key(
         active -= 1
         return {"ok": True, "message_id": "om_once"}
 
-    monkeypatch.setattr(notify, "_configured_hr_identity", lambda: "ou_hr")
     monkeypatch.setattr(notify._f, "send_message_impl", fake_send)
     results: list[dict[str, object]] = []
 
@@ -1129,9 +1267,9 @@ async def test_meeting_session_notify_resolves_fixed_summary_recipient(
 
     monkeypatch.setattr(notify, "_resolve_with_bot", fake_resolve)
 
-    identity, display_name = await notify._resolve_recipient(recipient, "")
+    identity, display_name, receive_id_type = await notify._resolve_recipient(recipient, "")
 
-    assert (identity, display_name) == (f"ou_{recipient}", recipient)
+    assert (identity, display_name, receive_id_type) == (f"ou_{recipient}", recipient, "open_id")
 
 
 @pytest.mark.anyio
@@ -1199,6 +1337,104 @@ async def test_resolve_main_meeting_group_requires_one_exact_match(monkeypatch: 
     identity, display_name = await notify._resolve_group_with_bot("HaiTun Agent主战场")
 
     assert (identity, display_name) == ("oc_main", "HaiTun Agent主战场")
+
+
+@pytest.mark.anyio
+async def test_resolve_group_falls_back_to_bot_chat_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """群名搜索落空时回落到机器人所在群列表 (群存在但搜索索引没收录)。
+
+    生产事故: ``chats/search`` 返回空 → 收件人解析失败 → 周中对齐会纪要发不进群,
+    状态停在 notifications_pending。
+    """
+    calls: list[str] = []
+
+    async def fake_api(**kwargs: object) -> dict[str, object]:
+        uri = str(kwargs["uri"])
+        calls.append(uri)
+        if uri.endswith("/chats/search"):
+            return {"ok": True, "items": []}
+        return {"ok": True, "items": [{"chat_id": "oc_main", "name": "HaiTun Agent主战场"}]}
+
+    monkeypatch.setattr(notify._api, "call_api_impl", fake_api)
+
+    identity, display_name = await notify._resolve_group_with_bot("HaiTun Agent主战场")
+
+    assert (identity, display_name) == ("oc_main", "HaiTun Agent主战场")
+    assert calls == ["/open-apis/im/v1/chats/search", "/open-apis/im/v1/chats"]
+
+
+@pytest.mark.anyio
+async def test_resolve_group_reports_both_lookups_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """两个接口都没命中时, 报错要同时说清搜索与列表各自的结果。"""
+
+    async def fake_api(**kwargs: object) -> dict[str, object]:
+        if str(kwargs["uri"]).endswith("/chats/search"):
+            return {"ok": True, "items": []}
+        return {"ok": True, "items": [{"chat_id": "oc_other", "name": "别的群"}]}
+
+    monkeypatch.setattr(notify._api, "call_api_impl", fake_api)
+
+    identity, error = await notify._resolve_group_with_bot("HaiTun Agent主战场")
+
+    assert identity == ""
+    assert "未找到群名" in error
+    assert "机器人所在 1 个群" in error
+
+
+@pytest.mark.anyio
+async def test_declared_recipients_resolve_from_config_without_a_roster_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """表里声明过 id 的收件人直接用配置值 —— 不走通讯录, 所以重名/改名/跨应用都不影响它。
+
+    ``hr`` 与 ``罗霖`` 在配置里是同一个定义(YAML 锚点), 两条键必须收敛到同一个 id。
+    """
+
+    async def fail_if_called(_name: str) -> tuple[str, str]:
+        raise AssertionError("表里已声明 id 的收件人不该再按姓名解析")
+
+    monkeypatch.setattr(notify, "_resolve_with_bot", fail_if_called)
+
+    assert await notify._resolve_recipient("hr", "") == ("98ba56b8", "hr", "user_id")
+    assert await notify._resolve_recipient("罗霖", "") == ("98ba56b8", "罗霖", "user_id")
+
+
+@pytest.mark.anyio
+async def test_typed_ids_are_used_verbatim(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``user_id:``/``open_id:``/``chat_id:`` 这类显式 id 直发: 不做任何解析。
+
+    租户级 ``user_id`` 没有前缀, 必须靠 ``user_id:`` 前缀自证类型 —— 否则会被当成人名
+    丢进通讯录, 报出来的是"查无此人"(误导)而不是"类型不对"。
+    """
+
+    async def fail_if_called(_value: str) -> tuple[str, str]:
+        raise AssertionError("显式 id 不该触发任何解析")
+
+    monkeypatch.setattr(notify, "_resolve_with_bot", fail_if_called)
+    monkeypatch.setattr(notify, "_resolve_group_with_bot", fail_if_called)
+
+    assert await notify._resolve_recipient("user_id:dg429f6d", "") == ("dg429f6d", "user_id:dg429f6d", "user_id")
+    assert await notify._resolve_recipient("ou_abc", "") == ("ou_abc", "ou_abc", "open_id")
+    assert await notify._resolve_recipient("chat_id:oc_abc", "") == ("oc_abc", "chat_id:oc_abc", "chat_id")
+    assert notify._split_typed_id("查无此人") is None
+
+
+@pytest.mark.anyio
+async def test_undeclared_name_still_falls_back_to_roster(monkeypatch: pytest.MonkeyPatch) -> None:
+    """表里没声明的姓名仍按通讯录解析一次; 解析失败就报不支持并指路配置。"""
+
+    async def fake_resolve(name: str) -> tuple[str, str]:
+        if name == "潘逸轩":
+            return "ou_panyixuan", "潘逸轩"
+        return "", f"未找到姓名为“{name}”的唯一成员"
+
+    monkeypatch.setattr(notify, "_resolve_with_bot", fake_resolve)
+
+    assert await notify._resolve_recipient("潘逸轩", "") == ("ou_panyixuan", "潘逸轩", "open_id")
+    identity, error, _kind = await notify._resolve_recipient("查无此人", "")
+    assert identity == ""
+    assert "不支持的会议收件人: 查无此人" in error
+    assert "user_id" in error, "报错要指路: 免姓名解析请写 user_id:<租户 id>"
 
 
 # ── P1: 运行指标 run_metrics.jsonl ───────────────────────────────────────────
@@ -1296,7 +1532,8 @@ async def test_pipeline_appends_run_metrics_on_success_and_failure(
         "ai_reasoning_chars": 0,
         "ai_empty_calls": 0,
     }
-    assert set(ok_row["notifications"]) == {"HaiTun Agent主战场", "罗霖"}
+    weekly = next(job for job in MEETING_JOBS if job.name == "weekday-alignment")
+    assert set(ok_row["notifications"]) == {*weekly.summary_recipients, *weekly.overview_recipients}
     assert fail_row["record_file_id"] == ""
     assert "provider unavailable" in fail_row["error"]
 
@@ -1325,7 +1562,6 @@ async def test_analysis_prompt_carries_meeting_metadata_and_rule_snapshots(
         meeting_code="57152787045",
         cron="0 12 * * 1,3,5",
         title="周中对齐会",
-        recipients=("罗霖",),
     )
     stats: dict[str, int] = {}
     token = _CURRENT_TOOL_AI_SOCKET.set("ai://meeting")
@@ -1679,7 +1915,8 @@ async def test_failure_alert_sent_to_every_alert_recipient(tmp_path: Path, monke
         )
     )
     assert result["status"] == "transcript_prepare_failed"
-    assert [recipient for recipient, _text in sent] == ["张浩", "王金旺"]
+    weekly = next(job for job in MEETING_JOBS if job.name == "weekday-alignment")
+    assert [recipient for recipient, _text in sent] == list(weekly.alert_recipients)
     assert all(text.startswith("[会议自动化告警]") and "transcript_prepare_failed" in text for _r, text in sent)
     assert all("token 无效" in text for _r, text in sent)
 
@@ -1778,3 +2015,109 @@ def test_runtime_constants_come_from_config_yaml() -> None:
     resources = data["resources"]
     assert pipeline.AGENT_ROOT / resources["meeting_sop_config_file"] == pipeline.MEETING_SOP_CONFIG_PATH
     assert pipeline.AGENT_ROOT / resources["positive_rules_file"] == pipeline.POSITIVE_NEGATIVE_RULES_PATH
+
+
+def _code_string_literals(tree: ast.Module) -> list[ast.Constant]:
+    """模块里**代码真正用到**的字符串字面量(排除 docstring)。
+
+    docstring 是叙述(可以写"实测: 某人发卡时 state 写错了"这种历史记录), 不是收件人配置;
+    收件人写死在代码里一定是出现在**值**的位置, 所以只扫值。
+    """
+    docstrings: set[int] = set()
+    holders = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    for node in ast.walk(tree):
+        if isinstance(node, holders) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                docstrings.add(id(first.value))
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings
+    ]
+
+
+def test_recipients_live_in_config_not_in_tool_code() -> None:
+    """收件人(人名/群名)只许住在 config/, 不许写进 tools/*.py 的字符串字面量。
+
+    曾经 ``_meeting_automation.py`` 的代码缺省里带着具体人名与群名、``meeting_session_notify.py``
+    里带着一张人名单别名表与一个群名常量 —— 换个人就得改代码、发 PR、再发版。这条测试把
+    「公司的人只住在配置里」钉住: 谁再把名字写回代码, 这里就红。
+    """
+    names = ("张浩", "王金旺", "罗霖", "程秀秀", "HaiTun Agent主战场", "37b6g8e9", "98ba56b8", "b7c7261f")
+    offenders: list[str] = []
+    for path in sorted(TOOLS_DIR.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in _code_string_literals(tree):
+            for name in names:
+                if name in str(node.value):
+                    offenders.append(f"{path.name}:{node.lineno}: {name}")
+    assert offenders == [], f"收件人必须只写在 config/meeting-automation.yaml, 代码里不允许出现: {offenders}"
+
+
+def test_every_job_gets_recipients_from_the_config_yaml() -> None:
+    """投递收件人来自 yaml, 且每场会议都必须有 —— 代码不再提供缺省。"""
+    data = yaml.safe_load(ma.MEETING_AUTOMATION_CONFIG_PATH.read_text(encoding="utf-8"))
+    for job in MEETING_JOBS:
+        overlay = data["meetings"][job.name]
+        assert tuple(overlay["summary_recipients"]) == job.summary_recipients
+        assert tuple(overlay["overview_recipients"]) == job.overview_recipients
+        assert job.summary_recipients and job.overview_recipients, f"{job.name} 缺收件人"
+
+
+def test_missing_recipients_fail_fast() -> None:
+    """收件人只从配置来, 所以没配 = 报错, 而不是静默「跑成功但没人收」。"""
+    without = MeetingJob(name="x", meeting_code="1", cron="0 0 * * *", title="t")
+    with pytest.raises(RuntimeError, match="summary_recipients"):
+        ma._validate_recipients((without,))
+    blank = replace(without, summary_recipients=("ok",), overview_recipients=("",))
+    with pytest.raises(RuntimeError, match="空收件人"):
+        ma._validate_recipients((blank,))
+
+
+def _config_with_recipient_table(table: object) -> dict[str, Any]:
+    """A minimal automation config carrying one ``runtime.notify.recipients`` table."""
+    return {"meetings": {}, "runtime": {"notify": {"recipients": table}}, "resources": {}}
+
+
+def test_notify_recipient_table_shape_is_validated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """解析表写错 = 显式报错(导入期也会跑一次), 不允许静默按人名解析。"""
+    assert ma.notify_recipients(), "随包配置必须能过校验"
+    monkeypatch.setattr(
+        ma, "MEETING_AUTOMATION_CONFIG", _config_with_recipient_table({"x": {"person": "a", "chat": "b"}})
+    )
+    with pytest.raises(RuntimeError, match="必须\\*\\*恰好\\*\\*给一个目标"):
+        ma.notify_recipients()
+    monkeypatch.setattr(
+        ma, "MEETING_AUTOMATION_CONFIG", _config_with_recipient_table({"x": {"person": "a", "typo": 1}})
+    )
+    with pytest.raises(RuntimeError, match="未知键"):
+        ma.notify_recipients()
+    monkeypatch.setattr(
+        ma, "MEETING_AUTOMATION_CONFIG", _config_with_recipient_table({"x": {"user_id": "u1", "open_id": "ou_1"}})
+    )
+    with pytest.raises(RuntimeError, match="恰好"):
+        ma.notify_recipients()
+
+
+@pytest.mark.anyio
+async def test_declared_group_recipient_resolves_as_chat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """群必须在表里声明成 chat; 未声明的值按人名解析, 失败时报错并指路配置。"""
+    seen: list[str] = []
+
+    async def fake_group(name: str) -> tuple[str, str]:
+        seen.append(name)
+        return "oc_main", name
+
+    async def fake_person(name: str) -> tuple[str, str]:
+        return "", f"未找到姓名为“{name}”的唯一成员"
+
+    monkeypatch.setattr(notify, "_resolve_group_with_bot", fake_group)
+    monkeypatch.setattr(notify, "_resolve_with_bot", fake_person)
+
+    assert await notify._resolve_recipient("主战场", "") == ("oc_main", "HaiTun Agent主战场", "chat_id")
+    assert seen == ["HaiTun Agent主战场"]
+
+    identity, error, _kind = await notify._resolve_recipient("没声明过的群", "")
+    assert identity == ""
+    assert "runtime.notify.recipients" in error, "报错必须指路配置, 而不是只说不支持"

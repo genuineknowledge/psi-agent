@@ -1,5 +1,123 @@
 # `deploy/haitun/` —— 生产部署脚本的版本控制副本
 
+这里的文件分两类, **性质完全不同**:
+
+| 文件 | 性质 |
+| --- | --- |
+| `Dockerfile` `Dockerfile.overlay` 两份 `*.dockerignore` `build-image.sh` | **准本**。构建时直接被用, 改这里就是改构建 |
+| `oauth-proxy.py` `launch-gateway.sh` `.env.example` | **副本**。运行中的是目标机上那份, 改这里不生效, 要人工同步 |
+
+---
+
+## 构建资产(`Dockerfile` 一族)
+
+### 为什么它们在 2026-09-10 才进 git
+
+此前**只存在于目标机的构建目录里**, 全库无副本。搬机时只搬了运行目录
+`/srv/haitun/psi-agent`(compose + `restart-stack.sh` + `workspace*`), 没搬构建目录 —— 实测
+境内 A 机 `47.100.84.197` 上 `find / -maxdepth 5 -iname 'Dockerfile*'` 只有 psi-cloud /
+psi-auth-impl / fmbuild 三份。
+
+后果是双重的:
+
+1. **A 机只能做 overlay 构建**(换 `/app/src`), 一旦 `pyproject.toml` / `uv.lock` 变了就没法
+   全量 build, 新依赖装不进去 —— 而表现是运行期 ImportError, 不是构建期报错。
+2. 发布文档写的「用**仓库里的** `Dockerfile` 全量 build」指向一个不存在的文件。
+
+### 用法
+
+```bash
+# 在仓库根。overlay: 只换 src, 秒级
+deploy/haitun/build-image.sh overlay <commit>
+
+# full: 依赖变了必须用这个
+deploy/haitun/build-image.sh full <commit>
+```
+
+`build-image.sh` 顺手把两条原先靠人记的规则变成了闸门: HEAD 必须等于目标 commit 且工作树
+干净(发布硬规则 1, 8-18 事故背书); overlay 模式下会拿基础镜像里的 `pyproject.toml` /
+`uv.lock` 与当前树比对, 不同就拒绝并提示改用 full。
+
+### ⚠️ 镜像源的默认值按**境内**取, 境外构建必须显式覆盖
+
+这是本目录里唯一一处「同一决策在两地结论相反」的地方, 所以默认值不是中立的。
+
+境内 A 机 `47.100.84.197` 实测(2026-09-10):
+
+| 源 | trixie InRelease | `simple/aiohttp/`(3.95 MB) |
+| --- | --- | --- |
+| `mirrors.aliyun.com` | 200 · 3.58 MB/s · 0.039s ← 默认 | 200 · 14.5 MB/s · 0.235s ← 默认 |
+| `mirrors.cloud.aliyuncs.com` | 200 · 2.79 MB/s · 0.050s | 000(该机无此 pypi 路径) |
+| `deb.debian.org` / `pypi.org` | 200 · 126 KB/s · 1.112s | 200 · **33 KB/s · 120s 未下完** |
+| tuna | 200 · 95 KB/s · 1.483s | 200 · 1.57 MB/s · 2.168s |
+
+境外 B 机(新加坡)实测(2026-09-01)是**反过来的**: `deb.debian.org` 比 aliyun 快 146 倍
+(20.2 MB/s vs 138 KB/s)、tuna 直接 **403**、`pypi.org` 2.70s 优于 tuna 3.72s。
+
+所以境外构建要这样传:
+
+```bash
+APT_MIRROR= PIP_INDEX_URL=https://pypi.org/simple \
+NPM_REGISTRY=https://registry.npmjs.org \
+deploy/haitun/build-image.sh full <commit>
+```
+
+`APT_MIRROR=` 是**空值, 表示不换源**, 与「没设」不是一回事 —— `build-image.sh` 用
+`${VAR+x}` 区分这两者。
+
+`pypi.org` 那条尤其要留意: 境内它不是 404 也不是超时, 而是 200 之后以 33 KB/s 涓流, 单个索引
+120 秒下不完。写死任一边, 换机器时 build 都会挂在装依赖那层, 而报错长得像网络抽风。
+
+基础镜像同理: A 机实测 `registry-1.docker.io` 直连 **15 秒无响应**, daocloud 加速器与 daemon
+里配的 `registry-mirrors` 都能拉, 所以默认值写死加速器域名而不是裸 `docker.io`。
+
+### 前端产物由构建阶段 1 生成, 不再手工
+
+`feishu-web/dist/` 被 gitignore 排除, 而后端 `_routes.py` 的 `add_static` 在目录不存在时
+**静默跳过** —— 页面 404, 日志只有一行 INFO, 容器状态一切正常。此前的补法是镜像外手工
+`npm run build` 再叠一层 `Dockerfile.fw`(B 机 `/srv/haitun/build-34c73c65/Dockerfile.fw`),
+纯人工步骤, 忘了做没有任何东西拦得住。
+
+现在 `Dockerfile` 的阶段 1 用 `npm ci` + `npm run build` 产出 dist, 阶段 2 `COPY --from` 取过来。
+两处硬要求:
+
+- **拷 dist 必须排在 `COPY src` 之后** —— dist 在 src 子树里, 顺序反了会被盖掉, 而**构建仍然
+  成功**。由 `test_dist_copied_after_src_so_it_is_not_overwritten` 钉住。
+- **`*.dockerignore` 里的 `dist/` 必须带前导斜杠。** 无锚点写法在任意层级匹配, 会把三棵前端
+  (`desktop/spa`, `desktop/spa-v2`, `feishu/feishu-web`)的产物全部排出上下文, 触发同一个静默
+  404。由 `test_dist_ignore_rule_is_anchored` 钉住。
+
+overlay 模式下 dist 完全来自基础镜像(它不跑 npm), 所以两份 Dockerfile 都在构建期
+`test -f .../dist/index.html` 自检一次。
+
+### `*.dockerignore` 这个文件名不是笔误
+
+BuildKit 支持 `<Dockerfile 路径>.dockerignore`, 且它**优先于**上下文根的 `.dockerignore`。
+2026-09-10 在 A 机(docker 29.7.2 / buildkit v0.32.2)实跑验证过生效, 不是照文档推断。这样排除
+规则能跟 Dockerfile 放在一起, 不必往仓库根塞一份 `.dockerignore` 去影响同机其他项目的构建。
+
+⚠️ 未启用 BuildKit 的 legacy builder **不认这个文件名**, 那种环境下要么升级 builder, 要么把
+文件手工拷成上下文根的 `.dockerignore`。
+
+### 判据
+
+`tests/deploy/test_build_assets.py`(20 条)静态解析 Dockerfile 文本。本仓 CI 没有 docker, 而这
+些缺陷都在文本层面: 源写死了、COPY 顺序反了、锚点丢了。真构建的验证在目标机做。
+
+```bash
+# 在仓库根跑。PYTHONPATH=src 与 -o testpaths= 都是必须的, 见 AGENTS.md
+PYTHONPATH=src .venv/Scripts/python.exe -m pytest -o testpaths= --no-cov tests/deploy/ -q
+```
+
+### 已知没验到的
+
+- **全量 build 在 A 机实跑过一次通过**(镜像 `psi-agent-gateway:probe-46566`, 见 PR 正文),
+  但**没有拿它替换过任何在跑的容器** —— 镜像能起、页面能开都没验。
+- 境外机的 build-arg 组合(`APT_MIRROR=` 空值那条路径)**没在境外机上跑过**, 只有本地判据。
+  B 机当前 `running=0`, 而那些数字是 9-01 量的。
+
+---
+
 ## `oauth-proxy.py`
 
 **这份是生产机 `/srv/haitun/psi-agent/oauth-proxy.py` 的版本控制副本, 不是运行中的那份。**

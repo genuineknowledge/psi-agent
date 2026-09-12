@@ -4,6 +4,8 @@ description: "公司 TODO 管理体系·闭环判定与回流 —— 在每次�
 category: productivity
 ---
 
+**离职/无法识别人员**:名单先交 `feishu_member_status_check` 分类(它只返回在职/解析失败名单和离职**人数**,不给离职姓名);已离职/冻结 → 不进对比,且**面向 mentor 的对比表/台账/报告完全不体现、不解释**;解析失败(unresolved,重名)→ 单列「解析失败,需人工」。不静默删除。
+
 # 公司 TODO 管理体系 · 闭环判定与回流
 
 > 判定口径读 `config/todo-sop.yaml`，用户可编辑，换公司只改此文件；本文保留引擎与通用纪律，参数值以该文件为准。
@@ -45,6 +47,8 @@ cron 已经错开（本技能 `30 14 * * 1,3,5`，sync `0 15 * * 1,3,5`），正
 「已闭环」；缺任一项状态停在「进行中」/「未闭环逾期」。第 5 项只做**验证**：评价回写 wiki 的
 动作由 `company-todo-review` 在 mentor 提交评价时立即执行，本技能用 `wiki_read` 核对快照页该
 todo 之后确实有评语文本即可。
+
+**删除线 = 上级验收通过的硬证据**(SOP v1.1:验收方式 = 上级用删除线划掉已完成且达标的 TODO)。删除线样式普通读表会拍平丢失,判验收状态时用确定性工具 `feishu_sheet_strike_read(board_link, person_name, cycle_date)` 读该人该期单元格的删除线:返回每段文本的 strike 状态。有删除线的段 = 已验收;无删除线 = 未验收(或验收未达标,守住「验收一定要守住标准」)。
 
 ## SOP v1.1 删除线验收衔接
 
@@ -132,6 +136,41 @@ CEO 口径：MVP 起即记录 check 结果数据，先搭评测体系再搭数�
 - **mentor 视图**（私聊，只含自己名下成员）：逐人六项 + 一句话连续性结论；连续两个周期未闭环的项单列
   「持续逾期」并同步该 mentor 上级（见回流规则第 3 条）。
 - **boss 视图**：全公司汇总，每个 mentor 团队加「较上期」趋势列（闭环数、回流数、顺延数）。
+
+### 推送前置：先对账人与 mentor 的关系（`feishu_todo_ledger_reconcile`）
+
+**本节的输出是按 mentor 分组的，而分组用的是台账行里的 `mentor` 字段 —— 那是 `company-todo-sync`
+建行那一刻从看板抄下来的快照，之后没有任何流程会更新它。** 所以只要有人在建行之后改了看板的
+mentor 列（把某人换到另一个 mentor 名下），这里就会继续按**改前的关系**分组出卡：人发到旧 mentor
+手里、新 mentor 名下少一个人，而且发送本身会全绿（卡片内容是错的，投递是成功的）。
+
+因此**凡要产出/推送逐 mentor 的分组（前后对比卡、mentor 报表、评价卡补发），先跑一次对账**：
+
+```
+feishu_todo_ledger_reconcile(
+  board_link=<看板链接>,
+  cycle_date=<本周期日期>,
+  folder_token=<台账 base 所在文件夹>,   # 或改传 ledgers_json 逐个 base 的 app_token
+  apply_fixes=false,                     # 先只看差在哪
+  user_key=<发送者 open_id>,
+)
+```
+
+按返回处理，三条都不许跳：
+
+1. `relation_aligned: true` → 才可以说「按当前关系分组」，继续推送。
+2. `mentor_changed` 非空 → 台账仍写着改前的 mentor。带 `apply_fixes=true` 重跑修正字段
+   （只在名字唯一解析到一个通讯录条目时才写；解析不出的进 `needs_manual`，**交人工，不要自己
+   挑一个同名的人写进去**）。
+3. `needs_move` 非空 → **修正字段之后才会出现的那一半**：行还躺在旧 mentor 的
+   `TODO 台账-<旧 mentor>` base 里。按 base 枚举的消费者仍会按旧关系读到它，所以此时
+   **不得**声称已对齐——把行搬进新 mentor 的本周期表（`company-todo-sync` 的建行口径），
+   或先如实报告「这两处还没对齐」。改字段与搬行是两件事。
+
+`person_not_on_board` / `row_missing_mentor` / `board_missing_mentor` / `row_missing_owner` 四类
+一律交人工补数据。其中**人不在看板上**的名字在转述给 mentor 之前，必须先过
+`feishu_member_status_check` 分类（离职 / 冻结人员面向 mentor 的输出完全不体现，见本文件开头的
+离职口径）——对账结果的这几桶**不是**可以直接贴给 mentor 的成品。
 
 **纪律**：消失 ≠ 未闭环 ≠ 失实；请假顺延不计逾期；承接只对任务做去重、不对填报文本硬匹配（当前多数人
 todo 还没写好父子关联，父项留空是常态，不强挂）。比对只读台账与 wiki 快照两处权威源，不接受口头 / 聊天

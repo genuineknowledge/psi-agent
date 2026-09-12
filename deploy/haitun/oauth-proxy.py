@@ -46,7 +46,9 @@ from aiohttp import web
 #     它们同在 api-paths.json 里(前端确实在打), 但那是**直连本地 gateway** 时的用法;
 #     公网这一跳不放行, 由 tests/deploy/test_oauth_proxy.py 双向钉住。
 #   * /feishu/route /feishu/routes —— channel 进程内部调用, 无鉴权且能 spawn Session,
-#     浏览器一次都不打。
+#     浏览器一次都不打。**「同是 /feishu/ 开头」不是放行理由**: 这一族里既有前端接口
+#     (如下面的 jsapi/config)也有内部端点, 判据是「浏览器是否真的打它 + 打通了能做什么」,
+#     由 tests/deploy/test_oauth_proxy.py::test_feishu_internal_routes_stay_blocked 钉住。
 ALLOWED_PATHS = frozenset(
     {
         # OAuth: 本代理原本唯一的用途。
@@ -57,6 +59,10 @@ ALLOWED_PATHS = frozenset(
         "/feishu/auth/login",
         "/feishu/auth/logout",
         "/feishu/auth/me",
+        # H5 免登签名。**它与下面刻意不含的 /feishu/routes 不是一类**, 别一起放行:
+        # 这条是浏览器自己打的前端接口(tt.config 要的 signature, 前端拿不到就没法免登),
+        # 它只对传入的 url 算一次 JSAPI 签名, 不建任何会话; routes 那条能 spawn Session。
+        "/feishu/jsapi/config",
         # 网页应用数据一族(register_feishu_routes), 全部按 sid 过滤身份。
         "/feishu/defaults",
         "/feishu/sessions",

@@ -129,6 +129,7 @@ TOOL_CALL_STYLE_SECTION = """\
 Routine low-risk calls: no narration.
 Narrate only for complex, sensitive/destructive, or explicitly requested steps.
 If a first-class tool exists, use it directly; do not ask the user to run an equivalent CLI command.
+Tool names and parameter names must match this turn's live `tools` list / schema — do not invent prefixed callables from skill endpoint or MCP tables (e.g. turning a URI into a fake `*_get` tool, calling browser MCP table names as top-level tools, or deleted `subagent_*`). Browser MCP table tools go through `browser_call`; subagent uses only `subagent_plan` / `subagent_wait` / `subagent_chat` (+ `background_*` in the recipe). On `Tool … not found`, illegal JSON args, or `unexpected keyword` / missing required: **stop guessing names**; re-scan `tools` and the target parameter schema (or skill param table), then call once correctly.
 When the user asks for a table, spreadsheet, or Excel file, call `write_excel` to produce a real .xlsx file; do not answer with a markdown table or HTML unless the user explicitly asks for that format.
 For sensitive or destructive commands, show the full command exactly as it will run (including chained operators like &&, ||, |, ;, or multiline scripts) before executing it.\
 """
@@ -206,7 +207,7 @@ EXECUTION_BIAS_SECTION = """\
 - Actionable request: act in this turn.
 - Non-final turn: use tools to advance, or ask for the one missing decision that blocks safe progress.
 - Continue until done or genuinely blocked; do not finish with a plan/promise when tools can move it forward.
-- Weak/empty tool result: vary query, path, command, or source before concluding.
+- Weak/empty tool result: vary query, path, command, or source before concluding — **except** call-surface failures (`Tool … not found`, illegal JSON args, `unexpected keyword` / missing required): do **not** invent another tool name or tweak kwargs in a loop; re-read the live `tools` list and that tool's parameter schema first.
 - Mutable facts need live checks: files, git, clocks, versions, services, processes, package state.
 - Final answer needs evidence: test/build/lint, screenshot, inspection, tool output, or a named blocker.
 - Longer work: brief progress update, then keep going - **except** subagent spawn (Steps 1-7): run silently, no per-step narration.\

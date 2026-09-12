@@ -13,7 +13,7 @@ category: productivity
 
 | 材料 / 门 / 业务类 | Skill |
 |-------------------|--------|
-| POC 检测/评测报告, 或步骤门=`POC`, 或里程碑业务类=**场景闭环** | [`proposal-acceptance-poc`](../proposal-acceptance-poc/SKILL.md) |
+| POC 检测/评测报告, 或步骤门=`POC`, 或里程碑业务类=**场景闭环**(含海豚功能自测分流) | [`proposal-acceptance-poc`](../proposal-acceptance-poc/SKILL.md) |
 | 交付/验收文档, 或步骤门=`文档`, 或里程碑业务类=**交付物** | [`proposal-acceptance-doc`](../proposal-acceptance-doc/SKILL.md) |
 | 步骤门=`无需` / 业务类=**无交付物** | **不**跑对照; 回 writing-standard 进度语义(勾选自报即可) |
 | 用户没分清、或只要泛化对照 | **本文** |

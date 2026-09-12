@@ -448,14 +448,32 @@ provider 只认 `reasoning_content`（any-llm 的 `REASONING_FIELD_NAMES` 首项
 没有」，于是再换一个词，正好是要收的那个环。这与 `truncate_tool_result` 的理由是同一条：不声明自己
 的截断，会被拿去当全量数据作答。
 
-两个计数器，对应事故的两种形状：
+两个计数器加一个回合级闸门，对应事故的三种形状：
 
-- **连续无效，按工具名计数**（`UNPRODUCTIVE_LIMIT = 4`）。换词能绕开任何按参数计数的判据 —— 「换词
+- **连续无效，按工具名计数**（`UNPRODUCTIVE_LIMIT = 5`）。换词能绕开任何按参数计数的判据 —— 「换词
   调 305 次」说的就是这件事，跨这些重试唯一稳定的键是工具名。**计的是连续**：一旦出结果就清零
   （`record`），因为有结果证明这个工具与这个查询形状是通的；终身次数由 `max_tool_rounds` 兜。
+  5 是收紧同参闸后的过渡值，后续可按线上分布再调。
 - **原样重复，按 (工具名, 参数) 计数**（`REPEAT_LIMIT = 3`）。参数键用 `sort_keys=True`：模型发同一个
   查询时 key 顺序会变，不排序则重复计数器永远不触发。3 而非 1 是因为重复并不总是无意义 —— 这里的工具
   会轮询外部状态（正在被编辑的文档、还在跑的后台进程）。
+
+第三个计数器，对应另一类空转（**刻意为之**）：
+
+- **调用面错误，按回合计数**（`CALL_SURFACE_ERROR_LIMIT = 2`）。`Tool … not found`、空工具名、参数不是合法
+  JSON 对象、以及 `Error executing tool …` 里常见的 `unexpected keyword` / missing required 等，说明模型在
+  **猜工具名或参数名**（常见：把 skill 里的飞书 URI / MCP 表名发明成 `feishu_*` / 顶层 `browser_*`）。
+  这类失败**不能**按工具名计连续无效 —— 每次换一个错名都会清零。满 2 次后本回合后续调用一律不发出，
+  顶替字符串（`CALL_SURFACE_NOTICE`）要求重新对照 live `tools` / schema，并点名 `feishu_api` /
+  `browser_call` / `subagent_plan|wait|chat`。  `agent.py` 对 not-found、空名、坏 JSON args 也会
+  `record`（不只记真正 dispatch 的调用），否则闸门永远攒不到证据。
+
+- **有信息后同名再调（只记账，暂不拒发，刻意为之）**：`record` 把「非空 / 非 error 开头 /
+  非空信封」记成该工具名 `_last_had_info=True`；下一次 `refusal_for` 再见到**同名**时
+  `_retry_after_info` +1，并打 INFO `retry-after-info tool=… count=…`。计数挂在
+  `retry_after_info_count(name)`，供后续闸门设计用。刻意**不**据此拒发——合法轮询与
+  「非空但没用」长得一样，阈值与豁免未定前只观测。同波并行的多次 `refusal_for`（尚未
+  `record`）互不计，避免把同轮并行当成「读完再调」。
 
 - **无效判定同时覆盖「成功但空」与「调用失败」**：从调用方看这是同一件事——又一次没推进；驱动失控的是
   重试，不是这两者中哪个发生了。空 JSON 信封（`{"items": []}`、`total: 0`）必须算空，它不是空字符串，

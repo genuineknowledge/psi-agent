@@ -1,0 +1,32 @@
+# overlay 构建的上下文排除规则。见 `Dockerfile.dockerignore` 头部对这个文件名的说明。
+#
+# 与全量构建那份的差别: overlay 只 COPY src, 但**排除规则仍然要写全** —— BuildKit 是先把
+# 上下文按本文件过滤后整体送进 builder, 再执行 COPY。少排一条, 代价是传输时间, 不是正确性。
+# `.kanban/` 与 `node_modules/` 这两条尤其: 它们能把 overlay 从秒级拖成分钟级, 而 overlay
+# 存在的唯一理由就是快。
+
+.venv/
+.git/
+.github/
+.opencode/
+.pytest_cache/
+.ruff_cache/
+.gw-run/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# 只排根目录的产物, 不能写成无锚点的 dist/ —— 理由同 Dockerfile.dockerignore 里那段。
+/dist/
+.coverage
+
+node_modules/
+
+*.log
+gateway-live.log
+gateway-restart.log
+
+examples/
+workspace/
+.kanban/

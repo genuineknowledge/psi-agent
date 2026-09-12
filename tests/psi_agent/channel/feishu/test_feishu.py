@@ -33,6 +33,7 @@ from psi_agent.channel.feishu.client import (
     _mentions_line,
     _parse_instance_detail,
     _register_approval_processor,
+    _register_ignored_processors,
     _remove_reaction,
     _SeenEvents,
     run_feishu,
@@ -1230,6 +1231,48 @@ def test_register_approval_processor_injects_both_schemas():
 def test_register_approval_processor_degrades_without_processor_map():
     channel = SimpleNamespace(dispatcher=SimpleNamespace())  # no _processorMap
     assert _register_approval_processor(channel, lambda _e: None) is False
+
+
+def test_register_ignored_processors_covers_every_event_and_schema():
+    """不消费的平台事件必须都有处理器 —— 没有就是 SDK 的 processor not found ERROR。"""
+    proc_map: dict = {}
+    channel = SimpleNamespace(dispatcher=SimpleNamespace(_processorMap=proc_map))
+
+    count = _register_ignored_processors(channel)
+
+    assert count == 2 * len(client._IGNORED_PLATFORM_EVENTS)
+    for event_type in client._IGNORED_PLATFORM_EVENTS:
+        for schema in ("p1", "p2"):
+            assert f"{schema}.{event_type}" in proc_map
+
+
+def test_register_ignored_processors_swallows_the_event():
+    """处理器必须能把事件吞下去而不抛 —— 抛了 SDK 还会再记一条。"""
+    proc_map: dict = {}
+    channel = SimpleNamespace(dispatcher=SimpleNamespace(_processorMap=proc_map))
+    _register_ignored_processors(channel)
+
+    processor = proc_map[f"p2.{client._IGNORED_PLATFORM_EVENTS[0]}"]
+    processor.do(SimpleNamespace(event={"anything": 1}))  # 不抛即通过
+
+
+def test_register_ignored_processors_keeps_a_real_consumer():
+    """已有处理器的键不许被覆盖: 真消费方优先。"""
+    event_type = client._IGNORED_PLATFORM_EVENTS[0]
+    existing = object()
+    proc_map: dict = {f"p2.{event_type}": existing}
+    channel = SimpleNamespace(dispatcher=SimpleNamespace(_processorMap=proc_map))
+
+    count = _register_ignored_processors(channel)
+
+    assert proc_map[f"p2.{event_type}"] is existing
+    assert count == 2 * len(client._IGNORED_PLATFORM_EVENTS) - 1
+    assert f"p1.{event_type}" in proc_map
+
+
+def test_register_ignored_processors_degrades_without_processor_map():
+    channel = SimpleNamespace(dispatcher=SimpleNamespace())  # no _processorMap
+    assert _register_ignored_processors(channel) == 0
 
 
 @pytest.mark.anyio

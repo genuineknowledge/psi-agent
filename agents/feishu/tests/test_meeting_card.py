@@ -122,6 +122,73 @@ def test_overview_unstructured_falls_back_to_note_without_crashing() -> None:
     assert "没有输出结构化" in result["values"]["footer"]
 
 
+def test_declaration_block_is_stripped_from_card_body() -> None:
+    """口径/边界声明(系统侧约束)不得复述进卡片正文。"""
+    analysis = {
+        "meeting_summary": (
+            "【用途与边界】本输出仅为候选观察, 不写入正式负面总表、不计分、不进入绩效。\n\n"
+            "会议决定把可插拔排在基础本体之前。"
+        ),
+        "analysis_text": (
+            "【用途与边界】本分析针对白名单固定会议 42654699903。\n\n"
+            "## 关键决定\n- 可插拔优先于基础本体。\n\n"
+            "msop.core.02 为 active:false, 按口径不判符合/不符合。"
+        ),
+        "positive_negative_overview": "",
+    }
+    result = cardmod.render_meeting_summary_card("日会", "42654699903", "2026-09-11", analysis)
+    assert result.get("ok"), result.get("error")
+    values = result["values"]
+    for key in ("summary", "key_points"):
+        text = values[key]
+        assert "用途与边界" not in text
+        assert "不计分" not in text
+        assert "不进入绩效" not in text
+        assert "active:false" not in text
+    assert "可插拔优先于基础本体" in values["key_points"]
+    assert "可插拔排在基础本体之前" in values["summary"]
+
+
+def test_long_paragraph_is_rendered_as_bullets() -> None:
+    """长段落按句切成分行要点, 避免卡片里一大坨流水文字。"""
+    paragraph = "第一句话说明结论。" * 25
+    result = cardmod.render_meeting_summary_card(
+        "日会",
+        "42654699903",
+        "2026-09-11",
+        {"meeting_summary": paragraph, "analysis_text": paragraph, "positive_negative_overview": ""},
+    )
+    assert result.get("ok"), result.get("error")
+    assert result["values"]["summary"].count("\n- ") >= 3
+    assert result["values"]["key_points"].count("\n- ") >= 3
+
+
+def test_code_generated_meta_and_cn_headings() -> None:
+    """代码生成的"合并口径"声明与【合并后分析】横幅不进卡片; 中文序号小节变粗体标题。"""
+    analysis = {
+        "meeting_summary": (
+            "合并口径\uff1a本分析由三段分块分析合并去重\uff0c智能纪要仅作辅助\uff1b凡仅靠单方陈述的结论标待补充证据。"
+            "\n\n会议围绕架构复盘展开。"
+        ),
+        "analysis_text": (
+            "【合并后分析\uff5c会议 42654699903\uff5cweekday-alignment-1100 日会\uff5c2026-09-11】\n\n"
+            "一、证据范围与口径\n\n本分析以四段原始转写为主要证据。\n\n"
+            "二、关键决定\n\n- 可插拔优先于基础本体。"
+        ),
+        "positive_negative_overview": "",
+    }
+    result = cardmod.render_meeting_summary_card("日会", "42654699903", "2026-09-11", analysis)
+    assert result.get("ok"), result.get("error")
+    values = result["values"]
+    for key in ("summary", "key_points"):
+        text = values[key]
+        assert "合并口径" not in text
+        assert "合并后分析" not in text
+        assert "智能纪要仅作辅助" not in text
+    assert "**一、证据范围与口径**" in values["key_points"]
+    assert "**二、关键决定**" in values["key_points"]
+
+
 @pytest.mark.anyio
 async def test_notify_meeting_card_sends_then_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sent: list[tuple[str, str]] = []

@@ -824,6 +824,23 @@ def _reset_uat_state() -> None:
 
 
 _REFRESH_URL = "https://open.feishu.cn/open-apis/authen/v1/refresh_access_token"
+
+#: Per-user refresh locks — the same refresh_token must never be refreshed
+#: concurrently (two paths — a scheduled task and a chat turn — can both touch
+#: one user's token; Feishu may invalidate the old refresh_token on either use).
+_refresh_locks: dict[str, Any] = {}
+
+
+def _refresh_lock(user_key: str) -> Any:
+    import asyncio  # noqa: PLC0415
+
+    lock = _refresh_locks.get(user_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _refresh_locks[user_key] = lock
+    return lock
+
+
 _APP_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
 
 
@@ -879,17 +896,27 @@ async def _get_valid_uat(user_key: str = "") -> Any:
     uat = await store.get(key)
     if uat is None:
         return None
+    old_scopes = list(uat.scopes or [])
     if uat_needs_refresh(uat) and uat.refresh_token:
-        app_token = await _get_app_access_token()
-        if app_token is not None:
-            payload = await _post_json(
-                _REFRESH_URL,
-                {"grant_type": "refresh_token", "refresh_token": uat.refresh_token},
-                headers={"Authorization": f"Bearer {app_token}"},
-            )
-            if payload.get("code") in (0, None) and (payload.get("data") or payload).get("access_token"):
-                uat = _uat_from_token_response(payload)
-                await store.set(key, uat)
+        async with _refresh_lock(key):
+            # 锁内重读:并发等待者进来时 token 可能已被上一家刷新好
+            uat = await store.get(key)
+            if uat is None or not uat_needs_refresh(uat) or not uat.refresh_token:
+                return uat
+            app_token = await _get_app_access_token()
+            if app_token is not None:
+                payload = await _post_json(
+                    _REFRESH_URL,
+                    {"grant_type": "refresh_token", "refresh_token": uat.refresh_token},
+                    headers={"Authorization": f"Bearer {app_token}"},
+                )
+                if payload.get("code") in (0, None) and (payload.get("data") or payload).get("access_token"):
+                    uat = _uat_from_token_response(payload)
+                    if not uat.scopes and old_scopes:
+                        # 刷新响应通常不回显 scope(首次授权才带);清空会让授权
+                        # 卡片等展示层误以为权限丢了,保留旧值只回填展示信息。
+                        uat.scopes = old_scopes
+                    await store.set(key, uat)
     return uat
 
 
@@ -998,6 +1025,7 @@ from _feishu.contact import (  # noqa: E402,F401
     _build_group_member_request,
     _child_department_ids,
     _child_departments,
+    _classify_names,
     _department_record,
     _members_of_department,
     _split_contacts,
@@ -1006,6 +1034,7 @@ from _feishu.contact import (  # noqa: E402,F401
     find_users_by_contact_impl,
     get_users_batch_impl,
     list_department_members_impl,
+    member_status_check_impl,
     user_group_members_impl,
 )
 from _feishu.doc import (  # noqa: E402,F401
@@ -1266,10 +1295,22 @@ from _feishu.sheet import (  # noqa: E402,F401
     read_sheet_range_impl,
     write_sheet_impl,
 )
+from _feishu.strike import (  # noqa: E402,F401
+    _col_letter,
+    _norm_name,
+    _parse_cell_strikes,
+    sheet_strike_read_impl,
+)
 from _feishu.task import (  # noqa: E402,F401
     _build_create_task_request,
     _due_to_ms,
     create_task_impl,
+)
+from _feishu.todo_sop import (  # noqa: E402,F401
+    _build_buckets,
+    _find_col,
+    load_todo_sop,
+    todo_fill_status_impl,
 )
 from _feishu.worktree import (  # noqa: E402,F401
     _node_text,

@@ -103,9 +103,23 @@ def _extract_json(text: str) -> dict[str, Any]:
 _EMPTY_ANALYSIS_MARKER = "未生成分析结果。"
 
 
+#: 分析正文的三个字段: 契约要求值必须是自然语言字符串(可含换行), 不得是对象/数组/数字。
+_ANALYSIS_TEXT_KEYS: tuple[str, ...] = ("analysis_text", "meeting_summary", "positive_negative_overview")
+
+#: 兼容模型/历史状态用过的别名字段。
+_ANALYSIS_KEY_ALIASES: dict[str, tuple[str, ...]] = {
+    "analysis_text": ("analysis",),
+    "meeting_summary": ("minutes",),
+    "positive_negative_overview": ("ledger_overview",),
+}
+
+#: Python 字面量痕迹: 值曾被 str() 成 repr 时的特征(如 ``{'meeting_type': '周中对齐会'}``)。
+_PYTHON_REPR_MARKERS: tuple[str, ...] = ("{'", "'}", "': '", "[{'", "'}]")
+
+
 def _analysis_has_content(analysis: dict[str, Any]) -> bool:
     """True 当三个正文字段中至少一个非空且不等于占位文案。"""
-    for key in ("analysis_text", "meeting_summary", "positive_negative_overview"):
+    for key in _ANALYSIS_TEXT_KEYS:
         value = str(analysis.get(key) or "").strip()
         if value and value != _EMPTY_ANALYSIS_MARKER:
             return True
@@ -127,10 +141,103 @@ def _analysis_stats_entry(stats: dict[str, int]) -> dict[str, int]:
     }
 
 
+def _flatten_value(value: Any, *, _depth: int = 0) -> str:
+    """把模型写成对象/数组的字段展平成人类可读文本。
+
+    契约要求这三个字段是自然语言字符串, 但模型偶尔会写成嵌套对象。以前这里用
+    ``str(value)``, 对 dict 得到的是带单引号的 Python 字面量, 于是「一坨字典」被原样
+    发进会议群/私聊(2026-09-11 事故)。现在逐层展平成 ``键: 值`` / ``- 值`` 文本,
+    模型再犯也不会把 repr 发出去。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, dict):
+        pad = "  " * _depth
+        lines: list[str] = []
+        for key, item in value.items():
+            name = str(key)
+            if name.startswith("_"):  # 内部诊断块(如 _ai_stream)不进正文
+                continue
+            flat = _flatten_value(item, _depth=_depth + 1)
+            if not flat:
+                continue
+            if isinstance(item, (dict, list, tuple)):
+                lines.append(f"{pad}{name}:")
+                lines.append(flat)
+            else:
+                lines.append(f"{pad}{name}: {flat}")
+        return "\n".join(lines).strip()
+    if isinstance(value, (list, tuple)):
+        pad = "  " * _depth
+        bullets: list[str] = []
+        for item in value:
+            flat = _flatten_value(item, _depth=_depth + 1)
+            if not flat:
+                continue
+            if isinstance(item, (dict, list, tuple)):
+                bullets.append(f"{pad}-")
+                bullets.append(flat)
+            else:
+                bullets.append(f"{pad}- {flat}")
+        return "\n".join(bullets).strip()
+    return str(value).strip()
+
+
+def _looks_like_python_repr(text: str) -> bool:
+    """文本里是否残留 Python 字面量痕迹(如 ``{'meeting_type': '周中对齐会'}``)。"""
+    head = text[:400]
+    return any(marker in head for marker in _PYTHON_REPR_MARKERS)
+
+
+def _raw_analysis_value(value: dict[str, Any], key: str) -> Any:
+    """取某字段的原始值: 先看规范键, 再看历史别名字段。"""
+    if key in value:
+        return value.get(key)
+    for alias in _ANALYSIS_KEY_ALIASES.get(key, ()):
+        if alias in value:
+            return value.get(alias)
+    return None
+
+
+def _non_string_value_keys(value: Any) -> list[str]:
+    """三个正文字段里被写成非字符串(对象/数组/数字)的键; 空表示契约成立。"""
+    if not isinstance(value, dict):
+        return list(_ANALYSIS_TEXT_KEYS)
+    invalid: list[str] = []
+    for key in _ANALYSIS_TEXT_KEYS:
+        item = _raw_analysis_value(value, key)
+        if item is None or isinstance(item, str):
+            continue
+        invalid.append(key)
+    return invalid
+
+
+def _degrade_python_repr(analysis: dict[str, str], issues: list[str] | None = None) -> dict[str, str]:
+    """摘要/概览残留 Python 字面量痕迹时, 降级用 analysis_text 并标记(不阻塞投递)。
+
+    展平已经能兜住模型把值写成对象的情况; 这条是第三层防御 —— 只要最终文本里还留着
+    repr 特征(老 state、模型把 repr 写进字符串等), 就换成完整分析正文, 并记一条
+    issues 供 run_metrics / 告警使用, 不再"静默发出看不懂的东西"。
+    """
+    marker = str(analysis.get("analysis_text") or "").strip()
+    for key in ("meeting_summary", "positive_negative_overview"):
+        if not _looks_like_python_repr(str(analysis.get(key) or "")):
+            continue
+        if issues is not None:
+            issues.append(f"{key}_downgraded_to_analysis_text")
+        if marker:
+            analysis[key] = marker
+    return analysis
+
+
 def _normalize_analysis(value: dict[str, Any]) -> dict[str, str]:
-    analysis = str(value.get("analysis_text") or value.get("analysis") or "").strip()
-    summary = str(value.get("meeting_summary") or value.get("minutes") or "").strip()
-    overview = str(value.get("positive_negative_overview") or value.get("ledger_overview") or "").strip()
+    analysis = _flatten_value(_raw_analysis_value(value, "analysis_text"))
+    summary = _flatten_value(_raw_analysis_value(value, "meeting_summary"))
+    overview = _flatten_value(_raw_analysis_value(value, "positive_negative_overview"))
     if not analysis:
         analysis = "\n\n".join(part for part in (summary, overview) if part).strip()
     if not summary:
@@ -199,8 +306,19 @@ def _analysis_system_prompt(job: MeetingJob | None = None) -> str:
         "不写入正式正负面总表, 不计分, 不进入绩效。"
         "必须以原始转写为主要证据, 智能纪要只能辅助。输出严格 JSON, 键为:"
         "analysis_text、meeting_summary、positive_negative_overview。"
+        "这三个键的值都必须是自然语言字符串(可含换行与 Markdown 列表), 不得写成对象、"
+        "数组或数字; 需要结构化明细(会议类型、参会人、逐条候选等)时一律写进 analysis_text "
+        "的正文里, 不要塞进 meeting_summary / positive_negative_overview。"
         "正负面判断必须区分事实、证据缺口和推断; 证据不足写待补充证据, 不要臆测。"
         "负面候选必须给出正确做法、立即补救和预防措施; 同时判断会议是否符合其会议 SOP。"
+        "输出纪律(卡片直接给人看, 违反了就没法用): "
+        "1) 不要复述口径与边界声明 —— 「用途与边界」「本输出仅」「候选观察」「不写入正式总表」"
+        "「不计分」「不进入绩效」「不作为证据」这类约束写在系统侧, 不许出现在任何字段里; "
+        "2) 不要输出引擎内部字段或状态(如 active:false、规则内部标记)作为判定, SOP 判定只写"
+        "「结论 + 原文依据」; "
+        "3) analysis_text 必须分层: 用 `## 小节标题` 组织(建议 会议要点 / 关键决定 / 行动项 / "
+        "风险与阻塞 / 证据缺口), 每条要点用 `- ` 列表单独成行, 禁止写成一大段流水文字; "
+        "4) meeting_summary 同样是短段落或 `- ` 列表, 控制在 10 行以内, 首句先给结论。"
     )
 
 
@@ -323,6 +441,7 @@ async def _analyze_meeting_transcript(
     sop_rules: str = "",
     positive_rules: str = "",
     stats: dict[str, int] | None = None,
+    issues: list[str] | None = None,
 ) -> dict[str, str]:
     """Analyze every transcript chunk, then synthesize the chunk analyses.
 
@@ -330,7 +449,8 @@ async def _analyze_meeting_transcript(
     analyzed independently, and the final call receives all chunk conclusions.
     When *job* is given, every request carries meeting identity metadata plus
     the versioned SOP / positive-negative rule snapshots; *stats* (optional)
-    collects ``ai_calls`` / ``ai_input_chars`` for run metrics.
+    collects ``ai_calls`` / ``ai_input_chars`` for run metrics; *issues* (optional)
+    collects output-contract problems (值写成对象/数组、repr 降级) for run_metrics 与告警。
     """
     ai_socket = current_tool_ai_socket()
     if not ai_socket:
@@ -365,7 +485,42 @@ async def _analyze_meeting_transcript(
                     stats["ai_empty_calls"] = stats.get("ai_empty_calls", 0) + 1
         return result
 
+    #: 更正重试时追加的说明: 只针对「值不是字符串」这一条契约, 不动其它判定纪律。
+    retry_note = (
+        "\n\n上一次输出不合格: 键 {keys} 的值不是自然语言字符串。请重新输出完整 JSON, "
+        "这三个键的值都必须是字符串(可含换行与 Markdown 列表), 结构化明细只能写进 "
+        "analysis_text 的正文里。"
+    )
+
+    async def _ensure_string_contract(raw: Any, user_content: str) -> dict[str, Any]:
+        """校验三个正文字段是不是字符串; 不合格时纠正重试一次。
+
+        仍不合格不再重试(避免无限循环): 交给 _normalize_analysis 的展平与
+        _degrade_python_repr 的降级兜底, 并把问题写进 *issues* 供告警。
+        """
+        value = raw if isinstance(raw, dict) else {}
+        offending = _non_string_value_keys(raw)
+        if not offending:
+            return value
+        if issues is not None:
+            issues.append("analysis_value_not_string:" + ",".join(offending))
+        retried = await _counted_call(
+            _analysis_system_prompt(job),
+            user_content=user_content + retry_note.format(keys="、".join(offending)),
+        )
+        if isinstance(retried, dict):
+            retried.pop("_ai_stream", None)
+        if not _non_string_value_keys(retried):
+            if issues is not None:
+                issues.append("analysis_value_recovered_after_retry")
+            return retried if isinstance(retried, dict) else value
+        if issues is not None:
+            still = _non_string_value_keys(retried)
+            issues.append("analysis_value_still_not_string:" + ",".join(still))
+        return retried if isinstance(retried, dict) else value
+
     partials: list[dict[str, Any]] = []
+    chunk_user_contents: list[str] = []
     for index, transcript_chunk in enumerate(transcript_chunks, start=1):
         meta = _meeting_meta(job, index, len(transcript_chunks)) if job is not None else ""
         guidance = (f"{meta}\n\n" if meta else "") + (
@@ -381,21 +536,21 @@ async def _analyze_meeting_transcript(
             # 诊断块只服务 run_metrics, 不进各段分析(避免污染 synthesis 输入)。
             partial.pop("_ai_stream", None)
         partials.append(partial)
+        chunk_user_contents.append(user_content)
     if len(partials) == 1:
-        return _normalize_analysis(partials[0])
+        raw = await _ensure_string_contract(partials[0], chunk_user_contents[0])
+        return _degrade_python_repr(_normalize_analysis(raw), issues)
     meta = _meeting_meta(job) if job is not None else ""
-    synthesis = await _counted_call(
-        _analysis_system_prompt(job),
-        user_content=(f"{meta}\n\n" if meta else "")
-        + (
-            "下面是同一场会议原始转写各段的独立分析。请合并去重并只保留有证据的结论, "
-            "不能遗漏任何片段中的行为事实; 无法互相印证的内容明确标记待补充证据。"
-            "输出完整的会议分析 JSON。\n\n"
-            f"智能纪要(仅供参考):\n{smart_minutes}\n\n"
-            f"各段分析:\n{json.dumps(partials, ensure_ascii=False)}"
-        ),
+    synthesis_content = (f"{meta}\n\n" if meta else "") + (
+        "下面是同一场会议原始转写各段的独立分析。请合并去重并只保留有证据的结论, "
+        "不能遗漏任何片段中的行为事实; 无法互相印证的内容明确标记待补充证据。"
+        "输出完整的会议分析 JSON。\n\n"
+        f"智能纪要(仅供参考):\n{smart_minutes}\n\n"
+        f"各段分析:\n{json.dumps(partials, ensure_ascii=False)}"
     )
-    return _normalize_analysis(synthesis)
+    synthesis = await _counted_call(_analysis_system_prompt(job), user_content=synthesis_content)
+    raw = await _ensure_string_contract(synthesis, synthesis_content)
+    return _degrade_python_repr(_normalize_analysis(raw), issues)
 
 
 async def _read_full_transcript(base: str, meeting_name: str, chunk_count: int) -> tuple[str, list[int]]:
@@ -481,6 +636,19 @@ async def _notify_failure_alert(
             )
 
 
+# prepare 的这几种状态都表示"本场没有可用的新文字转写"(仅云录制、转写未完成,
+# 或最新转写已经处理过)。它们不是失败, 但也绝不能触发"拿上一场转写重算重发"。
+_NO_NEW_TRANSCRIPT_STATUSES = frozenset({"transcript_pending", "no_completed_transcript", "already_processed"})
+
+
+def _pending_receipt_names(state: dict[str, Any]) -> list[str]:
+    """该场仍有未送达回执的收件人(用来区分"没新转写"与"投递欠账")。"""
+    raw = state.get("recipient_receipts")
+    if not isinstance(raw, dict):
+        return []
+    return [str(name) for name, receipt in raw.items() if isinstance(receipt, dict) and not receipt.get("ok")]
+
+
 async def meeting_pipeline_run(
     meeting_name: str = DAILY_MEETING_NAME,
     meeting_code: str = DAILY_MEETING_CODE,
@@ -543,6 +711,25 @@ async def meeting_pipeline_run(
                 ensure_ascii=False,
             )
         manifest = read_meeting_manifest(base, meeting_name)
+        prepare_status = str(prepare_result.get("status") or "")
+        if not prepare_result.get("record_file_id") and prepare_status in _NO_NEW_TRANSCRIPT_STATUSES:
+            # 腾讯侧本场没有可用的新文字转写(仅云录制 / 转写未完成 / 最新转写已处理过)。
+            # 此时**不能**回退到上一场已处理的转写去重算并把旧内容当今天产出重发 —— 那
+            # 正是"12:00 调用成功、群里却收到 9/9 内容"的成因。唯一例外: 那个已处理
+            # record 仍有未送达回执(投递欠账), 此时只补投递、不重新分析。
+            pending_recipients = _pending_receipt_names(state)
+            if not pending_recipients:
+                await _write_json(state_path, {"status": prepare_status, "prepare": prepare_result})
+                await _record(prepare_status, record_file_id="", entry={"prepare_status": prepare_status})
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "status": prepare_status,
+                        "notified": False,
+                        "message": "腾讯侧暂无本场可用的文字转写(仅云录制或转写未完成), 未重发历史分析",
+                    },
+                    ensure_ascii=False,
+                )
         record_file_id = str(
             prepare_result.get("record_file_id") or manifest.get("record_file_id") or state.get("record_file_id") or ""
         )
@@ -552,9 +739,10 @@ async def meeting_pipeline_run(
             return json.dumps({"ok": True, "status": "transcript_pending"}, ensure_ascii=False)
 
         analysis_stats: dict[str, int] = {}
+        analysis_issues: list[str] = []
         analysis_new = False
         if state.get("record_file_id") == record_file_id and state.get("analysis_text"):
-            analysis = _normalize_analysis(state)
+            analysis = _degrade_python_repr(_normalize_analysis(state), analysis_issues)
         else:
             read_started = time.perf_counter()
             transcript, source_chunks = await _read_full_transcript(
@@ -575,6 +763,7 @@ async def meeting_pipeline_run(
                 sop_rules=sop_rules,
                 positive_rules=positive_rules,
                 stats=analysis_stats,
+                issues=analysis_issues,
             )
             analyze_ms = int((time.perf_counter() - analyze_started) * 1000)
             analysis_new = True
@@ -629,6 +818,9 @@ async def meeting_pipeline_run(
                 "source_chunks": source_chunks,
                 **analysis,
             }
+            if analysis_issues:
+                # 输出契约问题随 state 入档: 复盘时能看到这一场是"模型写歪了"还是"真没内容"。
+                state["analysis_issues"] = list(analysis_issues)
             await _write_json(state_path, state)
 
         source_chunks = [int(value) for value in state.get("source_chunks", []) if str(value).isdigit()]
@@ -715,6 +907,7 @@ async def meeting_pipeline_run(
                 "total": _ms(),
             },
             "analysis_reused": not analysis_new,
+            "prepare_status": prepare_status,
             "analysis": _analysis_stats_entry(analysis_stats),
             "transcript_chars": int(manifest.get("transcript_chars") or 0),
             "paragraph_count": int(manifest.get("paragraph_count") or 0),
@@ -724,6 +917,8 @@ async def meeting_pipeline_run(
                 for name, receipt in receipts.items()
             },
         }
+        if analysis_issues:
+            entry["analysis_issues"] = list(analysis_issues)
         await _record(final_status, record_file_id=record_file_id, entry=entry)
         # 每轮收尾把该场全套产物(正文/纪要/分析/状态/收据)补进永久档。
         await archive_meeting_record(base, meeting_name, record_file_id)
@@ -741,8 +936,26 @@ async def meeting_pipeline_run(
                 status=final_status,
                 error=f"通知失败收件人: {json.dumps(failures, ensure_ascii=False)}",
             )
+        if analysis_issues:
+            # 输出契约问题不再静默: 展平/降级后照常投递, 但同时告警 alert_recipients
+            # (同一 record + 同一天至多一条), 让人能主动去核这一场的分析质量。
+            await _notify_failure_alert(
+                meeting_job,
+                base,
+                meeting_name,
+                record_file_id=record_file_id,
+                status="analysis_format_degraded",
+                error="分析输出契约问题(已展平/降级后仍投递): " + "; ".join(analysis_issues),
+            )
         return json.dumps(
-            {"ok": True, "status": final_status, "meeting_name": meeting_name, "record_file_id": record_file_id},
+            {
+                "ok": True,
+                "status": final_status,
+                "meeting_name": meeting_name,
+                "record_file_id": record_file_id,
+                **({"prepare_status": prepare_status} if prepare_status else {}),
+                **({"analysis_issues": analysis_issues} if analysis_issues else {}),
+            },
             ensure_ascii=False,
         )
     except (OSError, TypeError, ValueError, RuntimeError, json.JSONDecodeError) as exc:

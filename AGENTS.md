@@ -473,7 +473,10 @@ C 端注册登录的云端服务**不在本仓库**，在服务器 `/srv/psi-clo
 
 把本仓部署到云服务器的完整流程见 `docs/deploy/psi-agent-cloud-deployment.md`（前置条件、镜像获取、编排、配置项清单、反代、启动验证判据、数据迁移与故障排查）。与上一节的 psi-cloud 是两套东西：那是 C 端服务，这是 haitun 的 ToB 栈（`gateway` / `luolin` / `oauth-proxy` 三容器 + fusion-memory），同机但完全隔离。
 
-- **`Dockerfile` 与 `docker-compose.yml` 不在本仓**，只在目标机 `/srv/haitun/psi-agent/`。本仓贡献的是镜像里 `pip install -e .` 装的那部分。改了配置项 / 启动参数 / 端口暴露，要同步那份部署文档。
+- **构建走 `deploy/haitun/build-image.sh {overlay|full} <commit>`**（2026-09-10 起）。`Dockerfile` / `Dockerfile.overlay` / 两份 `*.dockerignore` 都在 `deploy/haitun/` 下，是**准本**（改这里就是改构建）；判据 `tests/deploy/test_build_assets.py`。它们此前只存在于目标机构建目录，搬机时漏搬 —— 实测 A 机上一份都没有，于是「用仓库里的 Dockerfile 全量 build」指向不存在的文件。
+- **镜像源三个 `ARG` 的默认值按境内取，境外构建必须显式覆盖**（`APT_MIRROR=` 空值 + `PIP_INDEX_URL=https://pypi.org/simple` + `NPM_REGISTRY=https://registry.npmjs.org`）。同一决策两地**结论相反**：境内 `pypi.org` 只有 33 KB/s、索引 120s 下不完，境外 `deb.debian.org` 反而比 aliyun 快 146 倍。两地实测表在 `deploy/haitun/README.md`。
+- **`feishu-web/dist` 由 `full` 构建的阶段 1 产出，`overlay` 不产出**。改了前端源码必须走 `full`，否则镜像里还是旧产物 —— 而 `add_static` 目录不存在时静默跳过，表现是页面 404 而栈全绿。
+- **`docker-compose.yml` 仍不在本仓**，只在目标机 `/srv/haitun/psi-agent/`。改了配置项 / 启动参数 / 端口暴露，要同步 `docs/deploy/psi-agent-cloud-deployment.md`。
 - 反直觉但正确的三条判据，别当 bug 修：公网 `/sessions` 返回 **404** 才表示 gateway 未暴露（它无跨用户鉴权却能驱动 agent 执行工具，绝不能发布）；从 gateway 容器内访问 `psi-agent-luolin:8081` 返回 **404 是正常**（DNS+TCP+HTTP 都通），`000` 才是故障；`Exited (137)` 在 `OOMKilled=false` 时是 `docker stop` 超时强杀，属正常停机。
 - `oauth-proxy` 用 `network_mode: "service:gateway"` 借用 gateway 的网络命名空间，**重启 gateway 会静默打断它的网络栈**（容器仍显示 Up 但 8090 不通）。用目标机的 `./restart-stack.sh`，不要裸 `docker compose restart gateway`。
 - 飞书 channel 是外发 WebSocket 长连接，同一 app 只能有一条，**两端同时在线会导致消息重复投递** —— 迁移顺序必须是「停旧 → 拷数据 → 起新」。

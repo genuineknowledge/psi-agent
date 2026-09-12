@@ -2,16 +2,18 @@
 
 本目录是两场固定会议定时任务的**种子 TASK.md**。Gateway 以 feishu 模式启动时,
 meeting 自动化会把它们落到会议专用 workspace(`.meeting-session/schedules/`)并由
-`meeting-session` 会话激活; 对已从代码移除的任务, 启动时会清理旧 TASK.md, 防止废弃任务继续触发。
+`meeting-session` 会话激活。
+
+> seed 只补 workspace 里**缺失的同名任务**, 已存在的一律不覆盖、也不删除 (`_scheduler_manager._seed_missing_schedules`)。因此下线一条任务要两步: 删掉 agent 包里的 `TASK.md` **并且**删掉 workspace 里的同名目录; 只删包里的文件, 线上旧目录会继续按原 cron 触发。
 
 ## 任务清单
 
 | TASK.md | 会议 | Cron | 行为 |
 |---|---|---|---|
 | `weekday-alignment/TASK.md` | 周中对齐会 `57152787045`(周一/三/五 10:00) | `0 12 * * 1,3,5` | `meeting_pipeline_run`: 取最新已完成转写 → 分块分析 → 按路由发送 |
-| `weekday-alignment-retry-1730/TASK.md` | 周中对齐会(12:00 未转码完成时补跑) | `30 17 * * 1,3,5` | 同上, 幂等跳过已处理录制 |
-| `weekday-alignment-1100/TASK.md` | 日会 `42654699903`(周一/三/五 11:00) | `0 12 * * 1,3,5` | 同上 |
-| `weekday-alignment-1100-retry-1730/TASK.md` | 日会(12:00 未转码完成时补跑) | `30 17 * * 1,3,5` | 同上, 幂等跳过已处理录制 |
+| `weekday-alignment-1100/TASK.md` | 日会 `42654699903`(周一/三/五 11:00) | `0 13 * * 1,3,5` | 同上 |
+
+> 17:30 的两条补偿重跑 (`*-retry-1730`) 已于 2026-09-11 下线: 只保留两场主任务。
 
 运行语义: `visibility: silent`(结果不进普通用户对话)、`fire: tool`(到点直调工具、
 不经过模型自主决策)、按录制 `record_file_id` 幂等。

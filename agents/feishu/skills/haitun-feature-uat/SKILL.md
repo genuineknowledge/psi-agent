@@ -16,9 +16,10 @@ description: "Automate Haitun feature-module UAT by driving a target Session B w
 
 ## 不要用来做什么
 
-- L1 垫词/文档对照 → `proposal-acceptance-poc` / L1 基准文档
+- 只要「对照方案契约读检测文档」、且 **不是** 海豚功能自测 → `proposal-acceptance-poc`（外部业务 POC）
+- **既要**方案及格线对照 **又要** 海豚功能自测 → 入口用 [`proposal-acceptance-poc`](../proposal-acceptance-poc/SKILL.md)（它会调本工具）；不要只跑 UAT 却宣称「方案 POC 已对照」
 - 只查技能/工具是否接线 → `poc_l2_probe`（`poc-l2-reproduce`）
-- 对**当前会话**同步发 chat（会死锁）
+- 对**当前会话**同步发 chat（会死锁；本工具刻意只打干净 Session B）
 
 ## 测谁（先选目标再跑）
 

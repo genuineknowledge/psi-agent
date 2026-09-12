@@ -172,9 +172,11 @@ async def get_users_batch_impl(
     """Fetch full user records (contact details) for up to 50 ids in one call.
 
     Returns [{open_id, user_id, name, mobile, email, enterprise_email, job_title,
-    department_ids, leader_user_id}] — the info needed to hand someone a colleague's
-    contact details. mobile/email are only populated if the app has the matching
-    contact scopes and 通讯录权限范围 covers the user.
+    department_ids, leader_user_id, status}] — the info needed to hand someone a
+    colleague's contact details. ``status`` is Feishu's own lifecycle flags
+    (is_resigned/is_exited/is_frozen/is_activated): the deterministic 离职/冻结
+    source, no guessing. mobile/email are only populated if the app has the
+    matching contact scopes and 通讯录权限范围 covers the user.
     """
     ids = [uid.strip() for uid in user_ids.split(",") if uid.strip()]
     if not ids:
@@ -198,6 +200,7 @@ async def get_users_batch_impl(
                 "job_title": it.get("job_title", ""),
                 "department_ids": it.get("department_ids", []),
                 "leader_user_id": it.get("leader_user_id", ""),
+                "status": it.get("status") or {},
             }
         )
     return {"ok": True, "user_id_type": user_id_type, "users": users, "count": len(users)}
@@ -752,3 +755,78 @@ async def user_group_members_impl(
     if failed:
         result["message"] = f"{len(succeeded)} 个成功, {len(failed)} 个失败; 看 failed 里每个人的原因。"
     return result
+
+
+async def member_status_check_impl(names: list[str], user_key: str = "") -> dict[str, Any]:
+    """Classify display names against the org directory (one recursive listing).
+
+    active = name matches exactly one directory entry; resigned = no match;
+    unresolved = multiple entries share the name (ambiguous) — needs a human.
+    """
+    # 全公司通讯录一次拉全(递归),名字比对纯确定性,不靠模型判断。
+    res = await list_department_members_impl("0", "open_department_id", "open_id", recursive=True)
+    if not res.get("ok"):
+        return _core._error(f"directory read failed: {res.get('message', 'unknown')}")
+    members: list[dict[str, Any]] = []
+    for it in res.get("members", []) if isinstance(res.get("members"), list) else []:
+        members.append({"name": str(it.get("name", "")).strip(), "open_id": it.get("open_id", "")})
+
+    # 批量补 status(离职/待离职/冻结标记)——飞书把离职人员移出通讯录列表,
+    # 冻结(暂停使用)人员还在列表里但 is_frozen=true,两者都要按不活跃处理。
+    # 批量查询失败时退化:status 留空,只按「名单里查不查得到」分类。
+    ids = [m["open_id"] for m in members if m.get("open_id")]
+    status_map: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(ids), 50):
+        bres = await get_users_batch_impl(",".join(ids[i : i + 50]))
+        if bres.get("ok"):
+            for u in bres.get("users", []) if isinstance(bres.get("users"), list) else []:
+                if u.get("open_id") and u.get("status"):
+                    status_map[u["open_id"]] = u["status"]
+    for m in members:
+        m["status"] = status_map.get(m["open_id"], {})
+
+    classified = _classify_names(names, members)
+    classified["ok"] = True
+    classified["directory_size"] = len(members)
+    return classified
+
+
+def _inactive_status(status: dict[str, Any] | None) -> bool:
+    """离职 / 待离职 / 冻结(暂停使用)= 不活跃。status 缺省按活跃(见调用方退化口径)。"""
+    if not status:
+        return False
+    return bool(status.get("is_resigned") or status.get("is_exited") or status.get("is_frozen"))
+
+
+def _classify_names(names: list[str], members: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pure classification: every name lands in exactly one bucket.
+
+    resigned = 通讯录查不到(飞书已把离职者移出列表)或 status 标记不活跃。
+    active = 在通讯录且 status 不活跃标记为假;unresolved = 重名歧义。
+    """
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for m in members:
+        if m.get("name"):
+            by_name.setdefault(m["name"], []).append(m)
+
+    active: list[dict[str, str]] = []
+    resigned: list[str] = []
+    unresolved: list[str] = []
+    for raw in names:
+        name = raw.strip()
+        if not name:
+            continue
+        hits = by_name.get(name, [])
+        if not hits or all(_inactive_status(h.get("status")) for h in hits):
+            resigned.append(name)
+        elif len(hits) == 1:
+            active.append({"name": name, "open_id": hits[0]["open_id"]})
+        else:
+            unresolved.append(name)
+
+    return {
+        "total": len(names),
+        "active": active,
+        "resigned": resigned,
+        "unresolved": unresolved,
+    }
