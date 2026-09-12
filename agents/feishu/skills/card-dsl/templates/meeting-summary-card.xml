@@ -4,15 +4,19 @@
   values: meeting_line / summary / key_points / positives / negatives / footer
     meeting_line = 首行元信息,如 "周中对齐会 · 2026-09-08"
     summary / key_points / positives / negatives = 已渲染好的 markdown 文本
-    任一为空:整节不渲染(<section> 空占位由引擎跳过,与 {note} 同语义)
+    任一为空:整节不渲染(<section>/<collapse> 空占位由引擎跳过,与 {note} 同语义)
+
+  摘要在首屏,其余长段落一律进**折叠面板**(默认收起、可展开): 卡片是给人"扫"的,
+  但内容不该因此被砍掉——2026-09-12 前这几节是按 700/1500/900 字硬截断的,
+  实测一场会摘要有 1530 字、正负面概览 3624 字, 收件人只能看到一半。
 -->
 <card title="会议总结" template="blue">
   <section text="{meeting_line}"/>
   <divider/>
   <section title="会议摘要" text="{summary}"/>
-  <section title="关键决定与分析" text="{key_points}"/>
-  <section title="✅ 正面候选" text="{positives}"/>
-  <section title="⚠️ 负面候选" text="{negatives}"/>
+  <collapse title="关键决定与分析（点开看全文）" text="{key_points}"/>
+  <collapse title="✅ 正面候选（点开看全文）" text="{positives}"/>
+  <collapse title="⚠️ 负面候选（点开看全文）" text="{negatives}"/>
   <divider/>
   <section text="{footer}"/>
 </card>

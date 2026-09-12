@@ -18,6 +18,7 @@ import ast
 import hashlib
 import json
 import re
+from typing import Any
 
 import _card_dsl
 import _feishu_impl as _f
@@ -26,16 +27,21 @@ from meeting_session_notify import _read_receipts, _receipt_lock, _resolve_recip
 
 from psi_agent._appdata import resolve_appdata_root
 
-# 卡片各分区的字符上限(飞书 markdown 单元素有隐性大小约束,控制总量)。
-# 上限刻意压短: 卡片是给人"扫"的, 长文应该去会议存档看 —— 一屏塞不完的内容
-# 等于没写。
-_SUMMARY_LIMIT = 700
-_KEY_POINTS_LIMIT = 1500
+# 卡片**不再按固定字符数截断正文**(2026-09-12): 长段落进折叠面板(默认收起、可展开),
+# 首屏照旧干净, 但一个字都不丢。真正的约束是下面那张卡片的**字节预算** ——
+# 飞书卡片硬上限约 30KB(错误码 230025, 见 ``_feishu/message.py``), 超了整张卡会
+# 发送失败, 所以超预算时按"最长的一段先降级"收敛(见 ``_fit_card_to_budget``)。
+#
+# 这两条仍是**单条/条数**层面的上限, 与卡片体积无关, 属于"读得动"的取舍:
 _EVIDENCE_LIMIT = 160
 _CANDIDATE_LIMIT = 12
-_UNSTRUCTURED_OVERVIEW_LIMIT = 400
-#: 未结构化 overview 分栏后的每栏字符上限(条数另由 ``_CANDIDATE_LIMIT`` 收口)。
-_UNSTRUCTURED_SECTION_LIMIT = 900
+#: 卡片 JSON 的字节预算: 30KB 硬上限留出余量给飞书侧包装与转义膨胀。
+CARD_BYTE_BUDGET = 26_000
+#: 收缩地板: 再砍下去这段话就没信息量了, 交给调用方/告警处理, 不无限砍。
+_SECTION_FLOOR = 240
+#: 可收缩的段落(按"谁长先动谁"排序, 与优先级无关)。
+_SHRINKABLE_KEYS = ("key_points", "summary", "positives", "negatives")
+_BUDGET_PASSES = 12
 _ELLIPSIS = "\n\n…(内容较长, 已截断, 完整文本见会议存档)"
 
 _CANDIDATE_KEYS = ("positive_candidates", "negative_candidates", "positives", "negatives")
@@ -230,7 +236,7 @@ def _unstructured_sections(text: str) -> tuple[str, str, str]:
         return "", "", ""
     marks = list(re.finditer(r"【([^】]{1,24})】", body))
     if not marks:
-        return "", "", _truncate(body, _UNSTRUCTURED_OVERVIEW_LIMIT)
+        return "", "", body
     note = _truncate(body[: marks[0].start()].strip(), 200)
     positives: list[tuple[str, str]] = []
     negatives: list[tuple[str, str]] = []
@@ -254,7 +260,7 @@ def _unstructured_sections(text: str) -> tuple[str, str, str]:
         extra = len(entries) - len(blocks)
         if extra > 0:
             blocks.append(f"…另有 {extra} 条, 完整清单见会议存档")
-        return _truncate("\n\n".join(blocks), _UNSTRUCTURED_SECTION_LIMIT)
+        return "\n\n".join(blocks)
 
     if neutral:
         suffix = f"…另有 {neutral} 条中性/待补充证据条目, 完整清单见会议存档"
@@ -284,6 +290,38 @@ def _overview_sections(overview_text: str) -> tuple[str, str, str]:
     return positives, negatives, note
 
 
+def _card_bytes(card: dict[str, Any]) -> int:
+    """卡片 JSON 的实际字节数(中文按 UTF-8 3 字节计 —— 飞书的 30KB 上限是字节数)。"""
+    return len(json.dumps(card, ensure_ascii=False).encode("utf-8"))
+
+
+def _render_values(values: dict[str, str]) -> dict[str, Any]:
+    return _card_dsl.render_template("meeting-summary-card", values_json=json.dumps(values, ensure_ascii=False))
+
+
+def _fit_card_to_budget(values: dict[str, str], rendered: dict[str, Any]) -> tuple[dict[str, str], dict[str, Any]]:
+    """把卡片收敛进字节预算: 只降级**最长的那一段**, 其余内容保持完整。
+
+    截断说明会写进被砍的那一段, 所以砍最长的那段才对症 —— 砍短的既丢内容又解决不了
+    体积。每轮至少砍掉超出预算的部分(中文约 3 字节/字), 并设轮数与地板, 不会死循环。
+    """
+    working = dict(values)
+    for _ in range(_BUDGET_PASSES):
+        if not rendered.get("ok"):
+            return working, rendered
+        over = _card_bytes(rendered["card"]) - CARD_BYTE_BUDGET
+        if over <= 0:
+            return working, rendered
+        key = max(_SHRINKABLE_KEYS, key=lambda name: len(str(working.get(name) or "")))
+        current = str(working.get(key) or "")
+        if len(current) <= _SECTION_FLOOR:
+            return working, rendered
+        cut = max(over // 3 + 1, len(current) // 8)
+        working[key] = _truncate(current, max(_SECTION_FLOOR, len(current) - cut))
+        rendered = _render_values(working)
+    return working, rendered
+
+
 def render_meeting_summary_card(
     meeting_title: str,
     meeting_code: str,
@@ -304,13 +342,14 @@ def render_meeting_summary_card(
         footer = f"{overview_note}\n\n{footer}"
     values = {
         "meeting_line": f"{meeting_title} · {meeting_date}",
-        "summary": _truncate(_structure(_strip_declarations(summary)), _SUMMARY_LIMIT),
-        "key_points": _truncate(_structure(_strip_declarations(key_points)), _KEY_POINTS_LIMIT),
+        # 不再按固定字符数截断: 摘要在首屏, 其余长段落进折叠面板(模板里是 <collapse>)。
+        "summary": _structure(_strip_declarations(summary)),
+        "key_points": _structure(_strip_declarations(key_points)),
         "positives": positives,
         "negatives": negatives,
         "footer": footer,
     }
-    rendered = _card_dsl.render_template("meeting-summary-card", values_json=json.dumps(values, ensure_ascii=False))
+    values, rendered = _fit_card_to_budget(values, _render_values(values))
     if not rendered.get("ok"):
         return {"ok": False, "error": str(rendered.get("error") or "card render failed")}
     return {"ok": True, "card": rendered["card"], "handlers": rendered.get("handlers", {}), "values": values}
