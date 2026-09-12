@@ -14,6 +14,7 @@ import tyro
 from aiohttp import web
 from loguru import logger
 
+from psi_agent._gateway_instance_lock import AppDataInstanceLock, GatewayInstanceError
 from psi_agent._logging import setup_logging
 from psi_agent._sockets import create_site
 from psi_agent.gateway._defaults import (
@@ -27,6 +28,7 @@ from psi_agent.gateway._state import GatewayState
 from psi_agent.gateway.desktop._attention import AttentionHub
 from psi_agent.gateway.desktop._auth_manager import AuthManager, resolve_endpoint
 from psi_agent.gateway.desktop._free_model import make_key_resolver
+from psi_agent.gateway.desktop._installer_activate import InstallerActivateListener
 from psi_agent.gateway.desktop._routes import register_desktop_routes
 from psi_agent.gateway.desktop._spa_shell import DEFAULT_APP_NAME
 from psi_agent.gateway.desktop._tray import GatewayTray
@@ -280,6 +282,37 @@ class Gateway:
         agent_default = await resolve_default_agent(self.default_agent)
         workspace_default = await resolve_default_workspace(self.default_workspace)
         appdata_root = await resolve_appdata_root(self.appdata)
+        # 同一 AppData 只允许一个 Gateway 进程持锁 (刻意为之): 防止双开共写
+        # state/latest.json 把 sessions 盖成 []. 端口随机与否无关; 身份是 AppData 根.
+        # 要并行: 换 --appdata 且换 --socket-path. 见 AGENTS.md「两个 Gateway 同时跑」.
+        instance_lock = AppDataInstanceLock(appdata_root)
+        try:
+            instance_lock.acquire()
+        except GatewayInstanceError as e:
+            raise ValueError(str(e)) from e
+        logger.info(f"AppData instance lock acquired: {instance_lock.path}")
+
+        try:
+            await self._run_with_appdata(
+                addr=addr,
+                gateways=gateways,
+                agent_default=agent_default,
+                workspace_default=workspace_default,
+                appdata_root=appdata_root,
+            )
+        finally:
+            instance_lock.release()
+            logger.info("AppData instance lock released")
+
+    async def _run_with_appdata(
+        self,
+        *,
+        addr: str,
+        gateways: tuple[str, ...],
+        agent_default: str,
+        workspace_default: str,
+        appdata_root: str,
+    ) -> None:
         prefs = await UIPrefs.from_appdata(appdata_root)
         install_language = await read_install_language(agent_default)
         language = await resolve_default_language(
@@ -551,6 +584,7 @@ class Gateway:
                     await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
 
                 tray = None
+                installer_activate: InstallerActivateListener | None = None
                 if self.tray:
                     if self.icon is None:
                         raise ValueError("--tray requires --icon to be set")
@@ -560,6 +594,20 @@ class Gateway:
                         tray.start()
                     except Exception as e:
                         logger.warning(f"Failed to start system tray: {e!r}")
+
+                    # 装机版 haitun.exe 二次点击: mutex 拦住复开后 SetEvent 到这里, 再开控制台.
+                    # 终端多 Gateway 不走 exe mutex; 仅 --tray 时装监听 (与装机启动参数对齐).
+                    def _reopen_console() -> None:
+                        if wv is not None and wv.is_running():
+                            wv.show()
+                            wv.request_attention()
+                        else:
+                            webbrowser.open(addr)
+                        if tray is not None and tray.is_running():
+                            tray.request_attention()
+
+                    installer_activate = InstallerActivateListener(_reopen_console)
+                    installer_activate.start()
 
                 if wv is not None and wv.is_running():
                     attention.bind(webview=wv)
@@ -574,6 +622,8 @@ class Gateway:
                     else:
                         await anyio.sleep_forever()
                 finally:
+                    if installer_activate is not None:
+                        installer_activate.stop()
                     if tray is not None:
                         tray.stop()
                     if wv is not None:
