@@ -35,9 +35,7 @@
 | 交付物 | 气泡 blob chip | 宝箱 UI；SSE `blob` 写入 `deliverables`；抽屉内按 blob 真实渲染（对齐 spa v1：MD/HTML/图片音视频/代码/CSV/PDF/DOCX/XLSX/PPTX，重库动态 `import()`；无 blob 时明确空态）。MD 预览与聊天气泡共用 `renderMd` + `.md-table-card`。**刻意为之**：`renderMd` 超链接 `target=_blank`；附件 chip / 预览抽屉仍本页。DOCX：`ignoreWidth` 去掉页宽；**页边距仍是绝对长度**，预览 CSS 强制 `section.docx` 宽 100% + 适中 padding，避免窄抽屉里正文挤成细条；表格/图片 `max-width:100%` 防横向溢出。视觉对齐 MD：`fitDocxTables()` 清 Word 绝对列宽、包 `.docx-table-scroll`、首行标 `docx-table-header-row`；host CSS 用深色标题 / 灰边卡片表 / 正文 15px（勿保留 Word 主题蓝标题）。有 `[SEND:]` path 时，气泡 chip / 宝箱 / 预览抽屉可「在文件夹中显示」（`POST /workspace/reveal`） |
 | 账户区 | 头像菜单合一 | 头像菜单仅账号/登录（「我的资料」已并进账号，入口已删）；**模型池**与**设置**为侧栏独立快捷入口 |
 | 默认工作区 | 无 / 必须先选 | 启动读 ``GET /defaults``.workspace（Gateway 软默认 `{Desktop}/haitun交付`，**只宣布不建目录**；首个 Session/对话时服务端再 mkdir）；遗留 `*-workspace` / 字面量 `workspace` / `haitun-workspace` 会忽略 |
-| 工作区切换 | 侧栏打开 PathPicker | 设置「切换工作区」→ 全屏选择页；**只更新新建任务默认路径** + `gw-v2-workspace`；**不** remount、**不**按目录过滤侧栏 |
-| Agent 包切换 | — | 设置「切换 Agent 包」同区；只影响**新建** `POST /sessions` 的 `agent`；已有任务不变 |
-| 任务迁移 | — | 侧栏行「迁移」：选目标 workspace → 选 agent 包 → `POST /sessions/{id}/relocate`（拷贝后删旧）；置顶 / 新交付物键随新 id 搬 |
+| 工作区切换 | 侧栏打开 PathPicker | 设置「切换工作区」→ 全屏选择页；**浏览**走 `/workspace/places` + `/browse`（对齐 v1）；偏好 `gw-v2-workspace` |
 | 顶栏新建 | — | 右上角「新建任务/聊天」+ 侧栏同入口（**刻意为之**：不绑 `⌘/Ctrl N`，与 Edge「打开新窗口」冲突；侧栏按钮亦不展示该快捷键）；**分屏聚焦**时对话栏「收起」旁也有同款入口（左栏收起后**仅**保留展开上下文钮，不再并排再建入口） |
 | Agent 包 | 与 workspace 合一 | ``GET /defaults``.agent → 新建任务/聊天 ``POST /sessions`` 带 `agent`（可与用户工作区不同）。设置「切换 Agent 包」与工作区同区；全屏 `WorkspaceGate kind=agent`；偏好 `gw-v2-agent`（覆盖 defaults）。**刻意为之**：只影响**新建** Session；已有任务仍用创建时绑定的 `agent` |
 | 任务模板库 | — | 卡片正文/分类/交付物/页脚等字号 ≥12–14px（勿回退 8–10px 设计稿字号）。「新建模板」抽屉经 `createPortal` 挂 `document.body`：全屏遮罩 + 右侧贴边抽屉（勿嵌在 `.main-stage` 内导致四边露白） |
@@ -53,9 +51,8 @@
 ## 映射
 
 ```text
-任务卡          ↔  Gateway Session（侧栏**全量**用户 Session，不按打开工作区过滤；C 端剔除 `feishu-*`；可选独立 agent 包）
-新建任务/聊天   ↔  POST /sessions（带**当前默认** workspace/agent）+ POST /titles（首条文案的 `titleFromPrompt`，与乐观 UI 一致）+ 首条 chat SSE（文案与附件同总览对话框：`File[]` multipart）；**首条发送后立刻进入分屏聚焦**（左上下文 / 右对话），不再停在新建页本地气泡
-任务迁移        ↔  POST /sessions/{id}/relocate（新 workspace + agent → 拷贝 history/todos/title/summary → 删旧）；侧栏用新 id 替换；交付物磁盘文件不搬家（刻意为之）
+任务卡          ↔  Gateway Session（同 workspace；可选独立 agent 包）
+新建任务/聊天   ↔  POST /sessions（可带 agent）+ POST /titles（首条文案的 `titleFromPrompt`，与乐观 UI 一致）+ 首条 chat SSE（文案与附件同总览对话框：`File[]` multipart）；**首条发送后立刻进入分屏聚焦**（左上下文 / 右对话），不再停在新建页本地气泡
 卡片内对话      ↔  POST /sessions/{id}/chat（multipart chunks）
 任务台标题      ↔  **刻意为之**：对标 DeepSeek——取聊天里**首条** user 文案（`titleFromHistoryMessages`）。`ensureHistory` / `refreshHistory` / 回合成功后同步 `POST /titles`；**无 user 的空 chat 默认不改标题**（避免首条落盘前抢读把乐观标题盖成「新任务」）。**Stop 撤回**传 `emptyMeansDefault` 才回落「新任务」。**不再**用 `POST /titles/generate` 另开 LLM 起标题。
 任务历史文案    ↔  GET /sessions/{id}/history（AppData `histories/` 优先 + legacy 双读）
@@ -78,7 +75,7 @@ Hub「使用免费模型」→ **保留**已连接真实模型；hydrateAiForSes
 发消息           → ensureSessionAi（优先任务绑定的模型；已被删除则用当前模型配置重绑旧 id，通道继续可用）
 ```
 
-不盲选 `ais[0]`。**不自动删除任何已连接模型**——只有「已连接」行的删除按钮会删除，且一次删除该配置（`provider+model+api_key+base_url`）的**全部实例**（同一模型被多个 Session 绑定的重复条目会一起删掉）；删除当前模型后回落到剩余模型，新连接/切免费都不影响其它模型，新连接的模型立即成为当前模型。优先 localStorage 选中 AI（含用户主动选的免费条目），免费条目与真实 key 可以同时保留在池中。Gateway **不**级联删 Session——AI 删除后 Session 仍挂旧 `ai_id`；该任务下一次对话用**当前选中模型**，并把旧 `ai_id` **重绑到当前模型配置**（池全空时才回落免费默认），Session 通道保持可用，刷新后任务卡与可聊性不变。模型池「已连接」按同配置 **折叠展示**（仅 id 不同只显示一行；key 不同则分列）；无显式 id 的 `POST /ais` 同配置复用已有实例。**展示层**（`labelAisForDisplay`）：副标题区分「免费」与「自有 Key ···末四位」；同名标题再加 `(1)/(2)`；**重命名**独立存 `gw` 无关的 `spa-v2-ai-aliases`（按 `aiConfigKey`，id 重绑不丢）。**侧栏不再按 workspace 过滤**（`sessionMatchesWorkspace` 仅保留工具函数；列表 = Gateway 全量用户 Session，剔除 `feishu-*`）。
+不盲选 `ais[0]`。**不自动删除任何已连接模型**——只有「已连接」行的删除按钮会删除，且一次删除该配置（`provider+model+api_key+base_url`）的**全部实例**（同一模型被多个 Session 绑定的重复条目会一起删掉）；删除当前模型后回落到剩余模型，新连接/切免费都不影响其它模型，新连接的模型立即成为当前模型。优先 localStorage 选中 AI（含用户主动选的免费条目），免费条目与真实 key 可以同时保留在池中。Gateway **不**级联删 Session——AI 删除后 Session 仍挂旧 `ai_id`；该任务下一次对话用**当前选中模型**，并把旧 `ai_id` **重绑到当前模型配置**（池全空时才回落免费默认），Session 通道保持可用，刷新后任务卡与可聊性不变。模型池「已连接」按同配置 **折叠展示**（仅 id 不同只显示一行；key 不同则分列）；无显式 id 的 `POST /ais` 同配置复用已有实例。**展示层**（`labelAisForDisplay`）：副标题区分「免费」与「自有 Key ···末四位」；同名标题再加 `(1)/(2)`；**重命名**独立存 `gw` 无关的 `spa-v2-ai-aliases`（按 `aiConfigKey`，id 重绑不丢）。workspace 过滤用 `sessionMatchesWorkspace`（空 workspace 视为本工作区）。
 
 ### 任务卡三步进度（分层）
 
