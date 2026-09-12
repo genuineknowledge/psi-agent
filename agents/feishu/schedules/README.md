@@ -1,8 +1,8 @@
 # 会议定时任务种子（`agents/feishu/schedules/`）
 
-本目录是两场固定会议定时任务的**种子 TASK.md**。Gateway 以 feishu 模式启动时,
-meeting 自动化会把它们落到会议专用 workspace(`.meeting-session/schedules/`)并由
-`meeting-session` 会话激活。
+本目录是固定会议定时任务的**种子 TASK.md**（两场主任务 + 补偿重跑）。Gateway 以
+feishu 模式启动时, meeting 自动化会把它们落到会议专用
+workspace(`.meeting-session/schedules/`)并由 `meeting-session` 会话激活。
 
 > seed 只补 workspace 里**缺失的同名任务**, 已存在的一律不覆盖、也不删除 (`_scheduler_manager._seed_missing_schedules`)。因此下线一条任务要两步: 删掉 agent 包里的 `TASK.md` **并且**删掉 workspace 里的同名目录; 只删包里的文件, 线上旧目录会继续按原 cron 触发。
 
@@ -11,12 +11,27 @@ meeting 自动化会把它们落到会议专用 workspace(`.meeting-session/sche
 | TASK.md | 会议 | Cron | 行为 |
 |---|---|---|---|
 | `weekday-alignment/TASK.md` | 周中对齐会 `57152787045`(周一/三/五 10:00) | `0 12 * * 1,3,5` | `meeting_pipeline_run`: 取最新已完成转写 → 分块分析 → 按路由发送 |
+| `weekday-alignment-retry-1730/TASK.md` | 同上(补偿重跑) | `30 17 * * 1,3,5` | 同上; 主任务已投递时按 record 去重自动跳过 |
+| `weekday-alignment-retry-2230/TASK.md` | 同上(补偿重跑) | `30 22 * * 1,3,5` | 同上 |
 | `weekday-alignment-1100/TASK.md` | 日会 `42654699903`(周一/三/五 11:00) | `0 13 * * 1,3,5` | 同上 |
+| `weekday-alignment-1100-retry-1730/TASK.md` | 同上(补偿重跑) | `30 17 * * 1,3,5` | 同上 |
 
-> 17:30 的两条补偿重跑 (`*-retry-1730`) 已于 2026-09-11 下线: 只保留两场主任务。
+> **补偿重跑为什么必须有**: 腾讯的文字转写是**异步**产出的, 主跑时常常还没有
+> (实测 2026-09-11 周中会: 12:00 主跑无转写, 21:59 才生成)。而管道只认**最新
+> occurrence** —— 下一次主跑时最新已是下一场, 当天没赶上就**永久丢失**。故周中会留
+> 17:30 与 22:30 两档(后者覆盖"晚上才出转写"), 日会保留 17:30 一档。
+> 幂等由 `record_file_id` 保证: 主任务已成功投递时, 重跑只跳过、不重复发卡。
+>
+> 2026-09-11 曾把两条 `*-retry-1730` 一起下线; 2026-09-12 因上述迟到转写复盘, 周中会
+> 重新声明补偿重跑(日会原有的那档一直没删)。
 
 运行语义: `visibility: silent`(结果不进普通用户对话)、`fire: tool`(到点直调工具、
 不经过模型自主决策)、按录制 `record_file_id` 幂等。
+
+> 本目录的文件必须与 `_meeting_automation.meeting_schedule_files()` 的投影**逐字节
+> 一致**(cron / retry / tool_args 的唯一事实源是代码里的 `MEETING_JOBS`);
+> `tests/test_meeting_automation.py::test_committed_meeting_schedule_files_match_projection`
+> 就是这条判据。改 `MEETING_JOBS` 后重新生成一次, 不要手改 cron。
 
 ## 运行所需的凭据环境变量
 
