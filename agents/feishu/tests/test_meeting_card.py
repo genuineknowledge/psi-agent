@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # Local meeting tools intentionally load from the agent package rather than an installed package.
-# ruff: noqa: E402
+# ruff: noqa: E402, RUF001 (用例正文是中文会议文案, 全角标点是内容本身)
 import json
 import sys
 from pathlib import Path
@@ -161,6 +161,115 @@ def test_long_paragraph_is_rendered_as_bullets() -> None:
     assert result.get("ok"), result.get("error")
     assert result["values"]["summary"].count("\n- ") >= 3
     assert result["values"]["key_points"].count("\n- ") >= 3
+
+
+def test_medium_paragraph_is_also_bulleted() -> None:
+    """100~140 字符的中等段落此前原样成行 —— 那正是"看起来还是一大段"的来源。"""
+    paragraph = (
+        "会议确认了发布节奏与验收口径，把风险项单独列出并要求各自给出截止时间；"
+        "同时决定把可插拔排在基础本体之前，下周复核一次进度。"
+    )
+    assert 60 < len(paragraph) < 140
+    result = cardmod.render_meeting_summary_card(
+        "日会",
+        "42654699903",
+        "2026-09-11",
+        {"meeting_summary": paragraph, "analysis_text": "", "positive_negative_overview": ""},
+    )
+    assert result.get("ok"), result.get("error")
+    assert result["values"]["summary"].startswith("- ")
+    assert "\n- " in result["values"]["summary"], "一句一行才叫松散"
+
+
+def test_long_sentence_is_split_on_commas() -> None:
+    """单句超过目标长度就按逗号把短分句攒成多条要点, 每行都要短。"""
+    sentence = "会议确认发布节奏保持不变，风险项由各自负责人补充截止时间，下周一复核，若仍无结论则升级到组会讨论。"
+    result = cardmod.render_meeting_summary_card(
+        "日会",
+        "42654699903",
+        "2026-09-11",
+        {"meeting_summary": sentence, "analysis_text": "", "positive_negative_overview": ""},
+    )
+    assert result.get("ok"), result.get("error")
+    bullets = [line for line in result["values"]["summary"].splitlines() if line.startswith("- ")]
+    assert len(bullets) >= 2, f"长句该切成多条要点: {bullets}"
+    assert max(len(line) for line in bullets) <= 60, f"每条都该短: {bullets}"
+    assert "".join(line[2:] for line in bullets) == sentence, "切分不许丢字"
+
+
+def test_bullets_survive_into_the_rendered_card() -> None:
+    """回归钉子: 引擎曾把属性里的字面换行归一成空格, 于是所有要点被压成一行。
+
+    XML 规范要求属性值里的字面换行折成空格, 所以渲染后**必须**仍是多行 ——
+    只断言 ``values`` 是不够的(那里本来就是多行, bug 发生在渲染器里)。
+    """
+    paragraph = "第一句话说明结论。" * 20
+    result = cardmod.render_meeting_summary_card(
+        "周中对齐会",
+        "57152787045",
+        "2026-09-11",
+        {"meeting_summary": paragraph, "analysis_text": paragraph, "positive_negative_overview": ""},
+    )
+    assert result.get("ok"), result.get("error")
+    contents = _element_texts(result["card"])
+    body = [text for text in contents if "**会议摘要**" in text]
+    assert body, contents
+    lines = body[0].splitlines()
+    assert len(lines) >= 5, f"要点必须各占一行, 实际只有 {len(lines)} 行: {body[0][:200]}"
+    assert max(len(line) for line in lines) <= 120, "不该出现一整块长行"
+
+
+def test_candidates_are_listed_whatever_key_the_model_used() -> None:
+    """候选正文键不写死一种: 实测模型用过 ``event``, 只认 ``candidate`` 会把整栏丢光。"""
+    overview = json.dumps(
+        {
+            "disclaimer": "候选观察, 不计分。",
+            "positive_candidates": [
+                {"event": "主持人当场确立等待上限规则", "evidence": "[842102] 原话", "axis": "会议时间纪律"},
+            ],
+            "negative_candidates": [
+                {"event": "会议超时且无超时分流", "fact_layer": "可观察事实"},
+                "纯字符串条目也要列出来",
+            ],
+        },
+        ensure_ascii=False,
+    )
+    result = cardmod.render_meeting_summary_card(
+        "日会",
+        "42654699903",
+        "2026-09-11",
+        {"meeting_summary": "", "analysis_text": "", "positive_negative_overview": overview},
+    )
+    assert result.get("ok"), result.get("error")
+    values = result["values"]
+    assert "主持人当场确立等待上限规则" in values["positives"]
+    assert "会议时间纪律" in values["positives"]
+    assert "证据: " in values["positives"]
+    assert "会议超时且无超时分流" in values["negatives"]
+    assert "纯字符串条目也要列出来" in values["negatives"], "字符串条目不许被静默跳过"
+
+
+def test_unstructured_overview_is_split_into_the_two_sections() -> None:
+    """overview 不是 JSON 但有【正面候选…】小标题时, 应该分到两栏而不是塞进 footer。"""
+    overview = (
+        "以下均为候选观察，不写入正式正负面总表，不计分，不进入绩效。\n\n"
+        "【正面候选 1】孙逊主动承担管理责任\n"
+        "- 事实：孙逊说飞书应用没推动起来与自己这边的管理问题有关。\n\n"
+        "【负面候选 1】行动项缺截止时间\n"
+        "- 事实：多项行动项只有负责人、没有截止时间。\n"
+    )
+    result = cardmod.render_meeting_summary_card(
+        "周中对齐会",
+        "57152787045",
+        "2026-09-11",
+        {"meeting_summary": "", "analysis_text": "", "positive_negative_overview": overview},
+    )
+    assert result.get("ok"), result.get("error")
+    values = result["values"]
+    assert "孙逊主动承担管理责任" in values["positives"]
+    assert "行动项缺截止时间" in values["negatives"]
+    assert "不计分" not in values["positives"], "口径声明不该出现在正文"
+    assert "候选观察" not in values["footer"] or "候选观察: 不进入" in values["footer"]
 
 
 def test_code_generated_meta_and_cn_headings() -> None:
