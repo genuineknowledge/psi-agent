@@ -12,8 +12,12 @@
 company_name: 真知
 card_title_prefix: 入职卡
 sop_doc_url: https://genuineknowledge.feishu.cn/docx/BFs4dmCxkohnMVxP47vc7Exonxf
-hr_notify_id: ou_f330a7e0874e53d4f3d1e08ba1d41853   # 罗霖（HRD）；留空则异常提醒不发
-hr_notify_id_type: open_id
+# 罗霖（HRD）的**租户 user_id**（不带 ou_ 前缀）: 跨应用稳定。
+# open_id 按应用隔离 —— 换了飞书应用（生产 ToB / 联调）旧值会直接报
+# 99992361 open_id cross app, 19:00 的异常提醒就发不出去（2026-09-12 复盘）。
+# 留空则异常提醒不发；类型必须与上面的 id 同源, 发送侧按 hr_notify_id_type 发。
+hr_notify_id: 98ba56b8
+hr_notify_id_type: user_id
 
 # 全组织共用**同一个**多维表格（总览表一人一行、明细表一人 28 行）。
 #
