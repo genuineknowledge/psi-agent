@@ -119,6 +119,7 @@ from psi_agent.session import layer_probe
 # tools / triggers / systems 完全一致 —— 各自解析一遍就是让四类内容悄悄分岔。
 from psi_agent.session.content_roots import AGENT_ROOT_NAME as _AGENT_ROOT_NAME
 from psi_agent.session.content_roots import content_roots_from_env as _content_roots_from_env
+from psi_agent.session.content_tombstone import is_tombstone as _is_tombstone
 
 from prompt_sections import (
     BOOTSTRAP_PENDING_SECTION,
@@ -530,6 +531,26 @@ async def _collect_skill_dirs(skills_dir: anyio.Path) -> list[tuple[str, anyio.P
     return entries
 
 
+async def _is_tombstoned(skill_md: anyio.Path) -> bool:
+    """该 SKILL.md 是不是墓碑(B-2 的"删除只读层内容", 见 ``content_tombstone``)。
+
+    读不出来当**不是**墓碑: 默认反过来会让一个 IO 抖动把某个 skill 从提示词里静默拿掉。
+    """
+    try:
+        raw = await skill_md.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    header: dict[str, str] = {}
+    if raw.startswith("---"):
+        end = raw.find("\n---", 3)
+        if end != -1:
+            for line in raw[3:end].splitlines():
+                if ":" in line:
+                    key, _, value = line.partition(":")
+                    header[key.strip()] = value.strip().strip('"').strip("'")
+    return _is_tombstone(header)
+
+
 async def _skill_roots(workspace_dir: anyio.Path) -> list[tuple[str, anyio.Path]]:
     """``(层名, skills 目录)`` 由远及近: global, 声明的内容根..., agent 根。
 
@@ -585,6 +606,15 @@ async def _build_skills_index(workspace_dir: anyio.Path) -> str:
     for layer_name, skills_dir in roots:
         found = await _collect_skill_dirs(skills_dir)
         for name, skill_md in found:
+            # 墓碑(B-2): 近的那层说"这个名字停用了", 于是它**整个消失**, 而不是被替换成
+            # 墓碑那份内容。放进索引会让模型看到一个 description 写着"已删除"的 skill;
+            # 只 pop 不 continue 会让更近的层没机会再放回来 —— 但 roots 是由远及近的,
+            # 更近的层还在后面, 所以 pop 之后照常继续: 若真有更近的一层放了内容, 它会
+            # 在后续轮次把这个名字重新写进来, 这正是 nearest-wins 该有的行为。
+            if await _is_tombstoned(skill_md):
+                skill_md_by_name.pop(name, None)
+                layer_by_name.pop(name, None)
+                continue
             skill_md_by_name[name] = skill_md
             layer_by_name[name] = layer_name
         # 层来源探针(只读, 见 ``layer_probe``)。

@@ -95,6 +95,7 @@ from typing import Any
 import yaml
 
 from psi_agent.session import layer_probe
+from psi_agent.session.content_tombstone import is_tombstone as _is_tombstone
 
 _RULES_BLOCK = re.compile(r"^```rules\s*$(.*?)^```\s*$", re.M | re.S)
 _METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
@@ -288,21 +289,67 @@ def parse_rules(text: str, source: str = "") -> list[Rule]:
 
 
 def load_rules(skills_dir: str | pathlib.Path) -> list[Rule]:
-    """All rules from ``<skills_dir>/*/SKILL.md``, most specific URI first."""
+    """All rules from ``<skills_dir>/*/SKILL.md``, most specific URI first.
+
+    Tombstoned skills (see ``content_tombstone``) contribute nothing: a skill the
+    user deleted must stop constraining API calls, not just vanish from the
+    prompt index. The two consumers of ``skills/`` have to agree — a rule that
+    outlives its deleted skill refuses calls for a reason the model can no longer
+    read anywhere.
+    """
+    rules, _tombstoned, _present = _load_rules_and_tombstones(skills_dir)
+    return rules
+
+
+def _load_rules_and_tombstones(skills_dir: str | pathlib.Path) -> tuple[list[Rule], set[str], set[str]]:
+    """``(rules, 被墓碑停用的 skill 名, 本层出现过的 skill 名)`` for one layer.
+
+    The tombstoned names come back separately because a tombstone names a
+    **skill** while a rule's identity is ``(METHOD, uri)``. The layered merge
+    therefore cannot express "deleted" as an override of the same key — it has to
+    drop the farther layer's rules *by source skill*, which is what this second
+    return value is for.
+
+    第三个返回值(本层**出现过**的 skill 名, 含没写 rules 块的)服务于整体覆盖: 覆盖的单位
+    是 skill 而不是 endpoint。派生副本删掉了 rules 块时, 它贡献 0 条规则 —— 若只按 endpoint
+    覆盖, 官方那份的规则会原地留下, 于是模型读到的是无规则的副本而真实调用仍被官方规则
+    拦住, 且拒绝的理由在任何地方都读不到。
+    """
     root = pathlib.Path(skills_dir)
     found: list[Rule] = []
+    tombstoned: set[str] = set()
+    present: set[str] = set()
     if not root.is_dir():
-        return found
+        return found, tombstoned, present
     for skill in sorted(root.glob("*/SKILL.md")):
         try:
             text = skill.read_text(encoding="utf-8")
         except OSError:
             continue
+        present.add(skill.parent.name)
+        if _is_tombstone(_frontmatter_of(text)):
+            tombstoned.add(skill.parent.name)
+            continue
         if "```rules" not in text:
             continue
         found.extend(parse_rules(text, source=skill.parent.name))
     found.sort(key=lambda r: -r.specificity)
-    return found
+    return found, tombstoned, present
+
+
+def _frontmatter_of(text: str) -> dict[str, str]:
+    """``key: value`` pairs from a leading ``---`` block; ``{}`` when there is none."""
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}
+    header: dict[str, str] = {}
+    for line in text[3:end].splitlines():
+        if ":" in line:
+            key, _, value = line.partition(":")
+            header[key.strip()] = value.strip().strip('"').strip("'")
+    return header
 
 
 def load_rules_layered(skills_dirs: Sequence[tuple[str, str | pathlib.Path]]) -> list[Rule]:
@@ -316,14 +363,28 @@ def load_rules_layered(skills_dirs: Sequence[tuple[str, str | pathlib.Path]]) ->
     guardrail neither wrote — on the API-call path, where the failure costs real
     money and real writes.
 
-    Identity is ``(METHOD, uri)``, not the file it came from: an override lands
-    in a different skill file by construction (a personal layer's own skill dir),
-    so keying on the file would let both rules survive and the
-    stricter-or-looser one win by sort order instead of by layer.
+    Within one endpoint, identity is ``(METHOD, uri)``: two layers writing a rule
+    for the same endpoint means the nearer rule replaces the farther one whole.
+
+    But the **unit of override is the skill**, not the endpoint. A nearer layer
+    that carries the same skill name — a derived copy, or a tombstone — retires
+    every rule the farther layer's same-named skill contributed, including the
+    endpoints the nearer copy says nothing about. Otherwise dropping a rule by
+    editing your copy is impossible: the official rule stays in force while the
+    skill the model reads no longer mentions it, so a refusal arrives with no
+    readable reason anywhere.
     """
     by_endpoint: dict[tuple[str, str], Rule] = {}
     for _layer, skills_dir in skills_dirs:
-        for rule in load_rules(skills_dir):
+        rules, tombstoned, present = _load_rules_and_tombstones(skills_dir)
+        # 先按 skill 名撤掉更远层的贡献, 再装本层的。墓碑与派生副本走同一条撤销路径:
+        # 前者是"这个 skill 没了", 后者是"这个 skill 归我这份说了算", 对更远那层的效果
+        # 相同 —— 它那份不再有发言权。
+        retired = tombstoned | present
+        if retired:
+            for key in [k for k, rule in by_endpoint.items() if rule.source in retired]:
+                del by_endpoint[key]
+        for rule in rules:
             by_endpoint[(rule.method, rule.uri)] = rule
     found = list(by_endpoint.values())
     found.sort(key=lambda r: -r.specificity)

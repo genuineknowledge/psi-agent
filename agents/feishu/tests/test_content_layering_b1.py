@@ -403,3 +403,32 @@ class TestGuardrailLayering:
 
         assert [name for name, _ in ladder] == ["official", _system._AGENT_ROOT_NAME]
         assert ladder[-1][1] == str(agent / "skills")
+
+    def test_missing_agent_layer_does_not_shadow_nearer_rule(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """agent 根下的 ``skills`` **不存在**时, 个人层的规则仍然生效。
+
+        这是 B-3 的真实形态: 上生产时 ``/workspace/skills`` 会被腾名, 而 ``_skills_ladder``
+        照旧把它追加在**最近**那一级(见该函数 151-152 行)。于是"最高优先级的那一层指向一个
+        不存在的目录"成为常态。
+
+        怕的是它不被静默跳过而是参与判定, 把个人层的规则遮蔽掉 —— 那样表现是提示词索引里
+        每人的覆盖看着生效, 而真实 API 调用失去护栏约束(该拒的没拒), 静默且朝最贵的方向错。
+        上面那些判据都假设 agent 层目录存在, 覆盖不到这个形态。
+        """
+        official, users, agent = tmp_path / "official", tmp_path / "users", tmp_path / "agent"
+        _write_skill(official, "feishu-demo", rules=_LOOSE_RULE)
+        _write_skill(users, "feishu-demo-personal", rules=_STRICT_RULE)
+        _declare_roots(monkeypatch, ("official", official), ("users", users))
+        # 腾名: 目录压根不建, 与生产 `mv skills skills.pre-layering` 之后同形。
+        monkeypatch.setattr(_api, "_skills_dir", lambda: str(agent / "skills"))
+        assert not (agent / "skills").exists(), "这条判据的前提是该目录不存在"
+
+        ladder = _api._skills_ladder()
+        assert ladder[-1][0] == _system._AGENT_ROOT_NAME, "不存在的 agent 层仍应在阶梯最近处"
+
+        rule = _spec.rules_for_layers(ladder, "GET", "/open-apis/demo/list")
+
+        assert rule is not None, "不存在的 agent 层遮蔽了个人层: 真实调用会失去护栏"
+        assert rule.fields["page_size"]["max"] == 10, "命中的不是个人层那条"

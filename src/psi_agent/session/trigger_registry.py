@@ -22,6 +22,7 @@ from loguru import logger
 from psi_agent._yaml import parse_yaml_header
 from psi_agent.session import layer_probe
 from psi_agent.session.content_roots import ContentRoot
+from psi_agent.session.content_tombstone import is_tombstone
 from psi_agent.session.event_protocol import (
     MATCH_ALL,
     EventEnvelope,
@@ -159,6 +160,10 @@ class TriggerEntry:
     file_hash: str
     trigger: Trigger
     fresh: bool = False
+    #: 墓碑标记(B-2, 见 ``content_tombstone``)。墓碑**是**一个已加载的条目而不是被跳过
+    #: 的文件: 它要参与跨层合并才能让更远那层的同名 trigger 落选。但它绝不能触发, 所以
+    #: ``triggers`` 把它滤掉 —— 一个"停用标记"自己跑起来是最坏的形状。
+    tombstone: bool = False
 
 
 class TriggerRegistry:
@@ -177,7 +182,15 @@ class TriggerRegistry:
 
     @property
     def triggers(self) -> list[Trigger]:
-        return [e.trigger for e in self._files.values()]
+        """The triggers that can fire — tombstones excluded.
+
+        Tombstones live in ``_files`` (they have to, so the layered merge can let
+        one shadow a lower root's same-named trigger by name), but they are
+        *absences*: a "this is deleted" marker that fires is worse than a failed
+        delete, because it fires with an empty body on whatever event the marker
+        happened to carry.
+        """
+        return [e.trigger for e in self._files.values() if not e.tombstone]
 
     @classmethod
     async def load(cls, triggers_dir: Path) -> TriggerRegistry:
@@ -490,6 +503,18 @@ class TriggerRegistry:
                     logger.error(f"No YAML header in {task_file!r}; skipping")
                     continue
                 name = str(header.get("name") or dir_path.name).strip()
+                # 墓碑要在 ``event`` 检查**之前**认出来: 它本来就没有 event(它不代表一个
+                # 会触发的东西), 走到下面那条 continue 就会被当成损坏文件跳过 —— 于是它
+                # 不进 ``_files``, 也就遮不住更远那层的同名 trigger, 删除静默失效。
+                if is_tombstone(header):
+                    files[str_path] = TriggerEntry(
+                        file_hash=file_hash,
+                        trigger=Trigger(name=name, event=""),
+                        fresh=True,
+                        tombstone=True,
+                    )
+                    logger.debug(f"Loaded tombstone for trigger {name!r} from {task_file!r}")
+                    continue
                 event = str(header.get("event") or "").strip()
                 if not event:
                     logger.error(f"Missing event in {task_file!r}; skipping")
