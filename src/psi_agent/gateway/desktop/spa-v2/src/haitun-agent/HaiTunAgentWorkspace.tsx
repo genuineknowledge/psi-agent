@@ -1245,6 +1245,7 @@ export default function HaiTunAgentWorkspace({
     setLiveThinkingByCard((current) => ({ ...current, [cardId]: "" }));
     setTodoSegmentSelection((current) => ({ ...current, [cardId]: "live" }));
     const userVisible = titleSource ?? (text.trim() || t("app.attachment"));
+    const turnStartedAt = Date.now();
     let turnOk = false;
     let wasAborted = false;
     let assistantFull = "";
@@ -1409,6 +1410,8 @@ export default function HaiTunAgentWorkspace({
         const { finalText } = settleContentSegments(turnContentSegByCardRef.current[cardId]);
         // Settle: drop temporary step bubble; keep only the last segment as body.
         if (!controller.signal.aborted) {
+          const thinkingMs = Math.max(0, Date.now() - turnStartedAt);
+          const settledAt = new Date().toISOString();
           setMessages((current) => {
             const list = [...(current[cardId] ?? [])];
             const last = list[list.length - 1];
@@ -1417,6 +1420,8 @@ export default function HaiTunAgentWorkspace({
                 ...last,
                 text: finalText || last.text,
                 interimText: undefined,
+                createdAt: settledAt,
+                thinkingMs,
                 ...(reasoningRaw ? { reasoning: reasoningRaw } : {}),
                 ...(tools.length ? { tools } : {}),
               };
@@ -1608,11 +1613,17 @@ export default function HaiTunAgentWorkspace({
     }
 
     const storedFiles = pendingFiles.length ? await filesToChatFiles(pendingFiles) : [];
+    const stampedAt = new Date().toISOString();
     let nextChat: ChatMessage[] = [];
     setMessages((current) => {
       nextChat = [
         ...(current[cardId] ?? []),
-        { role: "user", text: userVisible, files: storedFiles.length ? storedFiles : undefined },
+        {
+          role: "user",
+          text: userVisible,
+          files: storedFiles.length ? storedFiles : undefined,
+          createdAt: stampedAt,
+        },
         { role: "agent", text: "" },
       ];
       return { ...current, [cardId]: nextChat };
@@ -1856,6 +1867,7 @@ export default function HaiTunAgentWorkspace({
     };
     setTasks((current) => [...current, newTask]);
     const storedFiles = pendingFiles.length ? await filesToChatFiles(pendingFiles) : [];
+    const stampedAt = new Date().toISOString();
     setMessages((current) => ({
       ...current,
       [newTask.id]: [
@@ -1863,6 +1875,7 @@ export default function HaiTunAgentWorkspace({
           role: "user",
           text: userVisible,
           files: storedFiles.length ? storedFiles : undefined,
+          createdAt: stampedAt,
         },
         { role: "agent", text: "" },
       ],

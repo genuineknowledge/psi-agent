@@ -174,7 +174,7 @@ before / after 有内核默认值，`turn_context_fn` 和 `compaction_fn` 的 `N
 |--|------|
 | **workspace 侧签名** | `async def turn_context_builder() -> str`——不收参数（它不改写任何已有文本，只生产本回合的块），返回要挂上去的内容。**未定义即没有这个块**，老 workspace 行为不变 |
 | **折进位置** | 折在消息正文**之后**。放前面会移动这一回合的每个 byte，正好抵掉「存在带外键里」想省的东西 |
-| **不写回 history 行** | `turn_context` 是非上线键，与 `kind` / `chat_type` 同属 `_DISPLAY_ONLY_KEYS`：投影给 AI 时才折进 `content`，落盘行与 SPA 展示都看不到它。这样**之前每个回合投影出来都逐字节相同**，前缀才真的可复用 |
+| **不写回 history 行** | `turn_context` 是非上线键，与 `kind` / `chat_type` / `created_at` / `thinking_ms` 同属 `_DISPLAY_ONLY_KEYS`：投影给 AI 时才折进 `content`（仅 turn_context），落盘行与 SPA 展示都看不到它（timing 键相反：落盘可见、出网剥掉）。这样**之前每个回合投影出来都逐字节相同**，前缀才真的可复用 |
 | **多模态 content** | `content` 不是 `str`（block 列表）时原样返回、丢掉这个块——没有唯一的可追加位置，丢一行时钟远好过把 block 结构写坏 |
 | **构建失败** | `except Exception` 记 ERROR 后返回 `""`，不中断回合。**丢一行时钟远好过丢掉整个回合** |
 | **返回值不可用** | 非 `str` / 空串 / 纯空白一律当「没有这个块」 |
@@ -598,6 +598,8 @@ provider 只认 `reasoning_content`（any-llm 的 `REASONING_FIELD_NAMES` 首项
 | `schedule.display` / `trigger.display` | 仅 assistant |
 | `schedule.silent` / `trigger.silent` / `compacted` | 否 |
 | 遗留 `chat_type=schedule` / `*_schedule` role | 视为 silent |
+
+**展示 timing（刻意为之）**：JSONL 可带 ``created_at``（ISO UTC，``Conversation.add`` 缺则补）与 assistant ``thinking_ms``（整回合墙钟毫秒，自 user 早期 commit 后的 ``turn_t0`` 起算）。二者进 ``_DISPLAY_ONLY_KEYS``——Gateway ``/history`` 透出给 SPA 墙钟 /「已思考 · Ns」；``project_history_for_wire`` **剥掉**，永不进上游。旧行无字段时 UI 省略。合并多段 assistant 时取**后一行**的 ``created_at`` 与较大的 ``thinking_ms``。
 
 Gateway ``HistoryManager`` 同时投影剥掉 ``[SEND:]``/``[RECV:]`` 标记**与省略句柄
 ``[已省略 N 字符, 句柄 X]``**（`strip_transfer_markers`；带自述的形态是

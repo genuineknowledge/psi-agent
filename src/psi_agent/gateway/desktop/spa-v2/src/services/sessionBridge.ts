@@ -93,6 +93,12 @@ export function historyToChat(
         ? m.reasoning
         : undefined
     const tools = role === 'agent' ? toolSummariesFromHistory(m.tools, language) : []
+    const createdAt =
+      typeof m.created_at === 'string' && m.created_at.trim() ? m.created_at.trim() : undefined
+    const thinkingMs =
+      role === 'agent' && typeof m.thinking_ms === 'number' && Number.isFinite(m.thinking_ms)
+        ? Math.max(0, Math.floor(m.thinking_ms))
+        : undefined
     const last = out[out.length - 1]
     if (role === 'agent' && last?.role === 'agent') {
       const mergedFiles = mergeChatFiles(last.files, files)
@@ -100,6 +106,7 @@ export function historyToChat(
         .filter((r): r is string => typeof r === 'string' && !!r.trim())
         .join('\n')
       const mergedTools = mergeToolLines(last.tools, tools)
+      const mergedThinkingMs = maxOptionalMs(last.thinkingMs, thinkingMs)
       const { interimText: _dropInterim, ...rest } = last
       out[out.length - 1] = {
         ...rest,
@@ -108,6 +115,9 @@ export function historyToChat(
         ...(mergedFiles.length ? { files: mergedFiles } : {}),
         ...(mergedReasoning ? { reasoning: mergedReasoning } : {}),
         ...(mergedTools.length ? { tools: mergedTools } : {}),
+        // Later assistant row wins for wall-clock + thinking duration.
+        ...(createdAt ? { createdAt } : {}),
+        ...(mergedThinkingMs !== undefined ? { thinkingMs: mergedThinkingMs } : {}),
       }
       continue
     }
@@ -117,9 +127,18 @@ export function historyToChat(
       ...(files.length ? { files } : {}),
       ...(reasoning ? { reasoning } : {}),
       ...(tools.length ? { tools } : {}),
+      ...(createdAt ? { createdAt } : {}),
+      ...(thinkingMs !== undefined ? { thinkingMs } : {}),
     })
   }
   return out
+}
+
+function maxOptionalMs(a: number | undefined, b: number | undefined): number | undefined {
+  if (typeof a === 'number' && typeof b === 'number') return Math.max(a, b)
+  if (typeof a === 'number') return a
+  if (typeof b === 'number') return b
+  return undefined
 }
 
 function toolSummariesFromHistory(

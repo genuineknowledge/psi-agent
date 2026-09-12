@@ -325,3 +325,31 @@ async def test_history_delete_removes_appdata_and_legacy(tmp_path: Path, appdata
     assert not await app_path.exists()
     assert not await legacy_path.exists()
     await hm.delete(str(ws), "s-del", appdata=str(appdata))
+
+
+@pytest.mark.anyio
+async def test_history_projects_created_at_and_thinking_ms(tmp_path: Path, appdata: Path) -> None:
+    hm = HistoryManager()
+    result = await _project(
+        hm,
+        tmp_path,
+        appdata,
+        "timing",
+        [
+            '{"role":"user","content":"hi","kind":"chat","created_at":"2026-09-12T01:00:00.000Z"}',
+            # Tool-round assistant (no chat content) folds timing into the final bubble.
+            '{"role":"assistant","content":"","kind":"chat","tool_calls":[{"id":"1","type":"function","function":{"name":"read","arguments":"{}"}}],"created_at":"2026-09-12T01:00:01.000Z","thinking_ms":1000,"reasoning":"plan"}',
+            '{"role":"assistant","content":"done","kind":"chat","created_at":"2026-09-12T01:00:05.000Z","thinking_ms":5000,"reasoning":"ok"}',
+        ],
+    )
+    assert result == [
+        {"role": "user", "text": "hi", "created_at": "2026-09-12T01:00:00.000Z"},
+        {
+            "role": "assistant",
+            "text": "done",
+            "reasoning": "plan\nok",
+            "tools": [{"name": "read", "arguments": "{}"}],
+            "created_at": "2026-09-12T01:00:05.000Z",
+            "thinking_ms": 5000,
+        },
+    ]

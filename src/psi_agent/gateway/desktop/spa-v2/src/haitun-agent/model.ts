@@ -87,6 +87,10 @@ export type ChatMessage = {
    * and/or history ``tools`` projection). Rendered separately from「已思考」.
    */
   tools?: string[];
+  /** ISO-8601 UTC from Session JSONL ``created_at`` (or live optimistic stamp). */
+  createdAt?: string;
+  /** Whole-turn wall ms from Session ``thinking_ms`` (Cursor-style「已思考 · Ns」). */
+  thinkingMs?: number;
   /** Local-only: like / dislike on agent replies (spa v1 parity). */
   feedback?: MessageFeedback;
   /** User turn did not get a complete agent reply. */

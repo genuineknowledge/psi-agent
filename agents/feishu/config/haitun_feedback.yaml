@@ -1,15 +1,16 @@
 # HaiTun B/C 端 · 爽点/意见/bug 收集表（一层：确认后再写入）
-# 填好 app_token / table_id 后本 skill 才能落盘；列名须与多维表字段**逐字一致**。
-# 对话节奏见 skills/haitun-feedback-collect：先问类型/是否落盘，用户答应才 create_records。
+# 对话节奏见 skills/haitun-feedback-collect：先问类型/是否落盘，用户答应才写入。
 #
-# 推荐：一张表 + 「端」「类型」两列（筛选视图模拟 6 入口），不要 6 张独立 sheet。
-# 环境变量可覆盖（优先）：
+# 现网主路径：wiki 电子表格 + 6 个分表（端 × 类型）→ sheet_layout + feishu_sheet_append
+# 预留：一张多维表 + 「端」「类型」列 → 填 app_token / table_id 后走 feishu_bitable_create_records
+# 环境变量可覆盖多维坐标（优先）：
 #   HAITUN_FEEDBACK_APP_TOKEN / HAITUN_FEEDBACK_TABLE_ID
 
+# ── 多维表预留（现网未用；勿把 spreadsheet_token 填到这里）────────────────
 app_token: ""
 table_id: ""
 
-# 字段名 ↔ 多维表列名（改表头时同步改这里）
+# 字段名 ↔ 多维表列名（仅多维路径；改表头时同步改这里）
 fields:
   description: 详细描述
   surface: 端
@@ -18,10 +19,9 @@ fields:
   reporter_open_id: 提出者open_id
   date: 日期
   status: 状态
-  # 附件列可选；无此列则只把图片说明写进「详细描述」
   attachment: 附件
 
-# 单选/选项取值（须与表内选项名一致）
+# 单选/选项取值（多维路径；须与表内选项名一致）
 surface_values:
   b: B
   c: C
@@ -34,5 +34,30 @@ kind_values:
 # bug / 意见默认状态；爽点可留空（见 skill）
 default_status: 待确认
 
-# identity: bot 代写（收集表通常归机器人）；需要以用户身份写时改 user
+# 多维路径默认 identity；电子表格见 sheet_layout.identity
 identity: bot
+
+# ── 现网形态：一张 wiki 电子表格 + 6 个分表（端 × 类型）──────────────────────
+# 说明：线上《HaiTun Agent爽感/意见/bug反馈表》是电子表格，不是多维表格。
+#   分表 = 端 × 类型；列固定：编号 / 详细描述或截图 / 提出者 / 日期 / 状态 / 附件。
+#   写入：feishu_sheet_append(token=spreadsheet_token, range="<sheet_id>!A1:F1", ...)
+#   必须用下方钉死的 sheet_id，禁止运行时按分表标题模糊匹配（改名会串表）。
+#   机器人常无编辑权(91403) → sheet_layout.identity 默认 user（提出者授权后写）。
+# 坐标核对：2026-09-10（wiki get_node + sheets/query 实读，会话 feishu-ou_d81b…）
+sheet_layout:
+  spreadsheet_token: "GLlwsc70UhsQY9tWYLEcIDI3nuc"   # wiki 节点的 obj_token
+  wiki_node_token: "C5PFw1r0KixP3dksAOycDkFCnSc"
+  wiki_space_id: "7665307817380678866"
+  url: "https://genuineknowledge.feishu.cn/wiki/C5PFw1r0KixP3dksAOycDkFCnSc"
+  doc_title: "HaiTun Agent爽感/意见/bug反馈表"
+  columns: ["编号", "详细描述或截图", "提出者", "日期", "状态", "附件"]
+  date_format: "YY.M.D，如 26.9.10"
+  # 现网写权限：user（提出者）；机器人加协作者后可改 bot
+  identity: user
+  sheets:
+    B_bug:     {title: "B端bug",  sheet_id: "fZt4IO"}
+    B_opinion: {title: "B端意见", sheet_id: "sjekYA"}
+    B_delight: {title: "B端爽感", sheet_id: "ABfx5n"}
+    C_bug:     {title: "C端bug",  sheet_id: "Eg10pA"}
+    C_opinion: {title: "C端意见", sheet_id: "MuQOxK"}
+    C_delight: {title: "C端爽点", sheet_id: "POiGpV"}

@@ -5743,6 +5743,26 @@ button.metric-cell:disabled {
   gap: 4px;
   max-width: 100%;
 }
+.focus-chat-bubble-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+.focus-chat-msg-clock {
+  font-size: 11px;
+  line-height: 1.2;
+  color: #8a9aab;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+.focus-chat-msg-clock--user {
+  align-self: flex-end;
+}
+.focus-chat-msg-clock--agent {
+  align-self: flex-start;
+}
 /* User: DOM is [actions][bubble]; keep LTR so copy/retry sit on the
    center side of the bubble (not between bubble and avatar). Matches spa v1. */
 .focus-chat-side-actions {
