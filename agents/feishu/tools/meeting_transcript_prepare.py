@@ -26,6 +26,7 @@ from _meeting_automation import (
     path_lock,
     read_meeting_manifest,
     render_transcript_paragraphs,
+    same_day_record_candidates,
 )
 from tencent_meeting import _tencent_meeting_call_with_token_env, tencent_meeting_call
 
@@ -187,6 +188,48 @@ async def _collect_paragraphs(record_file_id: str, *, token_env: str) -> list[di
     return paragraphs
 
 
+#: prepare 阶段视为"这条记录取不到正文"的异常: 换同一天的其它记录继续试,
+#: 全部试完才以明确文案失败 (不把腾讯侧的 5xx 当成"这场会没有转写")。
+_TRANSCRIPT_FAILURES = (TypeError, ValueError, RuntimeError, OSError, json.JSONDecodeError)
+
+
+async def _collect_usable_paragraphs(
+    record_file_id: str,
+    payload: Any,
+    record: dict[str, Any],
+    processed_ids: set[str],
+    *,
+    token_env: str,
+) -> tuple[list[dict[str, Any]] | None, str, list[str]]:
+    """取正文: 先试管道选中的那条记录, 取不到再试**同一天**的其他记录。
+
+    返回 ``(paragraphs, 实际取到正文的 record_file_id, 尝试过并失败的原因列表)``;
+    全都取不到时 ``paragraphs`` 为 ``None``, 第二个元素仍是管道选中的那条。
+    """
+    candidates = [record_file_id]
+    for candidate in same_day_record_candidates(payload, record, processed_ids=processed_ids):
+        candidate_id = str(candidate.get("record_file_id") or "")
+        if candidate_id and candidate_id not in candidates:
+            candidates.append(candidate_id)
+
+    tried: list[str] = []
+    for candidate_id in candidates:
+        try:
+            paragraphs = await _collect_paragraphs(candidate_id, token_env=token_env)
+        except _TRANSCRIPT_FAILURES as exc:
+            tried.append(f"{candidate_id}: {type(exc).__name__}: {exc}")
+            continue
+        if render_transcript_paragraphs(paragraphs).strip():
+            return paragraphs, candidate_id, tried
+        tried.append(f"{candidate_id}: empty transcript")
+    return None, record_file_id, tried
+
+
+def _no_usable_transcript_error(tried: list[str]) -> str:
+    detail = "; ".join(tried) if tried else "no candidate record"
+    return f"no usable transcript on Tencent's side (tried {len(tried)} record(s): {detail[:400]})"
+
+
 async def _write(path: Path, content: str) -> None:
     await atomic_write_text(path, content)
 
@@ -197,6 +240,7 @@ async def meeting_transcript_prepare(
     appdata_root: str = "",
 ) -> str:
     """获取指定会议最新的完整原始文字转写并保存到独立会议存储。"""
+    selected_record_file_id = ""
     try:
         if not meeting_code.strip() or not meeting_name.strip():
             raise ValueError("meeting_code and meeting_name are required")
@@ -222,11 +266,16 @@ async def meeting_transcript_prepare(
             )
             return json.dumps({"ok": True, "status": status, "meeting_name": meeting_name}, ensure_ascii=False)
 
-        record_file_id = str(record["record_file_id"])
-        paragraphs = await _collect_paragraphs(record_file_id, token_env=token_env)
+        selected_record_file_id = str(record["record_file_id"])
+        paragraphs, record_file_id, tried = await _collect_usable_paragraphs(
+            selected_record_file_id, records_payload, record, processed_ids, token_env=token_env
+        )
+        if paragraphs is None:
+            raise RuntimeError(_no_usable_transcript_error(tried))
+        # 取到正文的是同一天的另一条记录(通常是云录制): 那条空的也要记进 processed,
+        # 否则下一次运行还会选中它、还会把同一天重翻一遍。
+        fallback_from = "" if record_file_id == selected_record_file_id else selected_record_file_id
         transcript = render_transcript_paragraphs(paragraphs)
-        if not transcript.strip():
-            raise RuntimeError("Tencent Meeting returned an empty transcript")
         smart_minutes: Any = {}
         try:
             smart_minutes = await _call("get_smart_minutes", {"record_file_id": record_file_id}, token_env=token_env)
@@ -246,6 +295,8 @@ async def meeting_transcript_prepare(
             if committed.get("record_file_id"):
                 committed_ids.add(str(committed["record_file_id"]))
             committed_ids.add(record_file_id)
+            if fallback_from:
+                committed_ids.add(fallback_from)
             next_manifest = {
                 "meeting_name": meeting_name,
                 "meeting_code": meeting_code.strip(),
@@ -261,24 +312,33 @@ async def meeting_transcript_prepare(
         # 新场次正文落位后立即入永久档(archive/<record_file_id>/): 即使后续分析
         # 失败或换场覆盖, 本场原文/纪要/manifest 也已保留。归档失败不阻断主线。
         await archive_meeting_record(base, meeting_name, record_file_id)
-        return json.dumps(
-            {
-                "ok": True,
-                "status": "ready",
-                "meeting_name": meeting_name,
-                "meeting_code": meeting_code.strip(),
-                "record_file_id": record_file_id,
-                "transcript_chars": len(transcript),
-                "paragraph_count": len(paragraphs),
-                "chunk_count": len(chunks),
-                "chunk_indexes": list(range(len(chunks))),
-                "smart_minutes_saved": bool(smart_minutes),
-            },
-            ensure_ascii=False,
-        )
+        ready_payload: dict[str, Any] = {
+            "ok": True,
+            "status": "ready",
+            "meeting_name": meeting_name,
+            "meeting_code": meeting_code.strip(),
+            "record_file_id": record_file_id,
+            "transcript_chars": len(transcript),
+            "paragraph_count": len(paragraphs),
+            "chunk_count": len(chunks),
+            "chunk_indexes": list(range(len(chunks))),
+            "smart_minutes_saved": bool(smart_minutes),
+        }
+        if fallback_from:
+            # 自报"正文取自同一天的另一条记录": 否则排障时会疑惑为什么这里的
+            # record_file_id 与 get_records_list 里最新的那条「文字转写」不一样。
+            ready_payload["fallback_from"] = fallback_from
+        return json.dumps(ready_payload, ensure_ascii=False)
     except (TypeError, ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
         return json.dumps(
-            {"ok": False, "status": "transcript_prepare_failed", "error": f"{type(exc).__name__}: {exc}"},
+            {
+                "ok": False,
+                "status": "transcript_prepare_failed",
+                # 失败也带上被选中的记录 id: 告警与排障要能直接定位到是哪条记录坏了,
+                # 而不是只看到一句 HTTP 500。
+                "record_file_id": selected_record_file_id,
+                "error": f"{type(exc).__name__}: {exc}",
+            },
             ensure_ascii=False,
         )
 
