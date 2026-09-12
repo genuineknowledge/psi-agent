@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from psi_agent._appdata import (
@@ -16,7 +18,7 @@ from psi_agent.runtime._session_relocate import (
 
 
 @pytest.mark.anyio
-async def test_copy_session_artifacts_prefers_appdata(tmp_path: object) -> None:
+async def test_copy_session_artifacts_prefers_appdata(tmp_path: Path) -> None:
     appdata = str(tmp_path / "appdata")
     old_id = "sess-old"
     new_id = "sess-new"
@@ -48,7 +50,7 @@ async def test_copy_session_artifacts_prefers_appdata(tmp_path: object) -> None:
 
 
 @pytest.mark.anyio
-async def test_delete_session_todo_files_is_best_effort(tmp_path: object) -> None:
+async def test_delete_session_todo_files_is_best_effort(tmp_path: Path) -> None:
     appdata = str(tmp_path / "appdata")
     sid = "sess-gone"
     todo = appdata_todo_path(appdata, sid)
