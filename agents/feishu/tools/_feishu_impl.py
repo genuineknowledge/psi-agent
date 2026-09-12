@@ -1272,6 +1272,10 @@ from _feishu.message import (  # noqa: E402,F401
     upload_file_impl,
     upload_image_impl,
 )
+from _feishu.pm_send import (  # noqa: E402,F401
+    _apply_states,
+    pm_batch_send_impl,
+)
 from _feishu.sheet import (  # noqa: E402,F401
     _SHEET_CELL_TYPES,
     _SHEET_MAX_COLS,
