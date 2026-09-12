@@ -140,16 +140,16 @@ async def todo_fill_status_impl(
         col_letter = _col_letter(date_col)
         lo, hi = min(group_rows), max(group_rows)
         fg = await read_sheet_grid_impl(
-            obj_token, range_=f"!{col_letter}{lo}:{col_letter}{hi}",
-            max_rows=hi - lo + 1, user_key=user_key,
+            obj_token,
+            range_=f"!{col_letter}{lo}:{col_letter}{hi}",
+            max_rows=hi - lo + 1,
+            user_key=user_key,
         )
         if fg.get("ok"):
             for i, row in enumerate(fg.get("rows", []) or []):
                 if row:
                     fill_map[lo + i] = bool(str(row[0]).strip())
-    people: list[dict[str, Any]] = [
-        {"name": roster[r][0], "filled": fill_map.get(r, False)} for r in group_rows
-    ]
+    people: list[dict[str, Any]] = [{"name": roster[r][0], "filled": fill_map.get(r, False)} for r in group_rows]
 
     # 5. 离职/在职分类(确定性)
     classified = await member_status_check_impl([p["name"] for p in people], user_key)
