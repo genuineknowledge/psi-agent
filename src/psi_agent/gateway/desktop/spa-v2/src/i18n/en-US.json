@@ -47,6 +47,8 @@
   "app.accountDevices": "Account & devices",
   "app.login": "Sign in",
   "app.switchWorkspace": "Switch Haitun Studio workspace",
+  "app.appdataLabel": "Memory area (AppData)",
+  "app.appdataMissing": "Gateway did not return an AppData path. Upgrade Gateway or check the deployment.",
   "app.selectLocalDir": "Choose a local folder",
   "app.workspacePath": "No Haitun Studio workspace",
   "app.workspaceFoot": "Tasks are bound to this folder; project files, history, and deliverables are saved here.",

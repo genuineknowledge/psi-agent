@@ -47,6 +47,8 @@
   "app.accountDevices": "賬戶與裝置",
   "app.login": "登入賬號",
   "app.switchWorkspace": "切換海豚工作室",
+  "app.appdataLabel": "記憶區（AppData）",
+  "app.appdataMissing": "Gateway 未返回記憶區路徑（appdata）。請升級 Gateway 或檢查部署設定。",
   "app.selectLocalDir": "選擇本機目錄",
   "app.workspacePath": "未選擇海豚工作室",
   "app.workspaceFoot": "任務會繫結到這個資料夾，專案檔案、歷史記錄和交付物都會儲存在這裡。",
