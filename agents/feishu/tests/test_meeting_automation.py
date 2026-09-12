@@ -82,10 +82,10 @@ def test_meeting_jobs_use_fixed_post_meeting_crons() -> None:
     jobs = {job.name: job for job in MEETING_JOBS}
     assert jobs["weekday-alignment"].meeting_code == "57152787045"
     assert jobs["weekday-alignment"].cron == "0 12 * * 1,3,5"
-    assert jobs["weekday-alignment"].retry_crons == ("30 17 * * 1,3,5", "30 22 * * 1,3,5")
+    assert jobs["weekday-alignment"].retry_crons == ("30 17 * * 1,3,5",)
     assert jobs["weekday-alignment-1100"].meeting_code == "42654699903"
     assert jobs["weekday-alignment-1100"].cron == "0 13 * * 1,3,5"
-    assert jobs["weekday-alignment-1100"].retry_crons == ()
+    assert jobs["weekday-alignment-1100"].retry_crons == ("30 17 * * 1,3,5",)
     assert jobs["weekday-alignment-1100"].token_env == "TENCENT_MEETING_TOKEN_42654699903"
     assert len(jobs) == 2
     assert jobs["weekday-alignment"].fire == "tool"
@@ -93,7 +93,7 @@ def test_meeting_jobs_use_fixed_post_meeting_crons() -> None:
 
 
 def test_meeting_schedule_files_cover_every_job() -> None:
-    """投影覆盖两场主任务 + 周中会的两档补偿重跑。
+    """投影覆盖两场主任务 + 每场一条 17:30 的补偿重跑。
 
     补偿重跑不是"再来一次"的重复劳动: 腾讯的文字转写是异步产出的, 主跑时常还没生成
     (实测 09-11: 12:00 主跑没有转写, 21:59 才生成)。周中会此前没有任何兜底, 而管道
@@ -103,11 +103,11 @@ def test_meeting_schedule_files_cover_every_job() -> None:
     assert set(files) == {
         "weekday-alignment",
         "weekday-alignment-retry-1730",
-        "weekday-alignment-retry-2230",
         "weekday-alignment-1100",
+        "weekday-alignment-1100-retry-1730",
     }
-    weekly = next(job for job in MEETING_JOBS if job.name == "weekday-alignment")
-    assert set(weekly.retry_crons) == {"30 17 * * 1,3,5", "30 22 * * 1,3,5"}
+    for job in MEETING_JOBS:
+        assert job.retry_crons == ("30 17 * * 1,3,5",), f"{job.name} 应各有一条 17:30 补偿重跑"
     for job in MEETING_JOBS:
         body = files[job.name]
         assert f"name: {job.name}" in body

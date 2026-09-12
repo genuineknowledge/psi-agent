@@ -123,10 +123,10 @@ _MEETING_JOBS_WHITELIST: tuple[MeetingJob, ...] = (
         title="周中对齐会",
         # 腾讯的文字转写是异步产出的, 主跑时常还没生成(实测 09-11: 12:00 主跑没有,
         # 21:59 才生成)。这条会议此前没有任何兜底 → 当天没赶上就永远不重跑
-        # (管道只认最新 occurrence, 下一次主跑时最新已是下一场)。故补两档补偿重跑:
-        # 17:30 沿用历史档位, 22:30 覆盖上述"晚上才出转写"的情形。
+        # (管道只认最新 occurrence, 下一次主跑时最新已是下一场)。故补一条 17:30 的补偿重跑。
+        # 17:30 是历史档位, 覆盖上述"晚上才出转写"的情形。
         # 幂等: 主跑已成功投递时按 record 去重自动跳过, 不会重复发卡。
-        retry_crons=("30 17 * * 1,3,5", "30 22 * * 1,3,5"),
+        retry_crons=("30 17 * * 1,3,5",),
         analysis_sop_skills=("meeting-sop/weekday-alignment",),
         tool_args=(("meeting_name", "weekday-alignment"), ("meeting_code", "57152787045")),
     ),
@@ -135,7 +135,8 @@ _MEETING_JOBS_WHITELIST: tuple[MeetingJob, ...] = (
         meeting_code="42654699903",
         cron="0 13 * * 1,3,5",
         title="日会",
-        retry_crons=(),
+        # 日会同样是异步转写: 13:00 主跑常在转写生成前, 故与周中会一致留一条 17:30 兜底。
+        retry_crons=("30 17 * * 1,3,5",),
         analysis_sop_skills=("meeting-sop/weekday-alignment",),
         token_env="TENCENT_MEETING_TOKEN_42654699903",
         tool_args=(("meeting_name", "weekday-alignment-1100"), ("meeting_code", "42654699903")),
