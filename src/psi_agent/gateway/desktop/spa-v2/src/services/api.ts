@@ -36,6 +36,8 @@ export type SessionInfo = {
 export type GatewayDefaults = {
   agent: string
   workspace: string
+  /** Memory-area root (todos / history / Gateway state). Used to scope UI prefs. */
+  appdata?: string
   /** Effective app UI language from the Gateway (zh-CN / en-US). */
   language?: string
 }
@@ -99,6 +101,24 @@ export async function createSession(
 
 export async function deleteSession(sessionId: string) {
   return api('DELETE', `/sessions/${sessionId}`)
+}
+
+/**
+ * Copy Session artifacts to a new workspace/agent, then delete the old Session.
+ * Equivalent to rebinding roots (which cannot be hot-patched on a live Session).
+ */
+export async function relocateSession(
+  sessionId: string,
+  body: { workspace: string; agent?: string },
+) {
+  return api<SessionInfo & { relocated_from?: string }>(
+    'POST',
+    `/sessions/${sessionId}/relocate`,
+    {
+      workspace: body.workspace,
+      ...(body.agent ? { agent: body.agent } : {}),
+    },
+  )
 }
 
 export async function listTitles() {

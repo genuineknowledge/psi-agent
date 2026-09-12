@@ -17,6 +17,7 @@ import re
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass, replace
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -121,7 +122,12 @@ _MEETING_JOBS_WHITELIST: tuple[MeetingJob, ...] = (
         meeting_code="57152787045",
         cron="0 12 * * 1,3,5",
         title="周中对齐会",
-        retry_crons=(),
+        # 腾讯的文字转写是异步产出的, 主跑时常还没生成(实测 09-11: 12:00 主跑没有,
+        # 21:59 才生成)。这条会议此前没有任何兜底 → 当天没赶上就永远不重跑
+        # (管道只认最新 occurrence, 下一次主跑时最新已是下一场)。故补一条 17:30 的补偿重跑。
+        # 17:30 是历史档位, 覆盖上述"晚上才出转写"的情形。
+        # 幂等: 主跑已成功投递时按 record 去重自动跳过, 不会重复发卡。
+        retry_crons=("30 17 * * 1,3,5",),
         analysis_sop_skills=("meeting-sop/weekday-alignment",),
         tool_args=(("meeting_name", "weekday-alignment"), ("meeting_code", "57152787045")),
     ),
@@ -130,7 +136,8 @@ _MEETING_JOBS_WHITELIST: tuple[MeetingJob, ...] = (
         meeting_code="42654699903",
         cron="0 13 * * 1,3,5",
         title="日会",
-        retry_crons=(),
+        # 日会同样是异步转写: 13:00 主跑常在转写生成前, 故与周中会一致留一条 17:30 兜底。
+        retry_crons=("30 17 * * 1,3,5",),
         analysis_sop_skills=("meeting-sop/weekday-alignment",),
         token_env="TENCENT_MEETING_TOKEN_42654699903",
         tool_args=(("meeting_name", "weekday-alignment-1100"), ("meeting_code", "42654699903")),
@@ -410,8 +417,14 @@ def extract_latest_transcript_record(payload: Any, processed_ids: set[str] | Non
             key=lambda occurrence_id: max(_record_sort_key(record) for record in occurrences[occurrence_id]),
         )
         records = occurrences[latest_occurrence_id]
+        # 「还没就绪」的检查只对**转写类**记录生效: 同一 occurrence 里常常还有云录制,
+        # 其中一段可能仍在"录制中/转码中", 那不是"这场会议的转写还没好"。此前对整组
+        # 所有记录做状态检查, 于是一条未完成的云录制会把**已经完成的文字转写**一起否掉
+        # (实测 09-11 那场: state=3 的文字转写 + state=1 的云录制 → 返回「没有转写」,
+        # 而当天 21:59 转写其实已经生成)。
         if any(
-            record.get("state_int", record.get("state")) is not None
+            _is_transcript_record(record)
+            and record.get("state_int", record.get("state")) is not None
             and not should_process_recording({**record, "record_file_id": "__state_check__"}, set())
             for record in records
         ):
@@ -426,6 +439,51 @@ def extract_latest_transcript_record(payload: Any, processed_ids: set[str] | Non
         if should_process_recording(normalized, processed):
             candidates.append(normalized)
     return max(candidates, key=_record_sort_key) if candidates else None
+
+
+def _record_day(record: dict[str, Any]) -> date | None:
+    """记录所属的日历日 (腾讯返回的是带时区的 ISO 时间戳)。解析不出来返回 ``None``。"""
+    raw = str(record.get("media_start_time") or record.get("record_start_time") or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+
+
+def same_day_record_candidates(
+    payload: Any, record: dict[str, Any], *, processed_ids: set[str] | None = None
+) -> list[dict[str, Any]]:
+    """同一天里其他**已完成且未处理**的记录 —— 主记录取不到正文时的回退候选 (新到旧)。
+
+    为什么需要这个: 腾讯**不保证每场会都产出「文字转写」记录**。实测 2026-09-11 周中会:
+    当天唯一那条「文字转写」属于一段 46 秒的杂散录制 (21:59:58-22:01:34), 在腾讯侧没有
+    内容 —— 段落索引 ``total=0``、详情 ``HTTP 500``、智能纪要 ``500260 会议无有效转写内容``;
+    而那场真会 (09:48 起, 14 人) 的正文只挂在它的**云录制**记录上。管道原先只认「文字转写」,
+    于是"明明有转写却报 prepare_failed"。
+
+    只取**同一日历日**: 退到前一天的记录等于把上一场当今天发出去 —— 那是另一个已经修过的
+    问题 (见 ``meeting_pipeline_run`` 的 ``_NO_NEW_TRANSCRIPT_STATUSES``)。
+    """
+    anchor_day = _record_day(record)
+    if anchor_day is None:
+        return []
+    selected_id = str(record.get("record_file_id") or "").strip()
+    processed = processed_ids or set()
+    candidates: list[dict[str, Any]] = []
+    for candidate in _record_candidates(payload):
+        record_file_id = str(candidate.get("record_file_id") or candidate.get("file_id") or "").strip()
+        if not record_file_id or record_file_id == selected_id:
+            continue
+        if _record_day(candidate) != anchor_day:
+            continue
+        normalized = dict(candidate)
+        normalized["record_file_id"] = record_file_id
+        if not should_process_recording(normalized, processed):
+            continue
+        candidates.append(normalized)
+    return sorted(candidates, key=_record_sort_key, reverse=True)
 
 
 def _paragraph_id(item: dict[str, Any]) -> str:
@@ -690,5 +748,6 @@ __all__ = [
     "path_lock",
     "read_meeting_manifest",
     "render_transcript_paragraphs",
+    "same_day_record_candidates",
     "should_process_recording",
 ]

@@ -694,15 +694,27 @@ async def meeting_pipeline_run(
         prepare_ms = int((time.perf_counter() - prepare_started) * 1000)
         if not prepare_result.get("ok"):
             error_text = str(prepare_result.get("error", "Tencent transcript preparation failed"))
-            await _write_json(state_path, {"status": "transcript_prepare_failed", "prepare": prepare_result})
+            # 告警要能定位到具体记录: "哪条 record_file_id 取不到正文" 是排障第一信息,
+            # 只给一句 HTTP 500 就得去翻日志 (2026-09-12 实测)。
+            failed_record_file_id = str(prepare_result.get("record_file_id") or "")
+            await _write_json(
+                state_path,
+                {
+                    "status": "transcript_prepare_failed",
+                    "record_file_id": failed_record_file_id,
+                    "prepare": prepare_result,
+                },
+            )
             await _record(
-                "transcript_prepare_failed", record_file_id="", entry={"error": error_text[:ALERT_ERROR_TRUNCATE_CHARS]}
+                "transcript_prepare_failed",
+                record_file_id=failed_record_file_id,
+                entry={"error": error_text[:ALERT_ERROR_TRUNCATE_CHARS]},
             )
             await _notify_failure_alert(
                 meeting_job,
                 base,
                 meeting_name,
-                record_file_id="",
+                record_file_id=failed_record_file_id,
                 status="transcript_prepare_failed",
                 error=error_text,
             )

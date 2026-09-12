@@ -89,10 +89,15 @@ async def rookie_sop_digest(hr_open_id: str = "") -> str:
 
     Args:
         hr_open_id: HR's Feishu open_id. Empty → ``hr_notify_id`` from
-            ``config/rookie_sop.yaml``.
+            ``config/rookie_sop.yaml``, sent with that config's
+            ``hr_notify_id_type`` (推荐 ``user_id``: 跨应用稳定)。
     """
     cfg = await _store.load_config()
-    target = (hr_open_id or "").strip() or str(cfg.get("hr_notify_id") or "").strip()
+    cfg_target, cfg_id_type = _store.hr_target(cfg)
+    arg_target = (hr_open_id or "").strip()
+    target = arg_target or cfg_target
+    # 显式传入的形参按 open_id 解释(形参与文档都这么写); 走配置时按配置的类型发。
+    id_type = "open_id" if arg_target else cfg_id_type
     if not target:
         return json.dumps(
             {"ok": False, "error": "hr_open_id is required (or set hr_notify_id in config/rookie_sop.yaml)"},
@@ -157,7 +162,7 @@ async def rookie_sop_digest(hr_open_id: str = "") -> str:
         await feishu_message_send_card(
             target,
             json.dumps(card, ensure_ascii=False),
-            "open_id",
+            id_type,
             "",
             json.dumps({"type": "rookie_sop_digest", "date": today.isoformat()}, ensure_ascii=False),
             json.dumps(handlers, ensure_ascii=False),

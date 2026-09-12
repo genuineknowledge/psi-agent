@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import anyio
+import yaml
 
 HAITUN = Path(__file__).resolve().parents[1]
 TOOLS = HAITUN / "tools"
@@ -1617,7 +1618,47 @@ def test_rookie_sop_remind_day2_notifies_hr_when_hr_notify_id_is_configured(monk
     assert len(sent) == 2
     assert sent[0][0] == "ou_x"
     assert sent[1][0] == "ou_hr"
+    assert sent[1][2] == "open_id", "配置没写 hr_notify_id_type 时应按 open_id 兜底"
     assert out["hr_feedback"] == {"ok": True, "sent": True}
+
+
+def test_rookie_sop_remind_sends_hr_card_with_the_configured_id_type(monkeypatch: Any) -> None:
+    """配置写租户 ``user_id`` 时, HR 反馈卡必须按 ``user_id`` 发出去。
+
+    2026-09-12 复盘: 发送处把 ``"open_id"`` 写死, 配置里的 ``hr_notify_id_type``
+    形同虚设 —— 于是填租户 user_id 会报 ``99992361 open_id cross app``, 而 open_id
+    本身又是按应用隔离的(换应用即失效)。
+    """
+    rm = _load("rookie_sop_remind")
+    p = _load("_rookie_sop_progress")
+    today = date.today()
+    onboard = today - timedelta(days=1)  # day_index == 2
+    fake = _FakeBitable([[_remind_detail_item("rec1", "wifi", p.STATUS_TODO, onboard, onboard)]])
+
+    async def _fake_load_state(workspace: str = "") -> dict[str, Any]:
+        return {"app_token": "app1", "detail_table_id": "tblDetail", "overview_table_id": "tblOverview"}
+
+    rm._rt.bitable_adapter = lambda: fake
+    rm._rt.load_state = _fake_load_state
+
+    async def _fake_load_config_tenant_id() -> dict[str, Any]:
+        return {"hr_notify_id": "dg429f6d", "hr_notify_id_type": "user_id", "sop_doc_url": "https://sop.example"}
+
+    monkeypatch.setattr(rm._store, "load_config", _fake_load_config_tenant_id)
+
+    sent: list[tuple[Any, ...]] = []
+
+    async def _fake_send_card_ok(*args: Any, **kwargs: Any) -> str:
+        sent.append(args)
+        return json.dumps({"ok": True, "callback_context_saved": True}, ensure_ascii=False)
+
+    monkeypatch.setattr(rm, "feishu_message_send_card", _fake_send_card_ok)
+
+    out = json.loads(anyio.run(lambda: rm.rookie_sop_remind("ou_x")))
+
+    assert out["hr_feedback"] == {"ok": True, "sent": True}
+    assert sent[1][0] == "dg429f6d", "HR 卡收件人应取配置里的租户 user_id"
+    assert sent[1][2] == "user_id", "收件人类型必须跟着配置走, 不能写死 open_id"
 
 
 def test_rookie_sop_remind_day2_skips_hr_feedback_when_hr_notify_id_is_empty(monkeypatch: Any) -> None:
@@ -1788,6 +1829,63 @@ def test_rookie_sop_digest_sends_nothing_on_empty_roster(monkeypatch: Any) -> No
     out = json.loads(anyio.run(lambda: dg.rookie_sop_digest("ou_hr")))
 
     assert out == {"ok": True, "sent": False, "reason": "no active rookies"}
+
+
+def test_rookie_sop_digest_sends_with_the_configured_id_type(monkeypatch: Any) -> None:
+    """配置写租户 ``user_id`` 时, 19:00 的日报卡也按 ``user_id`` 发。
+
+    与催办那条同一个根因: 发送处写死 ``"open_id"`` 会让租户 user_id 报
+    ``99992361 open_id cross app`` —— 两条 HR 通知都踩过。
+    """
+    dg = _load("rookie_sop_digest")
+    page = _item("recOv1", {"open_id": "ou_x", "姓名": "张三", "状态": "进行中"}, table="overview")
+    fake = _FakeBitable([([page], False, ""), ([page], False, "")])  # 对账前后各读一次
+
+    async def _fake_load_state(workspace: str = "") -> dict[str, Any]:
+        return {"app_token": "app1", "detail_table_id": "", "overview_table_id": "tblOverview"}
+
+    async def _fake_load_config_tenant_id() -> dict[str, Any]:
+        return {"hr_notify_id": "dg429f6d", "hr_notify_id_type": "user_id"}
+
+    dg._rt.bitable_adapter = lambda: fake
+    dg._rt.load_state = _fake_load_state
+    monkeypatch.setattr(dg._store, "load_config", _fake_load_config_tenant_id)
+
+    sent: list[tuple[Any, ...]] = []
+
+    async def _fake_send_card_ok(*args: Any, **kwargs: Any) -> str:
+        sent.append(args)
+        return json.dumps({"ok": True}, ensure_ascii=False)
+
+    monkeypatch.setattr(dg, "feishu_message_send_card", _fake_send_card_ok)
+
+    out = json.loads(anyio.run(lambda: dg.rookie_sop_digest()))
+
+    assert out == {"ok": True, "sent": True, "rookies": 1}
+    assert sent[0][0] == "dg429f6d"
+    assert sent[0][2] == "user_id", "收件人类型必须跟着配置走, 不能写死 open_id"
+
+
+def test_shipped_rookie_config_declares_a_self_consistent_hr_target() -> None:
+    """随包配置里的 HR 收件人必须 id 与 id_type 自洽, 且默认用跨应用稳定的租户 user_id。
+
+    这条判据的作用是让「填了 id 却发不出去」在合并前就红: 历史上配置里留着的是
+    一个**旧应用**的 open_id, 19:00 的异常提醒一直报 99992361 open_id cross app。
+    """
+    raw = yaml.safe_load((HAITUN / "config" / "rookie_sop.yaml").read_text(encoding="utf-8"))
+    id_type = str(raw.get("hr_notify_id_type") or "open_id").strip()
+    target = str(raw.get("hr_notify_id") or "").strip()
+
+    assert id_type in {"open_id", "user_id", "union_id"}, id_type
+    if not target:
+        return  # 留空是允许的（联调默认），空值不校验前缀
+    if id_type == "open_id":
+        assert target.startswith("ou_"), "open_id 必须以 ou_ 开头"
+    elif id_type == "union_id":
+        assert target.startswith("on_"), "union_id 必须以 on_ 开头"
+    else:
+        assert not target.startswith(("ou_", "on_")), "租户 user_id 不带 ou_/on_ 前缀"
+    assert id_type == "user_id", "HR 收件人用跨应用稳定的租户 user_id, 不用按应用隔离的 open_id"
 
 
 def test_rookie_sop_digest_follows_has_more_when_reading_the_overview_table(monkeypatch: Any) -> None:

@@ -111,6 +111,9 @@ def _resolve_agent(agent_raw: str = "") -> anyio.Path:
 # one number this section exists to produce.
 from psi_agent.session.prompt_budget import PromptBudget
 
+# 同上, 硬导入: 探针只写日志, 兜底成 no-op 反而正好抹掉它要报的那件事。
+from psi_agent.session import layer_probe
+
 from prompt_sections import (
     BOOTSTRAP_PENDING_SECTION,
     CONTEXT_FILE_ORDER,
@@ -519,10 +522,26 @@ async def _build_skills_index(workspace_dir: anyio.Path) -> str:
     # workspace pass replace them. This keeps the "nearest wins" convention
     # consistent with AGENTS.md/CLAUDE.md context lookup.
     skill_md_by_name: dict[str, anyio.Path] = {}
-    for name, skill_md in await _collect_skill_dirs(_GLOBAL_AGENT_SKILLS_DIR):
+    global_dirs = await _collect_skill_dirs(_GLOBAL_AGENT_SKILLS_DIR)
+    for name, skill_md in global_dirs:
         skill_md_by_name[name] = skill_md
-    for name, skill_md in await _collect_skill_dirs(skills_dir):
+    local_dirs = await _collect_skill_dirs(skills_dir)
+    for name, skill_md in local_dirs:
         skill_md_by_name[name] = skill_md
+
+    # 层来源探针(只读, 见 ``layer_probe``)。skills 是**已有的两根合并**(global +
+    # agent), 不是单目录 —— 探针如实报这两根, 免得后来的人照"单目录"去改。
+    # per_root 报的是**各层贡献的条目数**, 而 total 是合并去重后的; 两者不等即说明
+    # 发生了同名覆盖, 这正是 nearest-wins 该有的表现。
+    # 只报存在的层: ``_collect_skill_dirs`` 对"目录不存在"和"目录读不了(OSError)"
+    # 都返回空列表, 二者不可区分 —— 这是本探针存在的原始动机之一, 故这里显式
+    # 用 is_dir() 把"不存在"与"存在但空/读不了"分开。
+    per_root: list[tuple[str, int]] = []
+    if await _GLOBAL_AGENT_SKILLS_DIR.is_dir():
+        per_root.append(("global", len(global_dirs)))
+    if await skills_dir.is_dir():
+        per_root.append((layer_probe.root_name(str(workspace_dir)), len(local_dirs)))
+    layer_probe.report("skills", roots_declared=2, per_root=per_root)
 
     skill_entries: list[tuple[str, anyio.Path]] = sorted(skill_md_by_name.items())
 
