@@ -24,7 +24,11 @@ ACTIVATE_EVENT_NAME = "Local\\GenuineKnowledge.HaitunAgent.Activate"
 
 
 def _kernel32() -> Any:
-    return ctypes.WinDLL("kernel32", use_last_error=True)
+    # ``windll`` / ``WinDLL`` are Windows-only; getattr so Linux CI ``ty`` resolves.
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        raise RuntimeError("ctypes.windll is only available on Windows")
+    return windll.kernel32
 
 
 class InstallerActivateListener:
@@ -45,7 +49,7 @@ class InstallerActivateListener:
         # Auto-reset: one SetEvent → one awaken (bManualReset=False).
         handle = kernel32.CreateEventW(None, False, False, ACTIVATE_EVENT_NAME)
         if not handle:
-            err = ctypes.get_last_error()
+            err = int(kernel32.GetLastError())
             logger.warning(
                 f"Installer activate Event create failed (error={err}); "
                 "second haitun.exe click will not reopen the console"

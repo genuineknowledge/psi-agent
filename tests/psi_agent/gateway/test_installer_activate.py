@@ -44,7 +44,9 @@ def test_activate_listener_invokes_callback() -> None:
     listener.start()
     try:
         assert listener._event is not None
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        windll = getattr(ctypes, "windll", None)
+        assert windll is not None
+        kernel32 = windll.kernel32
         # Open the same named Event the listener created, then signal it.
         handle = kernel32.OpenEventW(0x0002, False, ACTIVATE_EVENT_NAME)  # EVENT_MODIFY_STATE
         assert handle
