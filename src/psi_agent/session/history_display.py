@@ -26,6 +26,7 @@ to the AI, never rendered as part of a chat bubble.
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from typing import Any
 
 from psi_agent._send_markers import iter_send_paths
@@ -74,9 +75,7 @@ CREATED_AT_KEY = "created_at"
 THINKING_MS_KEY = "thinking_ms"
 """Whole-turn wall ms from Session turn start to this assistant row (Cursor-style)."""
 
-_DISPLAY_ONLY_KEYS = frozenset(
-    {KIND_KEY, CHAT_TYPE_KEY, TURN_CONTEXT_KEY, CREATED_AT_KEY, THINKING_MS_KEY}
-)
+_DISPLAY_ONLY_KEYS = frozenset({KIND_KEY, CHAT_TYPE_KEY, TURN_CONTEXT_KEY, CREATED_AT_KEY, THINKING_MS_KEY})
 
 MAX_TOOL_RESULT_CHARS = 20_000
 """Cap on a single tool result, applied both at the write site and on the wire.
@@ -296,8 +295,6 @@ def with_chat_type(msg: dict[str, Any], chat_type: str) -> dict[str, Any]:
 
 def utc_now_iso() -> str:
     """UTC timestamp for ``created_at`` (millisecond ``Z`` suffix)."""
-    from datetime import UTC, datetime
-
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 

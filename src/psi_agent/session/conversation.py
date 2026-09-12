@@ -26,6 +26,7 @@ from psi_agent._appdata import (
     resolve_appdata_root,
     resolve_history_read_path,
 )
+from psi_agent.session.history_display import with_created_at
 from psi_agent.session.protocol import AgentChunk
 
 
@@ -139,8 +140,6 @@ class Conversation:
         Stamps ``created_at`` when missing so SPA wall-clock survives refresh
         (display-only; stripped on the AI wire — see ``history_display``).
         """
-        from psi_agent.session.history_display import with_created_at
-
         self._begin_if_needed()
         self.messages.append(with_created_at(msg))
 

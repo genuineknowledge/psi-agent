@@ -1051,9 +1051,7 @@ class SessionAgent:
                             if accumulated_reasoning:
                                 assistant_msg["reasoning"] = accumulated_reasoning
                             if accumulated_content:
-                                self._conversation.add(
-                                    with_kind(_with_thinking_ms(assistant_msg), turn_response_kind)
-                                )
+                                self._conversation.add(with_kind(_with_thinking_ms(assistant_msg), turn_response_kind))
                             committed = await self._conversation.commit()
                             if committed:
                                 after_turn_message[_HISTORY_PROVENANCE_KEY]["assistant_line"] = len(
@@ -1092,9 +1090,7 @@ class SessionAgent:
                                 assistant_msg["content"] = accumulated_content
                                 if accumulated_reasoning:
                                     assistant_msg["reasoning"] = accumulated_reasoning
-                                self._conversation.add(
-                                    with_kind(_with_thinking_ms(assistant_msg), turn_response_kind)
-                                )
+                                self._conversation.add(with_kind(_with_thinking_ms(assistant_msg), turn_response_kind))
                             await self._conversation.commit()
                             _finish(
                                 AgentRunStatus.INCOMPLETE,

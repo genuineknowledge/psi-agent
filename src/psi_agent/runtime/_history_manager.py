@@ -159,9 +159,7 @@ class HistoryManager:
                             pending_reasoning = _merge_reasoning(pending_reasoning, reasoning)
                         if tools:
                             pending_tools = _extend_tools(pending_tools, tools)
-                        pending_thinking_ms = max_thinking_ms(
-                            pending_thinking_ms, message_thinking_ms(msg)
-                        )
+                        pending_thinking_ms = max_thinking_ms(pending_thinking_ms, message_thinking_ms(msg))
                 continue
 
             text = msg.get("content", "")
@@ -181,9 +179,7 @@ class HistoryManager:
                     if pending_tools:
                         prev["tools"] = _extend_tools(prev.get("tools"), pending_tools)
                     if pending_thinking_ms is not None:
-                        prev["thinking_ms"] = max_thinking_ms(
-                            prev.get("thinking_ms"), pending_thinking_ms
-                        )
+                        prev["thinking_ms"] = max_thinking_ms(prev.get("thinking_ms"), pending_thinking_ms)
                 pending_reasoning = ""
                 pending_tools = []
                 pending_thinking_ms = None
@@ -211,9 +207,7 @@ class HistoryManager:
                         pending_tools = []
                     _merge_timing_into(prev, msg)
                     if pending_thinking_ms is not None:
-                        prev["thinking_ms"] = max_thinking_ms(
-                            prev.get("thinking_ms"), pending_thinking_ms
-                        )
+                        prev["thinking_ms"] = max_thinking_ms(prev.get("thinking_ms"), pending_thinking_ms)
                         pending_thinking_ms = None
                 else:
                     row: dict[str, object] = {"role": role, "text": "", "sends": sends}
@@ -244,9 +238,7 @@ class HistoryManager:
                             pending_reasoning = _merge_reasoning(pending_reasoning, reasoning)
                         if tools:
                             pending_tools = _extend_tools(pending_tools, tools)
-                        pending_thinking_ms = max_thinking_ms(
-                            pending_thinking_ms, message_thinking_ms(msg)
-                        )
+                        pending_thinking_ms = max_thinking_ms(pending_thinking_ms, message_thinking_ms(msg))
                 continue
 
             row: dict[str, object] = {"role": role, "text": cleaned}
