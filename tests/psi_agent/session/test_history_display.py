@@ -8,6 +8,7 @@ from psi_agent.session.history_display import (
     KIND_SCHEDULE_SILENT,
     THINKING_MS_KEY,
     VisibleMarkerFilter,
+    extract_recv_paths,
     extract_send_paths,
     is_displayable_chat_message,
     message_kind,
@@ -194,8 +195,6 @@ def test_extract_send_paths() -> None:
 
 
 def test_extract_recv_paths() -> None:
-    from psi_agent.session.history_display import extract_recv_paths
-
     assert extract_recv_paths("看图\n[RECV:/tmp/a.png]\n[RECV: b.pdf ]") == ["/tmp/a.png", "b.pdf"]
     assert extract_recv_paths("see\n[ RECV:/tmp/a.png ]") == ["/tmp/a.png"]
     assert extract_recv_paths("[SEND:/x]") == []

@@ -95,7 +95,11 @@ async def test_history_projects_user_recvs_for_attachment_chips(
         appdata,
         "user-recv",
         [
-            '{"role": "user", "content": "[RECV:/Downloads/.psi/a.png]\\n[RECV:/Downloads/.psi/b.pdf]", "kind": "chat"}',
+            (
+                '{"role": "user", "content": '
+                '"[RECV:/Downloads/.psi/a.png]\\n[RECV:/Downloads/.psi/b.pdf]", '
+                '"kind": "chat"}'
+            ),
             '{"role": "user", "content": "看这个\\n[RECV:/tmp/shot.png]", "kind": "chat"}',
         ],
     )
