@@ -72,8 +72,45 @@ async def test_history_filters_roles_kind_and_markers(tmp_path: Path, appdata: P
         {"role": "assistant", "text": "\u4f60\u597d"},
         {"role": "assistant", "text": "\u6709\u601d\u8003", "reasoning": "\u5148\u5206\u6790"},
         {"role": "assistant", "text": "\u65e5\u62a5", "kind": "schedule.display"},
-        {"role": "user", "text": "\u770b\u56fe"},
+        {"role": "user", "text": "\u770b\u56fe", "recvs": ["/tmp/a.png"]},
         {"role": "assistant", "text": "\u597d", "sends": ["/ws/out.md", "/ws/only.html"]},
+    ]
+
+
+@pytest.mark.anyio
+async def test_history_projects_user_recvs_for_attachment_chips(
+    tmp_path: Path,
+    appdata: Path,
+) -> None:
+    """User ``[RECV:]`` must become ``recvs`` so SPA chips survive rehydrate.
+
+    Markers stay stripped from visible ``text`` (no absolute-path leak in the
+    bubble body). Attachment-only uploads (no prose) still keep a bubble with
+    empty text + ``recvs`` — otherwise refresh / session switch drops the chip.
+    """
+    hm = HistoryManager()
+    result = await _project(
+        hm,
+        tmp_path,
+        appdata,
+        "user-recv",
+        [
+            (
+                '{"role": "user", "content": '
+                '"[RECV:/Downloads/.psi/a.png]\\n[RECV:/Downloads/.psi/b.pdf]", '
+                '"kind": "chat"}'
+            ),
+            '{"role": "user", "content": "看这个\\n[RECV:/tmp/shot.png]", "kind": "chat"}',
+        ],
+    )
+
+    assert result == [
+        {
+            "role": "user",
+            "text": "",
+            "recvs": ["/Downloads/.psi/a.png", "/Downloads/.psi/b.pdf"],
+        },
+        {"role": "user", "text": "看这个", "recvs": ["/tmp/shot.png"]},
     ]
 
 

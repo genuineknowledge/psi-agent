@@ -65,8 +65,8 @@ export function pathsByName(paths: string[]): Record<string, string> {
  * Project Gateway `/history` rows into workspace chat bubbles.
  * Server already whitelists by ``kind``; still strip transfer markers and drop empties
  * (parity with spa v1 useSession / historyReconcile).
- * Assistant ``sends`` become file stubs (name + path, empty data) so chat chips
- * survive refresh and can lazy-load via ``GET /workspace/file``.
+ * Assistant ``sends`` and user ``recvs`` become file stubs (name + path, empty data)
+ * so chat chips survive refresh and can lazy-load via ``GET /workspace/file``.
  *
  * **刻意为之**：连续 `assistant` 行合并成一个 agent 气泡（files 去重合并）。
  * Session 在每轮 `tool_calls` 都会把带正文的 assistant 落盘，todo 多步时 JSONL 常有
@@ -82,11 +82,11 @@ export function historyToChat(
     // Defense in depth: never surface silent schedule rows if a proxy leaks them.
     if (m.kind === 'schedule.silent') continue
     const text = stripTransferMarkers(typeof m.text === 'string' ? m.text : '')
-    const files = filesFromHistorySends(m)
-    // Empty text + no files → skip (SEND-only rows still feed historyToDeliverables).
+    const files = filesFromHistoryAttachments(m)
+    // Empty text + no files → skip. Attachment-only rows (user recvs / assistant
+    // sends with no prose) keep a chip bubble — DeepSeek-style, chest still lists
+    // assistant deliverables separately.
     if (!text.trim() && !files.length) continue
-    // Pure SEND bubble (no prose): still skip chat row; chest owns those files.
-    if (!text.trim()) continue
     const role = m.role === 'assistant' ? 'agent' : 'user'
     const reasoning =
       role === 'agent' && typeof m.reasoning === 'string' && m.reasoning.trim()
@@ -183,12 +183,17 @@ function mergeChatFiles(
   return [...map.values()]
 }
 
-/** Build chat file stubs from history ``sends`` (no base64 until preview load). */
-export function filesFromHistorySends(m: HistoryMessage): ChatFile[] {
-  if (m.role !== 'assistant' || !Array.isArray(m.sends)) return []
+/** Build chat file stubs from history ``sends`` / ``recvs`` (no base64 until preview load). */
+export function filesFromHistoryAttachments(m: HistoryMessage): ChatFile[] {
+  const rawPaths =
+    m.role === 'assistant' && Array.isArray(m.sends)
+      ? m.sends
+      : m.role === 'user' && Array.isArray(m.recvs)
+        ? m.recvs
+        : []
   const out: ChatFile[] = []
   const seen = new Set<string>()
-  for (const raw of m.sends) {
+  for (const raw of rawPaths) {
     if (typeof raw !== 'string' || !raw.trim()) continue
     const path = raw.trim()
     const name = basenameOf(path)
@@ -197,6 +202,11 @@ export function filesFromHistorySends(m: HistoryMessage): ChatFile[] {
     out.push({ name, data: '', path })
   }
   return out
+}
+
+/** @deprecated Prefer ``filesFromHistoryAttachments`` (also projects user ``recvs``). */
+export function filesFromHistorySends(m: HistoryMessage): ChatFile[] {
+  return filesFromHistoryAttachments(m)
 }
 
 /** Collect session deliverables from history ``sends`` (order preserved, unique by basename). */

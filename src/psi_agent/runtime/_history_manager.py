@@ -12,6 +12,7 @@ from psi_agent._appdata import (
 )
 from psi_agent.session.history_display import (
     KIND_CHAT,
+    extract_recv_paths,
     extract_send_paths,
     is_displayable_chat_message,
     max_thinking_ms,
@@ -166,6 +167,9 @@ class HistoryManager:
             if role not in ("user", "assistant") or not isinstance(text, str):
                 continue
             sends = extract_send_paths(text) if role == "assistant" else []
+            # User uploads: Channel encodes ``[RECV:path]``; project as ``recvs``
+            # (symmetric to assistant ``sends``) so SPA chips survive rehydrate.
+            recvs = extract_recv_paths(text) if role == "user" else []
             cleaned = strip_transfer_markers(text)
 
             if role == "user" and (pending_reasoning or pending_tools or pending_thinking_ms is not None):
@@ -183,6 +187,14 @@ class HistoryManager:
                 pending_reasoning = ""
                 pending_tools = []
                 pending_thinking_ms = None
+
+            # RECV-only user turns (attachment with no prose): keep the bubble +
+            # ``recvs`` so chips are not dropped when text strips to empty.
+            if not cleaned and recvs:
+                row: dict[str, object] = {"role": "user", "text": "", "recvs": recvs}
+                _attach_timing(row, created_at=message_created_at(msg), thinking_ms=None)
+                messages.append(row)
+                continue
 
             # SEND-only assistant turns: fold paths into the previous assistant
             # bubble so spa v1 does not render an empty message.
@@ -246,6 +258,8 @@ class HistoryManager:
                 row["kind"] = kind
             if sends:
                 row["sends"] = sends
+            if recvs:
+                row["recvs"] = recvs
             if role == "assistant":
                 merged = _merge_reasoning(pending_reasoning, reasoning)
                 merged_tools = _extend_tools(pending_tools, tools)

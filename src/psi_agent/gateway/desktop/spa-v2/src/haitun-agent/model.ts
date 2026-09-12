@@ -40,7 +40,7 @@ export type Task = {
   accent: string;
   /** All deliverables generated in this session (survives refresh via history ``sends``). */
   deliverables: string[];
-  /** Unacknowledged new deliverables (chest gold); cleared when saved to 成果库. */
+  /** Unacknowledged new deliverables (chest gold); cleared when the user opens the chest to view them. */
   newDeliverables: string[];
   /** Basename → absolute/relative path from ``[SEND:]`` (for reload preview). */
   deliverablePaths: Record<string, string>;

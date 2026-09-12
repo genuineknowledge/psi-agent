@@ -32,7 +32,7 @@
 | 技术栈 | Vue 3 + Pinia | React 19 + Vite |
 | base | `/spa/` | `/spa-v2/` |
 | 对话 | Gateway SSE | 同左（同一套 API） |
-| 交付物 | 气泡 blob chip | 宝箱 UI；SSE `blob` 写入 `deliverables`；抽屉内按 blob 真实渲染（对齐 spa v1：MD/HTML/图片音视频/代码/CSV/PDF/DOCX/XLSX/PPTX，重库动态 `import()`；无 blob 时明确空态）。MD 预览与聊天气泡共用 `renderMd` + `.md-table-card`。**刻意为之**：`renderMd` 超链接 `target=_blank`；附件 chip / 预览抽屉仍本页。DOCX：`ignoreWidth` 去掉页宽；**页边距仍是绝对长度**，预览 CSS 强制 `section.docx` 宽 100% + 适中 padding，避免窄抽屉里正文挤成细条；表格/图片 `max-width:100%` 防横向溢出。视觉对齐 MD：`fitDocxTables()` 清 Word 绝对列宽、包 `.docx-table-scroll`、首行标 `docx-table-header-row`；host CSS 用深色标题 / 灰边卡片表 / 正文 15px（勿保留 Word 主题蓝标题）。有 `[SEND:]` path 时，气泡 chip / 宝箱 / 预览抽屉可「在文件夹中显示」（`POST /workspace/reveal`） |
+| 交付物 | 气泡 blob chip | 宝箱 UI；SSE `blob` 写入 `deliverables`；抽屉内按 blob 真实渲染（对齐 spa v1：MD/HTML/图片音视频/代码/CSV/PDF/DOCX/XLSX/PPTX，重库动态 `import()`；无 blob 时明确空态）。MD 预览与聊天气泡共用 `renderMd` + `.md-table-card`。**刻意为之**：`renderMd` 超链接 `target=_blank`；附件 chip / 预览抽屉仍本页。DOCX：`ignoreWidth` 去掉页宽；**页边距仍是绝对长度**，预览 CSS 强制 `section.docx` 宽 100% + 适中 padding，避免窄抽屉里正文挤成细条；表格/图片 `max-width:100%` 防横向溢出。视觉对齐 MD：`fitDocxTables()` 清 Word 绝对列宽、包 `.docx-table-scroll`、首行标 `docx-table-header-row`；host CSS 用深色标题 / 灰边卡片表 / 正文 15px（勿保留 Word 主题蓝标题）。有 `[SEND:]` path 时，气泡 chip / 宝箱 / 预览抽屉可「在文件夹中显示」（`POST /workspace/reveal`）。宝箱抽屉无「保存到成果库 / 让 Agent 修改」；金色熄灭 = 打开查看新交付物 |
 | 账户区 | 头像菜单合一 | 头像菜单仅账号/登录（「我的资料」已并进账号，入口已删）；**模型池**与**设置**为侧栏独立快捷入口 |
 | 默认工作区 | 无 / 必须先选 | 启动读 ``GET /defaults``.workspace（Gateway 软默认 `{Desktop}/haitun交付`，**只宣布不建目录**；首个 Session/对话时服务端再 mkdir）；遗留 `*-workspace` / 字面量 `workspace` / `haitun-workspace` 会忽略 |
 | 工作区切换 | 侧栏打开 PathPicker | 设置「切换工作区」→ 全屏选择页；**只更新新建任务默认路径** + `gw-v2:{fp}:workspace`（AppData 分区）；**不** remount、**不**按目录过滤侧栏 |
@@ -151,6 +151,7 @@ Hub「使用免费模型」→ **保留**已连接真实模型；hydrateAiForSes
 
 - Gateway `/history` 按 Session ``kind`` **白名单**过滤：只返回 `chat` 气泡，以及 `schedule.display` 的 assistant；`schedule.silent`（含 heartbeat）不返回。
 - `historyToChat` 再剥 `[SEND:]`/`[RECV:]`，并丢弃空行 / 泄漏的 `schedule.silent`（防御）。
+- **`historyToChat` 附件芯片（刻意为之，DeepSeek 风）**：Gateway `/history` 在剥标记前抽出路径——assistant → `sends`、user → `recvs`；`historyToChat` 都建成 `message.files` stub（`data: ''` + `path`，抽屉经 `GET /workspace/file` 懒加载）。**纯附件气泡**（无正文、仅有 chip）也保留——否则 `refreshHistory` / 切会话 / 丢弃标签页重开后芯片会消失。宝箱仍只吃 assistant `sends`（`historyToDeliverables`），不把用户上传塞进交付物。
 - **`historyToChat` 合并连续 assistant（刻意为之）**：Session 每轮 `tool_calls` 会把带正文的 assistant 落盘。刷新合并时**只保留最后一段**正文（与当场 `settleContentSegments` 一致），前面步骤叙述丢弃；files/`sends` stub 按 basename 去重合并。合并只发生在相邻 assistant 之间，遇 `user` 切断。
 - 气泡渲染同样 `stripTransferMarkers`（与 v1 一致）。
 
@@ -159,12 +160,14 @@ Hub「使用免费模型」→ **保留**已连接真实模型；hydrateAiForSes
 | 字段 | 含义 |
 |------|------|
 | `deliverables` | **历史交付物**：当前 Session 累计全部产出（从 `/history` 的 `sends` 重水合，刷新后列表仍在） |
-| `newDeliverables` | **新交付物**：本轮未确认的；宝箱金色 / 侧栏「新交付物」只看这个；「保存到成果库」后清空 |
+| `newDeliverables` | **新交付物**：本轮未查看的；宝箱金色 / 侧栏「新交付物」只看这个；**打开宝箱查看后清空**（熄灭），下次再有 SSE `blob` 再亮起。历史交付物仍在 `deliverables` |
 | `deliverablePaths` | basename → `[SEND:]` 路径；刷新后抽屉/气泡经 `GET /workspace/file` 懒加载预览（**刻意**不传 `root`，避免绝对 SEND 路径被 workspace 门禁 403）；「在文件夹中显示」走 `POST /workspace/reveal`（有 path 才可点） |
 
 SSE `blob` 到达时同时写入 `deliverables` + `newDeliverables`（有 `path` 则写入 `deliverablePaths`）。流式追加文本时必须保留 `message.files`。
 
-History 在剥 `[SEND:]` 前抽出路径放进消息的 `sends`；纯 SEND、无正文的 assistant 行也会返回（`text: ""` + `sends`），前端气泡跳过空文本但仍累计交付物。
+宝箱抽屉**无**「保存到成果库 / 让 Agent 修改」按钮（二者无效或可对话替代）；熄灭逻辑 = 打开查看，不是保存。
+
+History 在剥 `[SEND:]`/`[RECV:]` 前抽出路径分别放进 `sends` / `recvs`；纯 SEND / 纯 RECV、无正文的行也会返回（`text: ""` + 路径列表），前端保留芯片气泡；宝箱只累计 `sends`。
 
 ## 本地开发
 

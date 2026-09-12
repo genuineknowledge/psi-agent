@@ -609,7 +609,7 @@ Gateway ``HistoryManager`` 同时投影剥掉 ``[SEND:]``/``[RECV:]`` 标记**�
 **只剥展示这一侧**：送往模型的请求必须保留句柄，剥了就把「可恢复的省略」变成「静默删除」。句柄字面量与
 剥离正则同源于 `history_display`（`ELISION_HANDLE_PREFIX` / `ELISION_HANDLE_TEMPLATE`，`request_assembly`
 从这里 import），不在两处各写一份 —— 同 `[SEND:]` 曾经两处正则写法不同的教训，而这里一旦漂移是 fail-open：
-剥不中，句柄又回到用户眼前。本节这几个符号（``KIND_CHAT`` / ``message_kind`` / ``wire_role`` / ``is_displayable_chat_message`` / ``strip_transfer_markers`` / ``extract_send_paths``）经 ``session/__init__.py`` 的 ``__all__`` 正式导出给 Gateway（同表还有 ``Session`` / ``SessionAgent`` / ``ACTIVATE_ALL``，共 9 个）——**依赖是刻意的**：Gateway 的展示投影必须与 Session 的落盘语义逐字一致，否则同一条历史两处渲染会分叉。此前 Gateway 按内部模块路径导入（依赖刻意、通道非正式），现已补上公开门面；旧 import 路径仍然有效，这是新增通道而非强制迁移。
+剥不中，句柄又回到用户眼前。本节这几个符号（``KIND_CHAT`` / ``message_kind`` / ``wire_role`` / ``is_displayable_chat_message`` / ``strip_transfer_markers`` / ``extract_send_paths`` / ``extract_recv_paths``）经 ``session/__init__.py`` 的 ``__all__`` 正式导出给 Gateway（同表还有 ``Session`` / ``SessionAgent`` / ``ACTIVATE_ALL``）——**依赖是刻意的**：Gateway 的展示投影必须与 Session 的落盘语义逐字一致，否则同一条历史两处渲染会分叉。此前 Gateway 按内部模块路径导入（依赖刻意、通道非正式），现已补上公开门面；旧 import 路径仍然有效，这是新增通道而非强制迁移。``extract_recv_paths`` 与 ``extract_send_paths`` 对称：Channel 把用户上传编码成 ``[RECV:path]``，Gateway ``/history`` 剥标记后把路径放进 user 行的 ``recvs``，SPA 气泡芯片才能在 refresh / 切会话后仍在（DeepSeek 风）。
 
 ``[SEND:]`` 的解码（正则 + 空路径过滤）归属顶层 ``psi_agent/_send_markers.py`` 的 ``iter_send_paths()``，本层不再自持正则——两处正则曾经写法不同，而 Channel 侧没有空路径过滤。放在顶层而非 ``channel/`` 内，是为了不让本层 import Channel 的私有模块（同 ``_feishu_routing``）。
 

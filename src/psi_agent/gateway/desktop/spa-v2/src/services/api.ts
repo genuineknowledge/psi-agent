@@ -161,6 +161,8 @@ export type HistoryMessage = {
   kind?: string
   /** ``[SEND:]`` paths extracted before marker strip (assistant turns). */
   sends?: string[]
+  /** ``[RECV:]`` paths extracted before marker strip (user uploads). */
+  recvs?: string[]
   /** Session JSONL thinking prose only (not tool markers). */
   reasoning?: string
   /** Structured tool_calls projected for SPA tool list (separate from reasoning). */
