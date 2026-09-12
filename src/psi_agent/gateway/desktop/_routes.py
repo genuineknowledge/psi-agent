@@ -275,6 +275,59 @@ async def _enable_workspace_skill(request: web.Request) -> web.Response:
         return _error(str(e), status=400)
 
 
+async def _export_workspace_skill(request: web.Request) -> web.Response:
+    """GET /workspace/skills/{name}/export -- download a skill as a zip archive.
+
+    Official skills export too (read-only, safe). The zip's top level is the skill
+    dir <name>/, so it re-imports cleanly via POST /workspace/skills/import. The
+    filename is sanitized to alnum/-/_ to avoid Content-Disposition injection.
+    """
+    wm: WorkspaceManager = request.app["wm"]
+    agent_dir = str(request.app.get("default_agent") or "")
+    name = request.match_info.get("name", "")
+    try:
+        data = await wm.export_skill(name, agent_dir)
+    except ValueError as e:
+        return _error(str(e), status=400)
+    except FileNotFoundError as e:
+        return _error(str(e), status=404)
+    except OSError as e:
+        return _error(str(e), status=400)
+    safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in name) or "skill"
+    return web.Response(
+        body=data,
+        content_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{safe}.zip"'},
+    )
+
+
+async def _import_workspace_skill(request: web.Request) -> web.Response:
+    """POST /workspace/skills/import -- upload a skill zip (multipart field 'file').
+
+    Mirrors the chat attachment path (gateway/server.py): request.post() then read
+    the upload in a worker thread. import_skill rejects zip slip and existing dirs
+    (409); a malformed zip or bad structure is a 400.
+    """
+    wm: WorkspaceManager = request.app["wm"]
+    try:
+        data = await request.post()
+    except ValueError as e:
+        return _error(f"Invalid multipart body: {e}", status=400)
+    field = data.get("file")
+    if field is None or not hasattr(field, "file"):
+        return _error("Missing zip file field 'file'", status=400)
+    try:
+        content = await anyio.to_thread.run_sync(field.file.read)  # ty: ignore
+        result = await wm.import_skill(content)
+    except FileExistsError as e:
+        return _error(str(e), status=409)
+    except ValueError as e:
+        return _error(str(e), status=400)
+    except OSError as e:
+        return _error(str(e), status=400)
+    return _json(result)
+
+
 # ---------------------------------------------------------------- 认证 (/auth/*)
 #
 # 这些路由只在云端地址非空时注册 (见 register_desktop_routes)。为空时整套认证不加载, 现有本地
@@ -471,6 +524,8 @@ async def register_desktop_routes(
     app.router.add_delete("/workspace/skills/{name}", _delete_workspace_skill)
     app.router.add_post("/workspace/skills/{name}/disable", _disable_workspace_skill)
     app.router.add_post("/workspace/skills/{name}/enable", _enable_workspace_skill)
+    app.router.add_get("/workspace/skills/{name}/export", _export_workspace_skill)
+    app.router.add_post("/workspace/skills/import", _import_workspace_skill)
 
     # 认证路由: 只在配了云端地址时才注册。authm 为 None 时**一条都不注册**,
     # 现有本地单用户流程零回归。

@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import contextlib
 import ctypes
+import io
 import json
 import os
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +122,53 @@ async def _rmtree_anyio(path: anyio.Path) -> None:
         await path.rmdir()
     else:
         await path.unlink()
+
+
+def _zip_skill_dir(dir_path: str, arc_root: str) -> bytes:
+    """Zip dir_path's file tree under arc_root/ (sync; run via anyio.to_thread).
+
+    zipfile is blocking IO, so the whole walk runs in a worker thread (the
+    gateway/server.py precedent). Entry names use POSIX separators so the archive
+    is portable across platforms.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for dirpath, _dirnames, filenames in os.walk(dir_path):
+            for fn in sorted(filenames):
+                full = os.path.join(dirpath, fn)
+                rel = os.path.relpath(full, dir_path).replace(os.sep, "/")
+                zf.write(full, f"{arc_root}/{rel}")
+    return buf.getvalue()
+
+
+def _import_skill_sync(zip_bytes: bytes, skills_dir: str) -> dict[str, Any]:
+    """Validate + extract a shared skill zip into skills_dir (sync; via to_thread).
+
+    Two guards run BEFORE anything is written:
+    1. zip slip -- every entry's resolved dest must stay inside skills_dir.
+    2. single top-level dir -- the zip must carry exactly one skill dir <name>/.
+    Then reject an existing <name> (decision 1: never silently overwrite the
+    user's skill). Raises ValueError / FileExistsError.
+    """
+    base = Path(skills_dir)
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        names = [n for n in zf.namelist() if n.strip()]
+        if not names:
+            raise ValueError("Empty skill zip")
+        base_resolved = _norm_fs(str(base.resolve()))
+        for n in names:
+            dest_s = _norm_fs(str((base / n).resolve()))
+            if not dest_s.startswith(base_resolved + os.sep):
+                raise ValueError(f"Zip entry escapes the skills dir: {n!r}")
+        top = {n.split("/", 1)[0] for n in names}
+        if len(top) != 1:
+            raise ValueError(f"Zip must carry a single top-level skill dir, got {sorted(top)}")
+        skill_name = next(iter(top))
+        if (base / skill_name).exists():
+            raise FileExistsError(f"Skill already exists: {skill_name!r}")
+        base.mkdir(parents=True, exist_ok=True)
+        zf.extractall(base)
+    return {"name": skill_name, "ok": True}
 
 
 class WorkspaceManager:
@@ -370,3 +419,35 @@ class WorkspaceManager:
         await _write_tombstones(tombstones)
         logger.info(f"Enabled official skill {clean!r} (tombstone removed)")
         return {"name": clean, "disabled": False}
+
+    async def export_skill(self, name: str, agent_dir: str) -> bytes:
+        """Zip a skill directory (winning layer) for sharing.
+
+        Official skills can be exported too (decision 2 -- read-only, safe). The
+        name is validated like delete_skill. The located dir is the global personal
+        layer if present, else the official layer (agent_dir/skills). zipfile is
+        blocking IO, so packing runs in a worker thread.
+        """
+        clean = (name or "").strip()
+        if not clean or clean in {".", ".."} or "/" in clean or "\\" in clean or "\x00" in clean:
+            raise ValueError(f"Invalid skill name: {name!r}")
+        target = anyio.Path(_GLOBAL_SKILLS_DIR) / clean  # global personal layer wins
+        if not await target.exists() and agent_dir.strip():
+            target = anyio.Path(agent_dir) / "skills" / clean  # official fallback
+        if not await target.exists():
+            raise FileNotFoundError(f"Skill not found: {name!r}")
+        return await anyio.to_thread.run_sync(_zip_skill_dir, str(target), clean)  # ty: ignore
+
+    async def import_skill(self, zip_bytes: bytes) -> dict[str, Any]:
+        """Import a shared skill zip into ~/.agent/skills.
+
+        Rejects zip slip (any entry escaping the skills dir), a multi-dir zip, and
+        an existing dir (decision 1: never silently overwrite). Extraction runs in
+        a worker thread; a malformed zip surfaces as ValueError.
+        """
+        try:
+            result = await anyio.to_thread.run_sync(_import_skill_sync, zip_bytes, _GLOBAL_SKILLS_DIR)  # ty: ignore
+        except zipfile.BadZipFile as e:
+            raise ValueError(f"Invalid zip file: {e}") from e
+        logger.info(f"Imported shared skill {result.get('name')!r}")
+        return result

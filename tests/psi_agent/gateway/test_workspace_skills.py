@@ -22,7 +22,9 @@ loads) + 6 red (WorkspaceManager has no list_skills yet -- AttributeError).
 from __future__ import annotations
 
 import importlib.util
+import io
 import sys
+import zipfile
 from pathlib import Path
 
 import anyio
@@ -456,3 +458,185 @@ async def test_tombstone_consistent_agent_gateway(
     assert gw_tombstoned == {"off-x"}  # gateway flags exactly off-x
     assert "OFFICIAL x" not in xml  # agent index dropped off-x
     assert "OFFICIAL y" in xml  # agent index kept off-y
+
+
+# -- Zip export/import criteria (share a skill; red before impl) --------------
+#
+# export_skill(name, agent_dir) -> zip bytes of the winning layer's skill dir.
+# import_skill(zip_bytes) -> extracts <name>/ into ~/.agent/skills, rejecting zip
+# slip and existing-dir conflicts. Both are gateway-side (no kernel, no agent pkg).
+
+
+def _make_zip(root_name: str, files: dict[str, str]) -> bytes:
+    """Build an in-memory zip with entries under root_name/ (the skill dir).
+
+    Mirrors what export_skill produces so import_skill can be tested standalone.
+    files maps relative paths ("SKILL.md", "scripts/h.py") to text content.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for rel, content in files.items():
+            zf.writestr(f"{root_name}/{rel}", content)
+    return buf.getvalue()
+
+
+@pytest.mark.anyio
+async def test_export_skill_packages_global_with_support_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """X1 (red before: export_skill missing -> AttributeError; green after):
+    exporting a personal skill zips its SKILL.md AND support files (scripts/),
+    preserving the <name>/ directory structure.
+
+    Mutation check: zip only SKILL.md (skip the subdir walk) -- the scripts/ entry
+    assertion turns red.
+    """
+    global_root = tmp_path / "global"
+    _write_skill(global_root, "mine", "my skill")
+    sub = global_root / "skills" / "mine" / "scripts"
+    sub.mkdir(parents=True)
+    (sub / "helper.py").write_text("print(1)", encoding="utf-8")
+    monkeypatch.setattr(wm_mod, "_GLOBAL_SKILLS_DIR", str(global_root / "skills"), raising=False)
+    data = await WorkspaceManager().export_skill("mine", "")
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        names = zf.namelist()
+    assert "mine/SKILL.md" in names
+    assert "mine/scripts/helper.py" in names
+
+
+@pytest.mark.anyio
+async def test_export_skill_packages_official(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """X2 (red before -> green after): an OFFICIAL skill can be exported too
+    (decision 2) -- sharing a useful official skill is legitimate and export is
+    read-only, so it is safe.
+
+    Mutation check: make export_skill look only at the global layer -- the
+    official-only skill is not found -> FileNotFoundError, red.
+    """
+    official = tmp_path / "agent"
+    _write_skill(official, "off", "OFFICIAL skill")
+    global_root = tmp_path / "global"
+    monkeypatch.setattr(wm_mod, "_GLOBAL_SKILLS_DIR", str(global_root / "skills"), raising=False)
+    data = await WorkspaceManager().export_skill("off", str(official))
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        names = zf.namelist()
+    assert "off/SKILL.md" in names
+
+
+@pytest.mark.anyio
+async def test_export_skill_validates_name_and_existence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """X3 (red before -> green after): export_skill rejects a traversal name
+    (ValueError) and an absent skill (FileNotFoundError), like delete_skill.
+
+    Mutation check: drop the name validation -- ../escape is not rejected, red.
+    """
+    official = tmp_path / "agent"
+    (official / "skills").mkdir(parents=True)
+    global_root = tmp_path / "global"
+    (global_root / "skills").mkdir(parents=True)
+    monkeypatch.setattr(wm_mod, "_GLOBAL_SKILLS_DIR", str(global_root / "skills"), raising=False)
+    wm = WorkspaceManager()
+    for bad in ("../escape", "a/b", "..", "", "a\\b"):
+        with pytest.raises(ValueError):
+            await wm.export_skill(bad, str(official))
+    with pytest.raises(FileNotFoundError):
+        await wm.export_skill("nope", str(official))
+
+
+@pytest.mark.anyio
+async def test_import_skill_extracts_to_global(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M1 (red before: import_skill missing -> AttributeError; green after):
+    importing a zip extracts <name>/ into ~/.agent/skills; SKILL.md and support
+    files both land.
+
+    Mutation check: extract only the top-level file (skip subdirs) -- the
+    scripts/helper.py assertion turns red.
+    """
+    global_root = tmp_path / "global"
+    (global_root / "skills").mkdir(parents=True)
+    monkeypatch.setattr(wm_mod, "_GLOBAL_SKILLS_DIR", str(global_root / "skills"), raising=False)
+    zip_bytes = _make_zip(
+        "newone", {"SKILL.md": "---\nname: newone\n---\n\nbody\n", "scripts/helper.py": "print(1)"}
+    )
+    result = await WorkspaceManager().import_skill(zip_bytes)
+    assert result["name"] == "newone"
+    assert (global_root / "skills" / "newone" / "SKILL.md").exists()
+    assert (global_root / "skills" / "newone" / "scripts" / "helper.py").exists()
+
+
+@pytest.mark.anyio
+async def test_import_skill_rejects_zip_slip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M2 (red before -> green after): a zip entry that escapes via ../ is rejected
+    (ValueError) and NOTHING is written outside ~/.agent/skills. The security crux
+    of import.
+
+    Mutation check: drop the per-entry containment check -- the escaping file gets
+    written, red.
+    """
+    global_root = tmp_path / "global"
+    (global_root / "skills").mkdir(parents=True)
+    monkeypatch.setattr(wm_mod, "_GLOBAL_SKILLS_DIR", str(global_root / "skills"), raising=False)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("../../escaped.txt", "pwned")  # climbs out of the skills dir
+    with pytest.raises(ValueError):
+        await WorkspaceManager().import_skill(buf.getvalue())
+    assert not (tmp_path / "escaped.txt").exists()  # nothing escaped
+
+
+@pytest.mark.anyio
+async def test_import_skill_rejects_existing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M3 (red before -> green after): importing a skill whose dir already exists
+    in ~/.agent/skills is REJECTED (FileExistsError) and the existing dir is left
+    intact (decision 1: never silently overwrite the user's skill).
+
+    Mutation check: overwrite instead of rejecting -- the FileExistsError assert
+    turns red and the original content is clobbered.
+    """
+    global_root = tmp_path / "global"
+    _write_skill(global_root, "dup", "ORIGINAL content")
+    monkeypatch.setattr(wm_mod, "_GLOBAL_SKILLS_DIR", str(global_root / "skills"), raising=False)
+    zip_bytes = _make_zip("dup", {"SKILL.md": "---\nname: dup\n---\n\nIMPORTED content\n"})
+    with pytest.raises(FileExistsError):
+        await WorkspaceManager().import_skill(zip_bytes)
+    original = (global_root / "skills" / "dup" / "SKILL.md").read_text(encoding="utf-8")
+    assert "ORIGINAL content" in original
+    assert "IMPORTED content" not in original
+
+
+@pytest.mark.anyio
+async def test_export_import_round_trip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M4 (red before -> green after): a skill exported then imported into a clean
+    global layer shows up in list_skills as source=global with the same content --
+    the export/import loop is lossless.
+
+    Mutation check: corrupt the zip's top dir on export -- import lands it under
+    the wrong name, the round-trip assertion turns red.
+    """
+    src_root = tmp_path / "src-global"
+    _write_skill(src_root, "portable", "PORTABLE skill", category="writing")
+    monkeypatch.setattr(wm_mod, "_GLOBAL_SKILLS_DIR", str(src_root / "skills"), raising=False)
+    data = await WorkspaceManager().export_skill("portable", "")
+    dst_root = tmp_path / "dst-global"
+    (dst_root / "skills").mkdir(parents=True)
+    monkeypatch.setattr(wm_mod, "_GLOBAL_SKILLS_DIR", str(dst_root / "skills"), raising=False)
+    result = await WorkspaceManager().import_skill(data)
+    assert result["name"] == "portable"
+    official = tmp_path / "agent"
+    (official / "skills").mkdir(parents=True)
+    skills = await WorkspaceManager().list_skills(str(official))
+    entry = _find(skills, "portable")
+    assert entry["source"] == "global"
+    assert entry["description"] == "PORTABLE skill"
