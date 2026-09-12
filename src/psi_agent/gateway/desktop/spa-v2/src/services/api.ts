@@ -103,6 +103,24 @@ export async function deleteSession(sessionId: string) {
   return api('DELETE', `/sessions/${sessionId}`)
 }
 
+/**
+ * Copy Session artifacts to a new workspace/agent, then delete the old Session.
+ * Equivalent to rebinding roots (which cannot be hot-patched on a live Session).
+ */
+export async function relocateSession(
+  sessionId: string,
+  body: { workspace: string; agent?: string },
+) {
+  return api<SessionInfo & { relocated_from?: string }>(
+    'POST',
+    `/sessions/${sessionId}/relocate`,
+    {
+      workspace: body.workspace,
+      ...(body.agent ? { agent: body.agent } : {}),
+    },
+  )
+}
+
 export async function listTitles() {
   return api<Record<string, string>>('GET', '/titles')
 }

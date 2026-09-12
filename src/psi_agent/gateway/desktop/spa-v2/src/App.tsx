@@ -62,13 +62,12 @@ async function pathExistsAsDir(path: string): Promise<boolean> {
 /**
  * spa-v2 root:
  * - Boot from GET /defaults (+ AppData-scoped localStorage for workspace / agent).
- * - Remount workbench when AppData fingerprint or workspace changes.
+ * - Remount workbench when AppData fingerprint changes (not on workspace switch).
  * - Pass agent into POST /sessions via HaiTunAgentWorkspace.
  */
 export default function App() {
   const { t } = useI18n()
   const [workspace, setWorkspace] = useState('')
-  const [defaultsWorkspace, setDefaultsWorkspace] = useState('')
   const [defaultAgent, setDefaultAgent] = useState('')
   const [appdataPath, setAppdataPath] = useState('')
   const [appdataFp, setAppdataFp] = useState('')
@@ -98,7 +97,6 @@ export default function App() {
         bindAppdataFingerprint(fp)
         setAppdataPath(appdata)
         setAppdataFp(fp)
-        setDefaultsWorkspace((d.workspace || '').trim())
 
         const savedAgent = readSavedAgent(fp)
         let agent = ''
@@ -210,13 +208,13 @@ export default function App() {
     )
   }
 
-  // Remount when AppData fingerprint or open workspace changes so hydrate
-  // cannot keep a dirty in-memory task list across GATEWAY_ORIGIN / folder switches.
+  // Remount only when AppData fingerprint changes (Vite GATEWAY_ORIGIN → other
+  // --appdata). 刻意为之: do not remount on workspace switch — settings
+  // workspace/agent are create-time defaults; sidebar lists all Gateway sessions.
   return (
     <HaiTunAgentWorkspace
-      key={`${appdataFp}|${workspace}`}
+      key={appdataFp}
       workspace={workspace}
-      defaultsWorkspace={defaultsWorkspace}
       appdataPath={appdataPath}
       defaultAgent={defaultAgent}
       onChangeWorkspace={changeWorkspace}

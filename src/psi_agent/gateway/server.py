@@ -24,6 +24,10 @@ from psi_agent.runtime._history_manager import HistoryManager
 from psi_agent.runtime._router_manager import RouterDependencyError, RouterManager, RouterUpstreamInfo
 from psi_agent.runtime._scheduler_manager import SchedulerManager
 from psi_agent.runtime._session_manager import SessionInfo, SessionManager
+from psi_agent.runtime._session_relocate import (
+    copy_session_artifacts,
+    delete_session_todo_files,
+)
 from psi_agent.runtime._summary_manager import SummaryManager
 from psi_agent.runtime._title_manager import TitleManager
 from psi_agent.runtime._todo_manager import TodoManager
@@ -204,6 +208,7 @@ async def create_core_app(
     app.router.add_get("/routers", _list_routers)
     app.router.add_post("/sessions", _create_session)
     app.router.add_delete("/sessions/{session_id}", _delete_session)
+    app.router.add_post("/sessions/{session_id}/relocate", _relocate_session)
     app.router.add_get("/sessions", _list_sessions)
     app.router.add_get("/titles", _list_titles)
     app.router.add_post("/titles", _set_title)
@@ -353,6 +358,7 @@ async def _delete_session(request: web.Request) -> web.Response:
         await sm.delete(session_id)
         appdata = str(request.app.get("appdata") or "")
         await hm.delete(workspace, session_id, appdata=appdata)
+        await delete_session_todo_files(session_id, appdata=appdata)
         await tm.delete(session_id)
         await sum_m.delete(session_id)
         return _json({"id": session_id, "status": "stopped"})
@@ -360,6 +366,73 @@ async def _delete_session(request: web.Request) -> web.Response:
         return _error(str(e), status=404)
     except Exception as e:
         logger.error(f"Unexpected error deleting session {session_id!r}: {e!r}")
+        return _error(str(e), status=500)
+
+
+async def _relocate_session(request: web.Request) -> web.Response:
+    """POST /sessions/{id}/relocate — copy to new workspace/agent, then delete old.
+
+    刻意为之: do not hot-patch a live Session's roots. Tools and the agent package
+    are bound at create time; equivalent rebind = new Session + artifact copy +
+    delete. Disk deliverables under the old workspace are not moved.
+    """
+    sm: SessionManager = request.app["sm"]
+    schedm: SchedulerManager = request.app["schedm"]
+    hm: HistoryManager = request.app["hm"]
+    tm: TitleManager = request.app["tm"]
+    sum_m: SummaryManager = request.app["sum_m"]
+    old_id = request.match_info["session_id"]
+    appdata = str(request.app.get("appdata") or "")
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            return _error("body must be a JSON object", status=400)
+        workspace = str(body.get("workspace") or "").strip()
+        if not workspace:
+            return _error("workspace is required", status=400)
+        agent_raw = body.get("agent")
+        agent = str(agent_raw).strip() if isinstance(agent_raw, str) else ""
+
+        old = sm.get_info(old_id)
+        if old.scheduler:
+            return _error("cannot relocate a scheduler session", status=400)
+
+        new_agent = agent if agent else old.agent
+        new_info = await sm.create(
+            backend_type=old.backend_type,
+            backend_id=old.backend_id,
+            workspace=workspace,
+            agent=new_agent,
+        )
+        await copy_session_artifacts(
+            old_session_id=old_id,
+            new_session_id=new_info.id,
+            old_workspace=old.workspace,
+            appdata=appdata,
+        )
+        titles = tm.get_all()
+        if old_id in titles:
+            await tm.set(new_info.id, titles[old_id])
+        summaries = sum_m.get_all()
+        if old_id in summaries:
+            await sum_m.set(new_info.id, summaries[old_id])
+
+        await sm.delete(old_id)
+        await hm.delete(old.workspace, old_id, appdata=appdata)
+        await delete_session_todo_files(old_id, appdata=appdata)
+        await tm.delete(old_id)
+        await sum_m.delete(old_id)
+
+        await schedm.ensure(new_info.workspace, ai_id=new_info.backend_id, agent=new_info.agent)
+        payload = _session_data(new_info)
+        payload["relocated_from"] = old_id
+        return _json(payload, status=201)
+    except LookupError as e:
+        return _error(str(e), status=404)
+    except (TypeError, ValueError, KeyError) as e:
+        return _error(str(e), status=400)
+    except Exception as e:
+        logger.error(f"Unexpected error relocating session {old_id!r}: {e!r}")
         return _error(str(e), status=500)
 
 
