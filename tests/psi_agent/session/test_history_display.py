@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from psi_agent.session.history_display import (
+    CREATED_AT_KEY,
     ELISION_HANDLE_TEMPLATE,
     KIND_CHAT,
     KIND_SCHEDULE_DISPLAY,
     KIND_SCHEDULE_SILENT,
+    THINKING_MS_KEY,
     VisibleMarkerFilter,
     extract_send_paths,
     is_displayable_chat_message,
@@ -13,6 +15,7 @@ from psi_agent.session.history_display import (
     render_sent_files_note,
     strip_transfer_markers,
     with_chat_type,
+    with_created_at,
     with_kind,
 )
 
@@ -243,3 +246,37 @@ def test_reasoning_rename_edge_cases() -> None:
     assert project_history_for_wire([{"role": "user", "content": "a", "reasoning": "x"}]) == [
         {"role": "user", "content": "a", "reasoning": "x"}
     ]
+
+
+def test_with_created_at_is_idempotent() -> None:
+    stamped = with_created_at({"role": "user", "content": "hi"}, when="2026-09-12T01:00:00.000Z")
+    assert stamped[CREATED_AT_KEY] == "2026-09-12T01:00:00.000Z"
+    again = with_created_at(stamped, when="2026-09-12T99:00:00.000Z")
+    assert again[CREATED_AT_KEY] == "2026-09-12T01:00:00.000Z"
+
+
+def test_project_history_strips_display_timing_keys() -> None:
+    projected = project_history_for_wire(
+        [
+            {
+                "role": "user",
+                "content": "hi",
+                "kind": KIND_CHAT,
+                CREATED_AT_KEY: "2026-09-12T01:00:00.000Z",
+            },
+            {
+                "role": "assistant",
+                "content": "ok",
+                "kind": KIND_CHAT,
+                CREATED_AT_KEY: "2026-09-12T01:00:05.000Z",
+                THINKING_MS_KEY: 5000,
+            },
+        ]
+    )
+    assert projected == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "ok"},
+    ]
+    for row in projected:
+        assert CREATED_AT_KEY not in row
+        assert THINKING_MS_KEY not in row

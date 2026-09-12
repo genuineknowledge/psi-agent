@@ -165,6 +165,10 @@ export type HistoryMessage = {
   reasoning?: string
   /** Structured tool_calls projected for SPA tool list (separate from reasoning). */
   tools?: HistoryToolCall[]
+  /** ISO-8601 UTC when the JSONL row was appended (display-only). */
+  created_at?: string
+  /** Whole-turn wall ms for Cursor-style「已思考 · Ns」(display-only). */
+  thinking_ms?: number
 }
 
 export async function fetchHistory(sessionId: string) {

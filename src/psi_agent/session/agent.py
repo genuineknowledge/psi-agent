@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import aclosing, asynccontextmanager
 from contextvars import ContextVar
@@ -38,6 +39,7 @@ from psi_agent.session.event_protocol import EventProtocolError, parse_event_env
 from psi_agent.session.history_display import (
     COMPACTED_COVERS_KEY,
     KIND_COMPACTED,
+    THINKING_MS_KEY,
     TURN_CONTEXT_KEY,
     message_kind,
     truncate_tool_result,
@@ -500,6 +502,7 @@ class SessionAgent:
         logger.info(f"Direct card dispatch: {len(calls)} action(s) -> {[c[0] for c in calls]}")
 
         summaries: list[str] = []
+        turn_t0 = time.monotonic()
         async with self._conversation:
             self._conversation.add(with_kind(user_message, message_kind(user_message)))
             await self._conversation.commit()
@@ -515,7 +518,11 @@ class SessionAgent:
                     logger.error(f"Direct card dispatch {handler} failed: {e!r}")
             self._conversation.add(
                 with_kind(
-                    {"role": "assistant", "content": "[card direct] " + " | ".join(summaries)},
+                    {
+                        "role": "assistant",
+                        "content": "[card direct] " + " | ".join(summaries),
+                        THINKING_MS_KEY: max(0, int((time.monotonic() - turn_t0) * 1000)),
+                    },
                     turn_response_kind,
                 )
             )
@@ -750,6 +757,15 @@ class SessionAgent:
                 turn_start = len(self._conversation.messages)
                 self._conversation.add(stored_user_message)
                 await self._conversation.commit()
+                # Cursor-style「已思考 · Ns」: wall ms from this turn's start to
+                # each assistant row (display-only; see THINKING_MS_KEY).
+                turn_t0 = time.monotonic()
+
+                def _with_thinking_ms(msg: dict[str, Any]) -> dict[str, Any]:
+                    out = dict(msg)
+                    out[THINKING_MS_KEY] = max(0, int((time.monotonic() - turn_t0) * 1000))
+                    return out
+
                 # Everything appended from here on is *this* turn's output, and
                 # the reply inside it has not reached the user yet.  Eliding it
                 # tells the upstream "my last message said nothing" — including
@@ -890,7 +906,9 @@ class SessionAgent:
                                     if accumulated_reasoning:
                                         assistant_msg["reasoning"] = accumulated_reasoning
                                     if accumulated_content or ordered_calls:
-                                        self._conversation.add(with_kind(assistant_msg, turn_response_kind))
+                                        self._conversation.add(
+                                            with_kind(_with_thinking_ms(assistant_msg), turn_response_kind)
+                                        )
 
                                     # pre-compute args + yield tool-call intent
                                     tool_args: list[tuple[int, dict[str, Any], str, dict[str, Any], str | None]] = []
@@ -1033,7 +1051,7 @@ class SessionAgent:
                             if accumulated_reasoning:
                                 assistant_msg["reasoning"] = accumulated_reasoning
                             if accumulated_content:
-                                self._conversation.add(with_kind(assistant_msg, turn_response_kind))
+                                self._conversation.add(with_kind(_with_thinking_ms(assistant_msg), turn_response_kind))
                             committed = await self._conversation.commit()
                             if committed:
                                 after_turn_message[_HISTORY_PROVENANCE_KEY]["assistant_line"] = len(
@@ -1072,11 +1090,8 @@ class SessionAgent:
                                 assistant_msg["content"] = accumulated_content
                                 if accumulated_reasoning:
                                     assistant_msg["reasoning"] = accumulated_reasoning
-                                self._conversation.add(with_kind(assistant_msg, turn_response_kind))
+                                self._conversation.add(with_kind(_with_thinking_ms(assistant_msg), turn_response_kind))
                             await self._conversation.commit()
-                            # No finish reason at all is a broken stream, not a model
-                            # decision — keep the two apart so triage can tell "the
-                            # model stopped early" from "we never heard why".
                             _finish(
                                 AgentRunStatus.INCOMPLETE,
                                 AgentStopCause.MODEL_STOPPED
@@ -1101,7 +1116,7 @@ class SessionAgent:
                         notice = MAX_ROUNDS_NOTICE.format(rounds=self._max_tool_rounds)
                         self._conversation.add(
                             with_kind(
-                                {"role": "assistant", "content": notice},
+                                _with_thinking_ms({"role": "assistant", "content": notice}),
                                 turn_response_kind,
                             )
                         )
