@@ -156,6 +156,38 @@ describe('historyToChat', () => {
       },
     ])
   })
+
+  it('projects created_at / thinking_ms and prefers later values when coalescing', () => {
+    expect(
+      historyToChat([
+        {
+          role: 'user',
+          text: 'hi',
+          created_at: '2026-09-12T01:00:00.000Z',
+        },
+        {
+          role: 'assistant',
+          text: 'step',
+          created_at: '2026-09-12T01:00:01.000Z',
+          thinking_ms: 1000,
+        },
+        {
+          role: 'assistant',
+          text: 'final',
+          created_at: '2026-09-12T01:00:05.000Z',
+          thinking_ms: 5000,
+        },
+      ]),
+    ).toEqual([
+      { role: 'user', text: 'hi', createdAt: '2026-09-12T01:00:00.000Z' },
+      {
+        role: 'agent',
+        text: 'final',
+        createdAt: '2026-09-12T01:00:05.000Z',
+        thinkingMs: 5000,
+      },
+    ])
+  })
 })
 
 describe('historyToDeliverables', () => {

@@ -14,7 +14,10 @@ from psi_agent.session.history_display import (
     KIND_CHAT,
     extract_send_paths,
     is_displayable_chat_message,
+    max_thinking_ms,
+    message_created_at,
     message_kind,
+    message_thinking_ms,
     strip_transfer_markers,
     wire_role,
 )
@@ -82,6 +85,28 @@ def _attach_process(
         row["tools"] = tools
 
 
+def _attach_timing(
+    row: dict[str, object],
+    *,
+    created_at: str | None,
+    thinking_ms: int | None,
+) -> None:
+    if created_at:
+        row["created_at"] = created_at
+    if thinking_ms is not None:
+        row["thinking_ms"] = thinking_ms
+
+
+def _merge_timing_into(prev: dict[str, object], msg: dict[str, object]) -> None:
+    """Later assistant rows win for both created_at and thinking_ms."""
+    incoming_at = message_created_at(msg)
+    if incoming_at:
+        prev["created_at"] = incoming_at
+    merged_ms = max_thinking_ms(prev.get("thinking_ms"), message_thinking_ms(msg))
+    if merged_ms is not None:
+        prev["thinking_ms"] = merged_ms
+
+
 class HistoryManager:
     async def get(self, workspace: str, session_id: str, *, appdata: str = "") -> list[dict[str, object]]:
         appdata_root = appdata.strip() or await resolve_appdata_root()
@@ -94,6 +119,7 @@ class HistoryManager:
         # Tool-round thinking / tools held until the next displayable assistant.
         pending_reasoning = ""
         pending_tools: list[dict[str, str]] = []
+        pending_thinking_ms: int | None = None
         try:
             content = await path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -127,11 +153,15 @@ class HistoryManager:
                             prev["reasoning"] = _merge_reasoning(prev.get("reasoning"), reasoning)
                         if tools:
                             prev["tools"] = _extend_tools(prev.get("tools"), tools)
+                        _merge_timing_into(prev, msg)
                     else:
                         if reasoning:
                             pending_reasoning = _merge_reasoning(pending_reasoning, reasoning)
                         if tools:
                             pending_tools = _extend_tools(pending_tools, tools)
+                        pending_thinking_ms = max_thinking_ms(
+                            pending_thinking_ms, message_thinking_ms(msg)
+                        )
                 continue
 
             text = msg.get("content", "")
@@ -140,7 +170,7 @@ class HistoryManager:
             sends = extract_send_paths(text) if role == "assistant" else []
             cleaned = strip_transfer_markers(text)
 
-            if role == "user" and (pending_reasoning or pending_tools):
+            if role == "user" and (pending_reasoning or pending_tools or pending_thinking_ms is not None):
                 if messages and messages[-1].get("role") == "assistant":
                     prev = messages[-1]
                     if pending_reasoning:
@@ -150,8 +180,13 @@ class HistoryManager:
                         )
                     if pending_tools:
                         prev["tools"] = _extend_tools(prev.get("tools"), pending_tools)
+                    if pending_thinking_ms is not None:
+                        prev["thinking_ms"] = max_thinking_ms(
+                            prev.get("thinking_ms"), pending_thinking_ms
+                        )
                 pending_reasoning = ""
                 pending_tools = []
+                pending_thinking_ms = None
 
             # SEND-only assistant turns: fold paths into the previous assistant
             # bubble so spa v1 does not render an empty message.
@@ -174,6 +209,12 @@ class HistoryManager:
                             _extend_tools(pending_tools, tools),
                         )
                         pending_tools = []
+                    _merge_timing_into(prev, msg)
+                    if pending_thinking_ms is not None:
+                        prev["thinking_ms"] = max_thinking_ms(
+                            prev.get("thinking_ms"), pending_thinking_ms
+                        )
+                        pending_thinking_ms = None
                 else:
                     row: dict[str, object] = {"role": role, "text": "", "sends": sends}
                     merged = _merge_reasoning(pending_reasoning, reasoning)
@@ -181,6 +222,12 @@ class HistoryManager:
                     pending_reasoning = ""
                     pending_tools = []
                     _attach_process(row, reasoning=merged, tools=merged_tools)
+                    _attach_timing(
+                        row,
+                        created_at=message_created_at(msg),
+                        thinking_ms=max_thinking_ms(pending_thinking_ms, message_thinking_ms(msg)),
+                    )
+                    pending_thinking_ms = None
                     messages.append(row)
                 continue
             if not cleaned:
@@ -191,11 +238,15 @@ class HistoryManager:
                             prev["reasoning"] = _merge_reasoning(prev.get("reasoning"), reasoning)
                         if tools:
                             prev["tools"] = _extend_tools(prev.get("tools"), tools)
+                        _merge_timing_into(prev, msg)
                     else:
                         if reasoning:
                             pending_reasoning = _merge_reasoning(pending_reasoning, reasoning)
                         if tools:
                             pending_tools = _extend_tools(pending_tools, tools)
+                        pending_thinking_ms = max_thinking_ms(
+                            pending_thinking_ms, message_thinking_ms(msg)
+                        )
                 continue
 
             row: dict[str, object] = {"role": role, "text": cleaned}
@@ -206,9 +257,17 @@ class HistoryManager:
             if role == "assistant":
                 merged = _merge_reasoning(pending_reasoning, reasoning)
                 merged_tools = _extend_tools(pending_tools, tools)
+                _attach_process(row, reasoning=merged, tools=merged_tools)
+                _attach_timing(
+                    row,
+                    created_at=message_created_at(msg),
+                    thinking_ms=max_thinking_ms(pending_thinking_ms, message_thinking_ms(msg)),
+                )
                 pending_reasoning = ""
                 pending_tools = []
-                _attach_process(row, reasoning=merged, tools=merged_tools)
+                pending_thinking_ms = None
+            else:
+                _attach_timing(row, created_at=message_created_at(msg), thinking_ms=None)
             messages.append(row)
 
         if messages and messages[-1].get("role") == "assistant":
@@ -217,6 +276,8 @@ class HistoryManager:
                 prev["reasoning"] = _merge_reasoning(prev.get("reasoning"), pending_reasoning)
             if pending_tools:
                 prev["tools"] = _extend_tools(prev.get("tools"), pending_tools)
+            if pending_thinking_ms is not None:
+                prev["thinking_ms"] = max_thinking_ms(prev.get("thinking_ms"), pending_thinking_ms)
 
         logger.debug(f"History for session {session_id!r}: {len(messages)} displayable message(s)")
         return messages

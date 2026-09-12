@@ -65,7 +65,18 @@ CHAT_TYPE_SCHEDULE = "schedule"
 # ``project_history_for_wire``.
 TURN_CONTEXT_KEY = "turn_context"
 
-_DISPLAY_ONLY_KEYS = frozenset({KIND_KEY, CHAT_TYPE_KEY, TURN_CONTEXT_KEY})
+# Display-side timing (2026-09-12).  Written into JSONL for SPA wall-clock and
+# 「已思考 · Ns」; stripped on the AI wire so they never become prompt tokens.
+# Absent on older rows → SPA simply omits the clock / duration (forward-compatible).
+CREATED_AT_KEY = "created_at"
+"""ISO-8601 UTC instant when the row was appended (``…Z``, millisecond precision)."""
+
+THINKING_MS_KEY = "thinking_ms"
+"""Whole-turn wall ms from Session turn start to this assistant row (Cursor-style)."""
+
+_DISPLAY_ONLY_KEYS = frozenset(
+    {KIND_KEY, CHAT_TYPE_KEY, TURN_CONTEXT_KEY, CREATED_AT_KEY, THINKING_MS_KEY}
+)
 
 MAX_TOOL_RESULT_CHARS = 20_000
 """Cap on a single tool result, applied both at the write site and on the wire.
@@ -283,6 +294,58 @@ def with_chat_type(msg: dict[str, Any], chat_type: str) -> dict[str, Any]:
     return with_kind(msg, chat_type)
 
 
+def utc_now_iso() -> str:
+    """UTC timestamp for ``created_at`` (millisecond ``Z`` suffix)."""
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def with_created_at(msg: dict[str, Any], *, when: str | None = None) -> dict[str, Any]:
+    """Copy ``msg`` ensuring ``created_at`` is set (idempotent if already present)."""
+    existing = msg.get(CREATED_AT_KEY)
+    if isinstance(existing, str) and existing.strip():
+        return msg
+    out = dict(msg)
+    out[CREATED_AT_KEY] = when if (isinstance(when, str) and when.strip()) else utc_now_iso()
+    return out
+
+
+def message_created_at(msg: dict[str, Any]) -> str | None:
+    value = msg.get(CREATED_AT_KEY)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def message_thinking_ms(msg: dict[str, Any]) -> int | None:
+    value = msg.get(THINKING_MS_KEY)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, float) and value >= 0:
+        return int(value)
+    return None
+
+
+def max_thinking_ms(*values: object) -> int | None:
+    """Prefer the largest non-negative thinking_ms (later assistant rows win)."""
+    best: int | None = None
+    for value in values:
+        if isinstance(value, bool):
+            continue
+        ms: int | None = None
+        if isinstance(value, int) and value >= 0:
+            ms = value
+        elif isinstance(value, float) and value >= 0:
+            ms = int(value)
+        if ms is None:
+            continue
+        best = ms if best is None else max(best, ms)
+    return best
+
+
 def project_history_for_wire(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Project history for the AI backend.
 
@@ -294,8 +357,8 @@ def project_history_for_wire(messages: list[dict[str, Any]]) -> list[dict[str, A
     ``session/request_assembly.py``, which is the only caller that can see the
     tool schemas as well as the messages.
 
-    - Strips display-only keys (``kind``, ``chat_type``, ``turn_context``) and
-      fixes legacy roles.
+    - Strips display-only keys (``kind``, ``chat_type``, ``turn_context``,
+      ``created_at``, ``thinking_ms``) and fixes legacy roles.
     - Skips legacy assistant rows that have neither ``content`` nor
       ``tool_calls``; they are invalid OpenAI wire messages.
     - Folds ``turn_context`` into the message's ``content`` (see
