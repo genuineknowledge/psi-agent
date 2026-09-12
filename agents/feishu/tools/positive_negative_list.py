@@ -32,9 +32,37 @@ from _positive_negative_list.dedupe import (
 from _positive_negative_list.drafts import delete_draft_body, save_draft
 from _positive_negative_list.models import CaseDraft
 from _positive_negative_list.validation import validate_case
+from loguru import logger
 
 from psi_agent._appdata import resolve_appdata_root as _resolve_appdata_root
 from psi_agent.session.runtime_context import get_session_id as _get_session_id
+
+# The exact case_json surface the skill contract exposes to the model.
+# Anything else (workflow, case ids, dedupe identifiers, source-session
+# bookkeeping, red-line state, record links) is generated or decided by the
+# tools and must not be supplied by the model.
+_CASE_JSON_ALLOWED_FIELDS = frozenset(
+    {
+        "writer_user_key",
+        "reporter_user_key",
+        "subject_user_key",
+        "occurred_at",
+        "observed_behavior",
+        "context",
+        "impact",
+        "evidence_sources",
+        "nature",
+        "category",
+        "primary_rule_id",
+        "secondary_rule_ids",
+        "rule_version",
+        "fact_summary",
+        "agent_inference",
+        "correct_behavior",
+        "immediate_remedy",
+        "prevention",
+    }
+)
 
 
 def _preview_digest(case: CaseDraft) -> str:
@@ -143,6 +171,20 @@ async def _public_case_preview(case: CaseDraft) -> dict[str, Any]:
     }
 
 
+def _case_has_durable_state(root: str | Path, case_id: str) -> bool:
+    """True when a case still owns a draft or a write receipt on disk."""
+    base = Path(root) / "positive-negative-list"
+    if (base / "receipts" / f"{case_id}.json").is_file():
+        return True
+    drafts_root = base / "drafts"
+    if not drafts_root.is_dir():
+        return False
+    for writer_dir in drafts_root.iterdir():
+        if writer_dir.is_dir() and (writer_dir / f"{case_id}.json").is_file():
+            return True
+    return False
+
+
 async def positive_negative_case_prepare(
     case_json: str,
     source_type: str = "feishu_private_chat",
@@ -156,6 +198,32 @@ async def positive_negative_case_prepare(
         raw: dict[str, Any] = json.loads(case_json)
         if not isinstance(raw, dict):
             raise ValueError("case_json must be an object")
+        internal = set(raw) - _CASE_JSON_ALLOWED_FIELDS
+        if internal:
+            red_line_flag = "red_line_candidate" in internal and raw.get("red_line_candidate") not in (None, False)
+            supplied_link = str(raw.get("record_link") or "").strip() if "record_link" in internal else ""
+            if red_line_flag:
+                return _f.dumps_result(
+                    {
+                        "ok": False,
+                        "status": "red_line_state_rejected",
+                        "error": "红线候选状态只能由人工处理流程认定，不接受模型传入 red_line_candidate",
+                        "allowed_case_fields": sorted(_CASE_JSON_ALLOWED_FIELDS),
+                    }
+                )
+            if supplied_link:
+                return _f.dumps_result(
+                    {
+                        "ok": False,
+                        "status": "record_link_rejected",
+                        "error": "记录链接由工具在写入后生成，不接受模型传入 record_link",
+                        "allowed_case_fields": sorted(_CASE_JSON_ALLOWED_FIELDS),
+                    }
+                )
+            # Tool-owned keys (workflow/case_id/dedupe identifiers/source
+            # bookkeeping) are regenerated below; strip any model-supplied
+            # values so the skill contract stays the only way in.
+            raw = {key: value for key, value in raw.items() if key in _CASE_JSON_ALLOWED_FIELDS}
         supplied_writer = raw.get("writer_user_key")
         if supplied_writer not in (None, "", user_key):
             raise ValueError("writer identity does not match trusted sender")
@@ -191,6 +259,16 @@ async def positive_negative_case_prepare(
             }
         )
         reservation = reserve_source_key(root, source_key, case_id)
+        if reservation.status == "exact_duplicate":
+            # A reservation whose case has neither a draft nor a receipt was
+            # left behind by a crash between reserve and card send.  Reclaim
+            # it so the same source can be retried instead of being blocked
+            # forever by an orphaned placeholder.
+            orphan_case = reservation.case_id
+            if orphan_case and not _case_has_durable_state(root, orphan_case):
+                release_source_key(root, source_key, orphan_case)
+                logger.warning(f"pnl prepare: reclaimed orphan reservation source={source_key} case={orphan_case}")
+                reservation = reserve_source_key(root, source_key, case_id)
         if reservation.status not in {"reserved", "idempotent"}:
             return _f.dumps_result({"ok": False, "status": reservation.status, "case_id": reservation.case_id})
         session_id = _get_session_id()
@@ -223,6 +301,7 @@ async def positive_negative_case_prepare(
             release_source_key(root, source_key, case_id)
             message = sent.get("message") if isinstance(sent, dict) else "确认卡发送失败"
             return _f.dumps_result({"ok": False, "status": "confirmation_card_failed", "error": message})
+        logger.info(f"pnl prepare: confirmation card sent case={case_id} source={source_key}")
         return _f.dumps_result(
             {
                 "ok": True,

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -197,6 +198,63 @@ def build_filter(query: LedgerQuery, field_names: Mapping[str, str] | None = Non
     return json.dumps({"conjunction": "and", "conditions": conditions}, ensure_ascii=False) if conditions else ""
 
 
+_FIELD_NAME_CACHE: dict[tuple[str, str], tuple[float, frozenset[str] | None]] = {}
+_FIELD_CACHE_TTL_SECONDS = 300.0
+
+
+async def list_table_field_names(app_token: str, table_id: str) -> frozenset[str] | None:
+    """Return the ledger's actual column names (cached briefly).
+
+    ``None`` means the field list could not be read: callers must then skip
+    capability checks instead of guessing that a column is absent.
+    """
+    key = (app_token, table_id)
+    cached = _FIELD_NAME_CACHE.get(key)
+    if cached is not None and time.time() - cached[0] < _FIELD_CACHE_TTL_SECONDS:
+        return cached[1]
+    result = await _f.list_bitable_fields_impl(app_token, table_id)
+    names: set[str] = set()
+    if not isinstance(result, dict) or not result.get("ok"):
+        _FIELD_NAME_CACHE[key] = (time.time(), None)
+        return None
+    for field in result.get("fields", []):
+        if isinstance(field, dict) and isinstance(field.get("name"), str) and field["name"]:
+            names.add(field["name"])
+    resolved = frozenset(names)
+    _FIELD_NAME_CACHE[key] = (time.time(), resolved)
+    return resolved
+
+
+async def reject_unavailable_filters(query: LedgerQuery, actual_names: frozenset[str] | None) -> dict[str, Any] | None:
+    """Reject filters that cannot work against the real ledger columns.
+
+    Feishu silently returns zero rows when a search filter names a column the
+    table does not have, which would otherwise be reported as "the table is
+    empty".  Person filters need trusted identities, and the chat model only
+    ever sees display names, so a bare name filter is equally unusable.
+    """
+    for semantic, label in (("subject_user_key", "涉事人"), ("reporter_user_key", "报告人")):
+        raw = str(getattr(query, semantic) or "").strip()
+        if not raw:
+            continue
+        parts = [part.strip() for part in raw.replace("，", ",").split(",") if part.strip()]
+        if parts and any(not part.startswith(("ou_", "user_")) for part in parts):
+            return {
+                "ok": False,
+                "状态": "读取失败",
+                "说明": f"当前不支持按{label}姓名筛选（人员筛选需要可信身份标识，对话中不展示身份 ID）。"
+                "请去掉该条件，改用关键词、日期或正负面性质筛选，或调用汇总分析查看全量。",
+            }
+    if query.category and actual_names is not None and not (set(_FIELD_ALIASES["category"]) & actual_names):
+        return {
+            "ok": False,
+            "状态": "读取失败",
+            "说明": "当前正负面总表没有独立的“分类”列，无法按分类筛选。"
+            "请改用正负面性质、关键词或日期筛选，或调用汇总分析查看全量。",
+        }
+    return None
+
+
 class FeishuLedgerClient:
     def __init__(
         self,
@@ -373,7 +431,11 @@ def _public_result(
         "ok": True,
         "记录": records,
         "本页记录数": len(records),
-        "读取状态": "本页已读完，请继续读取下一页" if result.get("has_more") else "已读完全部记录",
+        "读取状态": (
+            f"本页已读完（本页 {len(records)} 条），请调用汇总分析工具查看全量统计"
+            if result.get("has_more")
+            else "已读完全部记录"
+        ),
     }
 
 

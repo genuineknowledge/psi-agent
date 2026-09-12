@@ -7,23 +7,33 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, cast
 
 import _feishu_impl as _f
+import _runtime_paths as _paths
+import yaml
+from loguru import logger
 
 from _positive_negative_list.preflight import TableSchemaValidation, validate_table_schema
 from _positive_negative_list.reader import FeishuLedgerClient, _field_name_list, resolve_table_config
 from _positive_negative_list.table import TableAdapter, TableClient, _encode_field_value
 
 # The ledger is the existing organization base and the single production
-# target for both reads and confirmed writes.  These coordinates are
-# intentionally kept in code: they are the user-provided ledger, not a new
-# deployment configuration surface.  There is no robot-provisioned test table
-# and no AppData target file; the write path reuses the public ledger's own
-# six columns after a fail-closed preflight.
+# target for both reads and confirmed writes.  Coordinates and write-column
+# labels are editable through ``config/positive-negative-list.yaml`` (todo-sop
+# style: values editable, structure is a contract); the values below are the
+# built-in defaults used when that file is missing, unreadable, or malformed.
+# There is no robot-provisioned test table and no AppData target file; the
+# write path reuses the public ledger's own six columns after a fail-closed
+# preflight.
 _SOURCE_APP_TOKEN = "RNEvbLIJAaPPdksfv8YceTmjndg"
 _SOURCE_TABLE_ID = "tblwXV7Xlwu0hVYH"
 _SOURCE_VIEW_ID = "veweChthHV"
+# Tenant web domain for employee-visible record links (kept in sync with
+# ``table._DEFAULT_WEB_HOST``); ``ledger.host`` in the editable config
+# overrides it per deployment.
+_SOURCE_WEB_HOST = "genuineknowledge.feishu.cn"
 _LEDGER_FIELD_NAMES = {
     "nature": "正负面归属",
     "subject_user_key": "员工姓名",
@@ -77,8 +87,80 @@ _REQUIRED_LEDGER_FIELDS = (
 
 def _load_config() -> dict[str, Any]:
     # Kept as a tiny injection seam for unit tests and downstream deployments;
-    # the production path deliberately has no positive-negative config file.
+    # production reads the editable ``config/positive-negative-list.yaml``.
     return {}
+
+
+_CONFIG_FILE_REL = "config/positive-negative-list.yaml"
+
+
+def _ledger_file_config() -> dict[str, Any]:
+    """Optional editable PNL config (``config/positive-negative-list.yaml``).
+
+    Mirrors the todo-sop pattern: coordinates and column labels are editable
+    values while the structure is a contract.  A missing, unreadable, or
+    malformed file falls back to the built-in defaults below instead of
+    changing ledger behaviour silently.
+    """
+    try:
+        root = _paths.resolve_agent()
+    except Exception:
+        return {}
+    path = Path(str(root)) / _CONFIG_FILE_REL
+    if not path.is_file():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8")
+        loaded = yaml.safe_load(text)
+    except Exception as exc:
+        logger.warning(
+            f"positive-negative-list config unreadable ({type(exc).__name__}: {exc}); fall back to built-ins"
+        )
+        return {}
+    ledger = loaded.get("ledger") if isinstance(loaded, dict) else None
+    if not isinstance(ledger, dict):
+        return {}
+    app_token = str(ledger.get("app_token") or "").strip()
+    table_id = str(ledger.get("table_id") or "").strip()
+    if not app_token or not table_id:
+        logger.warning("positive-negative-list config lacks ledger coordinates; fall back to built-ins")
+        return {}
+    result: dict[str, Any] = {"app_token": app_token, "table_id": table_id}
+    view_id = str(ledger.get("view_id") or "").strip()
+    if view_id:
+        result["view_id"] = view_id
+    host = str(ledger.get("host") or "").strip()
+    if host:
+        result["host"] = host
+    columns = ledger.get("columns")
+    if isinstance(columns, dict):
+        names = {str(semantic): str(field_name) for semantic, field_name in columns.items() if str(field_name).strip()}
+        if names:
+            result["columns"] = names
+    return result
+
+
+def _default_ledger_coordinates() -> tuple[str, str, str]:
+    file_config = _ledger_file_config()
+    if file_config:
+        return (
+            file_config["app_token"],
+            file_config["table_id"],
+            file_config.get("view_id") or _SOURCE_VIEW_ID,
+        )
+    return _SOURCE_APP_TOKEN, _SOURCE_TABLE_ID, _SOURCE_VIEW_ID
+
+
+def _default_ledger_field_names() -> dict[str, str]:
+    file_config = _ledger_file_config()
+    columns = file_config.get("columns") if file_config else None
+    return dict(columns) if columns else dict(_LEDGER_FIELD_NAMES)
+
+
+def _default_ledger_web_host() -> str:
+    file_config = _ledger_file_config()
+    host = file_config.get("host") if file_config else None
+    return str(host).strip() if host else _SOURCE_WEB_HOST
 
 
 def _field_config(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -109,7 +191,7 @@ def _target_coordinates(config: dict[str, Any], target: str) -> tuple[str, str, 
     if not config:
         # Reads and confirmed writes both target the same public ledger; there
         # is no robot-provisioned test table left to initialize.
-        return _SOURCE_APP_TOKEN, _SOURCE_TABLE_ID, _SOURCE_VIEW_ID
+        return _default_ledger_coordinates()
     app_env = _target_env(config, target, "app_token_env", "HAITUN_PNL_APP_TOKEN")
     table_env = _target_env(config, target, "table_id_env", "HAITUN_PNL_TABLE_ID")
     view_env = _target_env(config, target, "view_id_env", "HAITUN_PNL_VIEW_ID")
@@ -124,7 +206,12 @@ def _target_coordinates(config: dict[str, Any], target: str) -> tuple[str, str, 
 
 def _read_field_names(config: dict[str, Any]) -> dict[str, str]:
     if not config:
-        return dict(_SOURCE_FIELD_NAMES)
+        names = dict(_SOURCE_FIELD_NAMES)
+        file_config = _ledger_file_config()
+        columns = file_config.get("columns") if file_config else None
+        if columns:
+            names.update(columns)
+        return names
     section = _target_section(config, "read")
     raw = section.get("field_names", {})
     if not isinstance(raw, dict) or not raw:
@@ -190,6 +277,7 @@ class ConfiguredTableClient(FeishuLedgerClient):
         }
         super().__init__(app_token, table_id, names)
         self._config = config
+        self.web_host = str(config.get("web_host") or "").strip()
         self._fields = fields
         self._field_names_by_id = {
             str(value.get("field_id")): str(value.get("field_name") or semantic)
@@ -312,13 +400,15 @@ class ConfiguredTableClient(FeishuLedgerClient):
         view_id = os.environ.get(view_env, "").strip() if view_env else ""
         if not view_purposes and view_id:
             view_purposes = {view_id: "public_ledger"}
-        # The production write target is the existing public ledger itself: the
-        # coordinates are hard-coded like the read side, and there is no
-        # robot-provisioned table or AppData target file.  Declare the ledger's
-        # public view as the write-path view purpose so the first confirmed
-        # write never requires extra deployment configuration.
-        if not view_purposes and self.app_token == _SOURCE_APP_TOKEN and self.table_id == _SOURCE_TABLE_ID:
-            view_purposes = {_SOURCE_VIEW_ID: "public_ledger"}
+        # The production write target is the existing public ledger itself (or
+        # its editable replacement from ``config/positive-negative-list.yaml``):
+        # there is no robot-provisioned table or AppData target file.  Declare
+        # the ledger's public view as the write-path view purpose so the first
+        # confirmed write never requires extra deployment configuration.
+        if not view_purposes:
+            resolved_app, resolved_table, resolved_view = _default_ledger_coordinates()
+            if self.app_token == resolved_app and self.table_id == resolved_table:
+                view_purposes = {resolved_view or _SOURCE_VIEW_ID: "public_ledger"}
         required = {
             "nature": {
                 "field_id": field_ids.get("nature", ""),
@@ -418,8 +508,14 @@ class ConfiguredTableClient(FeishuLedgerClient):
         values[ids["source_key"]] = "\n".join(note_lines)
         return values
 
-    async def search(self, field_id: str, value: str, user_key: str):
-        """Search one configured column using its deployed Feishu field name."""
+    async def search(self, field_id: str, value: str, user_key: str, operator: str = "is"):
+        """Search one configured column using its deployed Feishu field name.
+
+        ``operator`` is a Feishu filter operator.  The six-column ledger
+        aliases every deduplication identifier into the ``备注`` text column,
+        where an exact ``is`` match can never hit a multi-line cell; callers
+        resolving aliased columns pass ``contains`` instead.
+        """
         field_name = self._field_names_by_id.get(field_id)
         if not field_name:
             raise ValueError(f"unknown configured field ID: {field_id}")
@@ -427,7 +523,10 @@ class ConfiguredTableClient(FeishuLedgerClient):
             app_token=self.app_token,
             table_id=self.table_id,
             filter_json=json.dumps(
-                {"conjunction": "and", "conditions": [{"field_name": field_name, "operator": "is", "value": [value]}]},
+                {
+                    "conjunction": "and",
+                    "conditions": [{"field_name": field_name, "operator": operator, "value": [value]}],
+                },
                 ensure_ascii=False,
             ),
             field_names=json.dumps(_field_name_list(self.field_names, self._configured_semantics), ensure_ascii=False),
@@ -463,7 +562,10 @@ class ConfiguredTableClient(FeishuLedgerClient):
 def configured_table_adapter() -> TableAdapter:
     config = _load_config()
     app_token, table_id, _ = _target_coordinates(config, "write")
-    effective = config or {"write_target": {"mode": "existing_columns", "field_names": _LEDGER_FIELD_NAMES}}
+    effective = config or {
+        "write_target": {"mode": "existing_columns", "field_names": _default_ledger_field_names()},
+        "web_host": _default_ledger_web_host(),
+    }
     return TableAdapter(ConfiguredTableClient(app_token, table_id, effective))
 
 
@@ -488,9 +590,17 @@ def configured_read_view_id() -> str:
     return _target_coordinates(config, "read")[2]
 
 
+def read_target_coordinates() -> tuple[str, str]:
+    """Public-ledger coordinates used by the read-side capability guard."""
+    config = _load_config()
+    app_token, table_id, _ = _target_coordinates(config, "read")
+    return app_token, table_id
+
+
 __all__ = [
     "ConfiguredTableClient",
     "configured_read_table_adapter",
     "configured_read_view_id",
     "configured_table_adapter",
+    "read_target_coordinates",
 ]
