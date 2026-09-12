@@ -182,21 +182,58 @@ SOP 写明查一次就够。**没有改 `max_tool_rounds`**——那是掩盖，
 
 ## 六、合并与验证
 
-16 个 commit 合成一条分支。合并中出现一处真冲突：`src/psi_agent/session/AGENTS.md`，
-两张卡都重写了加载顺序契约，**两边内容都保留**，不是取其一。
-另把 `origin/main` 的 6 个 commit（#891/#892/#894/#895/#896/#898）并入，无冲突。
+22 个 commit 合成一条分支（PR #901，35 个文件）。过程中出现两处真冲突：
 
-判据在**合并后**的树上重量，不照搬各卡自述。基线取自 `origin/main` 的干净控制树
-（`git worktree add --detach`，不用 `git stash`），两边跑同一条命令：
+1. `src/psi_agent/session/AGENTS.md` —— 两张卡都重写了加载顺序契约，
+   **两边内容都保留**，不是取其一。
+2. `src/psi_agent/session/agent.py` 的 import 段 —— `origin/main` 期间推进到 `6d6a233a`，
+   其中 #917 给这一段加了注释、Phase E 删掉了 `tmpfix_m2_gate`。
+   保留 main 的注释 + Phase E 的 `tool_exposure` 导入，去掉已删除的 `tmpfix_m2_gate`。
+   解决后**逐条核两侧语义各自存活**：#917 的 `refusal_for` 仍排在空名检查之前
+   （`:1016` 早于 `:1020`），Phase E 的 `tier_from_env()`/`select_exposed()` 接线仍在
+   （`:309`/`:815`），`tmpfix_m2_gate` 全库 0 处残留。
 
-| 项 | 合并树 | 控制组 |
+判据在**合并后**的树上重量，不照搬各卡自述。基线取自同一 commit 的干净控制树
+（`git worktree add --detach`，不用 `git stash`），两边跑同一条命令，
+**FAILED 名字排序后 `diff`**，比条数更要比名字：
+
+| 项 | 合并树 | 控制组（干净 `6d6a233a`） |
 |---|---|---|
-| `tests/psi_agent/session` + `channel/feishu` | 13 failed / **1120** passed / 2 skipped / **0** xfailed | 13 failed / 824 passed / 2 skipped / 5 xfailed |
-| FAILED 名字 | **逐条相同**（`test_channel_adapter.py` 8 + `test_server.py` 5，全是 `asyncio events.py:487 NotImplementedError`，Windows 基线） | 同上 |
+| `session` + `channel` + `agents/feishu` | 36 failed / **1260** passed / 2 skipped / 12 xfailed | 36 failed / 1139 passed / 2 skipped / 17 xfailed |
+| FAILED 名字 | `diff` 后**逐条完全相同**，零回归 | 同上 |
 | `ruff check` / `format --check` | 退出码 **0 / 0** | — |
-| `ty check --python` | 退出码 1，4 个 `unresolved-attribute` | 4 个，**位置逐条相同** |
+| `ty check --python` | 退出码 **0** | 退出码 **0**（main 修掉的，不归本次） |
 
-CI：`lint` / `feishu-web` / `tool-load-order` 全部 success。
+失败绝大多数是 Windows 基线（`asyncio` 子进程 `NotImplementedError`、命名管道占用）。
+另有 2 条需要单独交代，见下。
+
+### 2 条环路失败：不是本次引入，但是本次判据照出来的
+
+`test_a1_r2_...[strike]` 和 `[todo_sop]` 在合并后变红，而**干净 main 上同样红这两条**。
+
+再往下查：`tests/agents/feishu/test_feishu_tool_import_cycles.py`（**裸名**基线测试，
+此前不在我跑的两个子树里）在干净 main 上对这同样两个模块报「环路仍在」。
+所以 `_feishu.strike` / `_feishu.todo_sop` **在裸名导入下本来就成环**，与 A1 无关。
+
+A1 那条判据的报错文字写「A1 下成环, 裸名基线不成环」，**这句话本身是错的**——
+它把「不在硬编码清单里」当成了「实测不成环」。两处 `_KNOWN_CYCLIC`
+（`test_layer_isolation_a1_real.py:70`、`test_feishu_tool_import_cycles.py:44`）
+写死同一份 12 个名字，`strike` 来自 #886、`todo_sop` 来自 #796，两次都没更新清单。
+这是 main 上的既有缺陷，**改它超出本次范围**，单独提出等负责人定。
+
+**这条本身也是一条方法教训**：把预期结果写成硬编码清单，等于把「实测」偷换成「查表」。
+清单一旦没跟上代码，判据不是变红报警，而是**用一句自信的错误文字指向错误的方向**——
+它说 A1 弄坏了 `strike`，而真相是 `strike` 一直是坏的。
+
+CI：`lint` / `feishu-web` / `tool-load-order` / `antlr` 全部 success。
+
+### 这一节没验到
+
+- **全量测试套件从未跑过**，只跑了 `session` + `channel` + `agents/feishu` 三个子树。
+  这三个子树覆盖了本次改到的全部符号（改动符号在子树外无引用，已 grep 核过），
+  但子树之外的回归**不能排除**。
+- **冲突解决只核了两侧语义各自存活**，#917 的调用面闸门与 Phase E 的分层暴露
+  **叠加后的交互行为没有专门判据**。
 
 ## 七、红线状态
 
@@ -205,7 +242,7 @@ CI：`lint` / `feishu-web` / `tool-load-order` 全部 success。
 - 生产未做任何改动。
 - `gateway/`、`desktop/`、ToC 侧代码、`deploy/` 未碰。
 
-## 八、过程中值得留下的两条
+## 八、过程中值得留下的三条
 
 **`merge --ff-only` 报「Already up to date.」却清掉暂存区新增文件。**
 分支 ref 已被 `git update-ref` 提前推进后，merge 变成空操作，但**空操作照样重置索引**，
@@ -217,3 +254,13 @@ CI：`lint` / `feishu-web` / `tool-load-order` 全部 success。
 我一度量到 `8fe88` 的 worktree 停在缺少前置依赖的 commit 上、`content_roots.py` 不在里面，
 判为「基于过期 base 出活」。复量后发现那是 worktree 刚建、**尚未切到任务分支**的瞬时状态，
 切过去以后 base 是对的。**要核的是任务分支上的 HEAD，不是刚建目录时的 HEAD。**
+
+**`merge --ff-only` 拒绝快进，是它在报告我合错了基点。**
+解决 #901 冲突时我在一棵从 `34496049` 开出的树上合 main，
+而 `34496049` 是交付文档提交 `77c6a8ca` 的**父**——合出来的结果漏掉了整份交付文档。
+本地 `merge --ff-only` 随即报 `Not possible to fast-forward, aborting`。
+这句拒绝是唯一的线索：如果当时改用 `git update-ref` 硬推，
+ref 会照推、文档会静默消失、`git status` 依旧干净。
+**ff 失败要当成「基点不对」去查祖先关系，不是当成绕道的障碍。**
+核法是 `git log --format='%h %p' -1 <merge>` 看两个父，
+再 `git merge-base --is-ancestor <该在里面的 commit> <merge>` 逐个确认。
