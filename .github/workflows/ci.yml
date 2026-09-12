@@ -14,7 +14,7 @@ jobs:
           python-version: "3.14"
       - run: uv sync
       - run: uv run ruff check src tests
-      - run: uv run ruff format --check src tests
+      - run: uv run ruff format --check src tests --extend-exclude "**/*.md"
       - run: uv run ty check src tests
       # macOS 打包脚本(.github/macos/)只在 macos runner 上执行, 但静态检查放这里:
       # ubuntu runner 预装 shellcheck, macOS runner 没有。放在打包 job 里会让
