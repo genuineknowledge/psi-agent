@@ -24,7 +24,15 @@ def _render(card_xml: str) -> dict[str, Any]:
 
 
 def _element_texts(card: dict[str, Any]) -> list[str]:
-    return [element.get("content", "") for element in card["body"]["elements"] if element.get("tag") == "markdown"]
+    """卡片里所有可读文本: 普通 markdown, 以及折叠面板的标题与面板内正文。"""
+    texts: list[str] = []
+    for element in card["body"]["elements"]:
+        if element.get("tag") == "markdown":
+            texts.append(str(element.get("content", "")))
+        elif element.get("tag") == "collapsible_panel":
+            texts.append(str(((element.get("header") or {}).get("title") or {}).get("content", "")))
+            texts.extend(str(item.get("content", "")) for item in element.get("elements", []))
+    return texts
 
 
 def test_section_and_divider_compile_to_markdown_and_hr() -> None:
@@ -64,18 +72,65 @@ def test_template_renders_full_summary_card() -> None:
     card = result["card"]
     assert card["schema"] == "2.0"
     assert card["header"]["title"]["content"] == "会议总结"
-    tags = [element.get("tag") for element in card["body"]["elements"]]
-    assert tags.count("hr") == 2
-    texts = _element_texts(card)
-    assert texts[0] == "周中对齐会 · 2026-09-08"
-    assert any("**会议摘要**" in text and "C 端发布定于" in text for text in texts)
-    assert any("**关键决定与分析**" in text and "分层汇报" in text for text in texts)
-    assert any("**✅ 正面候选**" in text and "P-1" in text for text in texts)
-    assert any("**⚠️ 负面候选**" in text and "N-1" in text for text in texts)
-    assert any("候选观察 · 不计分" in text for text in texts)
+    elements = card["body"]["elements"]
+    assert [element.get("tag") for element in elements].count("hr") == 2
+
+    # 首屏: 元信息 + 摘要保持可见
+    assert elements[0] == {"tag": "markdown", "content": "周中对齐会 · 2026-09-08"}
+    assert any(
+        element.get("tag") == "markdown"
+        and "**会议摘要**" in str(element.get("content"))
+        and "C 端发布定于" in str(element.get("content"))
+        for element in elements
+    )
+
+    # 长段落进折叠面板: 默认收起, 正文**完整**在面板里(这是"内容不再被截断"的落点)
+    panels = [element for element in elements if element.get("tag") == "collapsible_panel"]
+    assert len(panels) == 3
+    assert all(panel["expanded"] is False for panel in panels), "折叠面板必须默认收起"
+    assert [panel["header"]["title"]["content"] for panel in panels] == [
+        "关键决定与分析（点开看全文）",
+        "✅ 正面候选（点开看全文）",
+        "⚠️ 负面候选（点开看全文）",
+    ]
+    bodies = [panel["elements"][0]["content"] for panel in panels]
+    assert "分层汇报" in bodies[0]
+    assert "P-1" in bodies[1]
+    assert "N-1" in bodies[2]
+    assert any("候选观察 · 不计分" in text for text in _element_texts(card))
 
 
-def test_render_meeting_summary_card_builds_values_and_truncates() -> None:
+def test_collapse_compiles_to_a_collapsed_panel() -> None:
+    """<collapse> → 飞书 collapsible_panel: 默认收起, 正文一个字不丢。"""
+    result = _render(
+        '<card title="测试" template="blue">'
+        '<section text="首屏"/>'
+        '<collapse title="点开看全文" text="完整正文, 一个字不丢"/>'
+        '<collapse title="显式展开" text="正文" expanded="true"/>'
+        "</card>"
+    )
+    elements = result["card"]["body"]["elements"]
+    panel = elements[1]
+    assert panel["tag"] == "collapsible_panel"
+    assert panel["expanded"] is False, "默认必须收起, 否则首屏又被长文撑满"
+    assert panel["header"]["title"] == {"tag": "markdown", "content": "点开看全文"}
+    assert panel["elements"] == [{"tag": "markdown", "content": "完整正文, 一个字不丢"}]
+    assert elements[2]["expanded"] is True
+
+
+def test_collapse_without_body_is_skipped() -> None:
+    result = _render('<card title="测试" template="blue"><collapse title="只有标题"/><section text="有内容"/></card>')
+    assert [element.get("tag") for element in result["card"]["body"]["elements"]] == ["markdown"]
+
+
+def test_unknown_dsl_element_message_lists_collapse() -> None:
+    result = _card_dsl.render_card(card_xml='<card title="测试" template="blue"><bogus/></card>')
+    assert not result.get("ok")
+    assert "collapse" in str(result.get("error"))
+
+
+def test_render_meeting_summary_card_keeps_full_content() -> None:
+    """正文按内容原样进卡: 不再按 700/1500 字硬截断(2026-09-12 起改折叠面板)。"""
     overview = json.dumps(
         {
             "declaration": "以下为候选观察, 不进入正式正负面总表。",
@@ -102,11 +157,57 @@ def test_render_meeting_summary_card_builds_values_and_truncates() -> None:
     values = result["values"]
     assert values["meeting_line"] == "周中对齐会 · 2026-09-08"
     assert "摘要内容" in values["summary"]
-    assert values["key_points"].endswith("…(内容较长, 已截断, 完整文本见会议存档)")
+    assert values["key_points"].count("要点") == 3000, "6000 字的分析不该被截断"
+    assert cardmod._card_bytes(result["card"]) <= cardmod.CARD_BYTE_BUDGET
     assert "P-1" in values["positives"] and "孙逊公开肯定汇报" in values["positives"]
     assert values["positives"].count("证据: ") == 1
     assert values["footer"].startswith("以下为候选观察")
     assert "候选观察: 不进入正式正负面总表" in values["footer"]
+
+
+def test_real_meeting_sizes_fit_without_any_truncation() -> None:
+    """线上真实体量必须完整进卡: 9/9 那场摘要有 1530 字、正负面概览 3624 字 ——
+    这正是用户反馈"内容被截断"的那一场。"""
+    analysis = {
+        "meeting_summary": "摘要内容。" * 306,
+        "analysis_text": "分析要点。" * 291,
+        "positive_negative_overview": "【正面候选】" + "正面观察。" * 300 + "\n【负面候选】" + "负面观察。" * 300,
+    }
+    result = cardmod.render_meeting_summary_card("周中对齐会", "57152787045", "2026-09-09", analysis)
+    assert result.get("ok"), result.get("error")
+    values = result["values"]
+    assert cardmod._card_bytes(result["card"]) <= cardmod.CARD_BYTE_BUDGET
+    marker = cardmod._ELLIPSIS.strip()
+    for key in ("summary", "key_points", "positives", "negatives"):
+        assert marker not in str(values[key]), f"{key} 不该被截断"
+    assert str(values["summary"]).count("摘要内容") == 306
+    assert str(values["positives"]).count("正面观察") == 300
+    assert str(values["negatives"]).count("负面观察") == 300
+
+
+def test_card_over_budget_shrinks_only_the_longest_section() -> None:
+    """超出飞书 30KB 硬上限时: 只降级**最长的那一段**, 其余保持完整。
+
+    宁可让一段变短并注明"完整文本见会议存档", 也不让整张卡发送失败(230025)。
+    """
+    analysis = {
+        "meeting_summary": "摘要" * 400,
+        "analysis_text": "要点" * 12_000,
+        "positive_negative_overview": json.dumps(
+            {
+                "positive_candidates": [{"id": "P-1", "candidate": "候选正文", "evidence": "证据"}],
+                "negative_candidates": [],
+            },
+            ensure_ascii=False,
+        ),
+    }
+    result = cardmod.render_meeting_summary_card("周中对齐会", "57152787045", "2026-09-08", analysis)
+    assert result.get("ok"), result.get("error")
+    values = result["values"]
+    assert cardmod._card_bytes(result["card"]) <= cardmod.CARD_BYTE_BUDGET
+    assert str(values["key_points"]).endswith(cardmod._ELLIPSIS), "超预算时最长的那段被降级并注明"
+    assert str(values["summary"]).count("摘要") == 400, "短段落不该被牵连"
+    assert "P-1" in str(values["positives"])
 
 
 def test_overview_unstructured_falls_back_to_note_without_crashing() -> None:
