@@ -12,7 +12,6 @@ from typing import Any
 import _runtime_paths as _paths
 
 
-
 def _apply_states(lines: list[str], sent: set[str], failed: dict[str, str]) -> list[str]:
     """纯函数:按姓名把状态行改标(已发 / 失败:原因),姓名不在结果里的保持原样。
 
@@ -45,7 +44,7 @@ async def _write_state_file(pending_file: str, lines: list[str]) -> None:
 
 async def pm_batch_send_impl(items: list[dict[str, Any]], pending_file: str = "", user_key: str = "") -> dict[str, Any]:
     """Loop-send every item; returns sent / failed lists (no partial stop)."""
-    from _feishu.message import send_message_impl
+    from _feishu.message import send_message_impl  # noqa: PLC0415
 
     sent: list[str] = []
     failed: list[dict[str, str]] = []
