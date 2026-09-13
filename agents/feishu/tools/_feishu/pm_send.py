@@ -11,7 +11,6 @@ from typing import Any
 
 import _runtime_paths as _paths
 
-from _feishu.message import send_message_impl
 
 
 def _apply_states(lines: list[str], sent: set[str], failed: dict[str, str]) -> list[str]:
@@ -46,6 +45,8 @@ async def _write_state_file(pending_file: str, lines: list[str]) -> None:
 
 async def pm_batch_send_impl(items: list[dict[str, Any]], pending_file: str = "", user_key: str = "") -> dict[str, Any]:
     """Loop-send every item; returns sent / failed lists (no partial stop)."""
+    from _feishu.message import send_message_impl
+
     sent: list[str] = []
     failed: list[dict[str, str]] = []
     for it in items:
