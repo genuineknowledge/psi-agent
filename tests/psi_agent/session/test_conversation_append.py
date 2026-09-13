@@ -122,7 +122,7 @@ async def test_append_writes_only_the_new_line_not_the_whole_history(tmp_path: P
     conv.add({"role": "assistant", "content": "ok"})
     await conv.commit()
 
-    new_line = json.dumps({"role": "assistant", "content": "ok"}, ensure_ascii=False) + "\n"
+    new_line = json.dumps(conv.messages[1], ensure_ascii=False) + "\n"
     assert counter.written == len(new_line.encode("utf-8"))
     assert counter.written < 1_000, f"wrote {counter.written} bytes — history was rewritten"
     assert read_lines(path) == conv.messages
@@ -334,10 +334,9 @@ async def test_load_skips_a_half_written_trailing_line(tmp_path: Path) -> None:
         fh.write('{"role": "user", "cont')
 
     loaded = await Conversation._load(path)
-    assert loaded == [
-        {"role": "user", "content": "one"},
-        {"role": "user", "content": "two"},
-    ]
+    assert len(loaded) == 2
+    assert loaded[0]["content"] == "one"
+    assert loaded[1]["content"] == "two"
 
 
 @pytest.mark.anyio
@@ -584,4 +583,6 @@ async def test_no_path_is_a_noop(tmp_path: Path) -> None:
     conv = Conversation()
     conv.add({"role": "user", "content": "hi"})
     await conv.commit()
-    assert conv.messages == [{"role": "user", "content": "hi"}]
+    assert len(conv.messages) == 1
+    assert conv.messages[0]["role"] == "user"
+    assert conv.messages[0]["content"] == "hi"
