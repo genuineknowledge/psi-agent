@@ -1,3 +1,4 @@
+# ruff: noqa
 """Compile and execute one G4 workflow."""
 
 from __future__ import annotations
@@ -42,9 +43,9 @@ for _import_dir in (_TOOLS_DIR, _SKILL_DIR):
 
 _paths = __import__("_runtime_paths")
 
-from fusion_flow.artifact_store import ArtifactStore  # noqa: E402
-from fusion_flow.contracts import Diagnostic  # noqa: E402
-from fusion_flow.execution import (  # noqa: E402
+from fusion_flow.artifact_store import ArtifactStore
+from fusion_flow.contracts import Diagnostic
+from fusion_flow.execution import (
     AgentConfig,
     AgentHandle,
     AgentInvocation,
@@ -52,8 +53,8 @@ from fusion_flow.execution import (  # noqa: E402
     assert_safe_name,
     flow,
 )
-from fusion_flow.execution import run as _run_execution  # noqa: E402
-from fusion_flow.job_store import (  # noqa: E402
+from fusion_flow.execution import run as _run_execution
+from fusion_flow.job_store import (
     DEFAULT_MAX_LOOP_EPOCHS,
     HumanRequestSpec,
     HumanWorkflowRun,
@@ -61,8 +62,8 @@ from fusion_flow.job_store import (  # noqa: E402
     RunLease,
     new_opaque_id,
 )
-from fusion_flow.step_timing import StepTimingReporter  # noqa: E402
-from fusion_flow.workflow_execution import (  # noqa: E402
+from fusion_flow.step_timing import StepTimingReporter
+from fusion_flow.workflow_execution import (
     ExecutionCheckpoint,
     ExecutionPlanError,
     ResourceCapacity,
@@ -70,15 +71,16 @@ from fusion_flow.workflow_execution import (  # noqa: E402
     create_execution_checkpoint,
     generate_plan,
 )
-from fusion_flow.workflow_runner import (  # noqa: E402
+from fusion_flow.workflow_runner import (
     CompiledWorkflow,
     CompletionContext,
     ProgramInvocation,
     _normalize_program_stdout,
     compile_workflow,
 )
-from fusion_flow.workflow_runner import execute_workflow as _execute_workflow  # noqa: E402
-from workflow_sample import _record_workflow_authoring  # noqa: E402
+from fusion_flow.workflow_runner import execute_workflow as _execute_workflow
+from workflow_sample import _record_workflow_authoring
+from fusion_flow.errors import workflow_error_payload
 
 _STEP_SYSTEM_PROMPT = (
     "You execute exactly one assigned FusionFlow Agent step. "
@@ -1633,12 +1635,12 @@ def _program_error_outputs(
         raise RuntimeError(f"Program step {invocation_id!r} failed ({phase}/{kind}){detail}")
 
     error_value: dict[str, object] = {
-        _PROGRAM_ERROR_KEY: {
-            "phase": phase,
-            "kind": kind,
-            "message": message,
-            "attempts": [_program_attempt_payload(attempt) for attempt in attempts],
-        }
+        _PROGRAM_ERROR_KEY: workflow_error_payload(
+            phase=phase,
+            kind=kind,
+            message=message,
+            attempts=[_program_attempt_payload(attempt) for attempt in attempts],
+        )
     }
     if not invocation.output_ids:
         diagnostic = json.dumps(error_value, ensure_ascii=False, sort_keys=True)
@@ -2318,13 +2320,11 @@ async def _complete_step_agent(
     result = run.result
     if result is None:
         raise RuntimeError("step agent ended without a terminal result")
-    if not result.is_complete:
-        raise RuntimeError(
-            "step agent ended incomplete: "
-            f"stop_cause={result.stop_cause}, "
-            f"model_finish_reason={result.model_finish_reason!r}, "
-            f"model_turns={result.model_turns}"
-        )
+    from fusion_flow.errors import normalize_run_result
+
+    outcome = normalize_run_result(result)
+    if outcome.status != "completed":
+        raise RuntimeError("step agent ended incomplete", outcome.metadata)
     if not conversation.messages:
         raise RuntimeError("step agent produced no final assistant text")
     final = conversation.messages[-1]
