@@ -27,6 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import _content_layers as _layers
 import anyio
 import yaml
 from _meeting_archive import archive_meeting_record
@@ -61,7 +62,6 @@ ANALYSIS_CHUNK_CHARS = int(_MEETING_RUNTIME["analysis"]["chunk_chars"])
 ANALYSIS_TEMPERATURE = float(_MEETING_RUNTIME["analysis"]["temperature"])
 ALERT_MESSAGE_PREFIX = str(_MEETING_RUNTIME["alerts"]["message_prefix"])
 ALERT_ERROR_TRUNCATE_CHARS = int(_MEETING_RUNTIME["alerts"]["error_truncate_chars"])
-SKILLS_ROOT = AGENT_ROOT / "skills"
 #: 会议 SOP 判定口径与正负面规则快照的路径来自 yaml resources (相对 agent 包根);
 #: 缺失/契约损坏由 _load_analysis_rules 显式失败。
 MEETING_SOP_CONFIG_PATH = AGENT_ROOT / str(_MEETING_RESOURCES["meeting_sop_config_file"])
@@ -397,6 +397,27 @@ def _render_sop_checklist(config: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+async def _sop_skill_md(rel: str) -> anyio.Path | None:
+    """按内容层梯子找 SOP 技能的 ``SKILL.md``, 就近者胜; 全层未命中返回 ``None``。
+
+    内容分层把技能挪出了 ``<agent>/skills``, 于是原来写死的 ``AGENT_ROOT/"skills"/<rel>`` 断链。
+    这条链实测在生产上已经断了: ``meeting-sop`` 只存在于 ``/content/official/skills``,
+    而 ``/workspace/skills`` 下没有它, 每日会议分析因此抛 "会议 SOP skill 缺失" ——
+    此前有人给 4 个技能补了软链接绕过同类问题, 但 ``meeting-sop`` 不在其中。
+
+    走 ``_content_layers.layers_for("skills")`` 而不是自己拼一遍根列表: 模型读的技能
+    索引与这里读的引擎纪律是同一批文件, 各留一份口径会在某次改动后分歧。
+
+    **每次调用时解析, 不在 import 期**: 层按进程的环境变量算, 而 Gateway 一个进程跑很多
+    Session; import 期定死会把第一个 Session 的层固化给所有人。
+    """
+    for layer in _layers.layers_for("skills"):
+        candidate = layer.path / Path(rel) / "SKILL.md"
+        if await candidate.is_file():
+            return candidate
+    return None
+
+
 async def _load_analysis_rules(job: MeetingJob) -> tuple[str, str]:
     """读取会议 SOP 引擎/口径与正负面规则快照; 缺失或契约损坏即显式失败, 不静默降级。
 
@@ -406,10 +427,11 @@ async def _load_analysis_rules(job: MeetingJob) -> tuple[str, str]:
     """
     sop_parts: list[str] = []
     for rel in job.analysis_sop_skills:
-        skill_md = SKILLS_ROOT / Path(rel) / "SKILL.md"
-        if not skill_md.is_file():
-            raise RuntimeError(f"会议 SOP skill 缺失: {skill_md} (检查 MeetingJob.analysis_sop_skills)")
-        sop_parts.append(f"===== {rel} (引擎) =====\n{await anyio.Path(str(skill_md)).read_text(encoding='utf-8')}")
+        skill_md = await _sop_skill_md(rel)
+        if skill_md is None:
+            searched = ", ".join(str(layer.path / Path(rel) / "SKILL.md") for layer in _layers.layers_for("skills"))
+            raise RuntimeError(f"会议 SOP skill 缺失: {rel} (检查 MeetingJob.analysis_sop_skills; 已查: {searched})")
+        sop_parts.append(f"===== {rel} (引擎) =====\n{await skill_md.read_text(encoding='utf-8')}")
     if not MEETING_SOP_CONFIG_PATH.is_file():
         raise RuntimeError(f"会议 SOP 配置缺失: {MEETING_SOP_CONFIG_PATH}")
     config_text = await anyio.Path(str(MEETING_SOP_CONFIG_PATH)).read_text(encoding="utf-8")

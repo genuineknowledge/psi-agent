@@ -10,12 +10,38 @@ from typing import Any
 
 import yaml
 
+from psi_agent.session.content_roots import content_roots_from_env as _content_roots_from_env
+
 VALID_DIRECTIONS = frozenset({"positive", "negative", "red_line"})
 DEFAULT_VERSION = "6.0-shadow"
 # Rules are part of the positive-negative-list skill package, not deployment
 # configuration.  Keeping them beside the skill avoids requiring a second
 # process configuration file just to classify a private-chat report.
-_CONFIG_DIR = Path(__file__).resolve().parents[2] / "skills" / "positive-negative-list"
+_SKILL_NAME = "positive-negative-list"
+
+#: 单根世界里的老落点。分层未声明时 ``_config_dirs`` 只产出这一个, 与改动前逐字节相同。
+_LEGACY_CONFIG_DIR = Path(__file__).resolve().parents[2] / "skills" / _SKILL_NAME
+
+
+def _config_dirs() -> list[Path]:
+    """规则包可能所在的目录, **就近者在前**。
+
+    内容分层把技能挪出了 ``<workspace>/skills``, 于是原来写死的
+    ``parents[2]/"skills"/...`` 断链, 规则包读不到 —— 这个函数按 ``PSI_CONTENT_ROOTS``
+    逐层给出候选。
+
+    刻意用同步的 ``content_roots_from_env()`` 而不是工具侧的 ``_content_layers``:
+    后者返回 ``anyio.Path``, 会把 ``load_rule_pack`` 这个同步 API 连带染成 async,
+    波及它的调用方。层的顺序两处同源(都是声明序反转 + agent 根最近), 这里只是不需要
+    异步 IO。
+
+    每次调用时算, 不在 import 期定死: 层来自按进程的环境变量, 而 Gateway 一个进程跑
+    很多 Session。
+    """
+    # 声明序里越靠后越近, 所以反转 —— 与读侧 ``layers_for`` 同一口径。
+    dirs = [Path(str(root.path)) / "skills" / _SKILL_NAME for root in reversed(_content_roots_from_env())]
+    dirs.append(_LEGACY_CONFIG_DIR)
+    return dirs
 
 
 @dataclass(frozen=True)
@@ -90,8 +116,8 @@ class RulePack:
 def load_rule_pack(version: str = DEFAULT_VERSION) -> RulePack:
     if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+(?:-[a-z0-9-]+)?", version):
         raise ValueError("invalid rule pack version")
-    path = _CONFIG_DIR / f"{version}.yaml"
-    if not path.is_file():
+    path = next((p for d in _config_dirs() if (p := d / f"{version}.yaml").is_file()), None)
+    if path is None:
         raise ValueError(f"unknown rule pack version: {version}")
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict) or raw.get("version") != version:

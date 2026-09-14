@@ -28,6 +28,7 @@ from loguru import logger
 
 from psi_agent.session.agent import AgentError, SessionAgent, current_tool_ai_socket
 from psi_agent.session.ai_client import AiClient
+from psi_agent.session.content_roots import content_roots_from_env as _content_roots_from_env
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
@@ -35,8 +36,34 @@ from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistr
 _TOOLS_DIR = Path(__file__).parent
 _AGENT_DIR = _TOOLS_DIR.parent
 _WORKSPACE_DIR = _AGENT_DIR
-_SKILL_DIR = _AGENT_DIR / "skills" / "workflow"
-for _import_dir in (_TOOLS_DIR, _SKILL_DIR):
+#: 单根世界里的老落点。分层未声明时下面的候选只剩这一个, 与改动前逐字节相同。
+_LEGACY_SKILL_DIR = _AGENT_DIR / "skills" / "workflow"
+
+
+def _skill_dirs() -> list[Path]:
+    """``workflow`` 技能包可能所在的目录, **就近者在前**。
+
+    内容分层把技能挪出了 ``<agent>/skills``, 于是写死的 ``_AGENT_DIR/"skills"/"workflow"``
+    断链, 下面 ``from fusion_flow...`` 直接 ImportError。生产上是靠一条指向
+    ``/content/official/skills/workflow`` 的软链接在撑着。
+
+    用同步的 ``content_roots_from_env()`` 而不是工具侧的 ``_content_layers``: 这里是
+    **import 期**要往 ``sys.path`` 里塞路径, 拿不到 event loop, 而 ``layers_for`` 返回
+    ``anyio.Path``。层的顺序两处同源(声明序反转 + agent 根最近)。
+    """
+    # 声明序里越靠后越近, 所以反转 —— 与读侧 ``layers_for`` 同一口径。
+    dirs = [Path(str(root.path)) / "skills" / "workflow" for root in reversed(_content_roots_from_env())]
+    dirs.append(_LEGACY_SKILL_DIR)
+    return dirs
+
+
+# ``sys.path`` 是**进程级**的, 而层是按 Session 的环境变量算的 —— 且 ``fusion_flow`` 一旦
+# 进了 ``sys.modules`` 就由首个导入它的 Session 定死。所以这里做不到"每个 Session 用自己那层
+# 的 fusion_flow", 只能把存在的层按就近序全部放进搜索路径。这是 import 期解析包名的固有限制,
+# 不是本处的疏漏; 真要按 Session 隔离得把 fusion_flow 改成运行期加载。
+#: 倒着遍历: ``insert(0)`` 会把后插入的顶到前面, 顺序读着别扭但结果是
+#: ``[_TOOLS_DIR, 最近层, …, 最远层, …原有]`` —— 就近者胜。
+for _import_dir in reversed((_TOOLS_DIR, *(d for d in _skill_dirs() if d.is_dir()))):
     if str(_import_dir) not in sys.path:
         sys.path.insert(0, str(_import_dir))
 

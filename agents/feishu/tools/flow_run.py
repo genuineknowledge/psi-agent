@@ -26,6 +26,8 @@ from pathlib import Path
 
 import anyio
 
+from psi_agent.session.content_roots import content_roots_from_env as _content_roots_from_env
+
 TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
@@ -79,6 +81,31 @@ def _ensure_esm_package_json(flow_dir: Path) -> None:
         pkg.write_text('{ "type": "module" }\n', encoding="utf-8")
 
 
+def _flow_dotenv_candidates(flow: Path) -> list[Path]:
+    """``fusion-flow-legacy/.env`` 的候选路径, **就近者在前**。
+
+    两段拼起来:
+
+    1. 内容层。分层把技能挪出了 ``<workspace>/skills``, 于是单靠下面那段向上走再也走不到
+       技能目录 —— 生产上是靠一条指向 ``/content/official/skills/fusion-flow-legacy``
+       的软链接在撑着。没有 ``.env`` 时运行时会静默退回默认引擎 ``claude``(见本函数调用方
+       的说明), 所以这条断链的表现是"每个 session 都起错 CLI", 不是显式报错。
+    2. 原来的向上走。保留是因为它覆盖的是另一种情形: 调用方给了自己的 cwd / flow 文件躺在
+       某个临时目录里, 那时层里没有这份 ``.env``, 而 flow 旁边有。
+
+    用同步的 ``content_roots_from_env()``: 调用方 ``_load_flow_env`` 是同步的, 而工具侧的
+    ``_content_layers.layers_for`` 返回 ``anyio.Path``。层的顺序两处同源。
+    """
+    # 声明序里越靠后越近, 所以反转 —— 与读侧 ``layers_for`` 同一口径。
+    candidates = [
+        Path(str(root.path)) / "skills" / "fusion-flow-legacy" / ".env" for root in reversed(_content_roots_from_env())
+    ]
+    # 向上走找 workspace 根(装着 skills/), 再取技能的 .env。有界, 不扫全盘。
+    for base in [flow.resolve().parent, *flow.resolve().parents][:6]:
+        candidates.append(base / "skills" / "fusion-flow-legacy" / ".env")
+    return candidates
+
+
 def _load_flow_env(flow: Path) -> dict[str, str]:
     """Merge the Fusion Flow ``.env`` into the child environment.
 
@@ -92,10 +119,7 @@ def _load_flow_env(flow: Path) -> dict[str, str]:
     child's environment so the engine wiring survives regardless of cwd.
     """
     env = dict(os.environ)
-    # Walk up from the flow to find the workspace root (holds skills/), then the
-    # skill's .env. Bounded search so we never scan the whole disk.
-    for base in [flow.resolve().parent, *flow.resolve().parents][:6]:
-        dotenv = base / "skills" / "fusion-flow-legacy" / ".env"
+    for dotenv in _flow_dotenv_candidates(flow):
         if dotenv.is_file():
             for raw in dotenv.read_text(encoding="utf-8", errors="replace").splitlines():
                 line = raw.strip()
