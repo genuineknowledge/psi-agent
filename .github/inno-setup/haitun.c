@@ -13,6 +13,13 @@
 /* Same folder name as Gateway DEFAULT_USER_WORKSPACE_NAME (haitun + 交付). */
 #define DEFAULT_WS_NAME L"haitun\u4ea4\u4ed8"
 
+/* Single-instance for the installer exe (Cursor / Feishu style).
+ * Second click must not spawn another psi-agent / tray icon.
+ * Multi-Gateway stays a terminal concern (--appdata + --socket-path).
+ * Event name must match psi_agent.gateway.desktop._installer_activate. */
+#define HAITUN_SINGLE_MUTEX L"Local\\GenuineKnowledge.HaitunAgent.SingleInstance"
+#define HAITUN_ACTIVATE_EVENT L"Local\\GenuineKnowledge.HaitunAgent.Activate"
+
 static WCHAR g_dir[MAX_PATH];
 static WCHAR g_env[MAX_ENV * 2];  /* double size: wide-char bytes */
 static int   g_env_len;
@@ -573,10 +580,30 @@ static DWORD WINAPI update_check_thread(LPVOID unused)
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
 {
     HANDLE hAppProcess = NULL;
+    HANDLE hSingle = NULL;
+
+    /* 0. one installer process only (刻意为之: exe ≠ 终端多开).
+     * If already running: nudge the live Gateway to reopen the console, exit 0.
+     * Hold the mutex until this process exits so a third click still sees us. */
+    hSingle = CreateMutexW(NULL, TRUE, HAITUN_SINGLE_MUTEX);
+    if (hSingle == NULL)
+        return 1;
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        HANDLE hActivate = OpenEventW(EVENT_MODIFY_STATE, FALSE, HAITUN_ACTIVATE_EVENT);
+        if (hActivate) {
+            SetEvent(hActivate);
+            CloseHandle(hActivate);
+        }
+        CloseHandle(hSingle);
+        return 0;
+    }
 
     /* 1. get our own directory */
     DWORD dlen = GetModuleFileNameW(NULL, g_dir, MAX_PATH);
-    if (!dlen || dlen >= MAX_PATH) return 1;
+    if (!dlen || dlen >= MAX_PATH) {
+        CloseHandle(hSingle);
+        return 1;
+    }
     WCHAR *bs = g_dir + dlen;
     while (bs > g_dir && *bs != L'\\' && *bs != L'/') bs--;
     *bs = L'\0';
@@ -743,5 +770,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
         CloseHandle(hAppProcess);
     }
 
+    if (hSingle)
+        CloseHandle(hSingle);
     return 0;
 }

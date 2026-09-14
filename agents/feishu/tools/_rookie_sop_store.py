@@ -93,6 +93,25 @@ async def load_config() -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
+#: HR 收件人 id 的合法作用域 —— 与飞书 `receive_id_type` 一一对应。
+HR_ID_TYPES = ("open_id", "user_id", "union_id")
+
+
+def hr_target(cfg: dict[str, Any]) -> tuple[str, str]:
+    """HR 通知的 ``(收件人, receive_id_type)`` —— 全链路的唯一取值处。
+
+    ``hr_notify_id_type`` 缺省 ``open_id`` (历史配置只填了 open_id)。
+
+    **为什么类型必须跟着配置走**: open_id 与 union_id 都带应用色彩 —— open_id 按
+    应用隔离, 换应用后旧值会报 ``99992361 open_id cross app``; 租户 user_id 才是
+    跨应用稳定的那个。所以配置推荐 ``user_id``, 而发送侧一律按这里返回的类型发,
+    绝不把 ``user_id`` 当 ``open_id`` 送出去 (2026-09-12 复盘就是这么踩的)。
+    """
+    target = str(cfg.get("hr_notify_id") or "").strip()
+    id_type = str(cfg.get("hr_notify_id_type") or "open_id").strip() or "open_id"
+    return target, id_type
+
+
 def to_millis(value: date | None) -> int | None:
     if value is None:
         return None

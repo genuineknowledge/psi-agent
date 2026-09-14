@@ -52,6 +52,7 @@ import { mobileHaptic, prefersReducedMotion } from "./client-feedback";
 import {
   createSession,
   deleteSession,
+  relocateSession,
   fetchHistory,
   fetchSessionTodos,
   fetchTodoSegment,
@@ -118,12 +119,10 @@ import {
   addPendingDeliveries,
   clearPendingDeliveries,
   pendingDeliveriesFor,
+  remapPendingDeliveries,
 } from "../services/pendingDeliveries";
-import {
-  normalizeWorkspacePath,
-  sessionMatchesWorkspace,
-} from "../services/workspaceMatch";
 import { displayTaskStatusLabel } from "../services/sessionBridge";
+import PathPickerDialog from "../components/PathPickerDialog";
 
 import {
   AgentMark,
@@ -156,6 +155,8 @@ import { useI18n } from "../i18n";
 
 type Props = {
   workspace: string;
+  /** Memory-area root from ``GET /defaults.appdata`` (settings display). */
+  appdataPath?: string;
   /** Step 2: from GET /defaults.agent — passed to POST /sessions (not tool I/O). */
   defaultAgent?: string;
   onChangeWorkspace?: () => void;
@@ -164,6 +165,7 @@ type Props = {
 
 export default function HaiTunAgentWorkspace({
   workspace,
+  appdataPath = "",
   defaultAgent = "",
   onChangeWorkspace,
   onChangeAgent,
@@ -171,7 +173,7 @@ export default function HaiTunAgentWorkspace({
   const { t, language } = useI18n();
   const quickActions = [t("quickAction.blockers"), t("quickAction.nudge"), t("quickAction.conclusion")];
   const [tasks, setTasks] = useState<Task[]>([]);
-  /** Client-only pin order for sidebar history (localStorage `gw-v2-pinned-task-ids`). */
+  /** Client-only pin order for sidebar history (AppData-scoped localStorage). */
   const [pinnedTaskIds, setPinnedTaskIds] = useState<string[]>(() => loadPinnedTaskIds());
   const [templates, setTemplates] = useState<TaskTemplate[]>(INITIAL_TEMPLATES);
   const [aiId, setAiId] = useState<string | null>(null);
@@ -276,7 +278,12 @@ export default function HaiTunAgentWorkspace({
   /** ``live`` or a closed segment id — controls left-pane checklist projection. */
   const [todoSegmentSelection, setTodoSegmentSelection] = useState<Record<string, string>>({});
   const segmentDetailCacheRef = useRef<Record<string, TodoSegmentDetail>>({});
-  const workspaceNorm = normalizeWorkspacePath(workspace);
+  /** Relocate: pick destination workspace, then agent package. */
+  const [relocatePick, setRelocatePick] = useState<null | {
+    task: Task;
+    step: "workspace" | "agent";
+    workspace?: string;
+  }>(null);
 
   const cards = useMemo(() => {
     const taskCards = tasks.map((task) => ({ id: task.id, title: task.shortTitle }));
@@ -546,14 +553,31 @@ export default function HaiTunAgentWorkspace({
     return () => window.clearInterval(id);
   }, [streamingCards, refreshTodos, refreshTodoSegments]);
 
+  const acknowledgeNewDeliverables = useCallback((taskId: string) => {
+    clearPendingDeliveries(taskId);
+    setTasks((current) => current.map((item) => {
+      if (item.id !== taskId || !item.newDeliverables.length) return item;
+      return {
+        ...item,
+        newDeliverables: [],
+        // Keep generating if still streaming; otherwise dim the chest until next blob.
+        deliveryState: item.deliveryState === "generating" ? "generating" : "none",
+      };
+    }));
+  }, []);
+
   const openArtifact = useCallback((task: Task, fileName?: string, listMode?: "new" | "history") => {
     void ensureHistory(task.id);
+    const hadNew = task.newDeliverables.length > 0;
+    // 刻意为之: 点开宝箱查看即熄灭金色（不再依赖无效的「保存到成果库」）。
+    if (hadNew) acknowledgeNewDeliverables(task.id);
     const mode = listMode
-      ?? (fileName ? "history" : (task.newDeliverables.length ? "new" : "history"));
-    setArtifactListMode(mode);
+      ?? (fileName ? "history" : (hadNew ? "new" : "history"));
+    // newDeliverables 已清空，「new」列表会空——改看本会话历史（含刚查看的文件）。
+    setArtifactListMode(hadNew && mode === "new" ? "history" : mode);
     setArtifactInitialFile(fileName);
     setArtifactTask(task);
-  }, [ensureHistory]);
+  }, [acknowledgeNewDeliverables, ensureHistory]);
 
   const closeArtifact = useCallback(() => {
     setArtifactTask(null);
@@ -566,22 +590,20 @@ export default function HaiTunAgentWorkspace({
       setBootReady(false);
       setOpenModelsOnce(false);
       try {
-        // One hydrate pipeline: sessions → revive dangling AI → titles/summaries → tasks.
-        // Empty AI must not skip sessions.
+        // Flat list: all user Sessions on this Gateway (exclude Feishu ids on C-end).
+        // Settings workspace/agent are create defaults only — do not refilter on switch.
         const [sessions, titles, summaries] = await Promise.all([
           listSessions(),
           listTitles(),
           listSummaries().catch(() => ({}) as Record<string, string>),
         ]);
         if (cancelled) return;
-        const inWs = sessions.filter((s) =>
-          sessionMatchesWorkspace(s.workspace, workspaceNorm),
-        );
+        const visible = sessions.filter((s) => !s.id.startsWith("feishu-"));
         const { preferred, openModels } = await hydrateAiForSessions(readStoredAiId());
         if (cancelled) return;
         setAiId(preferred?.id ?? null);
         setOpenModelsOnce(openModels);
-        const mapped = inWs.map((s) => {
+        const mapped = visible.map((s) => {
           const pending = pendingDeliveriesFor(s.id)
           return sessionToTask(s, titles[s.id] || t("app.newTaskDefault"), {
             ...(summaries[s.id] ? { summary: summaries[s.id] } : {}),
@@ -605,7 +627,7 @@ export default function HaiTunAgentWorkspace({
       cancelled = true;
       for (const controller of Object.values(abortByCardRef.current)) controller.abort();
     };
-  }, [workspaceNorm, showToast]);
+  }, [showToast, t, language]);
 
   // Refresh landing: with history tasks open new task/chat directly; with none stay on the empty workspace.
   useEffect(() => {
@@ -820,7 +842,7 @@ export default function HaiTunAgentWorkspace({
     if (currentIndex >= cards.length) setCurrentIndex(cards.length - 1);
   }, [cards.length, currentIndex]);
 
-  // Drop stale pins after boot when the session list shrinks (delete / workspace switch).
+  // Drop stale pins after boot when the session list shrinks (delete / relocate).
   // 刻意为之: 等 bootReady 再 prune——冷启动 tasks=[] 时若立刻 prune 会把 localStorage 置顶清空。
   useEffect(() => {
     if (!bootReady) return;
@@ -915,6 +937,89 @@ export default function HaiTunAgentWorkspace({
 
     showToast(t("app.toastTaskDeleted", { title: task.shortTitle }));
   }, [artifactTask?.id, currentIndex, goHome, showToast, tasks, streamingCards]);
+
+  const beginMigrateTask = useCallback((task: Task) => {
+    if (streamingCards[task.id]) {
+      showToast(t("app.toastMigrateBusy"));
+      return;
+    }
+    setRelocatePick({ task, step: "workspace" });
+  }, [showToast, streamingCards, t]);
+
+  const applyRelocateLocally = useCallback((oldId: string, newTask: Task) => {
+    const newId = newTask.id;
+    remapPendingDeliveries(oldId, newId);
+    if (historyLoadedRef.current.has(oldId)) {
+      historyLoadedRef.current.delete(oldId);
+      historyLoadedRef.current.add(newId);
+    }
+    setPinnedTaskIds((current) => {
+      if (!current.includes(oldId)) return current;
+      const next = current.map((id) => (id === oldId ? newId : id));
+      savePinnedTaskIds(window.localStorage, next);
+      return next;
+    });
+    const remapKey = <T,>(current: Record<string, T>): Record<string, T> => {
+      if (!(oldId in current)) return current;
+      const next = { ...current };
+      next[newId] = next[oldId]!;
+      delete next[oldId];
+      return next;
+    };
+    setMessages((current) => remapKey(current));
+    setChatDrafts((current) => remapKey(current));
+    setChatAttachments((current) => remapKey(current));
+    setQueuedSends((current) => remapKey(current));
+    setTurnProgressLogs((current) => remapKey(current));
+    setLiveThinkingByCard((current) => remapKey(current));
+    setTodoSegmentsByTask((current) => remapKey(current));
+    setTodoSegmentSelection((current) => remapKey(current));
+    setStreamingCards((current) => remapKey(current));
+    if (queuedSendsRef.current[oldId] !== undefined) {
+      queuedSendsRef.current[newId] = queuedSendsRef.current[oldId] ?? null;
+      delete queuedSendsRef.current[oldId];
+    }
+    if (deferredQueueFlushRef.current[oldId]) {
+      deferredQueueFlushRef.current[newId] = deferredQueueFlushRef.current[oldId]!;
+      delete deferredQueueFlushRef.current[oldId];
+    }
+    if (abortByCardRef.current[oldId]) {
+      abortByCardRef.current[newId] = abortByCardRef.current[oldId]!;
+      delete abortByCardRef.current[oldId];
+    }
+    setTasks((current) => current.map((item) => (item.id === oldId ? newTask : item)));
+    if (artifactTask?.id === oldId) {
+      setArtifactTask(newTask);
+    }
+  }, [artifactTask?.id]);
+
+  const finishRelocate = useCallback(async (task: Task, destWorkspace: string, destAgent: string) => {
+    setRelocatePick(null);
+    try {
+      const info = await relocateSession(task.id, {
+        workspace: destWorkspace,
+        ...(destAgent ? { agent: destAgent } : {}),
+      });
+      const projected = sessionToTask(info, task.title, {
+        summary: task.summary,
+        newDeliverables: task.newDeliverables,
+        deliveryState: task.deliveryState,
+        deliverables: task.deliverables,
+        deliverablePaths: task.deliverablePaths,
+      }, language);
+      // Keep live progress/todos/status; only rebind id + workspace label.
+      const newTask: Task = {
+        ...task,
+        id: projected.id,
+        category: projected.category,
+      };
+      applyRelocateLocally(task.id, newTask);
+      showToast(t("app.toastMigrated"));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      showToast(t("app.toastMigrateFailed", { message: msg }));
+    }
+  }, [applyRelocateLocally, language, showToast, t]);
 
   const openNewTask = useCallback((draft?: string, category = t("app.freeTask"), returnView: MainView = "workspace") => {
     setNewTaskReturnExpanded(chatExpanded);
@@ -1157,6 +1262,7 @@ export default function HaiTunAgentWorkspace({
     setLiveThinkingByCard((current) => ({ ...current, [cardId]: "" }));
     setTodoSegmentSelection((current) => ({ ...current, [cardId]: "live" }));
     const userVisible = titleSource ?? (text.trim() || t("app.attachment"));
+    const turnStartedAt = Date.now();
     let turnOk = false;
     let wasAborted = false;
     let assistantFull = "";
@@ -1321,6 +1427,8 @@ export default function HaiTunAgentWorkspace({
         const { finalText } = settleContentSegments(turnContentSegByCardRef.current[cardId]);
         // Settle: drop temporary step bubble; keep only the last segment as body.
         if (!controller.signal.aborted) {
+          const thinkingMs = Math.max(0, Date.now() - turnStartedAt);
+          const settledAt = new Date().toISOString();
           setMessages((current) => {
             const list = [...(current[cardId] ?? [])];
             const last = list[list.length - 1];
@@ -1329,6 +1437,8 @@ export default function HaiTunAgentWorkspace({
                 ...last,
                 text: finalText || last.text,
                 interimText: undefined,
+                createdAt: settledAt,
+                thinkingMs,
                 ...(reasoningRaw ? { reasoning: reasoningRaw } : {}),
                 ...(tools.length ? { tools } : {}),
               };
@@ -1520,11 +1630,17 @@ export default function HaiTunAgentWorkspace({
     }
 
     const storedFiles = pendingFiles.length ? await filesToChatFiles(pendingFiles) : [];
+    const stampedAt = new Date().toISOString();
     let nextChat: ChatMessage[] = [];
     setMessages((current) => {
       nextChat = [
         ...(current[cardId] ?? []),
-        { role: "user", text: userVisible, files: storedFiles.length ? storedFiles : undefined },
+        {
+          role: "user",
+          text: userVisible,
+          files: storedFiles.length ? storedFiles : undefined,
+          createdAt: stampedAt,
+        },
         { role: "agent", text: "" },
       ];
       return { ...current, [cardId]: nextChat };
@@ -1768,6 +1884,7 @@ export default function HaiTunAgentWorkspace({
     };
     setTasks((current) => [...current, newTask]);
     const storedFiles = pendingFiles.length ? await filesToChatFiles(pendingFiles) : [];
+    const stampedAt = new Date().toISOString();
     setMessages((current) => ({
       ...current,
       [newTask.id]: [
@@ -1775,6 +1892,7 @@ export default function HaiTunAgentWorkspace({
           role: "user",
           text: userVisible,
           files: storedFiles.length ? storedFiles : undefined,
+          createdAt: stampedAt,
         },
         { role: "agent", text: "" },
       ],
@@ -1857,34 +1975,6 @@ export default function HaiTunAgentWorkspace({
     ]);
     setToast(t("app.toastTemplateSaved"));
     window.setTimeout(() => setToast(null), 2400);
-  };
-
-  const saveArtifact = (task: Task) => {
-    clearPendingDeliveries(task.id);
-    setTasks((current) => current.map((item) => item.id === task.id
-      ? {
-          ...item,
-          newDeliverables: [],
-          deliveryState: "saved",
-          updated: t("app.updatedSavedDeliverables"),
-        }
-      : item));
-    setMessages((current) => ({
-      ...current,
-      [task.id]: [...(current[task.id] ?? []), { role: "agent", text: t("app.deliverablesSavedDetail") }],
-    }));
-    closeArtifact();
-    setToast(t("app.toastDeliverablesSaved"));
-    window.setTimeout(() => setToast(null), 2600);
-  };
-
-  const reviseArtifact = (task: Task) => {
-    setTasks((current) => current.map((item) => item.id === task.id
-      ? { ...item, status: "working", statusLabel: t("app.statusRevising"), deliveryState: "generating", progress: Math.min(item.progress, 92), updated: t("app.updatedReviseRequest") }
-      : item));
-    closeArtifact();
-    setToast(t("app.toastReviseSent"));
-    window.setTimeout(() => setToast(null), 2600);
   };
 
   useEffect(() => {
@@ -2537,6 +2627,7 @@ export default function HaiTunAgentWorkspace({
                   onPrefetch={() => void ensureHistory(task.id)}
                   onOpenArtifact={openArtifact}
                   onDelete={deleteTask}
+                  onMigrate={beginMigrateTask}
                   onTogglePin={toggleTaskPin}
                 />
               ))}
@@ -2562,6 +2653,7 @@ export default function HaiTunAgentWorkspace({
             onChangeWorkspace={onChangeWorkspace}
             agent={defaultAgent}
             onChangeAgent={onChangeAgent}
+            appdata={appdataPath}
             onToast={showToast}
             // 门禁未落定 / 登录窗还开着时不要自动弹模型池，两层弹窗会叠在一起
             openModelsOnMount={bootReady && authGate === "passed" && openModelsOnce}
@@ -2712,8 +2804,6 @@ export default function HaiTunAgentWorkspace({
             messages[liveArtifactTask.id] ?? [],
           )}
           onClose={closeArtifact}
-          onSave={saveArtifact}
-          onRevise={reviseArtifact}
         />
       )}
       {firstRunOpen && (
@@ -2744,6 +2834,38 @@ export default function HaiTunAgentWorkspace({
         )}
       {toast && <div className="toast" role="status" aria-live="polite"><Check size={16} /> {toast}</div>}
       <SurveyPopup />
+      {relocatePick ? (
+        <PathPickerDialog
+          open
+          initialPath={
+            relocatePick.step === "workspace"
+              ? (relocatePick.workspace || workspace)
+              : (defaultAgent || relocatePick.workspace || workspace)
+          }
+          title={
+            relocatePick.step === "workspace"
+              ? t("task.migratePickWorkspace")
+              : t("task.migratePickAgent")
+          }
+          confirmLabel={t("task.migrateConfirm")}
+          onCancel={() => setRelocatePick(null)}
+          onConfirm={(path) => {
+            if (relocatePick.step === "workspace") {
+              setRelocatePick({
+                task: relocatePick.task,
+                step: "agent",
+                workspace: path,
+              });
+              return;
+            }
+            void finishRelocate(
+              relocatePick.task,
+              relocatePick.workspace || workspace,
+              path,
+            );
+          }}
+        />
+      ) : null}
     </div>
   );
 }

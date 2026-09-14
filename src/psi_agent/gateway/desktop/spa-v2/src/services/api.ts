@@ -36,6 +36,8 @@ export type SessionInfo = {
 export type GatewayDefaults = {
   agent: string
   workspace: string
+  /** Memory-area root (todos / history / Gateway state). Used to scope UI prefs. */
+  appdata?: string
   /** Effective app UI language from the Gateway (zh-CN / en-US). */
   language?: string
 }
@@ -101,6 +103,24 @@ export async function deleteSession(sessionId: string) {
   return api('DELETE', `/sessions/${sessionId}`)
 }
 
+/**
+ * Copy Session artifacts to a new workspace/agent, then delete the old Session.
+ * Equivalent to rebinding roots (which cannot be hot-patched on a live Session).
+ */
+export async function relocateSession(
+  sessionId: string,
+  body: { workspace: string; agent?: string },
+) {
+  return api<SessionInfo & { relocated_from?: string }>(
+    'POST',
+    `/sessions/${sessionId}/relocate`,
+    {
+      workspace: body.workspace,
+      ...(body.agent ? { agent: body.agent } : {}),
+    },
+  )
+}
+
 export async function listTitles() {
   return api<Record<string, string>>('GET', '/titles')
 }
@@ -141,10 +161,16 @@ export type HistoryMessage = {
   kind?: string
   /** ``[SEND:]`` paths extracted before marker strip (assistant turns). */
   sends?: string[]
+  /** ``[RECV:]`` paths extracted before marker strip (user uploads). */
+  recvs?: string[]
   /** Session JSONL thinking prose only (not tool markers). */
   reasoning?: string
   /** Structured tool_calls projected for SPA tool list (separate from reasoning). */
   tools?: HistoryToolCall[]
+  /** ISO-8601 UTC when the JSONL row was appended (display-only). */
+  created_at?: string
+  /** Whole-turn wall ms for Cursor-style「已思考 · Ns」(display-only). */
+  thinking_ms?: number
 }
 
 export async function fetchHistory(sessionId: string) {

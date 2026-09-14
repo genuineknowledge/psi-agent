@@ -24,6 +24,8 @@ type Props = {
   onChangeWorkspace?: () => void
   agent?: string
   onChangeAgent?: () => void
+  /** Memory-area root (read-only in settings). */
+  appdata?: string
   onToast?: (message: string) => void
   onAisChanged?: (ais: AiInfo[]) => void
   /** Open models panel on first mount (e.g. empty AI pool). */
@@ -60,6 +62,7 @@ export default function UserHub({
   onChangeWorkspace,
   agent,
   onChangeAgent,
+  appdata,
   onToast,
   onAisChanged,
   openModelsOnMount = false,
@@ -274,6 +277,7 @@ export default function UserHub({
         onClose={() => setPanel(null)}
         workspace={workspace}
         onChangeWorkspace={onChangeWorkspace}
+        appdata={appdata}
         onOpenAdvancedSettings={() => setPanel('settingsAdvanced')}
       />
       <HubAdvancedSettingsPanel

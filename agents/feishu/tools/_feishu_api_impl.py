@@ -31,6 +31,8 @@ import _runtime_paths as _paths
 from lark_channel.core.enum import AccessTokenType, HttpMethod
 from lark_channel.core.model import BaseRequest
 
+from psi_agent.session.content_roots import AGENT_ROOT_NAME as _AGENT_ROOT_NAME
+from psi_agent.session.content_roots import content_roots_from_env as _content_roots_from_env
 from psi_agent.session.runtime_context import get_session_id
 
 dumps_result = _f.dumps_result
@@ -130,6 +132,43 @@ def _warning_for(uri: str) -> str:
 def _skills_dir() -> str:
     """Where the endpoint tables live. Agent root, same place the model reads them from."""
     return str(pathlib.Path(_paths.agent_dir()) / "skills")
+
+
+def _skills_ladder() -> list[tuple[str, str]]:
+    """``(层名, skills 目录)`` 由远及近 —— 护栏规则的查找阶梯。
+
+    与提示词索引(``system._skill_roots``)同一顺序、同一层名来源。skills 目录有
+    **两个消费者**: 模型读的技能索引, 和这里执行的飞书 API 护栏。只让前者分层
+    会让每人的覆盖*看起来*生效, 而真实 API 调用仍只受官方规则约束 —— 静默, 且朝
+    最贵的方向错(该拒的没拒)。故这一处必须跟着分层, 且必须有自己的判据。
+
+    未声明内容根时返回单级阶梯, 即原来那一个目录, 行为逐字不变。
+    """
+    ladder: list[tuple[str, str]] = []
+    for root in _content_roots_from_env():
+        ladder.append((root.name, str(pathlib.Path(str(root.path)) / "skills")))
+    agent_skills = _skills_dir()
+    if not any(_same_dir(path, agent_skills) for _, path in ladder):
+        ladder.append((_AGENT_ROOT_NAME if ladder else _fallback_layer_name(agent_skills), agent_skills))
+    return ladder
+
+
+def _same_dir(left: str, right: str) -> bool:
+    """两个路径是否指同一目录; 解析失败时按原样比。"""
+    try:
+        return pathlib.Path(left).resolve() == pathlib.Path(right).resolve()
+    except OSError:  # pragma: no cover — 盘不可达 / 无权限
+        return left == right
+
+
+def _fallback_layer_name(skills_dir: str) -> str:
+    """单根世界的层名 —— 与 B-0 探针原来报的那个名字逐字一致。
+
+    原来是 ``layer_probe.root_name(skills_dir)``, 无声明表时退回目录名, 即
+    ``skills``。这里必须给出同一个词: 单根下这行日志的形状不变是 B-1 的判据之一,
+    换个词会让"未设 PSI_CONTENT_ROOTS 时行为不变"这条判据假红。
+    """
+    return pathlib.Path(skills_dir).name or skills_dir
 
 
 def _spec_refusal(
@@ -307,7 +346,7 @@ async def call_api_impl(
 
     # Endpoint table: refuse what it says cannot work, then fill the defaults it
     # declares. Both happen before the request is built, so a violation costs nothing.
-    rule = _spec.rules_for(_skills_dir(), verb, path)
+    rule = _spec.rules_for_layers(_skills_ladder(), verb, path)
     if refusal := _spec_refusal(rule, body, query, paths, confirm):
         return refusal
     # Kept after the pure checks and before anything is sent: a call that is malformed

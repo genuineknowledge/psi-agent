@@ -1,0 +1,42 @@
+﻿# 正负面清单（PNL）引用与运行配置 —— 用户/产品可编辑，工具按需读取。
+# 与 todo-sop.yaml 同模式：字段名与结构是契约，不要改；换表/换文档/换口径只改值。
+# 文件缺失或损坏时，代码回落内置默认（正式表坐标与六列映射写死在 runtime.py），并记录告警。
+# 员工侧规则文本仍以 SKILL.md 与 skills/positive-negative-list/6.0-shadow.yaml 为准。
+
+ledger:
+  # 租户 Web 域名, 用于拼接员工可见的记录链接(默认 genuineknowledge.feishu.cn); 换租户只改这里。
+  host: genuineknowledge.feishu.cn
+  app_token: RNEvbLIJAaPPdksfv8YceTmjndg
+  table_id: tblwXV7Xlwu0hVYH
+  view_id: veweChthHV
+  url: https://genuineknowledge.feishu.cn/base/RNEvbLIJAaPPdksfv8YceTmjndg?table=tblwXV7Xlwu0hVYH&view=veweChthHV
+  # 写入侧列名（语义 -> 正式总表实际列名），与读取侧六列一致；顺序即候选确认的写入顺序。
+  columns:
+    nature: 正负面归属
+    subject_user_key: 员工姓名
+    fact_summary: 事件描述
+    occurred_at: 记录日期
+    note: 备注
+    reporter_user_key: 填写人
+
+documents:
+  sop:
+    name: 正负面清单 SOP
+    url: https://genuineknowledge.feishu.cn/wiki/MyUywH7bQiVncgkuYJLcBZjungc
+    notes: >
+      判定口径与分类规则的唯一出处。员工追问判断依据时，只提供章节位置或本链接的原文，
+      不展示内部规则 ID、版本号或字段名。章节要点（分类顺序/唯一主条目/事实与证据标准/
+      员工侧表达/红线人工处理）在 SKILL.md 中与 SOP 同源维护。
+  ledger:
+    name: 正负面清单正式总表
+    url: https://genuineknowledge.feishu.cn/base/RNEvbLIJAaPPdksfv8YceTmjndg?table=tblwXV7Xlwu0hVYH&view=veweChthHV
+    notes: >
+      全员可见的正式记录总表。读取固定指向本表；候选记录经写入者确认与表结构/权限预检通过后
+      也只写入本表（不再使用机器人自建测试表）。表内备注列承载分类、背景、影响、证据、
+      Agent 判断与去重标识等扩展信息。
+  rules:
+    name: 内置规则快照（6.0-shadow）
+    path: skills/positive-negative-list/6.0-shadow.yaml
+    notes: >
+      规则文本、成立条件、例外与证据要求。内部版本号不得展示给员工；红线条目是人工升级通道，
+      不进入 Agent 规则查询结果。

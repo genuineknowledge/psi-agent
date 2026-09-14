@@ -757,12 +757,20 @@ async def user_group_members_impl(
     return result
 
 
+def _norm_name(cell: str) -> str:
+    """看板人名列常带 ``@`` 提及前缀(如 ``@张三``),通讯录是裸名,匹配前剥掉。"""
+    return cell.strip().lstrip("@").strip()
+
+
 async def member_status_check_impl(names: list[str], user_key: str = "") -> dict[str, Any]:
     """Classify display names against the org directory (one recursive listing).
 
     active = name matches exactly one directory entry; resigned = no match;
     unresolved = multiple entries share the name (ambiguous) — needs a human.
     """
+    # 看板人名列常带 @ 前缀(如 @张三),通讯录是裸名——入口先归一,否则
+    # 全员匹配不上、被静默判成离职(实测:fill_status 四桶全空的根因)。
+    names = [_norm_name(n) for n in names]
     # 全公司通讯录一次拉全(递归),名字比对纯确定性,不靠模型判断。
     res = await list_department_members_impl("0", "open_department_id", "open_id", recursive=True)
     if not res.get("ok"):

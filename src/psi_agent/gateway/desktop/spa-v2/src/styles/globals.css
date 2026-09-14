@@ -498,6 +498,7 @@ textarea:focus-visible {
 }
 
 .task-row-delete,
+.task-row-migrate,
 .task-row-pin {
   width: 28px;
   height: 28px;
@@ -516,6 +517,9 @@ textarea:focus-visible {
 .task-row:hover .task-row-delete,
 .task-row.active .task-row-delete,
 .task-row-delete:focus-visible,
+.task-row:hover .task-row-migrate,
+.task-row.active .task-row-migrate,
+.task-row-migrate:focus-visible,
 .task-row:hover .task-row-pin,
 .task-row.active .task-row-pin,
 .task-row-pin:focus-visible,
@@ -527,6 +531,12 @@ textarea:focus-visible {
 .task-row-delete:focus-visible {
   color: #ff8f8f;
   background: rgba(255, 100, 100, 0.12);
+}
+
+.task-row-migrate:hover,
+.task-row-migrate:focus-visible {
+  color: #9ec8ff;
+  background: rgba(100, 160, 255, 0.12);
 }
 
 .task-row-pin:hover,
@@ -541,6 +551,7 @@ textarea:focus-visible {
 
 @media (hover: none) {
   .task-row-delete,
+  .task-row-migrate,
   .task-row-pin { opacity: 0.85; }
 }
 
@@ -5731,6 +5742,26 @@ button.metric-cell:disabled {
   align-items: flex-start;
   gap: 4px;
   max-width: 100%;
+}
+.focus-chat-bubble-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+.focus-chat-msg-clock {
+  font-size: 11px;
+  line-height: 1.2;
+  color: #8a9aab;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+.focus-chat-msg-clock--user {
+  align-self: flex-end;
+}
+.focus-chat-msg-clock--agent {
+  align-self: flex-start;
 }
 /* User: DOM is [actions][bubble]; keep LTR so copy/retry sit on the
    center side of the bubble (not between bubble and avatar). Matches spa v1. */

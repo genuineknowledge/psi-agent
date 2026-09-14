@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import aclosing, asynccontextmanager
 from contextvars import ContextVar
@@ -33,12 +34,13 @@ from psi_agent.protocol import (
 )
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
-from psi_agent.session.content_roots import ContentRoot, content_roots_from_env
+from psi_agent.session.content_roots import content_roots_from_env, roots_with_agent_top
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.event_protocol import EventProtocolError, parse_event_envelope
 from psi_agent.session.history_display import (
     COMPACTED_COVERS_KEY,
     KIND_COMPACTED,
+    THINKING_MS_KEY,
     TURN_CONTEXT_KEY,
     message_kind,
     truncate_tool_result,
@@ -384,13 +386,15 @@ class SessionAgent:
         # single-dir load, unchanged.
         content_roots = content_roots_from_env()
         if content_roots:
-            top = ContentRoot(
-                name=str(agent_root.resolve()),
-                path=agent_root,
-                priority=max(root.priority for root in content_roots) + 10,
-            )
-            tool_registry = await ToolRegistry.load_content_roots([*content_roots, top], conversation.session_id)
+            # One ladder for every content kind — tools, triggers, systems — so
+            # the three cannot disagree about which roots exist or in what order.
+            # ``roots_with_agent_top`` appends the agent package as the most
+            # specific root; see ``content_roots`` for why its name is a name and
+            # not ``str(agent_root.resolve())``.
+            ladder = roots_with_agent_top(agent_root, content_roots)
+            tool_registry = await ToolRegistry.load_content_roots(ladder, conversation.session_id)
         else:
+            ladder = []
             tool_registry = await ToolRegistry.load(agent_root / "tools", conversation.session_id)
         # 刻意为之: schedules 仍然挂 ``workspace_path``, 不跟着分层走 agent_root/内容根。
         # 日程是「谁的提醒」——属于挂载侧、属于这个用户的 workspace, 内容根答不了这个问题。
@@ -400,8 +404,12 @@ class SessionAgent:
             active_names=active_schedules,
             deactive_names=deactive_schedules,
         )
-        trigger_registry = await TriggerRegistry.load(agent_root / "triggers")
-        system_prompt = await SystemPrompt.from_workspace(agent_root, conversation.session_id)
+        if ladder:
+            trigger_registry = await TriggerRegistry.load_content_roots(ladder)
+            system_prompt = await SystemPrompt.from_content_roots(ladder, conversation.session_id)
+        else:
+            trigger_registry = await TriggerRegistry.load(agent_root / "triggers")
+            system_prompt = await SystemPrompt.from_workspace(agent_root, conversation.session_id)
 
         return cls(
             ai_client=ai_client,
@@ -525,6 +533,7 @@ class SessionAgent:
         logger.info(f"Direct card dispatch: {len(calls)} action(s) -> {[c[0] for c in calls]}")
 
         summaries: list[str] = []
+        turn_t0 = time.monotonic()
         async with self._conversation:
             self._conversation.add(with_kind(user_message, message_kind(user_message)))
             await self._conversation.commit()
@@ -540,7 +549,11 @@ class SessionAgent:
                     logger.error(f"Direct card dispatch {handler} failed: {e!r}")
             self._conversation.add(
                 with_kind(
-                    {"role": "assistant", "content": "[card direct] " + " | ".join(summaries)},
+                    {
+                        "role": "assistant",
+                        "content": "[card direct] " + " | ".join(summaries),
+                        THINKING_MS_KEY: max(0, int((time.monotonic() - turn_t0) * 1000)),
+                    },
                     turn_response_kind,
                 )
             )
@@ -775,6 +788,15 @@ class SessionAgent:
                 turn_start = len(self._conversation.messages)
                 self._conversation.add(stored_user_message)
                 await self._conversation.commit()
+                # Cursor-style「已思考 · Ns」: wall ms from this turn's start to
+                # each assistant row (display-only; see THINKING_MS_KEY).
+                turn_t0 = time.monotonic()
+
+                def _with_thinking_ms(msg: dict[str, Any]) -> dict[str, Any]:
+                    out = dict(msg)
+                    out[THINKING_MS_KEY] = max(0, int((time.monotonic() - turn_t0) * 1000))
+                    return out
+
                 # Everything appended from here on is *this* turn's output, and
                 # the reply inside it has not reached the user yet.  Eliding it
                 # tells the upstream "my last message said nothing" — including
@@ -927,7 +949,9 @@ class SessionAgent:
                                     if accumulated_reasoning:
                                         assistant_msg["reasoning"] = accumulated_reasoning
                                     if accumulated_content or ordered_calls:
-                                        self._conversation.add(with_kind(assistant_msg, turn_response_kind))
+                                        self._conversation.add(
+                                            with_kind(_with_thinking_ms(assistant_msg), turn_response_kind)
+                                        )
 
                                     # pre-compute args + yield tool-call intent
                                     tool_args: list[tuple[int, dict[str, Any], str, dict[str, Any], str | None]] = []
@@ -1070,7 +1094,7 @@ class SessionAgent:
                             if accumulated_reasoning:
                                 assistant_msg["reasoning"] = accumulated_reasoning
                             if accumulated_content:
-                                self._conversation.add(with_kind(assistant_msg, turn_response_kind))
+                                self._conversation.add(with_kind(_with_thinking_ms(assistant_msg), turn_response_kind))
                             committed = await self._conversation.commit()
                             if committed:
                                 after_turn_message[_HISTORY_PROVENANCE_KEY]["assistant_line"] = len(
@@ -1109,11 +1133,8 @@ class SessionAgent:
                                 assistant_msg["content"] = accumulated_content
                                 if accumulated_reasoning:
                                     assistant_msg["reasoning"] = accumulated_reasoning
-                                self._conversation.add(with_kind(assistant_msg, turn_response_kind))
+                                self._conversation.add(with_kind(_with_thinking_ms(assistant_msg), turn_response_kind))
                             await self._conversation.commit()
-                            # No finish reason at all is a broken stream, not a model
-                            # decision — keep the two apart so triage can tell "the
-                            # model stopped early" from "we never heard why".
                             _finish(
                                 AgentRunStatus.INCOMPLETE,
                                 AgentStopCause.MODEL_STOPPED
@@ -1138,7 +1159,7 @@ class SessionAgent:
                         notice = MAX_ROUNDS_NOTICE.format(rounds=self._max_tool_rounds)
                         self._conversation.add(
                             with_kind(
-                                {"role": "assistant", "content": notice},
+                                _with_thinking_ms({"role": "assistant", "content": notice}),
                                 turn_response_kind,
                             )
                         )

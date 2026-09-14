@@ -274,18 +274,17 @@ class SessionManager:
     def has(self, session_id: str) -> bool:
         return session_id in self._entries
 
-    def get_workspace(self, session_id: str) -> str:
+    def get_info(self, session_id: str) -> SessionInfo:
         if session_id not in self._entries:
             raise LookupError(f"Session {session_id!r} not found")
-        return self._entries[session_id].info.workspace
+        return self._entries[session_id].info
+
+    def get_workspace(self, session_id: str) -> str:
+        return self.get_info(session_id).workspace
 
     def get_agent(self, session_id: str) -> str:
-        if session_id not in self._entries:
-            raise LookupError(f"Session {session_id!r} not found")
-        return self._entries[session_id].info.agent
+        return self.get_info(session_id).agent
 
     def get_backend_id(self, session_id: str) -> str:
         """Backend id the session is attached to — needed when a scheduler Session reuses the same AI instance."""
-        if session_id not in self._entries:
-            raise LookupError(f"Session {session_id!r} not found")
-        return self._entries[session_id].info.backend_id
+        return self.get_info(session_id).backend_id

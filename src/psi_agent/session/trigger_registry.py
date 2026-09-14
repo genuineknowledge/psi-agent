@@ -10,7 +10,7 @@ import hashlib
 import inspect
 import json
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +20,9 @@ import anyio
 from loguru import logger
 
 from psi_agent._yaml import parse_yaml_header
+from psi_agent.session import layer_probe
+from psi_agent.session.content_roots import ContentRoot
+from psi_agent.session.content_tombstone import is_tombstone
 from psi_agent.session.event_protocol import (
     MATCH_ALL,
     EventEnvelope,
@@ -157,6 +160,10 @@ class TriggerEntry:
     file_hash: str
     trigger: Trigger
     fresh: bool = False
+    #: 墓碑标记(B-2, 见 ``content_tombstone``)。墓碑**是**一个已加载的条目而不是被跳过
+    #: 的文件: 它要参与跨层合并才能让更远那层的同名 trigger 落选。但它绝不能触发, 所以
+    #: ``triggers`` 把它滤掉 —— 一个"停用标记"自己跑起来是最坏的形状。
+    tombstone: bool = False
 
 
 class TriggerRegistry:
@@ -175,12 +182,68 @@ class TriggerRegistry:
 
     @property
     def triggers(self) -> list[Trigger]:
-        return [e.trigger for e in self._files.values()]
+        """The triggers that can fire — tombstones excluded.
+
+        Tombstones live in ``_files`` (they have to, so the layered merge can let
+        one shadow a lower root's same-named trigger by name), but they are
+        *absences*: a "this is deleted" marker that fires is worse than a failed
+        delete, because it fires with an empty body on whatever event the marker
+        happened to carry.
+        """
+        return [e.trigger for e in self._files.values() if not e.tombstone]
 
     @classmethod
     async def load(cls, triggers_dir: Path) -> TriggerRegistry:
+        """Load from *triggers_dir* alone — the single-root entry point.
+
+        Kept as-is for every caller that has one directory and no notion of
+        layers (tests, ``run_once``, tools). ``load_content_roots`` is the
+        layered entry point ``SessionAgent`` reaches for.
+        """
         files = await cls._load_from_dir(triggers_dir)
+        seen: list[tuple[str, int]] = []
+        if await anyio.Path(str(triggers_dir)).is_dir():
+            seen.append((layer_probe.root_name(triggers_dir), len(files)))
+        layer_probe.report("triggers", roots_declared=1, per_root=seen)
         return cls(files=files, work_dir=triggers_dir)
+
+    @classmethod
+    async def load_content_roots(cls, roots: Sequence[ContentRoot]) -> TriggerRegistry:
+        """Load ``<root>/triggers`` across *roots*, nearest-wins by trigger name.
+
+        Merge semantics, matching skills: a trigger in a nearer root **replaces**
+        the same-named one from a lower root entirely — no field-level merge.
+        Merging fields would synthesise a third trigger nobody wrote, and a
+        trigger carries a ``filter`` and a ``fire`` target, so a half-overridden
+        one fires the wrong thing on the wrong events.
+
+        Identity is the trigger **name**, not the file path. Paths are unique per
+        root by construction, so keying on them (as ``_files`` does) would let
+        both copies live and fire twice — the override would silently *add* a
+        firing rather than replace one.
+
+        *roots* is ascending in priority (see ``content_roots``); the highest
+        root is the one ``refresh()`` reloads and the one ``work_dir`` points at,
+        because it is the only one a user can write to.
+        """
+        ordered = sorted(roots, key=lambda root: root.priority)
+        by_name: dict[str, tuple[str, TriggerEntry]] = {}
+        per_root: list[tuple[str, int]] = []
+        for root in ordered:
+            triggers_dir = root.path / "triggers"
+            loaded = await cls._load_from_dir(triggers_dir)
+            # 只报**存在**的层: "这层没有 triggers 目录"与"有目录但空"是两件事,
+            # 压成同一个 0 就是 B-0 探针存在的那个坑(见 ``layer_probe``)。
+            if await anyio.Path(str(triggers_dir)).is_dir():
+                per_root.append((root.name, len(loaded)))
+            for path, entry in loaded.items():
+                by_name[entry.trigger.name] = (path, entry)
+        files = dict(by_name.values())
+        # per_root 报各层**贡献**(去重前), 与合并后的 total 不等即说明发生了同名
+        # 覆盖 —— 覆盖行为得看得见, 否则"近的赢了"和"远的没被读到"同形。
+        layer_probe.report("triggers", roots_declared=len(ordered), per_root=per_root)
+        work_dir = ordered[-1].path / "triggers" if ordered else None
+        return cls(files=files, work_dir=work_dir)
 
     async def refresh(self) -> dict[str, str]:
         try:
@@ -440,6 +503,18 @@ class TriggerRegistry:
                     logger.error(f"No YAML header in {task_file!r}; skipping")
                     continue
                 name = str(header.get("name") or dir_path.name).strip()
+                # 墓碑要在 ``event`` 检查**之前**认出来: 它本来就没有 event(它不代表一个
+                # 会触发的东西), 走到下面那条 continue 就会被当成损坏文件跳过 —— 于是它
+                # 不进 ``_files``, 也就遮不住更远那层的同名 trigger, 删除静默失效。
+                if is_tombstone(header):
+                    files[str_path] = TriggerEntry(
+                        file_hash=file_hash,
+                        trigger=Trigger(name=name, event=""),
+                        fresh=True,
+                        tombstone=True,
+                    )
+                    logger.debug(f"Loaded tombstone for trigger {name!r} from {task_file!r}")
+                    continue
                 event = str(header.get("event") or "").strip()
                 if not event:
                     logger.error(f"Missing event in {task_file!r}; skipping")

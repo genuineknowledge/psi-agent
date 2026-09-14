@@ -271,8 +271,10 @@ async def _send_hr_feedback(cfg: dict[str, Any], name: str, progress: Any) -> di
 
     hr_notify_id 在联调阶段被刻意留空(安全考虑) —— 空的时候必须明确跳过并说明原因,
     不能悄悄不发、也不能猜一个收件人发出去(那比不发更糟: 卡片发给了错的人)。
+    收件人与 ``receive_id_type`` 一律取自配置(见 ``_store.hr_target``): 把 ``open_id``
+    写死在这里, 配置里填的租户 ``user_id`` 就会报 ``99992361 open_id cross app``。
     """
-    hr_target = str(cfg.get("hr_notify_id") or "").strip()
+    hr_target, hr_id_type = _store.hr_target(cfg)
     if not hr_target:
         return {"ok": False, "sent": False, "reason": "hr_notify_id is empty in config/rookie_sop.yaml"}
 
@@ -281,7 +283,7 @@ async def _send_hr_feedback(cfg: dict[str, Any], name: str, progress: Any) -> di
         await feishu_message_send_card(
             hr_target,
             json.dumps(card, ensure_ascii=False),
-            "open_id",
+            hr_id_type,
             "",
             json.dumps({"type": "rookie_sop_hr_feedback", "name": name}, ensure_ascii=False),
             json.dumps(handlers, ensure_ascii=False),

@@ -12,11 +12,19 @@ from zoneinfo import ZoneInfo
 from _positive_negative_list.models import CaseDraft, LedgerQuery, LedgerRecord
 from _positive_negative_list.preflight import TableSchema, TableSchemaValidation
 
+# Tenant web domain used to build employee-visible record links.  Never use
+# the generic ``feishu.cn`` here: this tenant's Feishu is served under its own
+# domain.  Deployments may override it per client through the editable PNL
+# config (``ledger.host`` in config/positive-negative-list.yaml).
+_DEFAULT_WEB_HOST = "genuineknowledge.feishu.cn"
+
 
 class TableClient(Protocol):
     async def preflight(self, user_key: str) -> TableSchemaValidation: ...
 
-    async def search(self, field_id: str, value: str, user_key: str) -> Sequence[Mapping[str, Any]]: ...
+    async def search(
+        self, field_id: str, value: str, user_key: str, operator: str = "is"
+    ) -> Sequence[Mapping[str, Any]]: ...
 
     async def create(self, fields: Mapping[str, Any], user_key: str) -> Mapping[str, Any]: ...
 
@@ -78,15 +86,34 @@ class TableAdapter:
                 return candidate
         return None
 
+    def _dedupe_operator(self, schema: TableSchema) -> str:
+        """Resolve the search operator for deduplication identifiers.
+
+        In the six-column ledger every identifier is aliased into the ``备注``
+        text column, where an exact ``is`` match can never hit the multi-line
+        cell; ``contains`` finds the identifier inside the note.  Tables with
+        dedicated identifier columns keep the exact ``is`` match.
+        """
+        field_ids = {
+            schema.deduplication_field_ids.get(name)
+            for name in ("source_key", "canonical_incident_id", "cross_source_fingerprint")
+        }
+        return "contains" if len(field_ids) == 1 else "is"
+
     async def find_by_source_key(self, source_key: str, user_key: str) -> Mapping[str, Any] | None:
         schema = self._require_schema()
-        rows = await self._client.search(schema.deduplication_field_ids["source_key"], source_key, user_key)
+        rows = await self._client.search(
+            schema.deduplication_field_ids["source_key"], source_key, user_key, self._dedupe_operator(schema)
+        )
         return rows[0] if rows else None
 
     async def find_by_canonical_id(self, canonical_id: str, user_key: str) -> Mapping[str, Any] | None:
         schema = self._require_schema()
         rows = await self._client.search(
-            schema.deduplication_field_ids["canonical_incident_id"], canonical_id, user_key
+            schema.deduplication_field_ids["canonical_incident_id"],
+            canonical_id,
+            user_key,
+            self._dedupe_operator(schema),
         )
         return rows[0] if rows else None
 
@@ -95,7 +122,10 @@ class TableAdapter:
         if not case.cross_source_fingerprint:
             return WriteResult("none")
         rows = await self._client.search(
-            schema.deduplication_field_ids["cross_source_fingerprint"], case.cross_source_fingerprint, user_key
+            schema.deduplication_field_ids["cross_source_fingerprint"],
+            case.cross_source_fingerprint,
+            user_key,
+            self._dedupe_operator(schema),
         )
         if not rows:
             return WriteResult("none")
@@ -171,11 +201,17 @@ class TableAdapter:
             if record_id and "record_link" not in created:
                 return {
                     **dict(created),
-                    "record_link": (
-                        f"https://feishu.cn/base/{schema.app_token}?table={schema.table_id}&record={record_id}"
-                    ),
+                    "record_link": self._link_for(record_id),
                 }
         return created
+
+    def _link_for(self, record_id: str) -> str:
+        schema = self._require_schema()
+        host = str(getattr(self._client, "web_host", "") or "").strip() or _DEFAULT_WEB_HOST
+        return f"https://{host}/base/{schema.app_token}?table={schema.table_id}&record={record_id}"
+
+    def public_record_link(self, record_id: str) -> str:
+        return self._link_for(record_id)
 
     def _require_schema(self) -> TableSchema:
         if self._schema is None:

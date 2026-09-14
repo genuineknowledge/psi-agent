@@ -13,6 +13,7 @@ import {
   stripToolMarkersFromReasoning,
 } from "../services/reasoningDisplay";
 import { isCompleteAgent } from "../services/messageTurn";
+import { formatMessageClock, thinkingHeaderWithDuration } from "../services/messageTiming";
 import { ensureChatFileData, revealDeliverableInFolder } from "../utils/filePreviewUtils";
 import { isBlobPreviewable } from "../utils/renderBlobPreview";
 import FilePreview from "../components/FilePreview";
@@ -166,10 +167,12 @@ function TurnProcessDisclosure({
   reasoning,
   tools = [],
   streaming = false,
+  thinkingMs,
 }: {
   reasoning?: string;
   tools?: string[];
   streaming?: boolean;
+  thinkingMs?: number;
 }) {
   const { t } = useI18n();
   const toolLines = tools.filter((line) => !!line.trim());
@@ -177,6 +180,9 @@ function TurnProcessDisclosure({
   const [toolsOpen, setToolsOpen] = useState(true);
   const [thinkingOpen, setThinkingOpen] = useState(false);
   if (!toolLines.length && !thinking) return null;
+  const thinkingLabel = streaming
+    ? t("chat.thinkingHeaderStreaming")
+    : thinkingHeaderWithDuration(t("chat.thinkingHeaderDone"), thinkingMs);
 
   return (
     <div className="focus-chat-turn-process">
@@ -215,7 +221,7 @@ function TurnProcessDisclosure({
             onClick={() => setThinkingOpen((v) => !v)}
           >
             <ChevronRight size={14} className="focus-chat-thinking-chevron" aria-hidden />
-            <span>{streaming ? t("chat.thinkingHeaderStreaming") : t("chat.thinkingHeaderDone")}</span>
+            <span>{thinkingLabel}</span>
           </button>
           {thinkingOpen ? (
             <div className="focus-chat-thinking-body" role="region" aria-label={t("chat.thinkingAria")}>
@@ -535,6 +541,7 @@ export function FocusChatThread({
                 <TurnProcessDisclosure
                   reasoning={message.reasoning}
                   tools={message.tools}
+                  thinkingMs={message.thinkingMs}
                 />
               )
               : null}
@@ -557,10 +564,21 @@ export function FocusChatThread({
                 </div>
               )}
               {(message.role === "user" || !isLiveAgent) && displayText.trim() ? (
-                <div
-                  className="focus-chat-bubble"
-                  dangerouslySetInnerHTML={{ __html: finalHtml }}
-                />
+                <div className="focus-chat-bubble-stack">
+                  <div
+                    className="focus-chat-bubble"
+                    dangerouslySetInnerHTML={{ __html: finalHtml }}
+                  />
+                  {message.createdAt ? (
+                    <time
+                      className={`focus-chat-msg-clock focus-chat-msg-clock--${message.role}`}
+                      dateTime={message.createdAt}
+                      title={message.createdAt}
+                    >
+                      {formatMessageClock(message.createdAt)}
+                    </time>
+                  ) : null}
+                </div>
               ) : null}
             </div>
             {fileChips}

@@ -32,17 +32,19 @@
 | 技术栈 | Vue 3 + Pinia | React 19 + Vite |
 | base | `/spa/` | `/spa-v2/` |
 | 对话 | Gateway SSE | 同左（同一套 API） |
-| 交付物 | 气泡 blob chip | 宝箱 UI；SSE `blob` 写入 `deliverables`；抽屉内按 blob 真实渲染（对齐 spa v1：MD/HTML/图片音视频/代码/CSV/PDF/DOCX/XLSX/PPTX，重库动态 `import()`；无 blob 时明确空态）。MD 预览与聊天气泡共用 `renderMd` + `.md-table-card`。**刻意为之**：`renderMd` 超链接 `target=_blank`；附件 chip / 预览抽屉仍本页。DOCX：`ignoreWidth` 去掉页宽；**页边距仍是绝对长度**，预览 CSS 强制 `section.docx` 宽 100% + 适中 padding，避免窄抽屉里正文挤成细条；表格/图片 `max-width:100%` 防横向溢出。视觉对齐 MD：`fitDocxTables()` 清 Word 绝对列宽、包 `.docx-table-scroll`、首行标 `docx-table-header-row`；host CSS 用深色标题 / 灰边卡片表 / 正文 15px（勿保留 Word 主题蓝标题）。有 `[SEND:]` path 时，气泡 chip / 宝箱 / 预览抽屉可「在文件夹中显示」（`POST /workspace/reveal`） |
+| 交付物 | 气泡 blob chip | 宝箱 UI；SSE `blob` 写入 `deliverables`；抽屉内按 blob 真实渲染（对齐 spa v1：MD/HTML/图片音视频/代码/CSV/PDF/DOCX/XLSX/PPTX，重库动态 `import()`；无 blob 时明确空态）。MD 预览与聊天气泡共用 `renderMd` + `.md-table-card`。**刻意为之**：`renderMd` 超链接 `target=_blank`；附件 chip / 预览抽屉仍本页。DOCX：`ignoreWidth` 去掉页宽；**页边距仍是绝对长度**，预览 CSS 强制 `section.docx` 宽 100% + 适中 padding，避免窄抽屉里正文挤成细条；表格/图片 `max-width:100%` 防横向溢出。视觉对齐 MD：`fitDocxTables()` 清 Word 绝对列宽、包 `.docx-table-scroll`、首行标 `docx-table-header-row`；host CSS 用深色标题 / 灰边卡片表 / 正文 15px（勿保留 Word 主题蓝标题）。有 `[SEND:]` path 时，气泡 chip / 宝箱 / 预览抽屉可「在文件夹中显示」（`POST /workspace/reveal`）。宝箱抽屉无「保存到成果库 / 让 Agent 修改」；金色熄灭 = 打开查看新交付物 |
 | 账户区 | 头像菜单合一 | 头像菜单仅账号/登录（「我的资料」已并进账号，入口已删）；**模型池**与**设置**为侧栏独立快捷入口 |
 | 默认工作区 | 无 / 必须先选 | 启动读 ``GET /defaults``.workspace（Gateway 软默认 `{Desktop}/haitun交付`，**只宣布不建目录**；首个 Session/对话时服务端再 mkdir）；遗留 `*-workspace` / 字面量 `workspace` / `haitun-workspace` 会忽略 |
-| 工作区切换 | 侧栏打开 PathPicker | 设置「切换工作区」→ 全屏选择页；**浏览**走 `/workspace/places` + `/browse`（对齐 v1）；偏好 `gw-v2-workspace` |
+| 工作区切换 | 侧栏打开 PathPicker | 设置「切换工作区」→ 全屏选择页；**只更新新建任务默认路径** + `gw-v2:{fp}:workspace`（AppData 分区）；**不** remount、**不**按目录过滤侧栏 |
+| Agent 包切换 | — | 设置「切换 Agent 包」同区；只影响**新建** `POST /sessions` 的 `agent`；已有任务不变 |
+| 任务迁移 | — | 侧栏行「迁移」：选目标 workspace → 选 agent 包 → `POST /sessions/{id}/relocate`（拷贝后删旧）；置顶 / 新交付物键随新 id 搬 |
 | 顶栏新建 | — | 右上角「新建任务/聊天」+ 侧栏同入口（**刻意为之**：不绑 `⌘/Ctrl N`，与 Edge「打开新窗口」冲突；侧栏按钮亦不展示该快捷键）；**分屏聚焦**时对话栏「收起」旁也有同款入口（左栏收起后**仅**保留展开上下文钮，不再并排再建入口） |
-| Agent 包 | 与 workspace 合一 | ``GET /defaults``.agent → 新建任务/聊天 ``POST /sessions`` 带 `agent`（可与用户工作区不同）。设置「切换 Agent 包」与工作区同区；全屏 `WorkspaceGate kind=agent`；偏好 `gw-v2-agent`（覆盖 defaults）。**刻意为之**：只影响**新建** Session；已有任务仍用创建时绑定的 `agent` |
+| Agent 包 | 与 workspace 合一 | ``GET /defaults``.agent → 新建任务/聊天 ``POST /sessions`` 带 `agent`（可与用户工作区不同）。设置「切换 Agent 包」与工作区同区；全屏 `WorkspaceGate kind=agent`；偏好 `gw-v2:{fp}:agent`（覆盖 defaults）。**刻意为之**：只影响**新建** Session；已有任务仍用创建时绑定的 `agent` |
 | 任务模板库 | — | 卡片正文/分类/交付物/页脚等字号 ≥12–14px（勿回退 8–10px 设计稿字号）。「新建模板」抽屉经 `createPortal` 挂 `document.body`：全屏遮罩 + 右侧贴边抽屉（勿嵌在 `.main-stage` 内导致四边露白） |
 
 设置弹窗保留**切换工作区**与**切换 Agent 包**（真实功能）；设置 / 高级设置是**同一弹窗的两个页面**（点「高级设置」换页、可返回设置；`Esc` 先回主页再关闭），不要叠第二个 `HubDialog`。通知/交付位置等占位项已去掉，避免空壳菜单。
 | 任务删除 | 侧栏 trash → DELETE session + 清本地 hist | 侧栏/卡片删除 → ``DELETE /sessions/{id}``（顺带清 JSONL + 标题）+ 清本地状态 |
-| 任务置顶 | 侧栏 pin → `gw-pinned-session-ids` | 侧栏历史任务行 pin 钮（`TaskRow`）→ `gw-v2-pinned-task-ids`；**只排侧栏列表**（置顶先、再原序），**不改**卡片栈顺序；bootReady 后再 prune 失效 id（冷启动 `tasks=[]` 时不写盘） |
+| 任务置顶 | 侧栏 pin → `gw-pinned-session-ids` | 侧栏历史任务行 pin 钮（`TaskRow`）→ `gw-v2:{fp}:pinned-task-ids`；**只排侧栏列表**（置顶先、再原序），**不改**卡片栈顺序；bootReady 后再 prune 失效 id（冷启动 `tasks=[]` 时不写盘） |
 | 消息操作栏 | 助手：赞/踩/复制/重新生成；用户：复制 + 失败重试 | 同左（`FocusChatThread`）；**重新生成仅末条助手**；feedback 仅内存态，刷新历史后不保留 |
 | 停止生成 | 输入栏 Send ↔ Stop 切换 | 同左：流式时 Stop + 可排队 Send；停止后草稿回填输入框（有待发送队列则不回填，改为自动发队列） |
 | 预发送队列 | — | 流式中 Enter/Send 把草稿排进输入框上方小字条（每卡一条，再发则替换）；成功后等 `refreshHistory` 再自动发出（期间保持 busy）；Stop 立刻发；身份/网络失败则回填输入框不连发；点 × 取消并还原 |
@@ -51,31 +53,34 @@
 ## 映射
 
 ```text
-任务卡          ↔  Gateway Session（同 workspace；可选独立 agent 包）
-新建任务/聊天   ↔  POST /sessions（可带 agent）+ POST /titles（首条文案的 `titleFromPrompt`，与乐观 UI 一致）+ 首条 chat SSE（文案与附件同总览对话框：`File[]` multipart）；**首条发送后立刻进入分屏聚焦**（左上下文 / 右对话），不再停在新建页本地气泡
+任务卡          ↔  Gateway Session（侧栏**全量**用户 Session，不按打开工作区过滤；C 端剔除 `feishu-*`；可选独立 agent 包）
+新建任务/聊天   ↔  POST /sessions（带**当前默认** workspace/agent）+ POST /titles（首条文案的 `titleFromPrompt`，与乐观 UI 一致）+ 首条 chat SSE（文案与附件同总览对话框：`File[]` multipart）；**首条发送后立刻进入分屏聚焦**（左上下文 / 右对话），不再停在新建页本地气泡
+任务迁移        ↔  POST /sessions/{id}/relocate（新 workspace + agent → 拷贝 history/todos/title/summary → 删旧）；侧栏用新 id 替换；交付物磁盘文件不搬家（刻意为之）
 卡片内对话      ↔  POST /sessions/{id}/chat（multipart chunks）
 任务台标题      ↔  **刻意为之**：对标 DeepSeek——取聊天里**首条** user 文案（`titleFromHistoryMessages`）。`ensureHistory` / `refreshHistory` / 回合成功后同步 `POST /titles`；**无 user 的空 chat 默认不改标题**（避免首条落盘前抢读把乐观标题盖成「新任务」）。**Stop 撤回**传 `emptyMeansDefault` 才回落「新任务」。**不再**用 `POST /titles/generate` 另开 LLM 起标题。
 任务历史文案    ↔  GET /sessions/{id}/history（AppData `histories/` 优先 + legacy 双读）
 任务卡中间步 N/M ↔  GET /sessions/{id}/todos（``todo`` tool → AppData `todos/{id}.json`，legacy `.psi/todos` 双读）
 分屏「任务历史」 ↔  GET /sessions/{id}/todo-segments（`todos/{id}.segments.json`；点选回放该段步骤）
-路径默认        ↔  GET /defaults（agent + workspace + appdata）；workspace 软默认 `{Desktop}/haitun交付`（宣布路径；目录随首个 Session 创建）；UI 主要用 agent/workspace；localStorage `gw-v2-workspace` / `gw-v2-agent` 可覆盖 defaults（路径须仍是目录）；appdata 为记忆区根（todos/history/Gateway state 已迁 AppData，前端仍走 REST，不直读盘）；打开即用 AI 仍走空池惰性 POST `/ais`
+路径默认        ↔  GET /defaults（agent + workspace + appdata）；workspace 软默认 `{Desktop}/haitun交付`（宣布路径；目录随首个 Session 创建）；UI 主要用 agent/workspace；**AppData 指纹分区**的 localStorage（`gw-v2:{fp}:workspace` / `agent` / `pinned-task-ids`；`spa-v2:{fp}:pending-deliveries` / `selected-ai`）可覆盖 defaults（路径须仍是目录）；缺 `appdata` 时 boot 失败提示；appdata 为记忆区根（todos/history/Gateway state 已迁 AppData，前端仍走 REST，不直读盘）；打开即用 AI 仍走空池惰性 POST `/ais`
 ```
+
+**多 Gateway / 多启动（刻意为之）**：工作台身份 = `GET /defaults.appdata` 规范化路径的短哈希（**不含** origin，装机随机端口不拆偏好）。Vite 换 `GATEWAY_ORIGIN` 指向另一 `--appdata` 时 `fp` 变 → `key={fp}` remount + 偏好桶隔离。**切换工作区不 remount**（侧栏全量列表）。两进程共一份 AppData 仍会真混合会话表——运维必须分 `--appdata`（见 Gateway「两个 Gateway 同时跑」）。
 
 **新建任务/聊天输入**：单个大框（对齐总览 `context-chat`）——框内上部是预设快捷按钮（单行），底部是细条真输入（回形针 + 文本框 + 发送）；附件 chip 在细条上方。发送时随首轮 `streamSessionChat` 上传；可纯附件无文案。页内「返回任务总览」始终回总览（`goHome`）；顶栏在从模板进入时可显示「返回模板库」（`newTaskReturnView`）。
 **模型选择（防踩坑） / 启动渲染管线（刷新稳定）**：
 
 ```text
 GET /spa-v2/     → 302 → index.html（redirect 须先于 add_static，否则 403）
-App              → GET /defaults → 选定 workspace / agent（localStorage 覆盖 / defaults）
-Workbench boot   → GET /sessions + /titles + /summaries
+App              → GET /defaults → bind AppData fp → 选定 workspace / agent（scoped LS 覆盖 / defaults）
+Workbench boot   → key={fp} remount（仅 AppData 变）→ GET /sessions + /titles + /summaries
                  → hydrateAiForSessions()（只读现有模型池，不复活/不删除）
-                 → setTasks（**从不**因空 AI 池跳过 sessions）
+                 → setTasks（**从不**因空 AI 池跳过 sessions；侧栏 = 全量用户 Session，剔除 `feishu-*`）
                  → 仅池仍空时 openModelsOnce
 Hub「使用免费模型」→ **保留**已连接真实模型；hydrateAiForSessions() 读取现有池 → 无免费条目时 `createAi(DEFAULT_REMOTE_AI)` 并强制选中免费模型
 发消息           → ensureSessionAi（优先任务绑定的模型；已被删除则用当前模型配置重绑旧 id，通道继续可用）
 ```
 
-不盲选 `ais[0]`。**不自动删除任何已连接模型**——只有「已连接」行的删除按钮会删除，且一次删除该配置（`provider+model+api_key+base_url`）的**全部实例**（同一模型被多个 Session 绑定的重复条目会一起删掉）；删除当前模型后回落到剩余模型，新连接/切免费都不影响其它模型，新连接的模型立即成为当前模型。优先 localStorage 选中 AI（含用户主动选的免费条目），免费条目与真实 key 可以同时保留在池中。Gateway **不**级联删 Session——AI 删除后 Session 仍挂旧 `ai_id`；该任务下一次对话用**当前选中模型**，并把旧 `ai_id` **重绑到当前模型配置**（池全空时才回落免费默认），Session 通道保持可用，刷新后任务卡与可聊性不变。模型池「已连接」按同配置 **折叠展示**（仅 id 不同只显示一行；key 不同则分列）；无显式 id 的 `POST /ais` 同配置复用已有实例。**展示层**（`labelAisForDisplay`）：副标题区分「免费」与「自有 Key ···末四位」；同名标题再加 `(1)/(2)`；**重命名**独立存 `gw` 无关的 `spa-v2-ai-aliases`（按 `aiConfigKey`，id 重绑不丢）。workspace 过滤用 `sessionMatchesWorkspace`（空 workspace 视为本工作区）。
+不盲选 `ais[0]`。**不自动删除任何已连接模型**——只有「已连接」行的删除按钮会删除，且一次删除该配置（`provider+model+api_key+base_url`）的**全部实例**（同一模型被多个 Session 绑定的重复条目会一起删掉）；删除当前模型后回落到剩余模型，新连接/切免费都不影响其它模型，新连接的模型立即成为当前模型。优先 localStorage 选中 AI（含用户主动选的免费条目），免费条目与真实 key 可以同时保留在池中。Gateway **不**级联删 Session——AI 删除后 Session 仍挂旧 `ai_id`；该任务下一次对话用**当前选中模型**，并把旧 `ai_id` **重绑到当前模型配置**（池全空时才回落免费默认），Session 通道保持可用，刷新后任务卡与可聊性不变。模型池「已连接」按同配置 **折叠展示**（仅 id 不同只显示一行；key 不同则分列）；无显式 id 的 `POST /ais` 同配置复用已有实例。**展示层**（`labelAisForDisplay`）：副标题区分「免费」与「自有 Key ···末四位」；同名标题再加 `(1)/(2)`；**重命名**独立存 `spa-v2-ai-aliases`（按 `aiConfigKey`，**不**按 AppData 分区）；选中 AI id 走 AppData 分区。**侧栏不再按 workspace 过滤**（`sessionMatchesWorkspace` 仅保留工具函数；列表 = Gateway 全量用户 Session，剔除 `feishu-*`）。
 
 ### 任务卡三步进度（分层）
 
@@ -125,7 +130,7 @@ Hub「使用免费模型」→ **保留**已连接真实模型；hydrateAiForSes
   - **封存行**：仅 `tool_call` 短句（如 `读取 \`a.py\``）；thinking / `tool_result` **不**封存（`tool_result` 尾行回「规划下一步…」，刻意不要「整理结果…」行）。
   - **尾行**：只活「规划下一步…」/「撰写回复…」；**刻意**永不把「规划下一步」推进 `lines`。
   - **步骤临时气泡（刻意为之）**：每轮 `tool_call` 前的自然语言**拼进**同一个临时气泡（`message.interimText`，虚线框），不因尾行回到「规划下一步…」而藏掉，也不把每段收进「已调用工具」。新一段 content 在临时气泡下方的普通气泡里继续长；再来 `tool_call` 时把该段并入临时气泡。回合结算**隐去**临时气泡，只留最后一段作 `message.text`（不进 tools/思考区）。`contentSegments` / `streamSegmentBodies` / `settleContentSegments`。`historyToChat` 合并连续 assistant 时同样只留末段。
-  - **回合结束后过程拆分封装（对标 Cursor）**：流式期间过程轴 + 临时/最终气泡；回合结束把思考挂到 `message.reasoning`、把过程轴封存行挂到 `message.tools`（短句列表）。`FocusChatThread` **分开两块**（工具优先）：①「已调用 N 个工具」——读 `message.tools`（**默认展开**）；②「已思考」——`stripToolMarkersFromReasoning(reasoning)` 散文（**默认收起**）。`/history` 透出 JSONL `reasoning`（仅思考），并把各轮结构化 ``tool_calls`` 投影为独立字段 ``tools: [{name, arguments}]``（**刻意为之**：不塞进 reasoning；Session 的 `[Tool Call:]` 只走 SSE）。`historyToChat` 用 `summarizeToolCall` 生成短句并在合并连续 assistant 时拼接。刷新同任务即可还原工具列表 + 思考。
+  - **回合结束后过程拆分封装（对标 Cursor）**：流式期间过程轴 + 临时/最终气泡；回合结束把思考挂到 `message.reasoning`、把过程轴封存行挂到 `message.tools`（短句列表）。`FocusChatThread` **分开两块**（工具优先）：①「已调用 N 个工具」——读 `message.tools`（**默认展开**）；②「已思考」——`stripToolMarkersFromReasoning(reasoning)` 散文（**默认收起**）；标题经 `thinkingHeaderWithDuration` 附带 Session ``thinking_ms``（如「已思考 · 12秒」）。气泡旁墙钟读 ``created_at``（`formatMessageClock`）。`/history` 透出 JSONL `reasoning`（仅思考）、``created_at`` / ``thinking_ms``（display-only），并把各轮结构化 ``tool_calls`` 投影为独立字段 ``tools: [{name, arguments}]``（**刻意为之**：不塞进 reasoning；Session 的 `[Tool Call:]` 只走 SSE）。`historyToChat` 用 `summarizeToolCall` 生成短句并在合并连续 assistant 时拼接；合并时 ``createdAt`` / ``thinkingMs`` 取**后一行**（与 HistoryManager 一致）。刷新同任务即可还原工具列表 + 思考 + 时间。**旧 JSONL 无这两字段时 UI 省略**（向前兼容）。
   - **`preferResultBelowRule`（刻意为之）**：仅展示层——短计划在 `---` 之上时偏好渲染下半段结果；**不改** JSONL / 复制源可选策略以实现为准。
   - **任务摘要 `summary`（刻意为之）**：不再截取助手末条回复。回合成功后（及历史缺摘要时）`POST /summaries/generate` 另开一轮模型写 1～2 句；Gateway `SummaryManager` 持久化到 AppData state（与 titles 同级）。左栏标题为「任务摘要」；任务卡正文同字段。展示侧仍 `plainTextFromMarkdown` 兜底。对话气泡仍走完整 Markdown。段标题（P1）可复用该 summary 写入 open todo-segment。
 
@@ -146,6 +151,7 @@ Hub「使用免费模型」→ **保留**已连接真实模型；hydrateAiForSes
 
 - Gateway `/history` 按 Session ``kind`` **白名单**过滤：只返回 `chat` 气泡，以及 `schedule.display` 的 assistant；`schedule.silent`（含 heartbeat）不返回。
 - `historyToChat` 再剥 `[SEND:]`/`[RECV:]`，并丢弃空行 / 泄漏的 `schedule.silent`（防御）。
+- **`historyToChat` 附件芯片（刻意为之，DeepSeek 风）**：Gateway `/history` 在剥标记前抽出路径——assistant → `sends`、user → `recvs`；`historyToChat` 都建成 `message.files` stub（`data: ''` + `path`，抽屉经 `GET /workspace/file` 懒加载）。**纯附件气泡**（无正文、仅有 chip）也保留——否则 `refreshHistory` / 切会话 / 丢弃标签页重开后芯片会消失。宝箱仍只吃 assistant `sends`（`historyToDeliverables`），不把用户上传塞进交付物。
 - **`historyToChat` 合并连续 assistant（刻意为之）**：Session 每轮 `tool_calls` 会把带正文的 assistant 落盘。刷新合并时**只保留最后一段**正文（与当场 `settleContentSegments` 一致），前面步骤叙述丢弃；files/`sends` stub 按 basename 去重合并。合并只发生在相邻 assistant 之间，遇 `user` 切断。
 - 气泡渲染同样 `stripTransferMarkers`（与 v1 一致）。
 
@@ -154,12 +160,14 @@ Hub「使用免费模型」→ **保留**已连接真实模型；hydrateAiForSes
 | 字段 | 含义 |
 |------|------|
 | `deliverables` | **历史交付物**：当前 Session 累计全部产出（从 `/history` 的 `sends` 重水合，刷新后列表仍在） |
-| `newDeliverables` | **新交付物**：本轮未确认的；宝箱金色 / 侧栏「新交付物」只看这个；「保存到成果库」后清空 |
+| `newDeliverables` | **新交付物**：本轮未查看的；宝箱金色 / 侧栏「新交付物」只看这个；**打开宝箱查看后清空**（熄灭），下次再有 SSE `blob` 再亮起。历史交付物仍在 `deliverables` |
 | `deliverablePaths` | basename → `[SEND:]` 路径；刷新后抽屉/气泡经 `GET /workspace/file` 懒加载预览（**刻意**不传 `root`，避免绝对 SEND 路径被 workspace 门禁 403）；「在文件夹中显示」走 `POST /workspace/reveal`（有 path 才可点） |
 
 SSE `blob` 到达时同时写入 `deliverables` + `newDeliverables`（有 `path` 则写入 `deliverablePaths`）。流式追加文本时必须保留 `message.files`。
 
-History 在剥 `[SEND:]` 前抽出路径放进消息的 `sends`；纯 SEND、无正文的 assistant 行也会返回（`text: ""` + `sends`），前端气泡跳过空文本但仍累计交付物。
+宝箱抽屉**无**「保存到成果库 / 让 Agent 修改」按钮（二者无效或可对话替代）；熄灭逻辑 = 打开查看，不是保存。
+
+History 在剥 `[SEND:]`/`[RECV:]` 前抽出路径分别放进 `sends` / `recvs`；纯 SEND / 纯 RECV、无正文的行也会返回（`text: ""` + 路径列表），前端保留芯片气泡；宝箱只累计 `sends`。
 
 ## 本地开发
 

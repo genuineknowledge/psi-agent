@@ -3,6 +3,11 @@
 Agent-package tool: creates/updates files under the Session agent root
 (same zone as ``schedules/``). Session's ``TriggerRegistry`` loads those
 files and fires on ``POST /events``.
+
+Under content layering (``PSI_CONTENT_ROOTS``) reads walk every root
+nearest-wins and writes land in the **topmost writable** one — see
+``_content_layers``. Deleting a trigger that lives in a read-only layer writes a
+tombstone in the writable layer instead of removing the original.
 """
 
 from __future__ import annotations
@@ -12,9 +17,12 @@ import re
 from contextlib import suppress
 from datetime import UTC, datetime
 
+import _content_layers as _layers
 import _runtime_paths as _paths
 import anyio
 import yaml
+
+_KIND = "triggers"
 
 # Mirror common feishu channel_events names — soft hint only (Session has no catalog gate).
 _KNOWN_EVENTS = frozenset(
@@ -42,7 +50,46 @@ _EVENT_TO_RAW: dict[str, str] = {
 
 def _triggers_dir() -> anyio.Path:
     # Same root as schedules: Session.agent package (falls back to workspace when unbound).
+    #
+    # 只是 agent 那一层。分层下 list / view / 写操作走 ``_layers``(跨层查找 + 落最上层可
+    # 写根); 未声明内容根时二者是同一个目录, 行为逐字节不变。
     return _paths.resolve_agent() / "triggers"
+
+
+async def _index() -> dict[str, tuple[_layers.ContentLayer, anyio.Path]]:
+    """``{trigger 名: (生效的层, TRIGGER.md)}`` —— 跨层 nearest-wins, 墓碑不出现。
+
+    与 ``TriggerRegistry.load_content_roots`` 同一套合并语义。两份必须给出同一个答案:
+    工具 ``list`` 说某 trigger 在、而 Session 的注册表里它已被墓碑遮掉(或反过来), 用户
+    就会去 delete 一个根本不会触发的东西。
+    """
+    found: dict[str, tuple[_layers.ContentLayer, anyio.Path]] = {}
+    # 本地变量: 墓碑集合跨调用存活会让同进程内所有后续 list 继续隐藏那个名字, 即使墓碑
+    # 已被删掉(Gateway 一个进程跑很多 Session, 会跨用户串味)。
+    seen_tombstones: set[str] = set()
+    for layer in _layers.layers_for(_KIND):
+        try:
+            if not await layer.path.is_dir():
+                continue
+            async for task_dir in layer.path.iterdir():
+                if not await task_dir.is_dir() or task_dir.name.startswith("."):
+                    continue
+                name = task_dir.name
+                if name in found or name in seen_tombstones:
+                    continue
+                task_md = task_dir / "TRIGGER.md"
+                if not await task_md.exists():
+                    continue
+                raw = await task_md.read_text(encoding="utf-8", errors="replace")
+                header, _body = _parse_header(raw)
+                if _layers.is_tombstone(header):
+                    seen_tombstones.add(name)
+                    continue
+                found[name] = (layer, task_md)
+        except OSError:
+            # 单层读不了不能让整个 list 失败 —— 分层下这是局部故障。
+            continue
+    return found
 
 
 def _validate_trigger_name(trigger_name: str) -> str | None:
@@ -233,6 +280,10 @@ async def trigger_manage(
     (parallel to ``schedules/``). Session loads them and fires when Channel
     ``POST /events`` delivers a matching catalog event.
 
+    Writes go to the topmost writable content layer; ``delete`` on a read-only
+    layer's trigger tombstones it there instead of removing the original. Group
+    chats cannot write — the refusal points at a private chat.
+
     **Create** requires ``event`` from the Session catalog (e.g.
     ``feishu.chat.member_added`` for「有人进群」). Optional ``filter`` is a JSON
     object of exact payload matches (e.g. ``{"chat_id":"oc_xxx"}``).
@@ -264,7 +315,6 @@ async def trigger_manage(
         raw_event: Platform-native type (optional; auto-filled when known)
         raw_filter: JSON object for raw_payload exact-match (optional)
     """
-    triggers_dir = _triggers_dir()
     act = action.strip().casefold()
 
     if err := _validate_visibility(visibility):
@@ -280,18 +330,11 @@ async def trigger_manage(
         return f"[Error] raw_filter: {rferr}"
 
     if act == "list":
-        if not await triggers_dir.exists():
-            return "No triggers found."
         entries: list[str] = []
-        async for task_dir in triggers_dir.iterdir():
-            if not await task_dir.is_dir() or task_dir.name.startswith("."):
-                continue
-            task_md = task_dir / "TRIGGER.md"
-            if not await task_md.exists():
-                continue
+        for dir_name, (_layer, task_md) in (await _index()).items():
             raw = await task_md.read_text(encoding="utf-8", errors="replace")
             header, _body = _parse_header(raw)
-            name = header.get("name") or task_dir.name
+            name = header.get("name") or dir_name
             desc = header.get("description") or "(no description)"
             ev = header.get("event") or "(no event)"
             tags: list[str] = []
@@ -310,24 +353,62 @@ async def trigger_manage(
     if act == "view":
         if err := _validate_trigger_name(trigger_name):
             return f"[Error] {err}"
-        task_md = triggers_dir / trigger_name / "TRIGGER.md"
-        if not await task_md.exists():
+        located = await _index()
+        if trigger_name not in located:
             return f"[Error] Trigger not found: {trigger_name!r}"
+        _layer, task_md = located[trigger_name]
         return await task_md.read_text(encoding="utf-8", errors="replace")
 
     if act == "delete":
+        if refusal := _layers.group_write_refusal("trigger"):
+            return refusal
         if err := _validate_trigger_name(trigger_name):
             return f"[Error] {err}"
-        task_dir = triggers_dir / trigger_name
-        task_md = task_dir / "TRIGGER.md"
-        if not await task_md.exists():
+        if trigger_name not in await _index():
             return f"[Error] Trigger not found: {trigger_name!r}"
-        await task_md.unlink()
-        with suppress(OSError):
-            await task_dir.rmdir()
-        return f"Deleted trigger {trigger_name!r}."
+
+        target, why = await _layers.writable_layer(_KIND)
+        if target is None:
+            return f"[Error] No writable triggers layer: {why}"
+
+        # 真删还是写墓碑, 取决于**下面还有没有一份**, 而不是"生效那份在不在可写层"。
+        # 后者在 trigger 上同样会漏: 可写层已有一份而下层还有同名那份时真删, 下层那份
+        # 立刻恢复触发 —— 用户看到删除成功而事件照旧被响应。
+        holders = await _layers.layers_containing(_KIND, trigger_name, "TRIGGER.md")
+        shadowed = [layer for layer in holders if not _layers.same_layer(layer, target)]
+        if not shadowed:
+            # 只有可写层有这一份 —— 真删。写墓碑盖自己会留下一个永远无法再 create 同名
+            # trigger 的残留标记。
+            await (target.path / trigger_name / "TRIGGER.md").unlink()
+            with suppress(OSError):
+                await (target.path / trigger_name).rmdir()
+            return f"Deleted trigger {trigger_name!r}."
+
+        # 下层那份不动, 可写层放墓碑让它按 nearest-wins 落选。墓碑刻意**不带**
+        # ``event``: 带了就有可能被当成一个真 trigger 触发, 而它代表的是"这个东西没了"。
+        source_layer = shadowed[0]
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        header = {
+            "name": trigger_name,
+            "description": f"(deleted by agent; shadows layer {source_layer.name})",
+            _layers.TOMBSTONE_KEY: True,
+            "derived_from_layer": source_layer.name,
+            "created_by": "agent",
+            "created_at": now,
+        }
+        dumped = yaml.safe_dump(header, allow_unicode=True, sort_keys=False, default_flow_style=False)
+        await _atomic_write(
+            target.path / trigger_name / "TRIGGER.md",
+            f"---\n{dumped}---\n\nStub marking this trigger as removed for this user.\n",
+        )
+        return (
+            f"Deleted trigger {trigger_name!r} — tombstoned in layer {target.name!r}; "
+            f"the copy in layer {source_layer.name!r} is untouched but no longer fires."
+        )
 
     if act == "create":
+        if refusal := _layers.group_write_refusal("trigger"):
+            return refusal
         parsed_args, aerr = _parse_tool_args(tool_args)
         if aerr or parsed_args is None:
             return f"[Error] {aerr}"
@@ -351,13 +432,18 @@ async def trigger_manage(
                 "[Error] feishu_message_send tool_args must include receive_id "
                 "(chat_id or open_id from <feishu_context>)."
             )
-        task_dir = triggers_dir / trigger_name
-        if await task_dir.exists():
+        # 存在性按**跨层**判: 只读层已有同名 trigger 时 create 会在可写层造出一个覆盖它
+        # 的影子, 而用户以为自己新建了一个。
+        if trigger_name in await _index():
             return f"[Error] Trigger already exists: {trigger_name!r}."
+
+        target, why = await _layers.writable_layer(_KIND)
+        if target is None:
+            return f"[Error] No writable triggers layer: {why}"
 
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         await _atomic_write(
-            task_dir / "TRIGGER.md",
+            target.path / trigger_name / "TRIGGER.md",
             _format_trigger_document(
                 trigger_name=trigger_name,
                 event=event.strip(),

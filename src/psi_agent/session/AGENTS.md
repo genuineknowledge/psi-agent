@@ -174,7 +174,7 @@ before / after 有内核默认值，`turn_context_fn` 和 `compaction_fn` 的 `N
 |--|------|
 | **workspace 侧签名** | `async def turn_context_builder() -> str`——不收参数（它不改写任何已有文本，只生产本回合的块），返回要挂上去的内容。**未定义即没有这个块**，老 workspace 行为不变 |
 | **折进位置** | 折在消息正文**之后**。放前面会移动这一回合的每个 byte，正好抵掉「存在带外键里」想省的东西 |
-| **不写回 history 行** | `turn_context` 是非上线键，与 `kind` / `chat_type` 同属 `_DISPLAY_ONLY_KEYS`：投影给 AI 时才折进 `content`，落盘行与 SPA 展示都看不到它。这样**之前每个回合投影出来都逐字节相同**，前缀才真的可复用 |
+| **不写回 history 行** | `turn_context` 是非上线键，与 `kind` / `chat_type` / `created_at` / `thinking_ms` 同属 `_DISPLAY_ONLY_KEYS`：投影给 AI 时才折进 `content`（仅 turn_context），落盘行与 SPA 展示都看不到它（timing 键相反：落盘可见、出网剥掉）。这样**之前每个回合投影出来都逐字节相同**，前缀才真的可复用 |
 | **多模态 content** | `content` 不是 `str`（block 列表）时原样返回、丢掉这个块——没有唯一的可追加位置，丢一行时钟远好过把 block 结构写坏 |
 | **构建失败** | `except Exception` 记 ERROR 后返回 `""`，不中断回合。**丢一行时钟远好过丢掉整个回合** |
 | **返回值不可用** | 非 `str` / 空串 / 纯空白一律当「没有这个块」 |
@@ -599,6 +599,8 @@ provider 只认 `reasoning_content`（any-llm 的 `REASONING_FIELD_NAMES` 首项
 | `schedule.silent` / `trigger.silent` / `compacted` | 否 |
 | 遗留 `chat_type=schedule` / `*_schedule` role | 视为 silent |
 
+**展示 timing（刻意为之）**：JSONL 可带 ``created_at``（ISO UTC，``Conversation.add`` 缺则补）与 assistant ``thinking_ms``（整回合墙钟毫秒，自 user 早期 commit 后的 ``turn_t0`` 起算）。二者进 ``_DISPLAY_ONLY_KEYS``——Gateway ``/history`` 透出给 SPA 墙钟 /「已思考 · Ns」；``project_history_for_wire`` **剥掉**，永不进上游。旧行无字段时 UI 省略。合并多段 assistant 时取**后一行**的 ``created_at`` 与较大的 ``thinking_ms``。
+
 Gateway ``HistoryManager`` 同时投影剥掉 ``[SEND:]``/``[RECV:]`` 标记**与省略句柄
 ``[已省略 N 字符, 句柄 X]``**（`strip_transfer_markers`；带自述的形态是
 ``[已省略 N 字符, 含已送达文件: 方案.pdf, 句柄 X]``，自述在同一对 ``[…]`` 内所以同一条正则照旧剥得掉）。
@@ -607,7 +609,7 @@ Gateway ``HistoryManager`` 同时投影剥掉 ``[SEND:]``/``[RECV:]`` 标记**�
 **只剥展示这一侧**：送往模型的请求必须保留句柄，剥了就把「可恢复的省略」变成「静默删除」。句柄字面量与
 剥离正则同源于 `history_display`（`ELISION_HANDLE_PREFIX` / `ELISION_HANDLE_TEMPLATE`，`request_assembly`
 从这里 import），不在两处各写一份 —— 同 `[SEND:]` 曾经两处正则写法不同的教训，而这里一旦漂移是 fail-open：
-剥不中，句柄又回到用户眼前。本节这几个符号（``KIND_CHAT`` / ``message_kind`` / ``wire_role`` / ``is_displayable_chat_message`` / ``strip_transfer_markers`` / ``extract_send_paths``）经 ``session/__init__.py`` 的 ``__all__`` 正式导出给 Gateway（同表还有 ``Session`` / ``SessionAgent`` / ``ACTIVATE_ALL``，共 9 个）——**依赖是刻意的**：Gateway 的展示投影必须与 Session 的落盘语义逐字一致，否则同一条历史两处渲染会分叉。此前 Gateway 按内部模块路径导入（依赖刻意、通道非正式），现已补上公开门面；旧 import 路径仍然有效，这是新增通道而非强制迁移。
+剥不中，句柄又回到用户眼前。本节这几个符号（``KIND_CHAT`` / ``message_kind`` / ``wire_role`` / ``is_displayable_chat_message`` / ``strip_transfer_markers`` / ``extract_send_paths`` / ``extract_recv_paths``）经 ``session/__init__.py`` 的 ``__all__`` 正式导出给 Gateway（同表还有 ``Session`` / ``SessionAgent`` / ``ACTIVATE_ALL``）——**依赖是刻意的**：Gateway 的展示投影必须与 Session 的落盘语义逐字一致，否则同一条历史两处渲染会分叉。此前 Gateway 按内部模块路径导入（依赖刻意、通道非正式），现已补上公开门面；旧 import 路径仍然有效，这是新增通道而非强制迁移。``extract_recv_paths`` 与 ``extract_send_paths`` 对称：Channel 把用户上传编码成 ``[RECV:path]``，Gateway ``/history`` 剥标记后把路径放进 user 行的 ``recvs``，SPA 气泡芯片才能在 refresh / 切会话后仍在（DeepSeek 风）。
 
 ``[SEND:]`` 的解码（正则 + 空路径过滤）归属顶层 ``psi_agent/_send_markers.py`` 的 ``iter_send_paths()``，本层不再自持正则——两处正则曾经写法不同，而 Channel 侧没有空路径过滤。放在顶层而非 ``channel/`` 内，是为了不让本层 import Channel 的私有模块（同 ``_feishu_routing``）。
 

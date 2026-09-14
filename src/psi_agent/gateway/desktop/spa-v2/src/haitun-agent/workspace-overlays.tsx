@@ -6,12 +6,11 @@ import {
   FileText,
   FolderOpen,
   Grid2X2,
-  MessageCircle,
   Settings2,
   Sparkles,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArtifactFileBody } from "../components/ArtifactFileBody";
 import {
   downloadChatFile,
@@ -19,7 +18,6 @@ import {
   findDeliverableFile,
   revealDeliverableInFolder,
 } from "../utils/filePreviewUtils";
-import { mobileHaptic, prefersReducedMotion } from "./client-feedback";
 import type { ChatFile, Task } from "./model";
 import { TreasureVisual } from "./primitives";
 import { useI18n } from "../i18n";
@@ -48,8 +46,6 @@ export function ArtifactDrawer({
   initialFile,
   workspaceRoot = "",
   onClose,
-  onSave,
-  onRevise,
 }: {
   task: Task;
   /** Live SSE blob payloads keyed by deliverable basename (may be empty after reload). */
@@ -59,8 +55,6 @@ export function ArtifactDrawer({
   initialFile?: string;
   workspaceRoot?: string;
   onClose: () => void;
-  onSave: (task: Task) => void;
-  onRevise: (task: Task) => void;
 }) {
   const { t, language } = useI18n();
   const fileNames = useMemo(() => {
@@ -72,12 +66,10 @@ export function ArtifactDrawer({
 
   const empty = fileNames.length === 0;
   const [selectedFile, setSelectedFile] = useState(0);
-  const [accepting, setAccepting] = useState(false);
   const [loadedFiles, setLoadedFiles] = useState<ChatFile[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [revealBusy, setRevealBusy] = useState(false);
-  const acceptTimer = useRef<number | null>(null);
   const previewErrorText = (err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err)
     return msg === '没有可打开的文件路径。'
@@ -96,10 +88,6 @@ export function ArtifactDrawer({
       return 0;
     });
   }, [fileNames, initialFile, listMode]);
-
-  useEffect(() => () => {
-    if (acceptTimer.current) window.clearTimeout(acceptTimer.current);
-  }, []);
 
   const selectedName = fileNames[selectedFile] ?? "";
   const selectedBlob = useMemo(() => {
@@ -150,16 +138,6 @@ export function ArtifactDrawer({
     };
   }, [selectedName, selectedBlob?.data, selectedBlob?.path, task.deliverablePaths, workspaceRoot]);
 
-  const acceptWithCelebration = () => {
-    if (accepting || empty || !task.newDeliverables.length) return;
-    setAccepting(true);
-    mobileHaptic([10, 28, 16]);
-    acceptTimer.current = window.setTimeout(
-      () => onSave(task),
-      prefersReducedMotion() ? 30 : 820,
-    );
-  };
-
   const handleDownload = () => {
     if (!selectedName) return;
     const blob = selectedBlob;
@@ -200,10 +178,8 @@ export function ArtifactDrawer({
   const kicker = empty
     ? t("drawer.kickerDeliverables")
     : listMode === "new"
-      ? (task.deliveryState === "saved" ? t("drawer.kickerSaved") : t("drawer.kickerReady"))
+      ? t("drawer.kickerReady")
       : t("drawer.kickerHistory");
-
-  const showSave = listMode === "new" && task.newDeliverables.length > 0;
 
   return (
     <div className="drawer-layer" role="dialog" aria-modal="true" aria-label={t("drawer.ariaPreview", { title: task.shortTitle })}>
@@ -299,29 +275,6 @@ export function ArtifactDrawer({
                 </div>
               )}
             </div>
-
-            <footer className="drawer-footer">
-              <button type="button" className="secondary-button" disabled={accepting} onClick={() => onRevise(task)}><MessageCircle size={16} /> {t("drawer.revise")}</button>
-              {showSave ? (
-                <button type="button" className={`gold-button ${accepting ? "accepting" : ""}`} disabled={accepting || task.deliveryState === "saved"} onClick={acceptWithCelebration}>
-                  <TreasureVisual state={task.deliveryState} size="mini" opening={accepting} />
-                  {task.deliveryState === "saved" ? t("drawer.savedToLibrary") : accepting ? t("drawer.saving") : t("drawer.saveToLibrary")}
-                </button>
-              ) : (
-                <button type="button" className="secondary-button" onClick={onClose}>{t("drawer.close")}</button>
-              )}
-            </footer>
-            {accepting && (
-              <div className="accept-celebration" aria-live="polite">
-                <div className="celebration-glow" />
-                <TreasureVisual state="ready" size="hero" opening />
-                <div className="celebration-coins" aria-hidden="true">
-                  {Array.from({ length: 14 }, (_, index) => <i key={index} />)}
-                </div>
-                <strong>{t("drawer.savedCount", { count: task.newDeliverables.length })}</strong>
-                <span>{t("drawer.savedNote")}</span>
-              </div>
-            )}
           </>
         )}
       </aside>

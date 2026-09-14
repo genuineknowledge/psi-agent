@@ -1,4 +1,4 @@
-import { ChevronRight, FolderOpen, Languages } from 'lucide-react'
+import { ChevronRight, FolderOpen, HardDrive, Languages } from 'lucide-react'
 import { useI18n } from '../../i18n'
 import HubDialog from './HubDialog'
 
@@ -7,6 +7,8 @@ type Props = {
   onClose: () => void
   workspace?: string
   onChangeWorkspace?: () => void
+  /** Memory-area root from GET /defaults.appdata (read-only). */
+  appdata?: string
   onOpenAdvancedSettings?: () => void
 }
 
@@ -22,6 +24,7 @@ export default function HubSettingsPanel({
   onClose,
   workspace,
   onChangeWorkspace,
+  appdata,
   onOpenAdvancedSettings,
 }: Props) {
   const { t, language, setLanguage } = useI18n()
@@ -104,6 +107,20 @@ export default function HubSettingsPanel({
           <p className="hub-settings-workspace-path" title={workspace}>{workspace}</p>
         ) : null}
         <p className="hub-settings-foot">{t('app.workspaceFoot')}</p>
+        {appdata ? (
+          <div className="hub-settings-row hub-settings-workspace" aria-label={t('app.appdataLabel')}>
+            <span className="hub-settings-workspace-icon" aria-hidden="true">
+              <HardDrive size={18} />
+            </span>
+            <span>
+              <strong>{t('app.appdataLabel')}</strong>
+              <em title={appdata}>{pathLabel(appdata)}</em>
+            </span>
+          </div>
+        ) : null}
+        {appdata ? (
+          <p className="hub-settings-workspace-path" title={appdata}>{appdata}</p>
+        ) : null}
       </section>
     </HubDialog>
   )

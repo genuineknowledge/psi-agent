@@ -341,12 +341,29 @@ def _compile(
             if section_text:
                 parts.append(section_text)
             elements.append({"tag": "markdown", "content": "\n\n".join(parts)})
+        elif tag == "collapse":
+            # 折叠面板: 正文**完整**放进去, 默认收起 —— 首屏只留摘要, 但一个字不丢。
+            # 飞书侧的最小可用写法(2026-09-12 实测发送成功):
+            # {"tag":"collapsible_panel","expanded":false,
+            #  "header":{"title":{"tag":"markdown","content":...}},"elements":[...]}
+            collapse_title = (child.get("title") or "").strip()
+            collapse_text = (child.get("text") or "").strip()
+            if not collapse_text:
+                # 没有正文的折叠面板只会给出一个空壳, 整节不渲染(与 <section> 同语义)。
+                continue
+            elements.append(
+                {
+                    "tag": "collapsible_panel",
+                    "expanded": str(child.get("expanded") or "").strip().lower() in {"true", "1", "yes"},
+                    "header": {"title": {"tag": "markdown", "content": collapse_title or "展开"}},
+                    "elements": [{"tag": "markdown", "content": collapse_text}],
+                }
+            )
         elif tag == "divider":
             elements.append({"tag": "hr"})
         else:
-            raise ValueError(
-                f"unknown element <{tag}> — vocabulary: card/info/section/divider/score/comment/action-row/button"
-            )
+            vocabulary = "card/info/section/collapse/divider/score/comment/action-row/button"
+            raise ValueError(f"unknown element <{tag}> — vocabulary: {vocabulary}")
 
     card: dict[str, Any] = {
         "schema": "2.0",
@@ -441,7 +458,19 @@ _TEMPLATE_DIR = _resolve_template_dir()
 
 
 def _xml_escape(text: str) -> str:
-    return escape(text)
+    """Escape one value destined for an XML **attribute**.
+
+    Newlines/tabs are emitted as character references, not literals: XML normalizes
+    literal whitespace inside attribute values to spaces (XML 1.0 §3.3.3), which
+    silently flattened every multi-line card body into a single run-on line — the
+    meeting summary card's ``- `` bullets all came back as one paragraph. Character
+    references are exempt from that normalization, so the parser hands the newline
+    back intact.
+
+    Order matters: escape first, then inject the references, or the ``&`` of a
+    reference would itself be escaped.
+    """
+    return escape(text).replace("\r\n", "&#10;").replace("\n", "&#10;").replace("\r", "&#13;").replace("\t", "&#9;")
 
 
 def _row_xml(row: dict[str, Any]) -> str:

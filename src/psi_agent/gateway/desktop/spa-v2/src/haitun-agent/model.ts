@@ -40,7 +40,7 @@ export type Task = {
   accent: string;
   /** All deliverables generated in this session (survives refresh via history ``sends``). */
   deliverables: string[];
-  /** Unacknowledged new deliverables (chest gold); cleared when saved to 成果库. */
+  /** Unacknowledged new deliverables (chest gold); cleared when the user opens the chest to view them. */
   newDeliverables: string[];
   /** Basename → absolute/relative path from ``[SEND:]`` (for reload preview). */
   deliverablePaths: Record<string, string>;
@@ -87,6 +87,10 @@ export type ChatMessage = {
    * and/or history ``tools`` projection). Rendered separately from「已思考」.
    */
   tools?: string[];
+  /** ISO-8601 UTC from Session JSONL ``created_at`` (or live optimistic stamp). */
+  createdAt?: string;
+  /** Whole-turn wall ms from Session ``thinking_ms`` (Cursor-style「已思考 · Ns」). */
+  thinkingMs?: number;
   /** Local-only: like / dislike on agent replies (spa v1 parity). */
   feedback?: MessageFeedback;
   /** User turn did not get a complete agent reply. */

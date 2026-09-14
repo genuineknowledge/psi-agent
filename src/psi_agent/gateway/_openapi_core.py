@@ -187,6 +187,44 @@ CORE_PATHS: dict[str, Any] = {
             },
         },
     },
+    "/sessions/{session_id}/relocate": {
+        "post": {
+            "summary": "Relocate a Session to a new workspace/agent (copy artifacts, delete old)",
+            "operationId": "relocateSession",
+            "parameters": [
+                {
+                    "name": "session_id",
+                    "in": "path",
+                    "required": True,
+                    "schema": {"type": "string"},
+                }
+            ],
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "type": "object",
+                            "required": ["workspace"],
+                            "properties": {
+                                "workspace": {"type": "string"},
+                                "agent": {"type": "string"},
+                            },
+                        }
+                    }
+                },
+            },
+            "responses": {
+                "201": {
+                    "description": "New Session after relocate",
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SessionInfo"}}},
+                },
+                "400": {"$ref": "#/components/responses/Error"},
+                "404": {"$ref": "#/components/responses/Error"},
+                "500": {"$ref": "#/components/responses/Error"},
+            },
+        },
+    },
     "/sessions/{session_id}/chat": {
         "post": {
             "summary": "Chat with a Session (SSE stream)",

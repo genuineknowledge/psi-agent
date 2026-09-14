@@ -26,6 +26,7 @@ from psi_agent._appdata import (
     resolve_appdata_root,
     resolve_history_read_path,
 )
+from psi_agent.session.history_display import with_created_at
 from psi_agent.session.protocol import AgentChunk
 
 
@@ -134,9 +135,13 @@ class Conversation:
 
     def add(self, msg: dict[str, Any]) -> None:
         """Append a message to history.  Automatically snapshots on the
-        first mutation after creation / ``commit`` / ``rollback``."""
+        first mutation after creation / ``commit`` / ``rollback``.
+
+        Stamps ``created_at`` when missing so SPA wall-clock survives refresh
+        (display-only; stripped on the AI wire — see ``history_display``).
+        """
         self._begin_if_needed()
-        self.messages.append(msg)
+        self.messages.append(with_created_at(msg))
 
     def trim_after(self, index: int) -> None:
         """Delete all messages after the given index (exclusive).

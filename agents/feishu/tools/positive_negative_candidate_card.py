@@ -3,15 +3,18 @@
 
 This card never writes a ledger row.  It only keeps or ignores
 candidate evidence for follow-up; the existing case confirmation tool remains
-the sole write gate for the robot test table.
+the sole write gate for the public ledger.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import sys
 from typing import Any
+
+from loguru import logger
 
 TOOLS_DIR = __import__("pathlib").Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
@@ -20,6 +23,11 @@ if str(TOOLS_DIR) not in sys.path:
 import _feishu_impl as _f
 from _assignment_display import readable_name, resolve_people_display
 from _positive_negative_list import candidate_batches
+
+# Per-batch in-process lock: decision clicks do a whole-batch read-modify-write,
+# and concurrent clicks on different rows of the same batch must not lose each
+# other's decision.
+_CLICK_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 def _parse(value: str) -> dict[str, Any]:
@@ -112,6 +120,14 @@ def render_candidate_card(batch: dict[str, Any]) -> dict[str, Any]:
                 {"tag": "markdown", "content": f"➖ {row.get('index', 0) + 1}. 已忽略：{row.get('text') or ''}"}
             )
             continue
+        if status == "kept":
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "content": f"✅ {row.get('index', 0) + 1}. 已纳入候选：{row.get('text') or ''}",
+                }
+            )
+            continue
         quality = row.get("quality_reason") or ""
         elements.append(
             {
@@ -155,7 +171,7 @@ async def _handle_click(card_action_json: str, user_key: str) -> str:
     batch = await candidate_batches.load_batch(batch_id)
     if not batch:
         return _f.dumps_result({"ok": False, "status": "candidate_batch_not_found"})
-    if batch.get("person_open_id") != user_key and user_key:
+    if not user_key or batch.get("person_open_id") != user_key:
         return _f.dumps_result({"ok": False, "status": "unauthorized"})
     action_name = str(action.get("action") or "")
     if action_name.startswith("pn_candidate_") and _action_row_index(action_name) is None:
@@ -164,33 +180,49 @@ async def _handle_click(card_action_json: str, user_key: str) -> str:
     if not parsed:
         return _f.dumps_result({"ok": False, "status": "invalid_candidate_action"})
     kind, source_index, _ = parsed
-    rows = batch.get("rows") or []
-    if not (0 <= source_index < len(rows)):
-        return _f.dumps_result({"ok": False, "status": "candidate_row_not_found"})
-    row = rows[source_index]
-    if kind == "keep":
-        if row.get("status") == "pending":
+
+    lock = _CLICK_LOCKS.setdefault(batch_id, asyncio.Lock())
+    async with lock:
+        # Reload under the batch lock so concurrent clicks on different rows of
+        # the same batch cannot overwrite each other's decision.
+        batch = await candidate_batches.load_batch(batch_id)
+        if not batch:
+            return _f.dumps_result({"ok": False, "status": "candidate_batch_not_found"})
+        rows = batch.get("rows") or []
+        if not (0 <= source_index < len(rows)):
+            return _f.dumps_result({"ok": False, "status": "candidate_row_not_found"})
+        row = rows[source_index]
+        current = str(row.get("status") or "pending")
+        changed = False
+        if kind == "keep" and current == "pending":
             row["status"] = "kept"
             row["decided_at"] = candidate_batches._now()
-    elif kind == "ignore" and row.get("status") == "pending":
-        row["status"] = "ignored"
-        row["decided_at"] = candidate_batches._now()
-    if candidate_batches.is_ready_for_analysis(batch):
-        batch["status"] = "ready_for_analysis"
-    await candidate_batches.save_batch(batch)
-    message_id = str(action.get("_message_id") or batch.get("message_id") or "")
-    if message_id:
-        await _f.edit_card_impl(message_id, json.dumps(render_candidate_card(batch), ensure_ascii=False), user_key)
-    result: dict[str, Any] = {
-        "ok": True,
-        "status": batch["status"],
-        "action": action.get("action"),
-        "batch_id": batch_id,
-    }
-    if batch["status"] == "ready_for_analysis":
-        active = candidate_batches.analysis_candidates(batch)
-        result.update({"analysis_candidates": active, "candidates": active})
-    return _f.dumps_result(result)
+            changed = True
+        elif kind == "ignore" and current == "pending":
+            row["status"] = "ignored"
+            row["decided_at"] = candidate_batches._now()
+            changed = True
+        if changed and candidate_batches.is_ready_for_analysis(batch):
+            batch["status"] = "ready_for_analysis"
+        if changed:
+            await candidate_batches.save_batch(batch)
+            logger.info(f"pnl candidate: batch={batch_id} row={source_index} -> {row['status']}")
+            message_id = str(action.get("_message_id") or batch.get("message_id") or "")
+            if message_id:
+                await _f.edit_card_impl(
+                    message_id, json.dumps(render_candidate_card(batch), ensure_ascii=False), user_key
+                )
+        result: dict[str, Any] = {
+            "ok": True,
+            "status": batch["status"] if changed else "already_decided",
+            "row_status": row["status"],
+            "action": action.get("action"),
+            "batch_id": batch_id,
+        }
+        if batch["status"] == "ready_for_analysis":
+            active = candidate_batches.analysis_candidates(batch)
+            result.update({"analysis_candidates": active, "candidates": active})
+        return _f.dumps_result(result)
 
 
 def candidate_card_handlers(batch: dict[str, Any]) -> dict[str, str]:
@@ -225,18 +257,27 @@ async def positive_negative_candidate_card(
         return _f.dumps_result({"ok": False, "status": "invalid_candidates", "error": str(exc)})
     if not isinstance(raw, list) or not raw:
         return _f.dumps_result({"ok": False, "status": "no_candidates"})
-    if source_key:
-        existing = await candidate_batches.find_batch_by_source_key(source_key)
-        if existing:
-            return _f.dumps_result(
-                {
-                    "ok": True,
-                    "status": "already_sent",
-                    "batch_id": existing["batch_id"],
-                    "message_id": existing.get("message_id", ""),
-                }
-            )
     candidates = [item if isinstance(item, dict) else {"text": item} for item in raw]
+    if not source_key:
+        # Same-source idempotency without a caller-provided key: an identical
+        # payload for the same person derives the same key and never sends a
+        # second candidate card.
+        source_key = candidate_batches.derive_source_key(
+            source_label=source_label,
+            meeting_date=meeting_date,
+            person_open_id=receive_id,
+            candidates=candidates,
+        )
+    existing = await candidate_batches.find_batch_by_source_key(source_key)
+    if existing:
+        return _f.dumps_result(
+            {
+                "ok": True,
+                "status": "already_sent",
+                "batch_id": existing["batch_id"],
+                "message_id": existing.get("message_id", ""),
+            }
+        )
     display_person_name = person_name.strip()
     if not readable_name(display_person_name):
         display_person_name = await resolve_people_display(display_person_name, _f.get_users_batch_impl)

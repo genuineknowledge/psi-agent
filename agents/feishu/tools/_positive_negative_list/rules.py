@@ -73,6 +73,10 @@ class RulePack:
         )
         scored: list[tuple[int, int, RuleEntry]] = []
         for index, entry in enumerate(self.entries):
+            # Red-line escalation is a human process, never an agent-side
+            # judgement: red-line entries stay out of the model query surface.
+            if entry.direction == "red_line":
+                continue
             haystack = _normalize(
                 " ".join((entry.id, entry.title, entry.text, entry.category, *entry.keywords, *entry.aliases))
             )

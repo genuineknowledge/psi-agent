@@ -82,10 +82,10 @@ def test_meeting_jobs_use_fixed_post_meeting_crons() -> None:
     jobs = {job.name: job for job in MEETING_JOBS}
     assert jobs["weekday-alignment"].meeting_code == "57152787045"
     assert jobs["weekday-alignment"].cron == "0 12 * * 1,3,5"
-    assert jobs["weekday-alignment"].retry_crons == ()
+    assert jobs["weekday-alignment"].retry_crons == ("30 17 * * 1,3,5",)
     assert jobs["weekday-alignment-1100"].meeting_code == "42654699903"
     assert jobs["weekday-alignment-1100"].cron == "0 13 * * 1,3,5"
-    assert jobs["weekday-alignment-1100"].retry_crons == ()
+    assert jobs["weekday-alignment-1100"].retry_crons == ("30 17 * * 1,3,5",)
     assert jobs["weekday-alignment-1100"].token_env == "TENCENT_MEETING_TOKEN_42654699903"
     assert len(jobs) == 2
     assert jobs["weekday-alignment"].fire == "tool"
@@ -93,21 +93,31 @@ def test_meeting_jobs_use_fixed_post_meeting_crons() -> None:
 
 
 def test_meeting_schedule_files_cover_every_job() -> None:
-    """投影只包含两场主任务: 17:30 补偿重跑已下线 (2026-09-11)。
+    """投影覆盖两场主任务 + 每场一条 17:30 的补偿重跑。
 
-    生成器仍保留 retry 渲染能力 (见下一条判据), 但没有任何 job 声明 ``retry_crons``,
-    所以静态文件、投影与线上 runner 都只应有两场主任务。
+    补偿重跑不是"再来一次"的重复劳动: 腾讯的文字转写是异步产出的, 主跑时常还没生成
+    (实测 09-11: 12:00 主跑没有转写, 21:59 才生成)。周中会此前没有任何兜底, 而管道
+    只认最新 occurrence —— 当天没赶上就永远是"没有转写"。日会仍有 17:30 那一档。
     """
     files = meeting_schedule_files()
-    assert set(files) == {"weekday-alignment", "weekday-alignment-1100"}
-    assert [name for name in files if "-retry-" in name] == []
+    assert set(files) == {
+        "weekday-alignment",
+        "weekday-alignment-retry-1730",
+        "weekday-alignment-1100",
+        "weekday-alignment-1100-retry-1730",
+    }
     for job in MEETING_JOBS:
-        assert job.retry_crons == (), f"{job.name} 不应再声明补偿重跑 cron"
+        assert job.retry_crons == ("30 17 * * 1,3,5",), f"{job.name} 应各有一条 17:30 补偿重跑"
+    for job in MEETING_JOBS:
         body = files[job.name]
         assert f"name: {job.name}" in body
         assert f'cron: "{job.cron}"' in body
         assert job.meeting_code in body
         assert "原始全文转写" in body
+        for retry_name, retry_cron in ma._job_schedules(job)[1:]:
+            retry_body = files[retry_name]
+            assert f'cron: "{retry_cron}"' in retry_body
+            assert "补偿重跑" in retry_body
 
 
 def test_retry_entry_renders_when_a_job_declares_retry_crons() -> None:
@@ -142,13 +152,18 @@ def test_meeting_schedule_files_self_describe_recovery() -> None:
 
     ``fire: tool`` 的正文不进入模型 (调度器直接调工具), 但对读文件的人与调度历史
     是唯一的自述: 正文不写补救路径, 出事只能靠翻代码找补跑工具。
+    身份也要自述准确: 主任务不许自称"补偿重跑", 补偿重跑条目必须自称(否则 4 条任务的
+    描述一模一样, 读不出哪条是兜底)。
     """
     files = meeting_schedule_files()
     for name, body in files.items():
         _, _, note = body.partition("---\n\n")
         assert "meeting_pipeline_replay" in note, f"{name}/TASK.md 未写补跑工具"
         assert "config/meeting-sop.yaml" in note, f"{name}/TASK.md 未写口径来源"
-        assert "补偿重跑" not in body, f"{name}/TASK.md 是主任务, 不应自称补偿重跑"
+        if "-retry-" in name:
+            assert "补偿重跑" in body, f"{name}/TASK.md 是补偿重跑, 必须自述身份"
+        else:
+            assert "补偿重跑" not in body, f"{name}/TASK.md 是主任务, 不应自称补偿重跑"
 
 
 def test_committed_meeting_schedule_files_match_projection() -> None:
@@ -211,6 +226,56 @@ def test_extract_completed_text_record_selects_latest_transcript() -> None:
     selected = extract_latest_transcript_record(payload, set())
     assert selected is not None
     assert selected["record_file_id"] == "text-new"
+
+
+def test_extract_record_takes_ready_transcript_beside_an_unfinished_cloud_recording() -> None:
+    """回归钉子: 同组里一段还没转码完的**云录制**不得否掉已完成的**文字转写**。
+
+    实测形状(09-11 周中会): 最新 occurrence 里有一条 state=3 的文字转写与一条 state=1
+    (录制中) 的云录制。旧逻辑对整组做状态检查 → 返回 None("没有转写"), 于是当天 21:59
+    已经生成的转写被忽略, 而管道只认最新 occurrence —— 下一次主跑时最新已是下一场,
+    这场就永久丢了。
+    """
+    payload = {
+        "record_meetings": [
+            {
+                "sub_meeting_id": "1789092000",
+                "record_type": "文字转写",
+                "state_int": 3,
+                "media_start_time": "2026-09-11T21:59:55+08:00",
+                "record_files": [{"record_file_id": "transcript-ready"}],
+            },
+            {
+                "sub_meeting_id": "1789092000",
+                "record_type": "云录制",
+                "state_int": 1,
+                "media_start_time": "2026-09-11T21:59:56+08:00",
+                "record_files": [{"record_file_id": "cloud-still-recording"}],
+            },
+        ]
+    }
+
+    selected = extract_latest_transcript_record(payload, set())
+
+    assert selected is not None, "已完成的文字转写不该被同组未完成的云录制否掉"
+    assert selected["record_file_id"] == "transcript-ready"
+
+
+def test_extract_record_still_waits_when_the_transcript_itself_is_not_ready() -> None:
+    """反向钉子: 转写**自己**还没转码完, 仍然要等(原语义不许被上面的修法放宽)。"""
+    payload = {
+        "record_meetings": [
+            {
+                "sub_meeting_id": "1789092000",
+                "record_type": "文字转写",
+                "state_int": 1,
+                "media_start_time": "2026-09-11T21:59:55+08:00",
+                "record_files": [{"record_file_id": "transcript-still-transcoding"}],
+            }
+        ]
+    }
+
+    assert extract_latest_transcript_record(payload, set()) is None
 
 
 def test_json_payload_unwraps_tencent_http_envelope() -> None:
@@ -367,6 +432,166 @@ async def test_prepare_saves_full_transcript_and_returns_manifest(
     manifest = read_meeting_manifest(tmp_path, "weekday-alignment")
     assert manifest["transcript_chars"] == len(saved_text)
     assert "x" * 6000 in saved_text
+
+
+def test_same_day_record_candidates_only_same_day_completed_and_unprocessed() -> None:
+    """回退候选: 只取**同一天**、已完成、未处理过的其它记录, 且从新到旧。
+
+    实测 2026-09-11: 当天唯一的「文字转写」属于一段 46 秒杂散录制 (腾讯侧是空的),
+    而那场真会的正文挂在同一天的云录制记录上 —— 前一天/未完成/已处理的都不能进候选
+    (退回前一天就等于把上一场当今天发出去)。
+    """
+    payload = {
+        "record_meetings": [
+            {
+                "media_start_time": "2026-09-11T21:59:55+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "文字转写",
+                "state_int": 3,
+                "record_files": [{"record_file_id": "transcript_empty"}],
+            },
+            {
+                "media_start_time": "2026-09-11T21:59:55+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "云录制",
+                "state_int": 3,
+                "record_files": [{"record_file_id": "cloud_already_processed"}],
+            },
+            {
+                "media_start_time": "2026-09-11T09:48:33+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "云录制",
+                "state_int": 3,
+                "record_files": [{"record_file_id": "cloud_real_meeting"}],
+            },
+            {
+                "media_start_time": "2026-09-11T13:23:47+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "云录制",
+                "state_int": 1,
+                "record_files": [{"record_file_id": "cloud_still_transcoding"}],
+            },
+            {
+                "media_start_time": "2026-09-09T09:52:52+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "云录制",
+                "state_int": 3,
+                "record_files": [{"record_file_id": "previous_day"}],
+            },
+        ]
+    }
+    record = extract_latest_transcript_record(payload, set())
+    assert record is not None
+    assert record["record_file_id"] == "transcript_empty"
+
+    candidates = ma.same_day_record_candidates(payload, record, processed_ids={"cloud_already_processed"})
+
+    assert [item["record_file_id"] for item in candidates] == ["cloud_real_meeting"]
+
+
+@pytest.mark.anyio
+async def test_prepare_falls_back_to_the_same_day_recording_when_the_transcript_record_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """主记录取不到正文时, 回退到同一天的其它记录, 而不是直接报 prepare_failed。
+
+    实测 2026-09-11 周中会: 管道选中的「文字转写」在腾讯侧是空的 (段落索引 ``total=0``、
+    详情 ``HTTP 500``), 而那场真会 (09:48 起, 14 人) 的正文挂在同一天的**云录制**记录上。
+    """
+    records = {
+        "record_meetings": [
+            {
+                "media_start_time": "2026-09-11T21:59:55+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "文字转写",
+                "state_int": 3,
+                "record_files": [{"record_file_id": "transcript_empty"}],
+            },
+            {
+                "media_start_time": "2026-09-11T09:48:33+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "云录制",
+                "state_int": 3,
+                "record_files": [{"record_file_id": "cloud_real_meeting"}],
+            },
+        ]
+    }
+
+    async def fake_call(name: str, arguments: dict[str, object], *, token_env: str) -> object:
+        if name == "get_records_list":
+            return records
+        if arguments.get("record_file_id") == "transcript_empty":
+            if name == "get_transcripts_paragraphs":
+                return {"total": 0}
+            raise RuntimeError("Tencent Meeting HTTP 500")
+        if name == "get_transcripts_paragraphs":
+            return {"paragraphs": [{"pid": "0"}]}
+        if name == "get_transcripts_details":
+            return {"paragraphs": [{"pid": "0", "speaker": "孙逊", "content": "本场周会正文"}]}
+        if name == "get_smart_minutes":
+            return {"summary": "参考纪要"}
+        raise AssertionError((name, arguments))
+
+    monkeypatch.setattr(transcript_prepare, "_call", fake_call)
+
+    result = json.loads(
+        await meeting_transcript_prepare(
+            meeting_code="57152787045", meeting_name="weekday-alignment", appdata_root=str(tmp_path)
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["record_file_id"] == "cloud_real_meeting", "正文应取自同一天那条有内容的记录"
+    assert result["fallback_from"] == "transcript_empty", "回退来源要自报, 排障才不用猜"
+    manifest = read_meeting_manifest(tmp_path, "weekday-alignment")
+    assert set(manifest["processed_record_file_ids"]) == {"cloud_real_meeting", "transcript_empty"}
+
+
+@pytest.mark.anyio
+async def test_prepare_names_every_record_it_tried_when_none_has_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """全都取不到正文时, 报错要说清试了哪几条、各自为什么失败 —— 不再只有一句 HTTP 500。"""
+    records = {
+        "record_meetings": [
+            {
+                "media_start_time": "2026-09-11T21:59:55+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "文字转写",
+                "state_int": 3,
+                "record_files": [{"record_file_id": "transcript_empty"}],
+            },
+            {
+                "media_start_time": "2026-09-11T09:48:33+08:00",
+                "sub_meeting_id": "occ1",
+                "record_type": "云录制",
+                "state_int": 3,
+                "record_files": [{"record_file_id": "cloud_also_empty"}],
+            },
+        ]
+    }
+
+    async def fake_call(name: str, arguments: dict[str, object], *, token_env: str) -> object:
+        if name == "get_records_list":
+            return records
+        if name == "get_transcripts_paragraphs":
+            return {"total": 0}
+        raise RuntimeError("Tencent Meeting HTTP 500")
+
+    monkeypatch.setattr(transcript_prepare, "_call", fake_call)
+
+    result = json.loads(
+        await meeting_transcript_prepare(
+            meeting_code="57152787045", meeting_name="weekday-alignment", appdata_root=str(tmp_path)
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "transcript_prepare_failed"
+    assert result["record_file_id"] == "transcript_empty", "失败也要带上被选中的记录 id"
+    assert "transcript_empty" in result["error"]
+    assert "cloud_also_empty" in result["error"]
+    assert "Tencent Meeting HTTP 500" in result["error"]
 
 
 @pytest.mark.anyio

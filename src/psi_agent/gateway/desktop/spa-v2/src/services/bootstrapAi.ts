@@ -1,4 +1,5 @@
 import { createAi, listAis, type AiInfo } from './api'
+import { readScopedItem, writeScopedItem } from './appdataScope'
 
 /**
  * Remote free-model endpoint (company domain). The upstream provider key lives
@@ -29,8 +30,7 @@ export const DEFAULT_REMOTE_AI = {
 
 export const PLACEHOLDER_API_KEY = 'haitun-default'
 
-const LS_SELECTED_AI = 'spa-v2-selected-ai'
-/** User-chosen display names, keyed by ``aiConfigKey`` (survives id rebind). */
+/** User-chosen display names, keyed by ``aiConfigKey`` (survives id rebind; not AppData-scoped). */
 const LS_AI_ALIASES = 'spa-v2-ai-aliases'
 
 /** Config fingerprint — same provider/model/key/base ⇒ one row in the Hub list. */
@@ -181,20 +181,14 @@ export function isPlaceholderAi(ai: Pick<AiInfo, 'api_key'> | null | undefined):
 
 export function readStoredAiId(): string | null {
   try {
-    const raw = localStorage.getItem(LS_SELECTED_AI)
-    return raw?.trim() || null
+    return readScopedItem(localStorage, 'selectedAi')?.trim() || null
   } catch {
     return null
   }
 }
 
 export function writeStoredAiId(id: string | null): void {
-  try {
-    if (id?.trim()) localStorage.setItem(LS_SELECTED_AI, id.trim())
-    else localStorage.removeItem(LS_SELECTED_AI)
-  } catch {
-    // ignore quota / private mode
-  }
+  writeScopedItem(localStorage, 'selectedAi', id?.trim() || null)
 }
 
 /**

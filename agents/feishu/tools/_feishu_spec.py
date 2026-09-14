@@ -89,9 +89,13 @@ import copy
 import functools
 import pathlib
 import re
+from collections.abc import Sequence
 from typing import Any
 
 import yaml
+
+from psi_agent.session import layer_probe
+from psi_agent.session.content_tombstone import is_tombstone as _is_tombstone
 
 _RULES_BLOCK = re.compile(r"^```rules\s*$(.*?)^```\s*$", re.M | re.S)
 _METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
@@ -285,26 +289,157 @@ def parse_rules(text: str, source: str = "") -> list[Rule]:
 
 
 def load_rules(skills_dir: str | pathlib.Path) -> list[Rule]:
-    """All rules from ``<skills_dir>/*/SKILL.md``, most specific URI first."""
+    """All rules from ``<skills_dir>/*/SKILL.md``, most specific URI first.
+
+    Tombstoned skills (see ``content_tombstone``) contribute nothing: a skill the
+    user deleted must stop constraining API calls, not just vanish from the
+    prompt index. The two consumers of ``skills/`` have to agree — a rule that
+    outlives its deleted skill refuses calls for a reason the model can no longer
+    read anywhere.
+    """
+    rules, _tombstoned, _present = _load_rules_and_tombstones(skills_dir)
+    return rules
+
+
+def _load_rules_and_tombstones(skills_dir: str | pathlib.Path) -> tuple[list[Rule], set[str], set[str]]:
+    """``(rules, 被墓碑停用的 skill 名, 本层出现过的 skill 名)`` for one layer.
+
+    The tombstoned names come back separately because a tombstone names a
+    **skill** while a rule's identity is ``(METHOD, uri)``. The layered merge
+    therefore cannot express "deleted" as an override of the same key — it has to
+    drop the farther layer's rules *by source skill*, which is what this second
+    return value is for.
+
+    第三个返回值(本层**出现过**的 skill 名, 含没写 rules 块的)服务于整体覆盖: 覆盖的单位
+    是 skill 而不是 endpoint。派生副本删掉了 rules 块时, 它贡献 0 条规则 —— 若只按 endpoint
+    覆盖, 官方那份的规则会原地留下, 于是模型读到的是无规则的副本而真实调用仍被官方规则
+    拦住, 且拒绝的理由在任何地方都读不到。
+    """
     root = pathlib.Path(skills_dir)
     found: list[Rule] = []
+    tombstoned: set[str] = set()
+    present: set[str] = set()
     if not root.is_dir():
-        return found
+        return found, tombstoned, present
     for skill in sorted(root.glob("*/SKILL.md")):
         try:
             text = skill.read_text(encoding="utf-8")
         except OSError:
             continue
+        present.add(skill.parent.name)
+        if _is_tombstone(_frontmatter_of(text)):
+            tombstoned.add(skill.parent.name)
+            continue
         if "```rules" not in text:
             continue
         found.extend(parse_rules(text, source=skill.parent.name))
     found.sort(key=lambda r: -r.specificity)
+    return found, tombstoned, present
+
+
+def _frontmatter_of(text: str) -> dict[str, str]:
+    """``key: value`` pairs from a leading ``---`` block; ``{}`` when there is none."""
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}
+    header: dict[str, str] = {}
+    for line in text[3:end].splitlines():
+        if ":" in line:
+            key, _, value = line.partition(":")
+            header[key.strip()] = value.strip().strip('"').strip("'")
+    return header
+
+
+def load_rules_layered(skills_dirs: Sequence[tuple[str, str | pathlib.Path]]) -> list[Rule]:
+    """All rules across *skills_dirs*, nearest-wins per endpoint, most specific URI first.
+
+    *skills_dirs* is ``(层名, 目录)`` **ascending** — far to near, same order the
+    prompt index merges in — so a nearer layer's rule for the same endpoint
+    replaces the farther one **entirely**. Whole-rule replacement, not
+    field-level: a rule carries ``refuse`` constraints, ``confirm``, and
+    ``defaults`` together, and merging halves of two authors' rules yields a
+    guardrail neither wrote — on the API-call path, where the failure costs real
+    money and real writes.
+
+    Within one endpoint, identity is ``(METHOD, uri)``: two layers writing a rule
+    for the same endpoint means the nearer rule replaces the farther one whole.
+
+    But the **unit of override is the skill**, not the endpoint. A nearer layer
+    that carries the same skill name — a derived copy, or a tombstone — retires
+    every rule the farther layer's same-named skill contributed, including the
+    endpoints the nearer copy says nothing about. Otherwise dropping a rule by
+    editing your copy is impossible: the official rule stays in force while the
+    skill the model reads no longer mentions it, so a refusal arrives with no
+    readable reason anywhere.
+    """
+    by_endpoint: dict[tuple[str, str], Rule] = {}
+    for _layer, skills_dir in skills_dirs:
+        rules, tombstoned, present = _load_rules_and_tombstones(skills_dir)
+        # 先按 skill 名撤掉更远层的贡献, 再装本层的。墓碑与派生副本走同一条撤销路径:
+        # 前者是"这个 skill 没了", 后者是"这个 skill 归我这份说了算", 对更远那层的效果
+        # 相同 —— 它那份不再有发言权。
+        retired = tombstoned | present
+        if retired:
+            for key in [k for k, rule in by_endpoint.items() if rule.source in retired]:
+                del by_endpoint[key]
+        for rule in rules:
+            by_endpoint[(rule.method, rule.uri)] = rule
+    found = list(by_endpoint.values())
+    found.sort(key=lambda r: -r.specificity)
     return found
+
+
+@functools.lru_cache(maxsize=64)
+def _cached_layered(key: tuple[tuple[str, str], ...]) -> tuple[Rule, ...]:
+    """Parsed rules for one ladder. *key* is ``((层名, 目录), ...)``, ascending.
+
+    Keyed on the **whole ladder** rather than one directory string: under
+    layering the answer is a function of every root and their order, so a
+    per-directory key would serve one layer's rules for another ladder that
+    happens to share its top directory.
+
+    ``maxsize`` up from 8 to 64: the key went from one directory to a ladder, and
+    a ladder is per (deployment layout x user root) — 8 entries thrash once a few
+    dozen users each have their own top root, and a thrashing cache re-parses
+    every SKILL.md on the API-call path.
+    """
+    rules = tuple(load_rules_layered(key))
+    per_root: list[tuple[str, int]] = []
+    for layer, skills_dir in key:
+        if pathlib.Path(skills_dir).is_dir():
+            per_root.append((layer, len(load_rules(skills_dir))))
+    # 单值? 不是 —— 护栏是合并语义(每个 endpoint 各自被最近的层定), 故不报 chosen。
+    # per_root 报各层**贡献**(去重前), 与 total 不等即说明发生了同名 endpoint 覆盖。
+    layer_probe.report("feishu_api_rules", roots_declared=len(key), per_root=per_root)
+    return rules
 
 
 @functools.lru_cache(maxsize=8)
 def _cached(skills_dir: str) -> tuple[Rule, ...]:
-    return tuple(load_rules(skills_dir))
+    rules = tuple(load_rules(skills_dir))
+    # 层来源探针(只读, 见 ``layer_probe``)。挂在 *缓存未命中* 上而不是 ``rules_for``
+    # 上: 后者每次飞书 API 调用都过, 会把日志淹掉; 这里每个不同的 skills_dir 只报
+    # 一次, 而"有几个不同的 skills_dir"恰好就是要问的那个问题。
+    #
+    # skills 目录是**两个消费者**: 提示词里的技能索引, 和这里的飞书 API 护栏规则。
+    # 分层若只改了前者, 每人的覆盖会*看起来*生效(索引里能看到), 而真实 API 调用仍
+    # 只受官方规则约束 —— 静默, 且朝着最贵的方向错。故这一处必须单独有判据。
+    # 单根: 恒报 1 of 1; 等分层落地后仍报 1 of 1, 就是"护栏没跟着分层"的判据。
+    #
+    # 目录不存在时 chosen 必须留空: 报 ``chosen=<名字>`` 是在说"这一层赢了", 而一个
+    # 都没读到时没有赢家 —— 那样写会让"护栏规则来自某层"与"护栏规则一条都没加载"
+    # 在日志里同形, 正是本探针要消灭的那种同形。
+    exists = pathlib.Path(skills_dir).is_dir()
+    name = layer_probe.root_name(skills_dir)
+    layer_probe.report(
+        "feishu_api_rules",
+        roots_declared=1,
+        per_root=[(name, len(rules))] if exists else [],
+        chosen=name if exists else "",
+    )
+    return rules
 
 
 def rules_for(skills_dir: str | pathlib.Path, method: str, uri: str) -> Rule | None:
@@ -320,9 +455,24 @@ def rules_for(skills_dir: str | pathlib.Path, method: str, uri: str) -> Rule | N
     return None
 
 
+def rules_for_layers(skills_dirs: Sequence[tuple[str, str | pathlib.Path]], method: str, uri: str) -> Rule | None:
+    """:func:`rules_for` across a ladder of skills dirs, nearest-wins.
+
+    The layered entry point the API call path uses. Same prefix / advice
+    semantics as the single-root one — layering decides *which* rule governs an
+    endpoint, not how a rule that governs it is applied.
+    """
+    key = tuple((layer, str(path)) for layer, path in skills_dirs)
+    for rule in _cached_layered(key):
+        if rule.matches((method or "").upper(), uri or ""):
+            return rule if rule.governs_exactly(uri or "") else rule.as_advice()
+    return None
+
+
 def reset_cache() -> None:
     """Drop the parsed-rules cache — for tests and for skill hot-reload."""
     _cached.cache_clear()
+    _cached_layered.cache_clear()
 
 
 #: The three buckets a field can be pinned to, for ``in:`` and for ``bucket.name`` keys.
