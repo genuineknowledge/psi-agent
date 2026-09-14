@@ -31,7 +31,8 @@ def test_apply_states_keeps_unknown_rows() -> None:
 
 
 def test_tool_rejects_bad_args() -> None:
-    spec = importlib.util.spec_from_file_location("pm_tool", Path("agents/feishu/tools/feishu_pm_batch_send.py"))
+    tools_dir = Path(__file__).resolve().parents[1] / "tools"
+    spec = importlib.util.spec_from_file_location("pm_tool", tools_dir / "feishu_pm_batch_send.py")
     assert spec is not None and spec.loader is not None
     tool = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tool)
