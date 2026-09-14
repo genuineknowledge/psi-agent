@@ -71,6 +71,8 @@ from _todo_card_impl import (
     _untick_action_id,
 )
 
+from psi_agent.session.content_roots import content_roots_from_env as _content_roots_from_env
+
 # ── Vocabulary constants ──────────────────────────────────────────────────────
 
 # card template → Feishu header template (native colors, full mapping).
@@ -435,26 +437,50 @@ def _compile_list_card(root: ET.Element, context: dict[str, Any]) -> tuple[dict[
 # 将来定义挪进数据库,渲染入口(字符串进)与模板内容都不动。
 
 
-def _resolve_template_dir() -> str:
-    """Locate the card-dsl templates directory.
+def _template_dirs() -> list[str]:
+    """模板目录的候选, **就近者在前**。
 
     Inside a Session the tool modules are loaded via compile+exec under a
     synthesized module name, so ``__file__`` is unreliable. Resolve through the
     runtime agent dir first (``_runtime_paths.agent_dir()``, the same root the
     skill loader uses), falling back to the ``__file__``-relative path that
     works when this module runs standalone (local tests).
+
+    内容分层把技能挪出了 ``<agent>/skills``, 所以 agent 根之后还要接内容层。刻意用同步的
+    ``content_roots_from_env()`` 而不是工具侧的 ``_content_layers``: 后者返回
+    ``anyio.Path``, 会把 ``render_template`` 这条同步链连带染成 async。
     """
-    candidates: list[str] = []
+    dirs: list[str] = []
     with contextlib.suppress(Exception):
-        candidates.append(os.path.join(agent_dir(), "skills", "card-dsl", "templates"))
-    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "skills", "card-dsl", "templates"))
-    for path in candidates:
-        if os.path.isdir(path):
+        dirs.append(os.path.join(agent_dir(), "skills", "card-dsl", "templates"))
+    # 声明序里越靠后越近, 所以反转 —— 与读侧 ``layers_for`` 同一口径。
+    dirs.extend(
+        os.path.join(str(root.path), "skills", "card-dsl", "templates") for root in reversed(_content_roots_from_env())
+    )
+    dirs.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "skills", "card-dsl", "templates"))
+    return dirs
+
+
+def _resolve_template(name: str) -> str | None:
+    """按内容层梯子找模板文件, 就近者胜; 全层未命中返回 ``None``。
+
+    **逐个文件找, 不是先定一个目录再进去找。** 原来的做法是"第一个 ``isdir`` 为真的候选目录
+    就是模板目录", 分层之后这条逻辑在生产上断了, 而且断得不报错: ``/workspace/skills/card-dsl/
+    templates`` 这个目录**存在**(有人 2026-09-14 14:33 往里放了一个 ``remind-card.xml``),
+    于是解析就此终止, ``/content/official`` 下的另外三个模板
+    (``meeting-summary-card`` / ``review-card`` / ``todo-card``)全部看不见 ——
+    牵连会议总结卡、``feishu_card_render``、台账对账与评价卡。
+
+    这与前 4 处断链(目录不存在)不是同一形态: 这处目录在、只是内容不全, 所以"目录存不存在"
+    那类判据抓不到它。改成按文件解析后, 每层缺哪个文件都能各自被下一层补上。
+
+    每次调用时解析, 不在 import 期: 层按进程的环境变量算, 而 Gateway 一个进程跑很多 Session。
+    """
+    for directory in _template_dirs():
+        path = os.path.join(directory, f"{name}.xml")
+        if os.path.isfile(path):
             return path
-    return candidates[-1]
-
-
-_TEMPLATE_DIR = _resolve_template_dir()
+    return None
 
 
 def _xml_escape(text: str) -> str:
@@ -526,12 +552,16 @@ def render_template(
     name = (template_name or "").strip()
     if not name or "/" in name or "\\" in name or ".." in name:
         return {"ok": False, "error": "invalid template_name"}
-    path = os.path.join(_TEMPLATE_DIR, f"{name}.xml")
+    path = _resolve_template(name)
+    if path is None:
+        # 报出查过的目录: 分层之后"模板找不到"最常见的原因是投放漏了某一层, 而不是名字写错。
+        searched = ", ".join(_template_dirs())
+        return {"ok": False, "error": f"template {name!r} not found (已查: {searched})"}
     try:
         with open(path, encoding="utf-8") as f:
             xml = f.read()
     except OSError as e:
-        return {"ok": False, "error": f"template {name!r} not found: {e!r}"}
+        return {"ok": False, "error": f"template {name!r} not readable: {e!r}"}
     try:
         values = json.loads(values_json) if isinstance(values_json, str) else values_json
     except ValueError:
