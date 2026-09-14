@@ -121,6 +121,10 @@ extend-exclude = [
     # (byte-identical); generated code is not hand-maintained, so it is
     # excluded on both paths.
     "agents/desktop/skills/workflow/fusion_flow/generated",
+    # 生产上「领先」文件的**逐字节存底**, 不是仓库应用代码。留 ``.py`` 后缀是为了能 diff、
+    # 能给人读; 一旦让 lint 管它, 修 lint 就会改动副本本身, 而"与生产那份逐字节相同"正是
+    # 存底唯一的用处。
+    "docs/superpowers/salvage/**",
 ]
 
 [tool.ruff.lint]
