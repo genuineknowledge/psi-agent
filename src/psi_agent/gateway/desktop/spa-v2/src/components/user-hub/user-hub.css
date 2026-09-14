@@ -505,6 +505,205 @@
   border-radius: 999px;
 }
 
+/* Content console (skills). Source badges: 'global' (mine) inherits the brand-blue
+   .hub-badge above; 'official' is neutral gray so it never borrows the reserved
+   green/gold/red semantic colors (DESIGN_SPEC section 5). */
+.hub-badge-official {
+  color: var(--ink-soft);
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.hub-content-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.hub-content-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.hub-content-tab {
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.hub-content-tab.active {
+  color: var(--brand-600);
+  background: rgba(var(--brand-rgb), 0.12);
+  border-color: rgba(var(--brand-rgb), 0.3);
+}
+
+.hub-content-search {
+  margin-left: auto;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #fff;
+  font-size: 12px;
+  min-width: 150px;
+}
+
+.hub-content-hint {
+  color: var(--ink-soft);
+  font-size: 12px;
+  text-align: center;
+  padding: 20px 0;
+}
+
+.hub-content-empty {
+  text-align: center;
+  padding: 32px 16px;
+  color: var(--ink-soft);
+}
+
+.hub-content-empty svg {
+  opacity: 0.4;
+  margin-bottom: 8px;
+}
+
+.hub-content-empty-title {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ink);
+  margin: 0 0 6px;
+}
+
+.hub-content-empty-hint {
+  font-size: 12px;
+  margin: 0;
+}
+
+.hub-skill-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hub-skill-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  cursor: pointer;
+  text-align: left;
+}
+
+.hub-skill-main:hover {
+  border-color: rgba(var(--brand-rgb), 0.45);
+}
+
+.hub-skill-reveal {
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.hub-skill-reveal:hover {
+  color: var(--brand-600);
+  border-color: rgba(var(--brand-rgb), 0.45);
+}
+
+/* Delete (personal skills only). Hover stays neutral (not red) to respect
+   DESIGN_SPEC section 5 reserved semantic colors; the destructive action is
+   guarded by a window.confirm instead of by color. */
+.hub-skill-delete {
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.hub-skill-delete:hover {
+  color: var(--ink);
+  border-color: var(--ink-soft);
+}
+
+/* Disable / enable (official skills only -- the tombstone mechanism). Disable
+   hover stays neutral like delete (it hides a skill from the model, guarded by a
+   window.confirm); enable hover uses the brand color (restoring is a positive,
+   safe action). No semantic color borrowed (DESIGN_SPEC section 5). */
+.hub-skill-disable,
+.hub-skill-enable {
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.hub-skill-disable:hover {
+  color: var(--ink);
+  border-color: var(--ink-soft);
+}
+
+.hub-skill-enable:hover {
+  color: var(--brand-600);
+  border-color: rgba(var(--brand-rgb), 0.45);
+}
+
+/* A tombstoned official skill: a struck-through "disabled" badge beside the
+   Official badge, and the row's name/description greyed out. */
+.hub-badge-disabled {
+  color: var(--ink-soft);
+  background: rgba(0, 0, 0, 0.08);
+  text-decoration: line-through;
+}
+
+.hub-skill-row-disabled .hub-ai-info {
+  opacity: 0.5;
+}
+
+/* Export (any layer): download the skill as a zip. Neutral look, hover brand
+   like reveal -- exporting is a safe, positive action. */
+.hub-skill-export {
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.hub-skill-export:hover {
+  color: var(--brand-600);
+  border-color: rgba(var(--brand-rgb), 0.45);
+}
+
+.hub-skill-preview {
+  margin: 8px 0 0;
+  padding: 12px;
+  border-radius: 10px;
+  background: #f6f8fa;
+  border: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+  color: var(--ink);
+}
+
 .hub-preset-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

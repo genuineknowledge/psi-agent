@@ -2655,6 +2655,7 @@ export default function HaiTunAgentWorkspace({
             onChangeAgent={onChangeAgent}
             appdata={appdataPath}
             onToast={showToast}
+            onNewSkill={() => openNewTask(t("content.newSkillDraft"), t("app.freeTask"), "workspace")}
             // 门禁未落定 / 登录窗还开着时不要自动弹模型池，两层弹窗会叠在一起
             openModelsOnMount={bootReady && authGate === "passed" && openModelsOnce}
             onModelsAutoOpened={() => setOpenModelsOnce(false)}
