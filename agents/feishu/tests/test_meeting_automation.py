@@ -169,20 +169,45 @@ def test_meeting_schedule_files_self_describe_recovery() -> None:
 def test_committed_meeting_schedule_files_match_projection() -> None:
     """``agents/feishu/schedules`` 下的静态 TASK.md 必须与 ``MEETING_JOBS`` 投影一致。
 
-    调度器把 agent 包 ``schedules/*/TASK.md`` 原样 seed 进公司 workspace (只在缺失
-    时复制), 改 ``MEETING_JOBS`` 的 cron/retry/参数必须同步改静态文件 —— 这条红绿
-    判据把两边钉在同一个事实源上, 防止改一处漏一处。
+    调度器把 agent 包 ``schedules/*/TASK.md`` 原样 seed 进公司 workspace, 而
+    ``_scheduler_manager._seed_missing_schedules`` 对**已存在**的同名目录一律不覆盖 ——
+    所以只改 ``MEETING_JOBS`` 的 cron/retry 而不同步落包, 线上会继续按旧 cron 跑, 且没有
+    任何运行期信号。这条判据把两边钉在同一个事实源上。
 
-    静态 TASK.md 文件由独立 PR (#856) 提供; 本分支不含这些文件时判据自动跳过,
-    两侧都合并到 main 后恢复强制。
+    **缺文件是失败, 不是跳过。** 2026-09-11 #914 把日会 12:00 改成 13:00 时, 落包那一步
+    在同批改动里被删掉, 而本判据当时写的是「静态文件不存在就 pytest.skip」, 于是它每次
+    运行都静默跳过、连着一个周末没有红过, 口径漂移一路飘到线上 (背景见
+    ``scripts/gen_meeting_schedules.py``)。文件由那个生成器产出, 缺了就重跑它 —— 那不是
+    跳过判据的理由。
     """
     schedules_root = Path(__file__).resolve().parents[1] / "schedules"
     files = meeting_schedule_files()
-    if any(not (schedules_root / name / "TASK.md").is_file() for name in files):
-        pytest.skip("静态 meeting TASK.md 由独立 PR 提供, 合并前跳过一致性判据")
+
+    missing = [name for name in sorted(files) if not (schedules_root / name / "TASK.md").is_file()]
+    assert not missing, (
+        f"这些会议任务没有落包: {missing}; 跑 `python scripts/gen_meeting_schedules.py` 生成"
+    )
     for name, expected in files.items():
         committed = (schedules_root / name / "TASK.md").read_text(encoding="utf-8")
         assert committed == expected, f"agents/feishu/schedules/{name}/TASK.md 与 MEETING_JOBS 投影不一致"
+
+
+def test_no_orphan_meeting_schedule_files() -> None:
+    """库里的会议 TASK.md 不许有投影之外的孤儿。
+
+    下线一条会议任务要两步: 删掉 ``MEETING_JOBS`` 里的声明 **并且**删掉落包文件 ——
+    seed 只补缺失、从不删除, 所以留着落包的孤儿会被下一次部署原样 seed 回线上, 按一条
+    代码里已不存在的 cron 触发。这条判据守住第二步。
+    """
+    schedules_root = Path(__file__).resolve().parents[1] / "schedules"
+    known = set(meeting_schedule_files())
+    orphans = sorted(
+        path.parent.name
+        for path in schedules_root.glob("*/TASK.md")
+        if path.parent.name not in known
+        and "tool: meeting_pipeline_run" in path.read_text(encoding="utf-8")
+    )
+    assert not orphans, f"这些会议 TASK.md 不在 MEETING_JOBS 投影里(白名单已删, 落包没删): {orphans}"
 
 
 def test_chunk_text_preserves_full_text_and_bounds_each_chunk() -> None:
