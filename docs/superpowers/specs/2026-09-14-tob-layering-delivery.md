@@ -287,6 +287,31 @@ ssh root@47.100.84.197 'ls -d /srv/haitun && docker ps -q | wc -l'   # 生产 = 
   | `_gen_mcp_skill.py` | `SKILLS` → `/workspace/skills`，`is_dir=True` |
 
   这 4 条软链同样不在 git 里，属于同一类"只活在生产上的修复"。
+
+#### ⚠ 上面这份清单是错的，而且它掩盖了一处正在发生的故障（2026-09-14 17:0x 纠正）
+
+  全量清点了一遍 `agents/feishu/tools/` 里所有自己拼 `"skills"` 路径的地方，结论与上表有三处不符：
+
+  1. **真断的是 4 处，不是 3 处**，上表漏了两个：`meeting_pipeline_run.py:409`（SOP 技能）与
+     `flow_run.py:98`（`fusion-flow-legacy/.env`）。
+  2. **`_gen_mcp_skill.py` 不是缺陷**，我把它算进来是错的。它下划线前缀、不进工具扫描，是仓库内
+     的 dev CLI，产物 `skills/*-mcp/SKILL.md` 已入 git，`TOOLS.parent / "skills"` 在仓库检出里
+     本来就对。上表那行 `is_dir=True` 量到的是生产上那个恰好存在的目录，不说明任何问题。
+  3. **每日会议分析当前是断的。** 容器内实测：
+
+     ```
+     MISSING /workspace/skills/meeting-sop/weekday-alignment/SKILL.md
+     /content/official/skills/meeting-sop/weekday-alignment
+     ```
+
+     14:21 补的 4 条软链里没有 `meeting-sop` —— 补的人只补了自己撞见的那几个。上表「三个工具
+     都能用」这句话本身没错，错在它给人的印象是这一类问题已经被兜住了。
+
+  这也说明**软链接不是修复**：它没有就近覆盖语义（企业层/用户层改不动被链过去的官方规则），
+  且下次加技能还得有人记得补。4 处已在 PR #956 里改成走内容层梯子，各自的断法不同、因此各有
+  独立判据：`meeting_pipeline_run` 显式抛错、`flow_run` **静默**退回默认引擎 `claude`、
+  `run_flow` 在 import 期 `ImportError`、`rules.py` 抛 `unknown rule pack version`（看着像调用方
+  版本号写错）。15 条判据 + 6 个变异全部如期转红；生产上的效果**还没量**（见台账 U13/U14）。
 - **`docker-compose.yml` 至今不在 git 里**：分层配置目前只靠机器上一个 `.bak` 文件保着。
   建议收进 `deploy/haitun/` 作为准本。
 
