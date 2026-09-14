@@ -32,8 +32,23 @@
 | 生产上已执行的**写**动作 | 见第三节，逐条记录 |
 | 当前生产是否已启用分层 | 见第三节末尾的"当前态"行 |
 | 回滚是否仍可用 | 见第三节每条的回滚列 |
-| **完整部署闭环** | ⛔ **卡住，非本方案原因**：2026-09-14 12:0x 起跳板机 `210.45.70.163` ICMP 100% 丢包、TCP/22 超时（同时刻本机打 github:443 正常，是那一跳断了）。剩余三步 U8/U9/U10 全部需要生产可达 |
-| 已交付的标准部署流程 | `deploy/haitun/audit-workspace-drift.sh` + `deploy/haitun/README.md` 新增「`workspace/tools/` 的投放」一章。脚本已做四类变异复核，但**未在真机跑过**（U8） |
+| **完整部署闭环** | 剩 31 个「落后」文件 + 1 个缺失 + 两份私有 workspace 铺平。**等 4 个「领先」文件定归属**（`tencent_meeting.py` 今天 14:19 还被改过，可能有人在做） |
+| 已交付的标准部署流程 | `deploy/haitun/audit-workspace-drift.sh`（已随 PR #953 合并）+ README 新增「`workspace/tools/` 的投放」一章。**已在真机首跑**，见动作 15 |
+
+### ⚠ 我此前记的「生产不可达」是错的——量的是另一台机器（2026-09-14 15:2x 纠正）
+
+台账与交付文档此前写着「2026-09-14 12:0x 起跳板机 `210.45.70.163` TCP/22 超时，生产不可达，
+闭环做不了」。**这个结论错了。**
+
+我用了 `~/.ssh/config` 里的 `haitun1` 别名，它配着 `ProxyJump jump` 指向实验室内网
+`192.168.63.174`——那台有 docker 但**跑 0 个容器、没有 `/srv/haitun`**，根本不是 ToB 生产机。
+
+**ToB 生产是云服务器 `root@47.100.84.197`，直接 ssh 就行，不经任何跳板。** 生产这段时间一直好着
+（9 个容器全 Up、分层 env 在位、护栏 195 条规则仍生效）。
+
+教训：别名里带 `ProxyJump` 不会在报错里显形，`Connection timed out` 长得跟生产宕机一模一样，而
+「跳板机不通」与「生产不通」是两件事。判据是登进去先核 `ls -d /srv/haitun` 与
+`docker ps -q | wc -l`，别拿 ssh 是否成功当落点正确的证据。
 
 ---
 
@@ -78,6 +93,7 @@
 | 12 | 2026-09-14 10:5x | 持久化 `vm.swappiness=10`（动作 1 只改了运行时，重启即回滚） | 新建 `/etc/sysctl.d/zz-psi-agent-swappiness.conf` | 运行时 10，但 `/etc/sysctl.d/99-apsara-sysctl.conf` 声明 `= 0` → **重启回到 0，OOM 立刻回来** | **判据吃劲**：`sysctl --system` 输出显示先 apsara 应用 `0`、后 zz- 应用 `10`，运行时终值 10 = PASS。这个顺序就是重启时的加载顺序 | `rm /etc/sysctl.d/zz-psi-agent-swappiness.conf` + `sysctl --system` |
 | 13 | 2026-09-14 11:28 | **我的探测产生的副作用**：跑 `writable_layer('skills')` 建出 `/srv/haitun/psi-agent/workspace/skills` 空目录 | 无（`_probe_writable` 的实写探针会先建目录） | 该目录不存在（9-12 已腾名为 `skills.pre-layering`） | 空目录，0 条目。**无害**：agent 层本就是设计的可写落点，探针语义是"建不出来才算不可写"。另两台没跑过探测故仍不存在 | `rmdir /srv/haitun/psi-agent/workspace/skills`（空目录，可直接删） |
 | 14 | 2026-09-14 11:37–11:41 | **修复飞书 API 护栏失效**：投放 `_feishu_api_impl.py` × 3 workspace | `cp` + `chown`，备份 `/srv/backup/guardrail-fix-20260914-1140/` | 生产 434 行（旧版，调 `rules_for(_skills_dir())` 单目录）；`_skills_dir()` = 已腾名的 `/workspace/skills` → **护栏规则 0 条，`POST /im/v1/messages` = None**。而同目录 `_feishu_spec.py` 已是新版（683 行，含 `rules_for_layers`）→ 9-12 投了 spec 漏投 impl | md5 `64ad81caf9e8` × 3 全符。三台先 import 实测再重启（避免重演动作 11）。**判据吃劲**：探针 `0 from 0 of 1 roots [(none)]` → **`195 from 3 of 4 roots [official=195 enterprise=0 agent=0]`**；真实调用被拦下并给出业务原因（`use_dedicated_tool`），修复前会放行。工具数 229/198/198 未退，失败数未增 | 从 `/srv/backup/guardrail-fix-20260914-1140/` 还原 3 份 + 重启 |
+| 15 | 2026-09-14 15:3x | **审计脚本真机首跑**（只读 + 传一个脚本进 `/tmp`）：销 U8 的账 | `scp deploy/haitun/audit-workspace-drift.sh root@47.100.84.197:/tmp/` → `bash /tmp/audit-workspace-drift.sh ef3cad55` | 脚本从未在真机跑过，gateway workspace 漂移只有我手工量的一组数（同 205/落后 32/领先 3/缺失 1/独有 0） | 同 205 / 落后 31 / 领先 4 / 缺失 1 / 独有 0，EXIT=1。差异是 `tencent_meeting.py`（两次测量之间的 14:19 被人就地改了 51 行，mtime 带纳秒，落后→领先），**脚本因此拒绝覆盖它** —— 正是这个分类存在的理由。脚本用 `git archive` 取快照，没碰目标机上任何工作树 | 无需回滚（只读；`rm /tmp/audit-workspace-drift.sh` 即可清干净） |
 
 ### ⚠ 两个私有 workspace 不是 gateway 的副本，是 8-07 的旧快照（动作 11 的教训）
 
@@ -244,6 +260,6 @@ B 臂是最坏的形状：操作者以为在恢复，实际上把内容清空了
 | U2 | 分层代码在真实生产镜像里的行为 | 全部判据都是本地 rig 跑出来的 | 重打镜像后在生产用 `layer_probe` 那行 INFO 核 |
 | ~~U3~~ | ~~护栏规则在腾名形态下的行为~~ | 已验证：不存在的 agent 层被静默跳过，users 层接手，与提示词索引同一答案 | 已完成 2026-09-12 |
 | ~~U4~~ | ~~只回滚 L1 不回滚 L2 的行为~~ | 已验证，见第五节：会清空内容，手册已按此改写 | 已完成 2026-09-12 |
-| U8 | `audit-workspace-drift.sh` 在真机上的输出 | 它是标准流程的判据本身。已在人造树上做过四类变异复核（见 README「判据」），但**没在生产上跑过一次** | 生产恢复连通后跑 `bash /tmp/audit-workspace-drift.sh origin/main`，判据是复现 9-14 手工量的 gateway 同 205/落后 32/领先 3/缺失 1/独有 0 |
+| U8 | ~~`audit-workspace-drift.sh` 在真机上的输出~~ | ✅ **已销账（动作 15）**：9-14 15:3x 在 `root@47.100.84.197` 首跑，基准 `ef3cad55`，得同 205/落后 31/领先 4/缺失 1/独有 0，EXIT=1。与手工量的 32/3 差 `tencent_meeting.py`（14:19 被人就地改过，落后→领先，脚本拒绝覆盖） | — |
 | U9 | 两份私有 workspace 整份铺平 | 它们仍是 8-07 旧快照（缺 73/71 个文件），增量投放已实测会炸（动作 11） | 需要停机窗；铺平后工具数与失败数逐项比对 |
-| U10 | 32 个"落后"文件的批量覆盖 | 这是"完整部署闭环"剩下的最后一步 | 生产恢复后先跑审计确认仍是 32 个且"领先"仍只有 3 个，再逐文件投放 + 重启前 import 探针 |
+| U10 | 31 个"落后"文件的批量覆盖 + 1 个缺失文件补投 | 这是"完整部署闭环"剩下的最后一步。**卡在 4 个"领先"文件的归属**，不是卡在网络 | 归属定了之后重跑审计确认数字未变，再逐文件投放 + 重启前 import 探针 |
