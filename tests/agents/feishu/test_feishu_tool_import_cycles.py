@@ -42,10 +42,19 @@ _PRIVATE_MODULES = sorted(p.stem for p in (_TOOLS / "_feishu").glob("*.py") if p
 # wholesale so a *new* module is failing-by-default, and ``strict=True`` means fixing
 # one turns this test red until it moves out of the list.
 #
-# 2026-09-14: ``todo_sop`` 与 ``strike`` 是这个「新模块默认红」机制第一次真的抓到东西 —— 两者
-# 都是后加的, 加进来时就带着同一个环路, 于是这条测试自动变红。已实测确认是同一性质(签名同为
-# ``partially initialized module``, 且都被 ``_feishu_impl`` re-export 后又反向依赖它), 故销账
-# 移入清单, 而不是当成回归去修。
+# 2026-09-14: 这个「新模块默认红」机制第一次真的抓到东西, 一次抓到三个后加的模块。逐个实测过
+# 归因, **它们不是同一种**, 所以分开记:
+#
+# - ``todo_sop`` / ``strike``: 与上面 12 个同一性质 —— 被 ``_feishu_impl`` re-export 后又在模块
+#   作用域反向 import 它, 报错指向自己(``cannot import name '_build_buckets' from partially
+#   initialized module '_feishu.todo_sop'``)。
+# - ``pm_send``: **不是自己成环**。``_feishu_impl`` 根本不从它 re-export, 它是 ``_feishu.message``
+#   那个既有环路的下游受害者 —— 报错指向 ``message``(``cannot import name
+#   '_ANNOUNCEMENT_ERROR_HINTS' from partially initialized module '_feishu.message'``)。它会随
+#   ``message`` 的环路被解开而自动变绿, 不需要单独修。
+#
+# 三个都是既有缺陷的表现而非回归, 故销账移入清单。留这段区分是因为将来解环时,
+# ``pm_send`` 应该跟着 ``message`` 一起从清单里出去, 而不是被当成第 15 个独立环路去查。
 #
 # ⚠️ 这份清单是硬编码的, 而 ``_PRIVATE_MODULES`` 是 glob 出来的 —— **两者不同步时红的是这里,
 # 这正是设计意图**。但反过来要小心: A1 那份测试(``test_layer_isolation_a1_real.py``)拿同一份
@@ -62,6 +71,7 @@ _KNOWN_CYCLIC = frozenset(
         "drive",
         "leave",
         "message",
+        "pm_send",
         "sheet",
         "strike",
         "task",
