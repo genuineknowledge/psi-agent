@@ -32,7 +32,7 @@
 | 生产上已执行的**写**动作 | 见第三节，逐条记录 |
 | 当前生产是否已启用分层 | 见第三节末尾的"当前态"行 |
 | 回滚是否仍可用 | 见第三节每条的回滚列 |
-| **完整部署闭环** | 剩 31 个「落后」文件 + 1 个缺失 + 两份私有 workspace 铺平。**等 4 个「领先」文件定归属**（`tencent_meeting.py` 今天 14:19 还被改过，可能有人在做） |
+| **完整部署闭环** | 剩 32 个「落后」文件 + 1 个缺失 + 两份私有 workspace 铺平。**等 3 个「领先」文件定归属**（`tencent_meeting.py` 今天 14:19 还被改过，可能有人在做） |
 | 已交付的标准部署流程 | `deploy/haitun/audit-workspace-drift.sh`（已随 PR #953 合并）+ README 新增「`workspace/tools/` 的投放」一章。**已在真机首跑**，见动作 15 |
 
 ### ⚠ 我此前记的「生产不可达」是错的——量的是另一台机器（2026-09-14 15:2x 纠正）
@@ -93,7 +93,8 @@
 | 12 | 2026-09-14 10:5x | 持久化 `vm.swappiness=10`（动作 1 只改了运行时，重启即回滚） | 新建 `/etc/sysctl.d/zz-psi-agent-swappiness.conf` | 运行时 10，但 `/etc/sysctl.d/99-apsara-sysctl.conf` 声明 `= 0` → **重启回到 0，OOM 立刻回来** | **判据吃劲**：`sysctl --system` 输出显示先 apsara 应用 `0`、后 zz- 应用 `10`，运行时终值 10 = PASS。这个顺序就是重启时的加载顺序 | `rm /etc/sysctl.d/zz-psi-agent-swappiness.conf` + `sysctl --system` |
 | 13 | 2026-09-14 11:28 | **我的探测产生的副作用**：跑 `writable_layer('skills')` 建出 `/srv/haitun/psi-agent/workspace/skills` 空目录 | 无（`_probe_writable` 的实写探针会先建目录） | 该目录不存在（9-12 已腾名为 `skills.pre-layering`） | 空目录，0 条目。**无害**：agent 层本就是设计的可写落点，探针语义是"建不出来才算不可写"。另两台没跑过探测故仍不存在 | `rmdir /srv/haitun/psi-agent/workspace/skills`（空目录，可直接删） |
 | 14 | 2026-09-14 11:37–11:41 | **修复飞书 API 护栏失效**：投放 `_feishu_api_impl.py` × 3 workspace | `cp` + `chown`，备份 `/srv/backup/guardrail-fix-20260914-1140/` | 生产 434 行（旧版，调 `rules_for(_skills_dir())` 单目录）；`_skills_dir()` = 已腾名的 `/workspace/skills` → **护栏规则 0 条，`POST /im/v1/messages` = None**。而同目录 `_feishu_spec.py` 已是新版（683 行，含 `rules_for_layers`）→ 9-12 投了 spec 漏投 impl | md5 `64ad81caf9e8` × 3 全符。三台先 import 实测再重启（避免重演动作 11）。**判据吃劲**：探针 `0 from 0 of 1 roots [(none)]` → **`195 from 3 of 4 roots [official=195 enterprise=0 agent=0]`**；真实调用被拦下并给出业务原因（`use_dedicated_tool`），修复前会放行。工具数 229/198/198 未退，失败数未增 | 从 `/srv/backup/guardrail-fix-20260914-1140/` 还原 3 份 + 重启 |
-| 15 | 2026-09-14 15:3x | **审计脚本真机首跑**（只读 + 传一个脚本进 `/tmp`）：销 U8 的账 | `scp deploy/haitun/audit-workspace-drift.sh root@47.100.84.197:/tmp/` → `bash /tmp/audit-workspace-drift.sh ef3cad55` | 脚本从未在真机跑过，gateway workspace 漂移只有我手工量的一组数（同 205/落后 32/领先 3/缺失 1/独有 0） | 同 205 / 落后 31 / 领先 4 / 缺失 1 / 独有 0，EXIT=1。差异是 `tencent_meeting.py`（两次测量之间的 14:19 被人就地改了 51 行，mtime 带纳秒，落后→领先），**脚本因此拒绝覆盖它** —— 正是这个分类存在的理由。脚本用 `git archive` 取快照，没碰目标机上任何工作树 | 无需回滚（只读；`rm /tmp/audit-workspace-drift.sh` 即可清干净） |
+| 15 | 2026-09-14 15:3x | **审计脚本真机首跑**（只读 + 传一个脚本进 `/tmp`）：销 U8 的账 | `scp deploy/haitun/audit-workspace-drift.sh root@47.100.84.197:/tmp/` → `bash /tmp/audit-workspace-drift.sh ef3cad55` | 脚本从未在真机跑过，gateway workspace 漂移只有我手工量的一组数（同 205/落后 32/领先 3/缺失 1/独有 0） | 首跑得 同 205 / 落后 31 / 领先 4 / 缺失 1 / 独有 0，EXIT=1。与手工量差一个 `meeting_pipeline_run.py` —— 查下去**是脚本判据错了**，不是生产变了（详见动作 16）。脚本用 `git archive` 取快照，没碰目标机任何工作树 | 无需回滚（只读；`rm /tmp/audit-workspace-drift.sh` 即可清干净） |
+| 16 | 2026-09-14 15:5x–16:0x | **修审计脚本的落后/领先判据 + 复跑**；另做只读取证：3 个「领先」文件的归属、`workspace/skills` 只剩 5 项的成因、三个硬编码 skills 路径的工具是否还能用 | 本地改 `audit-workspace-drift.sh` → 变异复核 → `scp` 覆盖 `/tmp/` 那份 → `bash /tmp/audit-workspace-drift.sh ef3cad55 workspace`；取证用 `docker exec psi-agent-gateway` 跑只读 `python3 -c` 与 `ls`/`stat` | 判据是 mtime 纳秒位：整秒=投放、带纳秒=就地写入 | **判据不成立**：不带 `-p` 的 `cp` 把 mtime 设成「此刻」而此刻天然带纳秒，投放与就地编辑无法区分。改成内容判据 `git hash-object` + `git cat-file -e`（blob 在仓库里 = 落后，不在 = 真领先）；并改为取历史最全的 clone（目标机 `/tmp/rel-482d970c` 只有 729 commit、`/tmp/rel-5565f4bd` 有 3133，取残缺那份会把落后误判成领先）。复跑得 **同 205 / 落后 32 / 领先 3 / 缺失 1 / 独有 0，EXIT=1**，与手工量一致。变异复核三条全过，其中「整秒 mtime 但内容不在 git → 仍判领先」是旧判据会静默覆盖的那条。取证结论：`tencent_meeting.py` 那份是**分层适配补丁**（`_skill_script()` 跨层找技能脚本，git 里一处都搜不到），但同时丢了 PR #859 的 `anyio.fail_after` 超时保护（`grep -c` 得 0）；`workspace/skills` 只剩 5 项，其中 4 条是 14:21–14:33 有人软链到 `/content/official/skills/` 的兜底，容器内 4 条全解析、三个工具实测都能用（`load_rule_pack()` 16 条、`SKILLS` 是目录）| 脚本改动在 git 里可回退；取证全是只读，无副作用 |
 
 ### ⚠ 两个私有 workspace 不是 gateway 的副本，是 8-07 的旧快照（动作 11 的教训）
 
@@ -260,6 +261,8 @@ B 臂是最坏的形状：操作者以为在恢复，实际上把内容清空了
 | U2 | 分层代码在真实生产镜像里的行为 | 全部判据都是本地 rig 跑出来的 | 重打镜像后在生产用 `layer_probe` 那行 INFO 核 |
 | ~~U3~~ | ~~护栏规则在腾名形态下的行为~~ | 已验证：不存在的 agent 层被静默跳过，users 层接手，与提示词索引同一答案 | 已完成 2026-09-12 |
 | ~~U4~~ | ~~只回滚 L1 不回滚 L2 的行为~~ | 已验证，见第五节：会清空内容，手册已按此改写 | 已完成 2026-09-12 |
-| U8 | ~~`audit-workspace-drift.sh` 在真机上的输出~~ | ✅ **已销账（动作 15）**：9-14 15:3x 在 `root@47.100.84.197` 首跑，基准 `ef3cad55`，得同 205/落后 31/领先 4/缺失 1/独有 0，EXIT=1。与手工量的 32/3 差 `tencent_meeting.py`（14:19 被人就地改过，落后→领先，脚本拒绝覆盖） | — |
+| U8 | ~~`audit-workspace-drift.sh` 在真机上的输出~~ | ✅ **已销账（动作 15 + 16）**：首跑反而查出脚本自己的落后/领先判据不成立（mtime 纳秒位区分不了 `cp` 投放与就地编辑），改用 `git hash-object` + `git cat-file -e` 的内容判据后复跑得 **同 205 / 落后 32 / 领先 3 / 缺失 1 / 独有 0，EXIT=1**，与手工量一致 | — |
 | U9 | 两份私有 workspace 整份铺平 | 它们仍是 8-07 旧快照（缺 73/71 个文件），增量投放已实测会炸（动作 11） | 需要停机窗；铺平后工具数与失败数逐项比对 |
-| U10 | 31 个"落后"文件的批量覆盖 + 1 个缺失文件补投 | 这是"完整部署闭环"剩下的最后一步。**卡在 4 个"领先"文件的归属**，不是卡在网络 | 归属定了之后重跑审计确认数字未变，再逐文件投放 + 重启前 import 探针 |
+| U10 | 32 个"落后"文件的批量覆盖 + 1 个缺失文件补投 | 这是"完整部署闭环"剩下的最后一步。**卡在 3 个"领先"文件的归属**，不是卡在网络 | 归属定了之后重跑审计确认数字未变，再逐文件投放 + 重启前 import 探针 |
+| U11 | `tencent_meeting.py` 的分层适配补丁只活在生产上 | 它加的 `_skill_script()`（改从 `PSI_CONTENT_ROOTS` 逐层找技能脚本）在 git 里一处都搜不到。分层把技能挪出 `<workspace>/skills` 后这个适配是必要的，但下次镜像发布或批量投放会把它冲掉；同一份改动还丢了 PR #859 的 `anyio.fail_after` 超时保护（防上游挂起把会议 cron 永久阻塞） | 收编进仓库，**两者都要**：保留跨层解析 + 恢复超时保护。判据是 `_skill_script()` 解析到 official 层且 `grep -c fail_after` 不为 0 |
+| U12 | `workspace/skills` 下的 4 条软链只活在生产上 | 9-14 14:21–14:33 有人把 `tencent-meeting-mcp` / `positive-negative-list` / `workflow` / `fusion-flow-legacy` 软链到 `/content/official/skills/`，给三个硬编码 `<workspace>/skills` 路径的工具兜底（另两个是 `_positive_negative_list/rules.py` 与 `_gen_mcp_skill.py`）。已实测容器内 4 条全解析、三个工具都能用，但这是机器上的手工状态，不在 git 也不在镜像里 | 要么把三个工具都改成跨层解析（同 U11），要么把软链写进部署脚本。判据是容器内 `[ -e /workspace/skills/<name> ]` 四条全真 |

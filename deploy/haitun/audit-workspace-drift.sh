@@ -46,8 +46,14 @@ REPO="${REPO:-}"
 # 仓库位置: 显式给 REPO, 否则找一个能用的 clone。不 clone 新的 —— 目标机的 GitHub
 # 是间歇故障(实测 TLS recv error -110), 静默拉半份比拉不到更糟。
 if [ -z "$REPO" ]; then
+  # 挑历史最全的那个 clone, 不是第一个撞上的。落后/领先的判据是"blob 在不在仓库里",
+  # 历史缺失会把"落后"误判成"领先"。实测目标机上 /tmp/rel-482d970c 只有 729 个
+  # commit 而 /tmp/rel-5565f4bd 有 3133 个 —— 按 glob 顺序取正好取到残缺那份。
+  best=0
   for c in /tmp/rel-check /tmp/rel-* .; do
-    [ -d "$c/.git" ] && REPO="$c" && break
+    [ -d "$c/.git" ] || continue
+    n=$(git -C "$c" rev-list --count --all 2>/dev/null) || continue
+    if [ "${n:-0}" -gt "$best" ]; then best="$n"; REPO="$c"; fi
   done
 fi
 [ -n "$REPO" ] && [ -d "$REPO/.git" ] || { echo "找不到 git clone。用 REPO=<path> 指定。" >&2; exit 2; }
@@ -90,8 +96,19 @@ for W in "${WORKSPACES[@]}"; do
     if [ "$a" = "$b" ]; then
       same=$((same+1)); continue
     fi
-    ns=$(stat -c %y "$p" | sed 's/.*\.//; s/ .*//')
-    if [ "$ns" = "000000000" ]; then
+    # 落后 vs 领先: 判据是"这份内容在仓库里存在过吗", 不是 mtime。
+    #
+    # 2026-09-14 实测: 只看 mtime 纳秒位会误判。`meeting_pipeline_run.py` 带纳秒
+    # (14:19 之外的一次手工投放), 按 mtime 判成"领先"、脚本拒绝覆盖; 但它的内容与
+    # commit 880d9831 逐字节相同, 其实是**落后** 5 天。根因: 不带 `-p` 的 `cp` 会把
+    # mtime 设成"此刻", 而此刻天然带纳秒 —— 手工投放与就地编辑在 mtime 上无法区分。
+    #
+    # `git hash-object` 算出的是 blob SHA; 只要仓库里存在这个 blob, 说明这份内容
+    # 是某个 commit 里的版本, 覆盖它不会丢任何没进 git 的代码。反之才是真"领先"。
+    # 前提: 仓库 blob 与生产文件都是 LF(已核 .gitattributes 与 blob 内容), 所以
+    # 直接对生产文件算 hash 是同口径比对。
+    blob=$(git hash-object "$p")
+    if git cat-file -e "$blob" 2>/dev/null; then
       stale=$((stale+1)); echo "$f" >> "$SNAP/stale_$W"
     else
       ahead=$((ahead+1)); printf '%s  (%s)\n' "$f" "$(stat -c %y "$p" | cut -c1-19)" >> "$SNAP/ahead_$W"
