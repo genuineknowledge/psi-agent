@@ -104,6 +104,10 @@ TOOL_ALIASES: dict[str, str] = {
     "positive_negative_case_review_submit": "正在保存复盘",
     "positive_negative_candidate_analyze": "正在分析候选",
     "positive_negative_candidate_card": "正在整理候选卡片",
+    # 额外暴露工具别名
+    "schedule_manage": "正在管理日程",
+    "tencent_meeting_call": "正在发起腾讯会议",
+    "tencent_meeting_minutes_publish": "正在发布会议纪要",
 }
 """工具名 → 中文别名。覆盖飞书包自己声明暴露的工具, 由判据锁死。
 

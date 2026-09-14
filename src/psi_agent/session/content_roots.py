@@ -61,11 +61,12 @@ from psi_agent.session.tool_layers import Layer
 # ``PSI_PRIVATE_OPEN_IDS``).  Unset → no layering, single-root behaviour unchanged.
 CONTENT_ROOTS_ENV = "PSI_CONTENT_ROOTS"
 
-# ``name=path`` entries, ``os.pathsep``-separated so a Windows drive letter's colon
-# does not have to be escaped.  Priority is the entry's position: ascending, so the
-# last entry is the most specific (closest to the user) — the same direction the
-# mount list reads in, ``official:enterprise:users``.
+# ``name=path`` entries, ``;`` or `os.pathsep`-separated. A delimiter regex
+# ``r"\s*(?:;|:(?=[0-9A-Za-z._-]+\s*=))\s*"`` is used so Windows drive letter colons
+# (e.g., ``C:/path``) are not split when parsing on POSIX/Linux systems where
+# ``os.pathsep`` is ``:``.
 _ENTRY_SPLIT = re.compile(r"\s*=\s*")
+_DELIM_SPLIT = re.compile(r"\s*(?:;|:(?=[0-9A-Za-z._-]+\s*=))\s*")
 
 # A name goes into a module name via ``Layer.scope_token``, and it is an identity,
 # so the character set is restricted rather than sanitised: sanitising would let
@@ -118,7 +119,7 @@ def parse_content_roots(raw: str) -> list[ContentRoot]:
     """
     roots: list[ContentRoot] = []
     seen: set[str] = set()
-    for piece in raw.split(os.pathsep):
+    for piece in _DELIM_SPLIT.split(raw):
         entry = piece.strip()
         if not entry:
             continue
