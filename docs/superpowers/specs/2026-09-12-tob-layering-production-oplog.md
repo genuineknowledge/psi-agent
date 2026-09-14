@@ -165,6 +165,47 @@
 
 ---
 
+### 动作 18：查出分层断链的第 5 处，`card-dsl` 模板（2026-09-14 19:0x，只读探针，生产零写入）
+
+**起因**：负责人问「不合 #867 影响本次上线吗」。查耦合的过程中顺手核了 `_card_dsl.py:449`
+——我此前把它记成「等 #867 合并后再改」，理由是怕撞同一个文件。**那个判断是错的**：实测 #867
+没碰这段（它改的是元素分派 `elif` 链与 `_xml_escape`），两者文件交集为空，没必要等。
+
+**只读探针实测（容器内）**：
+
+```
+/workspace/skills/card-dsl/templates       → 1 个：remind-card.xml（9-14 14:33 有人放的）
+/content/official/skills/card-dsl/templates → 4 个：meeting-summary-card / remind-card / review-card / todo-card
+PSI_CONTENT_ROOTS = official=/content/official:enterprise=/content/enterprise:users=/content/users
+
+meeting-summary-card.xml  visible=False
+review-card.xml           visible=False
+todo-card.xml             visible=False
+```
+
+`_resolve_template_dir()` 的逻辑是「第一个 `isdir` 为真的候选目录就是模板目录」。`/workspace`
+那个目录**存在**（有人放了一个模板进去），于是解析就此终止，`/content/official` 下的另外三个
+**全部看不见**。牵连 `_meeting_card`（会议总结卡）、`feishu_card_render`、
+`feishu_todo_ledger_reconcile`（台账对账）、`_review_card_impl`（评价卡）。
+
+**这是与前 4 处不同的形态，值得单列**：前 4 处是**目录不存在**才断，`isdir` 类判据能抓到；
+这处**目录在、只是内容不全**，`isdir` 判据全绿。表现也只是一句 `not found`，看着像调用方把
+模板名写错了 —— 没有任何一层会为此报警。
+
+**修法**（PR #960）：`_resolve_template_dir() -> str` 换成 `_template_dirs() -> list[str]` +
+`_resolve_template(name) -> str | None`，从「先定一个目录、再进去找文件」改成「**逐层找单个
+文件，就近者胜**」。兜底链的终止条件必须落在最终要用的那个东西（文件）上，不能落在它的容器
+（目录）上。报错带上查过的目录 —— 分层后「找不到」最常见的原因是投放漏了某一层。
+
+**判据的一个坑，实测撞出来的**：测试里的模板名刻意用仓库里**不存在**的 `layer-probe-card`。
+一开始用了真名 `review-card`，结果 `__file__` 兜底那层悄悄接住请求，判据假绿。7 条判据 +
+5 条变异（退回原缺陷那条打红 3 条），复原后全绿且 `git diff --stat` 非空。
+
+**生产影响**：无。本条只跑了只读探针（`ls` / `python -c` 里的 `isfile`），生产零写入。
+修复走 PR #960，投放后的复量见 U16。
+
+---
+
 ## 二之二、G1–G4 本次实测结果（2026-09-12 20:2x，PR #948 已合并 `5565f4bd`）
 
 | 闸门 | 实测 | 判定 |
@@ -297,6 +338,7 @@ B 臂是最坏的形状：操作者以为在恢复，实际上把内容清空了
 | U13 | PR #956 的 4 处跨层修复在生产上的实际效果 | 其中 `meeting_pipeline_run.py` 那条是**当前正断着**的每日会议分析。15 条判据全在本机跑的，生产一次没量 | #956 合并 + 投放后，容器内调 `_sop_skill_md("meeting-sop/weekday-alignment")` 确认落到 `/content/official`；`flow_run` 那条要看子进程环境里 `.env` 的变量是否真进去了 —— 它断的时候不报错，只是静默用错引擎，所以判据必须看变量值而不是看有没有异常 |
 | U15 | `positive_negative_rules` 指纹返回的 `layer` 在生产上报的是哪一层 | #956 合并期与 #955 撞车（详见下方「PR #956 的 CI 红在合并结果上」），修法是让 `load_rule_pack` 与 `rule_pack_source` 共用一条层梯子。**这个字段的用处正是防伪证**：agent 拿指纹当"我确实重读了规则"的证据，报错层等于给没读过的文件作保。本机判据齐（3 条变异全红），生产没量 | 投放后容器内调一次 `positive_negative_rules("及时反馈")`，看返回里 `layer` 与 `sha256` 是否同源 —— 拿 `layer` 报的那一层的文件自己算一遍 sha256 比对，**不要只看 `layer` 的字面值**，写死也能报对 |
 | U14 | `workspace/skills` 那 4 条软链在 #956 之后能否删 | 它们是 14:21 的手工兜底，#956 之后应当冗余。留着不只是脏：软链**没有就近覆盖语义**，企业层/用户层改不动被链过去的官方规则 | 先删影响面最小的 `fusion-flow-legacy` 一条，跑一次对应工具确认走的是层梯子；4 条逐条来，别一次删完 |
+| U16 | `card-dsl` 模板在生产上是否已能跨层看见（PR #960） | **这是分层断链的第 5 处，动手前已实测正断着**：`/workspace/skills/card-dsl/templates` 只有 1 个 `remind-card.xml`（9-14 14:33 有人放的），而 `meeting-summary-card` / `review-card` / `todo-card` 只在 `/content/official`，容器内逐个 `isfile` 均 `False`。牵连会议总结卡、`feishu_card_render`、台账对账、评价卡。7 条判据 + 5 条变异全在本机 | 投放后容器内调 `_card_dsl._resolve_template('meeting-summary-card')`，确认返回的是 `/content/official` 那份而不是 `None`；**再各渲染一次那三个模板**——只验解析到路径不够，`isfile` 为真但内容坏掉一样发不出卡 |
 | U10 | 32 个"落后"文件的批量覆盖 + 1 个缺失文件补投 | 这是"完整部署闭环"剩下的最后一步。**卡在 3 个"领先"文件的归属**，不是卡在网络 | 归属定了之后重跑审计确认数字未变，再逐文件投放 + 重启前 import 探针 |
 | ~~U11~~ | ~~`tencent_meeting.py` 的分层适配补丁只活在生产上~~ | **已在仓库里落地（PR #956）**，跨层解析与 `anyio.fail_after` 超时保护两者都在，且各有一条判据（超时那条做过变异复核：把 `fail_after` 换名后如期转红）。生产那份文件本身仍收编在 `docs/superpowers/salvage/prod-ahead-20260914/` 备查 | 剩下的是「投放后在生产上复量」，见 U13 |
 | ~~U12~~ | ~~`workspace/skills` 下的 4 条软链只活在生产上~~ | **这条的描述有两处错，已在动作 17 纠正**：(1) 需要兜底的工具不是 3 个而是 4 个，且清单不对 —— 真断的是 `meeting_pipeline_run.py` / `flow_run.py` / `run_flow.py` / `rules.py`，而 `_gen_mcp_skill.py` 根本不是缺陷（下划线前缀不进工具扫描，是仓库内 dev CLI）；(2) 「三个工具都能用」掩盖了 `meeting-sop` **没被软链、每日会议分析当前就是断的**。修复走 PR #956 | 后续判据移到 U13/U14 |
