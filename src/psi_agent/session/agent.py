@@ -63,6 +63,7 @@ from psi_agent.session.system_prompt import SystemPrompt
 from psi_agent.session.tool_convergence import ToolCallConvergence  # refusal notices + call-surface gate
 from psi_agent.session.tool_defs import ToolDefsCache, build_tool_defs
 from psi_agent.session.tool_exposure import select_exposed, tier_from_env
+from psi_agent.session.tool_guard import screen_tool_call
 from psi_agent.session.tool_registry import ToolRegistry
 from psi_agent.session.trigger_registry import TriggerRegistry
 
@@ -990,6 +991,19 @@ class SessionAgent:
                                     results: list[str] = [""] * len(ordered_calls)
 
                                     async def _execute_one(idx: int, fn: str, a: dict[str, Any], r: list[str]) -> None:
+                                        # 只读/演练会话的工具闸门 (见 session/tool_guard.py)。
+                                        # 作用点在**执行处**, 不是提示词: 评测用例里有一类是
+                                        # "要求它拒绝"的诱导题 (见 PR #955), 而模型偶尔真会照做 ——
+                                        # 2026-09-14 就这么把纪要发进了真实的飞书群。提示词只能提高
+                                        # 拒绝率, 拦不住那一次照做; 闸门才拦得住。
+                                        blocked = screen_tool_call(self._conversation.session_id, fn, a)
+                                        if blocked is not None:
+                                            r[idx] = blocked
+                                            logger.warning(
+                                                f"Tool guard blocked {fn!r} "
+                                                f"in {self._conversation.session_id!r}"
+                                            )
+                                            return
                                         func = self._tool_registry.get(fn)
                                         if func is None:
                                             r[idx] = f"Error: Tool '{fn}' not found"
