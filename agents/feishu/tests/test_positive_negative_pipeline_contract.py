@@ -6,6 +6,7 @@ import importlib
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -223,6 +224,42 @@ def test_rules_tool_reports_rule_pack_fingerprint_for_provenance() -> None:
     assert source["file"] == "skills/positive-negative-list/6.0-shadow.yaml"
     # 指纹是给比对用的, 不是给读用的 —— 不能顺手把整份规则正文塞进返回值。
     assert len(source["sha256"]) == 12
+    # 未声明分层时命中的是老落点。``file`` 只是相对短路径, 分层后每层都有同名文件, 单靠它
+    # 定不到"到底读了哪一份" —— ``layer`` 补的就是这一位。
+    assert source["layer"] == "legacy"
+
+
+def test_rule_pack_fingerprint_names_the_layer_it_read() -> None:
+    """指纹必须指名命中的层, 且 ``sha256`` 与那一层的文件对得上。
+
+    分层之后 ``<version>.yaml`` 在每层都可能存在。若 ``layer`` 写死或漏报, 指纹就会为一份
+    没被读过的文件作保 —— 而 agent 拿它当"我确实重读了"的证据, 等于伪证。
+    """
+    rules = importlib.import_module("_positive_negative_list.rules")
+    legacy = rules._LEGACY_CONFIG_DIR / f"{rules.DEFAULT_VERSION}.yaml"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        near = Path(tmp) / "enterprise" / "skills" / "positive-negative-list"
+        near.mkdir(parents=True)
+        # 内容刻意与老落点那份不同: 只有这样 sha256 才能证明读的是就近那层, 而不是碰巧相等。
+        payload = legacy.read_text(encoding="utf-8") + "\n# layer probe\n"
+        near_pack = near / f"{rules.DEFAULT_VERSION}.yaml"
+        near_pack.write_text(payload, encoding="utf-8")
+        near_bytes = near_pack.read_bytes()
+        assert near_bytes != legacy.read_bytes(), "两层内容必须不同, 否则 sha256 断言证明不了任何事"
+
+        os.environ["PSI_CONTENT_ROOTS"] = f"enterprise={Path(tmp) / 'enterprise'}"
+        try:
+            source = rules.rule_pack_source()
+        finally:
+            del os.environ["PSI_CONTENT_ROOTS"]
+
+    assert source["layer"] == "enterprise", "命中了就近层却没报出来"
+    # 期望值取自**落盘后读回的字节**, 不是内存里的 payload: Windows 上 ``write_text`` 会把
+    # ``\n`` 写成 ``\r\n``, 拿内存那份算 sha256 会让判据在换行风格上假红。
+    expected = hashlib.sha256(near_bytes).hexdigest()[:12]
+    assert source["sha256"] == expected, "sha256 来自另一层 —— 指纹与 layer 不同源"
+    assert source["bytes"] == len(near_bytes)
 
 
 def test_rules_tool_rejects_unknown_or_traversal_version_without_leaking_a_path() -> None:

@@ -114,13 +114,35 @@ class RulePack:
         return [entry.as_dict() for _, _, entry in scored[:limit]]
 
 
-def load_rule_pack(version: str = DEFAULT_VERSION) -> RulePack:
+def _layer_name_of(path: Path) -> str:
+    """``path`` 命中的内容层名; 落在老落点上返回 ``"legacy"``。
+
+    按 ``_config_dirs()`` 同一份候选倒查, 而不是去解析路径字符串 —— 层的根可以是任意目录,
+    从路径反推层名迟早会猜错。
+    """
+    for root in reversed(_content_roots_from_env()):
+        if path.parent == Path(str(root.path)) / "skills" / _SKILL_NAME:
+            return root.name
+    return "legacy"
+
+
+def _rule_pack_path(version: str) -> Path:
+    """规则包文件, 按内容层就近解析; 全层未命中抛 ``ValueError``。
+
+    ``load_rule_pack`` 与 ``rule_pack_source`` **必须共用这一个解析口**: 后者返回的是
+    "我确实读了这份文件"的指纹, 一旦两处各自解析、落到不同层的同名文件上, 指纹就成了伪证 ——
+    它会为一份没被读过的文件作保。共用之后这种偏斜在结构上不可能出现。
+    """
     if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+(?:-[a-z0-9-]+)?", version):
         raise ValueError("invalid rule pack version")
     path = next((p for d in _config_dirs() if (p := d / f"{version}.yaml").is_file()), None)
     if path is None:
         raise ValueError(f"unknown rule pack version: {version}")
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return path
+
+
+def load_rule_pack(version: str = DEFAULT_VERSION) -> RulePack:
+    raw = yaml.safe_load(_rule_pack_path(version).read_text(encoding="utf-8"))
     if not isinstance(raw, dict) or raw.get("version") != version:
         raise ValueError("rule pack version metadata mismatch")
     entries: list[RuleEntry] = []
@@ -147,17 +169,20 @@ def rule_pack_source(version: str = DEFAULT_VERSION) -> dict[str, Any]:
     skills/positive-negative-list/<version>.yaml``, 那正是"用 bash 去补工具缺口"的
     典型来源(实测 P25)。把指纹放回工具返回里, 这条路就不需要了。
 
-    ``file`` 是相对 agent 包根的路径, 便于在原句里引用; ``sha256`` 只取前 12 位 ——
-    够区分且好念。刻意**不**返回全文: 这个字段是给"比对"用的, 不是给"读"用的。
+    ``file`` 保持"相对技能根"的短路径, 便于在原句里引用, 也不把服务器目录结构泄进 agent 的
+    输出。但分层之后**光有它不足以定位文件**: 同名 ``<version>.yaml`` 在每层都可能存在, 只报
+    这一个字段会让 ``file`` 读着像 agent 包那份、``sha256`` 其实来自 ``official`` 层 —— 自相
+    矛盾, 且恰好骗过"报了路径就算有据"的读法。所以另给 ``layer``: 命中层的名字(未声明分层时是
+    ``legacy``, 与改动前的单根世界对应)。
+
+    ``sha256`` 只取前 12 位 —— 够区分且好念。刻意**不**返回全文: 这个字段是给"比对"用的,
+    不是给"读"用的。
     """
-    if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+(?:-[a-z0-9-]+)?", version):
-        raise ValueError("invalid rule pack version")
-    path = _CONFIG_DIR / f"{version}.yaml"
-    if not path.is_file():
-        raise ValueError(f"unknown rule pack version: {version}")
+    path = _rule_pack_path(version)
     raw = path.read_bytes()
     return {
-        "file": f"skills/positive-negative-list/{version}.yaml",
+        "file": f"skills/{_SKILL_NAME}/{version}.yaml",
+        "layer": _layer_name_of(path),
         "sha256": hashlib.sha256(raw).hexdigest()[:12],
         "bytes": len(raw),
     }
