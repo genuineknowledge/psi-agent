@@ -18,6 +18,29 @@ metadata:
 
 # 腾讯会议 MCP 服务
 
+## 唯一的调用入口：`tencent_meeting_call`
+
+本文件里出现的 `get_records_list`、`get_transcripts_details`、`search_minutes`、
+`convert_timestamp` … 是**腾讯会议 MCP 的方法名**，不是本进程 `tools` 列表里的工具名。
+本进程里腾讯会议侧只有一个工具，方法名写进它的 `params_json.name`：
+
+```
+tencent_meeting_call(method="tools/call",
+                     params_json='{"name": "<方法名>", "arguments": {...}}')
+```
+
+- 要查**线上状态**（录制/转写的 `state`、会议详情、纪要、播放地址、参会人）就调它。
+  方法名以本文件为准，不要发明变体。
+- **不要**用 `bash` 去跑 `skills/tencent-meeting-mcp/scripts/*`：工具包的就是同一个脚本，
+  但只有工具带 token 环境、超时、错误码提示与调用记录；自己跑一遍等于把同一件事做得
+  不可审计（生产上出现过这种绕过）。
+- **不要**用 `read`/`sed`/`grep` 读 `tools/*.py`、配置或 appdata 文件来**推断线上状态**。
+  源码只能说明设计意图（比如"转写是异步产出的"），说明不了"这一场现在是什么 state"。
+  线上状态一律以接口返回为准；接口没返回就如实说没返回，不要拿代码推断冒充现状。
+- 常规顺序：先 `meeting_transcript_prepare`（本链路封装的"取最新一场转写"），再
+  `meeting_session_read`（含 `search=` 全文检索，用于逐字核对与计数）；只有这两个
+  覆盖不到的方法，才直接走 `tencent_meeting_call`。
+
 ## 调用面约束（防空转）
 
 - 工具名只认本回合 `tools` 列表里真实存在的名字（本 skill 写明的入口，如 `td_*`）；**禁止**根据文档发明变体或假 dispatcher 并换名连打。

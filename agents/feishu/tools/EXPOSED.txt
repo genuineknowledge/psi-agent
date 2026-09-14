@@ -93,3 +93,16 @@ meeting_transcript_prepare
 meeting_record_export
 meeting_records_list
 meeting_pipeline_replay
+
+# ── 腾讯会议直连 + 调度入口 (2026-09-14 评测发现) ────────────────────────────
+# tencent_meeting_call 是腾讯会议侧的**通用透传**: 没有专用工具封装的方法都走它。
+# 它此前不在名单里, 结果模型看不见这个名字, 又需要同一个能力时就去 `bash` 跑
+# ``skills/tencent-meeting-mcp/scripts/*`` —— 那正是这个工具内部包着的同一个脚本,
+# 只是丢掉了 token 环境、超时与错误契约 (实测 M23: 唯一一条"纯 bash 绕过"的用例)。
+# tencent_meeting_minutes_publish 是同一侧的投递入口, 与 meeting_session_notify 配对。
+#
+# schedule_manage 是会议/正负面两条链路的调度入口 (改时间、开关定时任务)。同样只加
+# 发现面: 不在名单里时模型要先 tool_search 才能发现它, 相关用例的命中率天然偏低。
+schedule_manage
+tencent_meeting_call
+tencent_meeting_minutes_publish

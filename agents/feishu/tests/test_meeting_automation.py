@@ -671,6 +671,71 @@ async def test_meeting_session_read_returns_bounded_chunks(tmp_path: Path) -> No
 
 
 @pytest.mark.anyio
+async def test_meeting_session_read_search_scans_the_whole_artifact(tmp_path: Path) -> None:
+    """检索要看到全局: 命中行号 + 出现次数, 不受分块边界影响。"""
+    root = tmp_path / "meeting-session" / "weekday-alignment"
+    root.mkdir(parents=True)
+    filler = "\n".join(f"第 {index} 行普通内容" for index in range(1, 900))
+    (root / "transcript.md").write_text(f"{filler}\n锚点一\n中间还有一句锚点一\n尾行锚点一\n", encoding="utf-8")
+    result = json.loads(
+        await meeting_session_read(
+            meeting_name="weekday-alignment", artifact="transcript", appdata_root=str(tmp_path), search="锚点一"
+        )
+    )
+    assert result["ok"] is True
+    assert result["match_count"] == 3
+    assert result["occurrence_count"] == 3
+    assert [item["line"] for item in result["matches"]] == [900, 901, 902]
+    assert result["truncated"] is False
+    # 分块读取只看得到一块, 检索必须看到全文 —— 末行命中就是这条保证的证据。
+    assert result["matches"][-1]["text"] == "尾行锚点一"
+
+
+@pytest.mark.anyio
+async def test_meeting_session_read_search_supports_context_limit_and_misses(tmp_path: Path) -> None:
+    root = tmp_path / "meeting-session" / "weekday-alignment"
+    root.mkdir(parents=True)
+    (root / "transcript.md").write_text("甲\n乙\n锚点\n丙\n丁\n", encoding="utf-8")
+    hit = json.loads(
+        await meeting_session_read(
+            meeting_name="weekday-alignment",
+            appdata_root=str(tmp_path),
+            search="锚点",
+            context=2,
+            limit=1,
+        )
+    )
+    assert hit["matches"][0]["before"] == ["甲", "乙"]
+    assert hit["matches"][0]["after"] == ["丙", "丁"]
+
+    miss = json.loads(
+        await meeting_session_read(meeting_name="weekday-alignment", appdata_root=str(tmp_path), search="不存在的锚点")
+    )
+    assert miss["ok"] is True
+    assert miss["match_count"] == 0
+    assert miss["occurrence_count"] == 0
+    assert miss["matches"] == []
+
+
+@pytest.mark.anyio
+async def test_meeting_session_read_rejects_out_of_range_search_options(tmp_path: Path) -> None:
+    root = tmp_path / "meeting-session" / "weekday-alignment"
+    root.mkdir(parents=True)
+    (root / "transcript.md").write_text("锚点\n", encoding="utf-8")
+    bad_context = json.loads(
+        await meeting_session_read(
+            meeting_name="weekday-alignment", appdata_root=str(tmp_path), search="锚点", context=99
+        )
+    )
+    bad_limit = json.loads(
+        await meeting_session_read(meeting_name="weekday-alignment", appdata_root=str(tmp_path), search="锚点", limit=0)
+    )
+    assert bad_context["ok"] is False
+    assert bad_context["status"] == "meeting_session_read_failed"
+    assert bad_limit["ok"] is False
+
+
+@pytest.mark.anyio
 async def test_prepare_skips_already_processed_recording(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "meeting-session" / "weekday-alignment"
     root.mkdir(parents=True)

@@ -16,9 +16,35 @@ description: "在人工飞书私聊中，按正负面清单分析行为、补齐
   (同库的战争版 `tblbF6ZVQbNTNxxn`、红线记录表等都不是台账读写目标)。
 - 读写失败(权限/表不存在)时如实转述工具错误, 提示用户在飞书侧检查应用协作者权限,
   绝不静默改坐标、换表或用其它手段绕过。
+
+- **读规则与读台账都走专用工具, 不用 `bash`/`read` 直接翻文件或源码。** 规则用
+  `positive_negative_rules`(它按 `active` 过滤、返回稳定 ID), 台账用
+  `positive_negative_case_read`。拿 `sed`/`grep` 去读 `skills/positive-negative-list/*.yaml`
+  或 `tools/positive_negative_*.py` 得到的是**未经工具契约过滤**的原文: 会混进未生效条目,
+  口径也与工具返回不一致(实测: 直接读文件数出 16 条, 而 `positive_negative_rules` 实际只
+  返回 14 条 —— 红线条目按设计不进检索面), 回答却把来源写成了工具返回。
 - 人员过滤(subject_user_key=涉事人 / reporter_user_key=报告人)只接受 open_id 或
   特殊值 `我/本人/me`(工具自动填当前会话发起人 open_id); 中文姓名会报错, 需要按姓名查时
   先经 `feishu_contact_find` 解析成 open_id, 或全量读取后自行筛选。
+
+### 工具调用场景 (哪个需求 → 哪个入口)
+
+| 需求 | 入口 | 不要这样替代 |
+|---|---|---|
+| 规则条目、稳定 ID、条件/例外 | `positive_negative_rules`(按 `active` 过滤) | `grep`/`sed` 读 `skills/positive-negative-list/*.yaml`: 会读到未生效条目, 口径与工具不一致 |
+| **规则包来源指纹**(证明"本轮确实重读过、内容没变") | `positive_negative_rules` 返回的 `source`(`file` + `sha256` 前 12 位 + `bytes`) | `md5sum`/`sha256sum` 规则文件: 指纹已由工具给出, 自己算出来的是另一个口径 |
+| 台账记录内容(读、按人筛选、分页) | `positive_negative_case_read` | 自写脚本读表; 用 `feishu_api` 直接拉记录 |
+| **台账表结构 / 列名 / 列映射**(写前预检用) | `feishu_api` 取上方固定坐标台账表的字段元数据 —— 取**结构**是允许的 | 用"列出所有表"的接口去**发现并切换**目标表(坐标由代码固定, 换表即错); 也不得自造字段名 |
+| 分析汇总、证据缺口、疑似重复 | `positive_negative_case_analyze` | 自己聚合 `case_read` 的返回 |
+| 生成写入者确认卡 | `positive_negative_case_prepare` | 直接把候选写进表 |
+| 用户点「确认写入」/「取消录入」 | `positive_negative_case_confirm`(原样传卡片 JSON + 当前 `user_key`) | 自己重建 `case_id`、预览摘要或写入者身份 |
+| 提醒涉事人 | `positive_negative_case_remind`(按记录+涉事人去重, 失败可重试) | 用 `feishu_message_send` 绕开去重与回执 |
+| 复盘: 开始 / 提交 | `positive_negative_case_review_start` / `positive_negative_case_review_submit` | 把复盘答案写回表 |
+| 会议纪要里的行为候选整理 | `positive_negative_candidate_card` → `positive_negative_candidate_analyze` | 从会议产物直接生成正式记录 |
+| 按姓名找人 | 先 `feishu_contact_find` 解析成 open_id, 再传给过滤器 | 把中文姓名直接塞进 `subject_user_key`/`reporter_user_key` |
+
+`feishu_api` 在这条链路里只有一个位置: **固定坐标台账表的结构元数据**。任何"记录内容"
+出自 `positive_negative_case_*`, 任何"规则内容"出自 `positive_negative_rules`。
 
 ## 一期 MVP 边界
 
