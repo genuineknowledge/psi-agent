@@ -5,9 +5,10 @@ year-explicitness, PG template shape) so the guards can never silently
 regress while the real O2OA connection is still being provisioned.
 """
 
+import re
 import sys
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import anyio
 import pytest
@@ -117,6 +118,71 @@ class TestAdmissionRules:
         assert adm.require_optional_table("task_attachment", granted=True) is None
         # a granted-by-default table never degrades
         assert adm.require_optional_table("task", granted=False) is None
+
+    # ---- rule 7:名称像测试数据的剔除(可选开关,默认关) ----------------------
+
+    def test_exclusion_is_off_by_default(self, monkeypatch):
+        """不设变量时正式门的措辞**逐字节**与改动前相同:正式任务总数还是 88。
+
+        这条是"行为不变"的第一道证据 —— 它比的是完整字符串,不是"含某子串"。
+        """
+        monkeypatch.delenv(adm.EXCLUDE_TEST_LIKE_ENV, raising=False)
+        assert adm.exclude_test_like() is False
+        assert adm.sql_task_admission("pg") == "t.is_deleted = 0 AND t.workflow_status = 'published'"
+        assert adm.has_test_like_exclusion(adm.sql_task_admission("pg")) is False
+        # 既有的方言无关性(shipped behaviour)在开关关着时原样成立
+        assert adm.sql_task_admission("pg") == adm.sql_task_admission("mysql")
+
+    def test_switch_reads_like_formal_enabled(self, monkeypatch):
+        """取值判定:``1``/``true``/``yes`` 视为开(大小写不敏感 + 容忍空白)。"""
+        for raw in ("1", "true", "yes", "TRUE", "True", "YES", "Yes", " 1 ", "\ttrue\n"):
+            monkeypatch.setenv(adm.EXCLUDE_TEST_LIKE_ENV, raw)
+            assert adm.exclude_test_like() is True, raw
+        for raw in ("", " ", "0", "false", "FALSE", "no", "off", "2", "true1", "nope"):
+            monkeypatch.setenv(adm.EXCLUDE_TEST_LIKE_ENV, raw)
+            assert adm.exclude_test_like() is False, raw
+
+    def test_switch_on_only_touches_the_formal_dialect(self, monkeypatch):
+        """开关只管**正式源**的正式台账;演示快照是冻结的合成数据,一行都不许动。"""
+        monkeypatch.setenv(adm.EXCLUDE_TEST_LIKE_ENV, "1")
+        assert adm.has_test_like_exclusion(adm.sql_task_admission("pg")) is True
+        assert adm.sql_task_admission("mysql") == "t.is_deleted = 0 AND t.workflow_status = 'published'"
+        # 剔除贴在正式门**里面**(同一个 WHERE 子句),不是在出口上删行
+        assert adm.sql_task_admission("pg").startswith(adm.sql_task_admission_plain("pg"))
+
+    def test_the_predicate_is_written_once(self, monkeypatch):
+        """判据只有一处:词表来自 ``TEST_LIKE_SUBSTRINGS``,两种写法共用同一份。"""
+        monkeypatch.setenv(adm.EXCLUDE_TEST_LIKE_ENV, "1")
+        excluded = adm.sql_test_like_exclusion("t")
+        matched = adm.sql_test_like_match("t")
+        assert excluded.count("ARRAY[") == 1 and "NOT ILIKE ALL (" in excluded
+        assert "ILIKE ANY (" in matched and "NOT ILIKE ALL" not in matched
+        for word in adm.TEST_LIKE_SUBSTRINGS:
+            assert f"'%{word}%'" in excluded, word
+            assert f"'%{word}%'" in matched, word
+        # 客户实测那批名字的形态:7 个词每一个都真能命中(子串,不区分大小写)
+        for word in adm.TEST_LIKE_SUBSTRINGS:
+            assert f"'%{word}%'" in adm.sql_task_admission("pg")
+
+    def test_two_halves_are_complementary_not_confusable(self, monkeypatch):
+        """数"剔了几条"的那条 SQL 不许被认成"这条已经剔过了"(两者语义正相反)。"""
+        monkeypatch.setenv(adm.EXCLUDE_TEST_LIKE_ENV, "1")
+        assert adm.has_test_like_exclusion(adm.sql_task_admission("pg")) is True
+        assert adm.has_test_like_exclusion(adm.sql_test_like_match("t")) is False
+        assert adm.has_test_like_exclusion(adm.sql_test_like_exclusion("t")) is True
+
+    def test_exclusion_is_alias_agnostic(self, monkeypatch):
+        """模板里任务别名有两种(``t`` 与子查询里的 ``t2``),判定不许只认一个。"""
+        monkeypatch.setenv(adm.EXCLUDE_TEST_LIKE_ENV, "1")
+        assert adm.has_test_like_exclusion(adm.sql_task_admission("pg", "t")) is True
+        assert adm.has_test_like_exclusion(adm.sql_task_admission("pg", "t2")) is True
+
+    def test_null_names_are_not_swept_away(self, monkeypatch):
+        """``NOT (NULL ILIKE ...)`` 仍是 NULL:名字为空的行**不能**跟着被剔掉。"""
+        monkeypatch.setenv(adm.EXCLUDE_TEST_LIKE_ENV, "1")
+        assert adm.sql_test_like_exclusion("t").startswith("coalesce(t.task_name, '')")
+        assert adm.sql_test_like_match("t").startswith("coalesce(t.task_name, '')")
+        assert "NOT (t.task_name" not in adm.sql_task_admission("pg")
 
 
 class TestO2oaTemplates:
@@ -2801,6 +2867,319 @@ class TestFormalSourceErrorEnvelope:
         assert _fallback.should_translate() is True
         assert _fallback.CODE == "not_migrated" != _fallback.FORMAL_SOURCE_CODE
 
+
+# ---- rule 7 的假库:一张 15 行的 task 表,行集按被测 SQL 自己算出来 ----------
+
+#: 判据的两半(别名都是 ``t``)。假库拿它们分辨"这条 SQL 带的是哪一半";
+#: **词表从 SQL 的 ARRAY 里读**(``_test_like_words``),所以假库不带第二份判据。
+_EXCLUDE_FRAGMENT = adm.sql_test_like_exclusion("t")
+_MATCH_FRAGMENT = adm.sql_test_like_match("t")
+
+
+def _test_like_words(sql: str) -> list[str]:
+    """从被测 SQL 的 ``ARRAY['%x%', …]`` 里取词表 —— 判据只有被测代码那一份。"""
+    return re.findall(r"'%([^%']*)%'", sql)
+
+
+def _passes_formal_gate(row: dict[str, Any], sql: str) -> bool:
+    """假库的准入判定:规则 1 + (SQL 里带了哪一半判据,就按哪一半过滤)。"""
+    if row["is_deleted"] or row["workflow_status"] != "published":
+        return False
+    hit = any(word.lower() in str(row["task_name"] or "").lower() for word in _test_like_words(sql))
+    if _EXCLUDE_FRAGMENT in sql:
+        return not hit
+    if _MATCH_FRAGMENT in sql:
+        return hit
+    return True
+
+
+def _without_exclusion(sql: str) -> str:
+    """把剔除谓词摘掉(别名 ``t`` / ``t2`` 两种写法都摘)。
+
+    用来断言**关掉开关就是逐字节原来那条 SQL** —— 比"某处少了一段"强:
+    原有措辞一个字都没动。
+    """
+    for alias in ("t", "t2"):
+        sql = sql.replace(f" AND {adm.sql_test_like_exclusion(alias)}", "")
+    return sql
+
+
+class _Column:
+    """``envelope`` 只从游标描述里读 ``.name``。"""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class _FakeCursor:
+    """``envelope`` 的最小桩:只认本用例用到的三种 SQL 形状。
+
+    * 含 ``AS formal_task_count`` ⇒ 覆盖率那三列;
+    * 其余含 ``count(*)`` 的 ⇒ 一行一列(被剔除条数);
+    * 其余 ⇒ 任务清单 ``(id, task_name)``。
+
+    它**不解析 SQL 语义**,只按上面三条形状回行 —— 这正是"桩"的边界:单测验的是
+    "同一道闸门在计数与清单上同增同减 + 口径自述实时算",不是 PG 的解析。
+    """
+
+    def __init__(self, tasks: tuple[dict[str, Any], ...]) -> None:
+        self.tasks = tasks
+        self.executed: list[str] = []
+        self.description: list[_Column] | None = None
+        self._rows: list[tuple] = []
+
+    def __enter__(self) -> _FakeCursor:
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        return False
+
+    def execute(self, sql: str, params: tuple = ()) -> None:
+        self.executed.append(sql)
+        passing = [row for row in self.tasks if _passes_formal_gate(row, sql)]
+        if "AS formal_task_count" in sql:
+            covered = [row for row in passing if row["has_progress"]]
+            share = round(len(covered) * 100.0 / len(passing), 1) if passing else None
+            self._shape(
+                ["formal_task_count", "tasks_with_progress", "coverage_pct"],
+                [(len(passing), len(covered), share)],
+            )
+        elif "count(*)" in sql:
+            self._shape(["n"], [(len(passing),)])  # 列名无关:生产侧只读 row[0]
+        else:
+            self._shape(["id", "task_name"], [(row["id"], row["task_name"]) for row in passing])
+
+    def _shape(self, columns: list[str], rows: list[tuple]) -> None:
+        self.description = [_Column(name) for name in columns]
+        self._rows = rows
+
+    def fetchall(self) -> list[tuple]:
+        return list(self._rows)
+
+    def fetchone(self) -> tuple | None:
+        return self._rows[0] if self._rows else None
+
+
+class _FakeConn:
+    """``_formal.envelope`` 只用 ``cursor()`` / ``close()``。"""
+
+    def __init__(self, cursor: _FakeCursor) -> None:
+        self._cursor = cursor
+        self.closed = False
+
+    def cursor(self) -> _FakeCursor:
+        return self._cursor
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestTestLikeExclusion:
+    """``GUOSHU_WEEKLY_EXCLUDE_TEST_LIKE``:把名字像测试数据的任务剔出**正式**口径。
+
+    客户台账里有 8 条名字像测试/演示的已发布任务(实测 id 50/86/87/88/89/90/91/101),
+    剔不剔是**他们的口径决定** —— 所以默认必须关,打开后也必须能一眼看见剔了几条。
+
+    假台账 15 行:**8 条命中判据**(7 个词各来一条)+ 4 条正常 + 1 条名字为空 +
+    1 条未发布 + 1 条已软删。过正式门的是 13 条(8+4+1),开关打开后 5 条。
+    真库上的 88 由真库验收脚本核(它连的是活库);单测钉的是"少掉整整那 8 条"本身。
+    """
+
+    #: 假台账,每行 ``(id, 名字, 有已发布进展, is_deleted, workflow_status)``。
+    SEED: ClassVar[tuple[tuple[int, str | None, bool, int, str], ...]] = (
+        # 命中判据的 8 条:名字形态照客户台账(0810测试 / 测试任务--技术组 / test001 / …)
+        (50, "0810测试", True, 0, "published"),
+        (86, "测试任务--技术组", False, 0, "published"),
+        (87, "test001", False, 0, "published"),
+        (88, "test-集团任务-演示", True, 0, "published"),
+        (89, "示例任务-技术组", False, 0, "published"),
+        (90, "demo-流程验证", False, 0, "published"),
+        (91, "完整流程-集团任务", True, 0, "published"),
+        (101, "流程验证-集团", False, 0, "published"),
+        # 4 条正常任务:两种模式都在(它们才是 88 里该留下的那部分)
+        (1, "技术组-国产数据库攻关", True, 0, "published"),
+        (2, "集团-信创迁移", True, 0, "published"),
+        (3, "技术组-指标体系", True, 0, "published"),
+        (4, "集团-数据治理", True, 0, "published"),
+        # 名字为空:必须留下(``NOT (NULL ILIKE …)`` 仍是 NULL 的那个坑)
+        (5, None, False, 0, "published"),
+        # 这两条两种模式下都不算:说明"少掉的 8 条"只来自判据,没顺手吞别的行
+        (999, "未发布-演示草稿", False, 0, "draft"),
+        (998, "已删测试", False, 1, "published"),
+    )
+
+    EXCLUDED = 8
+    FORMAL_TOTAL = 13
+    STAYING_TOTAL = 5
+
+    @classmethod
+    def _tasks(cls, keep: tuple[int, ...] | None = None) -> tuple[dict[str, Any], ...]:
+        """把 ``SEED`` 摊成假库的行;``keep`` 只留指定 id(换一份台账验"实时算")。"""
+        return tuple(
+            {
+                "id": task_id,
+                "task_name": name,
+                "has_progress": progress,
+                "is_deleted": deleted,
+                "workflow_status": status,
+            }
+            for task_id, name, progress, deleted, status in cls.SEED
+            if keep is None or task_id in keep
+        )
+
+    def _run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tool: str,
+        *,
+        tasks: tuple[dict[str, Any], ...] | None = None,
+        **kwargs: Any,
+    ) -> tuple[dict[str, Any], _FakeCursor]:
+        cursor = _FakeCursor(self._tasks() if tasks is None else tasks)
+        conn = _FakeConn(cursor)
+        monkeypatch.setenv("TASK_BOARD_DATA_SOURCE", "o2oa")
+        monkeypatch.setattr(_pg, "connect", lambda **_kw: conn)
+        got = _formal.dispatch(tool, **kwargs)
+        assert got is not None and got["ok"] is True, got
+        return got, cursor
+
+    def _count(self, monkeypatch, **kwargs) -> tuple[dict[str, Any], _FakeCursor]:
+        """计数类模板:``scope=formal_coverage`` 直报 ``formal_task_count``。"""
+        return self._run(monkeypatch, "weekly_progress_coverage", scope="formal_coverage", **kwargs)
+
+    def _listing(self, monkeypatch, **kwargs) -> tuple[dict[str, Any], _FakeCursor]:
+        """清单类模板:``weekly_task_query`` 一行一条任务。"""
+        return self._run(monkeypatch, "weekly_task_query", board="tech", **kwargs)
+
+    # ---- 默认关:行为不变 --------------------------------------------------
+
+    def test_switch_off_keeps_the_totals_untouched(self, monkeypatch):
+        """不设变量:13 还是 13(真库上就是 88 还是 88),口径一字不加。"""
+        monkeypatch.delenv(adm.EXCLUDE_TEST_LIKE_ENV, raising=False)
+        count, cursor = self._count(monkeypatch)
+        listing, _ = self._listing(monkeypatch)
+        assert count["rows"][0]["formal_task_count"] == self.FORMAL_TOTAL
+        assert listing["row_count"] == self.FORMAL_TOTAL
+        assert "已剔除" not in count["caliber"] and "已剔除" not in listing["caliber"]
+        # 开关关着时**不会多问一句**:信封只跑主查询那一次
+        assert len(cursor.executed) == 1
+        assert "ILIKE" not in count["caliber"]
+
+    def test_off_values_are_byte_identical_to_unset(self, monkeypatch):
+        """``0``/``false``/空串 ⇒ 关:整条 SQL 字符串与不设时逐字相同。"""
+        monkeypatch.delenv(adm.EXCLUDE_TEST_LIKE_ENV, raising=False)
+        baseline = [build()[0] for build in ALL_BUILDERS]
+        assert all(not adm.has_test_like_exclusion(sql) for sql in baseline)
+        for raw in ("0", "false", "FALSE", "no", "", " ", "off"):
+            monkeypatch.setenv(adm.EXCLUDE_TEST_LIKE_ENV, raw)
+            assert [build()[0] for build in ALL_BUILDERS] == baseline, raw
+        monkeypatch.delenv(adm.EXCLUDE_TEST_LIKE_ENV, raising=False)
+        assert [build()[0] for build in ALL_BUILDERS] == baseline
+
+    # ---- 打开:计数与清单同减 ----------------------------------------------
+
+    def test_switch_on_drops_exactly_the_matching_rows_from_both_shapes(self, monkeypatch):
+        """计数类与清单类**同时**少掉那 8 条 —— 不是"列表删了数还留着"。"""
+        monkeypatch.setenv(adm.EXCLUDE_TEST_LIKE_ENV, "1")
+        count, _ = self._count(monkeypatch)
+        listing, _ = self._listing(monkeypatch)
+        counted = count["rows"][0]["formal_task_count"]
+        assert counted == self.STAYING_TOTAL
+        assert listing["row_count"] == self.STAYING_TOTAL
+        assert self.FORMAL_TOTAL - counted == self.EXCLUDED
+        assert self.FORMAL_TOTAL - listing["row_count"] == self.EXCLUDED
+        # 少掉的**正是**命中判据那 8 条:清单里剩下的就是没命中的 5 条
+        assert {row["task_name"] for row in listing["rows"]} == {
+            "技术组-国产数据库攻关",
+            "集团-信创迁移",
+            "技术组-指标体系",
+            "集团-数据治理",
+            None,  # 名字为空的行留下(没被三值逻辑误剔)
+        }
+        assert {row["id"] for row in listing["rows"]} == {1, 2, 3, 4, 5}
+
+    def test_uppercase_on_values_all_open_the_switch(self, monkeypatch):
+        """大小写不敏感:``TRUE`` / ``True`` / ``Yes`` 都算开。"""
+        for raw in ("TRUE", "True", "trUe", "YES", "Yes", "1"):
+            monkeypatch.setenv(adm.EXCLUDE_TEST_LIKE_ENV, raw)
+            count, _ = self._count(monkeypatch)
+            assert count["rows"][0]["formal_task_count"] == self.STAYING_TOTAL, raw
+
+    def test_every_gated_builder_carries_the_exclusion_in_lockstep(self, monkeypatch):
+        """81 处 ``sql_task_admission`` 调用点共用一道闸:遍历 ALL_BUILDERS 复核。
+
+        断言的是"摘掉剔除谓词就回到原来的那条 SQL"—— 即开关只**加**了那一句,
+        正式门原有的措辞(以及其余每一个字符)都没动。
+        """
+        monkeypatch.delenv(adm.EXCLUDE_TEST_LIKE_ENV, raising=False)
+        baseline = [build()[0] for build in ALL_BUILDERS]
+        monkeypatch.setenv(adm.EXCLUDE_TEST_LIKE_ENV, "TRUE")
+        opened = [build()[0] for build in ALL_BUILDERS]
+        for before, after in zip(baseline, opened, strict=True):
+            assert adm.has_test_like_exclusion(after)
+            assert before != after
+            assert _without_exclusion(after) == before
+
+    # ---- 口径自述 ----------------------------------------------------------
+
+    def test_caliber_says_how_many_and_how_to_turn_it_off(self, monkeypatch):
+        """那句话按需求给的形状出现,条数是实时算的 8(不是写死的)。"""
+        monkeypatch.setenv(adm.EXCLUDE_TEST_LIKE_ENV, "1")
+        opener, closer = "\uff08", "\uff09"  # 需求给的句子用的是全角括号
+        sentence = (
+            f"已剔除 {self.EXCLUDED} 条名称像测试/演示的条目{opener}可用 GUOSHU_WEEKLY_EXCLUDE_TEST_LIKE 关闭{closer}"
+        )
+        for got, _cursor in (self._count(monkeypatch), self._listing(monkeypatch)):
+            assert sentence in got["caliber"], got["caliber"]
+            # 原有口径没被顶掉,说明是"追加"
+            assert got["caliber"].index(sentence) > 0
+
+    def test_the_number_is_computed_live_not_hardcoded(self, monkeypatch):
+        """换一份台账,自述里的条数跟着变 —— 写死的 8 骗不过去。"""
+        monkeypatch.setenv(adm.EXCLUDE_TEST_LIKE_ENV, "1")
+        opener, closer = "\uff08", "\uff09"
+        only_one = (50, 1, 2, 3, 4, 5, 999, 998)  # 8 条里只剩 id 50 命中
+        count, _ = self._count(monkeypatch, tasks=self._tasks(keep=only_one))
+        assert count["rows"][0]["formal_task_count"] == 5  # ⇒ 只少 1 条
+        assert (
+            f"已剔除 1 条名称像测试/演示的条目{opener}可用 GUOSHU_WEEKLY_EXCLUDE_TEST_LIKE 关闭{closer}"
+            in count["caliber"]
+        )
+        # 常量本身不带条数:占位符必须由查询结果填
+        assert "{count}" in _formal.EXCLUDE_TEST_LIKE_NOTE
+        assert str(self.EXCLUDED) not in _formal.EXCLUDE_TEST_LIKE_NOTE
+
+    def test_the_extra_query_asks_the_complement_on_the_same_connection(self, monkeypatch):
+        """条数来自**同一连接**上的第二次查询,而且问的是判据的补集。"""
+        monkeypatch.setenv(adm.EXCLUDE_TEST_LIKE_ENV, "1")
+        _count, cursor = self._count(monkeypatch)
+        assert len(cursor.executed) == 2  # 主查询 + 被剔除条数
+        assert _MATCH_FRAGMENT in cursor.executed[-1]
+        assert _EXCLUDE_FRAGMENT not in cursor.executed[-1]
+        assert "excluded_test_like" in cursor.executed[-1]
+
+    def test_unaffected_returns_claim_nothing(self, monkeypatch):
+        """刻意不带正式门的档(字段字典/看板清单)不被顺手剔除,口径也不多说一句。"""
+        monkeypatch.setenv(adm.EXCLUDE_TEST_LIKE_ENV, "1")
+        sql, params = o2.schema_columns()
+        assert adm.has_test_like_exclusion(sql) is False
+        cursor = _FakeCursor(self._tasks())
+        monkeypatch.setattr(_pg, "connect", lambda **_kw: _FakeConn(cursor))
+        got = _formal.envelope(sql=sql, params=params, caliber="原口径", limit=5)
+        assert got["caliber"] == "原口径"
+        assert len(cursor.executed) == 1  # 没受影响就不多问一句
+
+    def test_the_audit_template_counts_the_complement(self, monkeypatch):
+        """被剔除条数那条模板本身就是两道门:正式门 + 判据的补集。"""
+        sql, params = o2.test_like_excluded_total()
+        assert params == ()
+        assert adm.sql_task_admission_plain("pg", "t") in sql
+        assert _MATCH_FRAGMENT in sql
+        assert adm.has_test_like_exclusion(sql) is False  # 与"已剔除"的那半不会互相误认
+        monkeypatch.setenv(adm.EXCLUDE_TEST_LIKE_ENV, "1")
+        cursor = _FakeCursor(self._tasks())
+        monkeypatch.setattr(_pg, "connect", lambda **_kw: _FakeConn(cursor))
+        assert _formal.envelope(sql=sql, params=params, caliber="x", limit=1)["rows"][0]["n"] == self.EXCLUDED
 
 
 class TestAuthPolicy:

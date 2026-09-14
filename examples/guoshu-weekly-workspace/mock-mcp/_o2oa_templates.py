@@ -1008,6 +1008,28 @@ SELECT (SELECT count(*) FROM task t WHERE {gate})      AS formal_task_count,
     return sql, tuple(board_params * sql.count("%s"))
 
 
+# ---- rule 7:名称像测试数据的剔除(可选开关,默认关) --------------------------
+
+
+def test_like_excluded_total() -> tuple[str, tuple]:
+    """开关打开时被剔掉的正式任务条数 —— 口径自述里那个数,**实时算**。
+
+    它是 ``sql_task_admission`` 那道剔除的**补集**:正式门用 ``NOT ILIKE ALL`` 过滤,
+    这里数 ``ILIKE ANY``。两半同一个词表、同一道正式门,所以"自述说剔了 N 条"与
+    "上面那条查询少掉 N 行"必然一致。
+
+    取名与形状对齐本文件的其余模板(``() -> (sql, params)``),``check_pg_syntax.py``
+    按同样的方式枚举得到它。
+    """
+    sql = f"""
+SELECT count(*) AS excluded_test_like
+FROM task t
+WHERE {adm.sql_task_admission_plain("pg", "t")}
+  AND {adm.sql_test_like_match("t")}
+"""
+    return sql, ()
+
+
 def latest_round(
     board_code: str | None = None,
     project_group: str | None = None,

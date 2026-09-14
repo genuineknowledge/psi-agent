@@ -38,6 +38,11 @@ FORMAL_SNAPSHOT_NOTE = "国数正式只读源(O2OA PostgreSQL / task-board 应�
 # 以便与演示包的快照日(2026-08-15)对同一批题。
 DEFAULT_AS_OF = "2026-08-15"
 
+#: 开关打开时,受影响返回的 ``caliber`` 末尾追加这一句。``{count}`` 是**实时**算出来的
+#: 条数(见 ``_excluded_test_like``),不是写死的那个 8。括号用转义序列写:全角括号
+#: 直接写会触发 RUF001 的 ambiguous unicode(与 ``_board_grams`` 同一处理)。
+EXCLUDE_TEST_LIKE_NOTE = "已剔除 {count} 条名称像测试/演示的条目\uff08可用 GUOSHU_WEEKLY_EXCLUDE_TEST_LIKE 关闭\uff09"
+
 _TABLE_RE = re.compile(r"\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_]*)", re.IGNORECASE)
 # 与 ``_store._DATE_RE`` 同一形状:调用方给的日期要么是这个格式,要么就是口径错。
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -79,6 +84,12 @@ def envelope(
     "刚好取满" 与 "被截断" 长得一模一样(313 行的年度目标会被报成 200 行且
     ``has_more=false``,实测踩过)。
 
+    ``caliber`` 是**统一拼口径的地方**:``GUOSHU_WEEKLY_EXCLUDE_TEST_LIKE`` 打开时,
+    凡是这条 SQL 真的带了剔除谓词的返回(``_admission.has_test_like_exclusion``),
+    末尾追加一句 ``EXCLUDE_TEST_LIKE_NOTE``,条数与刚才那条查询少掉的行数同源。
+    没受影响的返回(裸表口径 / 在途提交单 / 审批动作 / 看板清单)一字不加 ——
+    给它们写一句"已剔除 N 条"是在描述一件没发生的事。
+
     **驱动异常一律包成信封**(``ok: false`` + ``error.code``),不外泄:
 
     这是**容器实跑抓到的一条**:正式源连不上时,原先异常会一路冒到 MCP 层,
@@ -110,6 +121,8 @@ def envelope(
                 cur.execute(sql, sql_params)
                 columns = [d.name for d in cur.description] if cur.description else []
                 raw = cur.fetchall()
+                # 主查询读完再问条数:这一步会顶掉 cur.description
+                excluded = _excluded_test_like(cur, sql)
         finally:
             conn.close()
     except _pg.driver_errors() as exc:
@@ -129,7 +142,7 @@ def envelope(
     rows = [dict(zip(columns, r, strict=True)) for r in raw[:bounded]]
     result: dict[str, Any] = {
         "ok": True,
-        "caliber": caliber or "无附加口径",
+        "caliber": _with_exclusion_note(caliber or "无附加口径", excluded),
         "snapshot_note": FORMAL_SNAPSHOT_NOTE,
         "snapshot_date": as_of(),
         "source_tables": source_tables(sql),
@@ -141,6 +154,32 @@ def envelope(
     if extra:
         result.update(extra)
     return result
+
+
+def _excluded_test_like(cur: Any, sql: str) -> int | None:
+    """这条 SQL 剔掉了几条"名字像测试数据"的任务;开关没开或本条不受影响时 ``None``。
+
+    三条取舍:
+
+    * **实时算**(``tpl.test_like_excluded_total()`` 每次真去数),不写死也不缓存 ——
+      口径自述里的数必须与刚才那条 SQL 少掉的行数是同一个,台账变了它得跟着变;
+    * **同一条连接上再跑一句**,不另开连接:开关打开不会给每个返回多一次建连;
+    * 失败与主查询**同路**:算不出口径时宁可报 ``store_unreachable``,也不给一句
+      自己都算不出来的说明。
+    """
+    if not adm.has_test_like_exclusion(sql):
+        return None
+    count_sql, params = tpl.test_like_excluded_total()
+    cur.execute(count_sql, params)
+    row = cur.fetchone()
+    return 0 if row is None or row[0] is None else int(row[0])
+
+
+def _with_exclusion_note(caliber: str, excluded: int | None) -> str:
+    """把剔除说明追到口径末尾(``None`` = 这条返回没受影响,一字不动)。"""
+    if excluded is None:
+        return caliber
+    return f"{caliber};{EXCLUDE_TEST_LIKE_NOTE.format(count=excluded)}"
 
 
 class SourceUnavailableError(Exception):
@@ -655,7 +694,7 @@ def _freshness_one_task(args: dict[str, Any], raw_task: str, *, limit: int) -> d
             },
         }
     formal = int(row.get("is_deleted") or 0) == 0 and str(row.get("workflow_status")) == "published"
-    if formal:  # pragma: no cover - 正式任务却 0 行只可能是并发删除,仍照实说明
+    if formal:  # 正式任务却 0 行:并发删除,或开着 GUOSHU_WEEKLY_EXCLUDE_TEST_LIKE 时名字命中判据
         return result
     cause = (
         "已删除(is_deleted = 1)"

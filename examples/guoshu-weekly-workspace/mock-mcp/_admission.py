@@ -13,6 +13,10 @@ the ChatBI agent (they are enforced server-side, never left to the model):
      集团看板内容只在 ``board.code = 'group'`` 且使用 ``task_group_detail``。
   5. 年度目标问答必须显式给 ``year``(``task_year_goal.year``)。
   6. 任何查询都带软删过滤(表有该字段时);长文本为空如实答"未填写"。
+  7. **可选开关**:``GUOSHU_WEEKLY_EXCLUDE_TEST_LIKE`` 打开后,名字像测试/演示的任务
+     不进**正式**口径。这是**客户的口径决定**(那几条是他们台账里自己的行),所以
+     默认关;判据只写在 ``sql_test_like_exclusion`` 一处,且贴在正式门**里面** ——
+     计数类模板与清单类模板因此同增同减。
 
 These helpers are dialect-neutral building blocks; the SQL fragments for the
 MySQL demo and the PostgreSQL formal source live in the two ``sql_*`` maps so a
@@ -20,6 +24,8 @@ rule can never be written differently in one place and loosened in another.
 """
 
 from __future__ import annotations
+
+import os
 
 PUBLISHED = "published"
 
@@ -120,12 +126,97 @@ def require_optional_table(name: str, granted: bool) -> str | None:
 # ---- dialect fragments -----------------------------------------------------
 
 
+def sql_task_admission_plain(dialect: str, alias: str = "t") -> str:
+    """Rule 1 **原文**:正式任务的准入集,不含 rule 7 那层剔除。
+
+    ``dialect`` 收下但不用:与 ``sql_task_admission`` 同一形状(演示与正式源当前共用
+    这套措辞,``TestAdmissionRules.test_published_only`` 钉着这条方言无关性),
+    参数位对齐是为了将来某一边真要分开时不必动所有调用点。
+    需要"剔除以外"的正式门时用它 —— 例如数一下被剔掉了几条(见
+    ``_o2oa_templates.test_like_excluded_total``)。
+    """
+    return f"{alias}.is_deleted = 0 AND {alias}.workflow_status = 'published'"
+
+
 def sql_task_admission(dialect: str, alias: str = "t") -> str:
-    """Rule 1: the only admission set into ChatBI answers."""
-    clause = f"{alias}.is_deleted = 0 AND {alias}.workflow_status = 'published'"
-    if dialect == "pg":
-        return clause
+    """Rule 1 (+ rule 7):the only admission set into ChatBI answers.
+
+    开关打开时把"名字像测试数据"那几条剔在**正式门里面**,而不是在清单出口上删行 ——
+    所以计数类模板(`count(*)`)与清单类模板(`SELECT ... LIMIT`)看到的是**同一个集合**:
+    不可能出现"列表里删了、数还留着"。
+
+    剔除只加在 ``pg``(正式源)这一支。开关问的是**客户的正式台账**要不要去掉那几条,
+    演示快照是冻结的合成数据(它的每个数都有契约用例钉着),一行都不许因此动。
+    """
+    clause = sql_task_admission_plain(dialect, alias)
+    if dialect == "pg" and exclude_test_like():
+        return f"{clause} AND {sql_test_like_exclusion(alias)}"
     return clause
+
+
+# ---- rule 7:名称像测试数据的剔除(可选开关,默认关) --------------------------
+
+#: 开关变量名。取值 ``1`` / ``true`` / ``yes``(大小写不敏感)视为开,其余与不设都视为关。
+EXCLUDE_TEST_LIKE_ENV = "GUOSHU_WEEKLY_EXCLUDE_TEST_LIKE"
+
+#: 名字含其中任一子串(不区分大小写)即算"像测试数据"。**判据只写在这一行**:
+#: SQL 谓词、以及口径自述里那个"剔了几条"的条数,都从它派生。
+TEST_LIKE_SUBSTRINGS: tuple[str, ...] = (
+    "test",
+    "测试",
+    "演示",
+    "示例",
+    "demo",
+    "流程验证",
+    "完整流程",
+)
+
+_TEST_LIKE_ARRAY = "ARRAY[{}]".format(", ".join(f"'%{word}%'" for word in TEST_LIKE_SUBSTRINGS))
+#: 剔除谓词的**内核**(与别名无关)。``sql_test_like_exclusion`` 拼它,
+#: ``has_test_like_exclusion`` 也拿它认 SQL —— 同一个常量,换别名、加词都不会失配。
+_TEST_LIKE_EXCLUDED = f"NOT ILIKE ALL ({_TEST_LIKE_ARRAY})"
+
+
+def exclude_test_like() -> bool:
+    """开关是否打开;读法与 ``_formal.enabled()`` 同一形状(去空白 + 小写 + 白名单)。
+
+    **默认关**是硬要求:不设这个变量时,正式门的那句 SQL 与改动前逐字节相同,
+    正式任务总数(实测 88)也照旧。剔不剔是客户的口径决定 —— 那 8 条是他们自己
+    台账里的行,我们只提供开关,不替他们定。
+    """
+    raw = os.environ.get(EXCLUDE_TEST_LIKE_ENV, "").strip().lower()
+    return raw in ("1", "true", "yes")
+
+
+def sql_test_like_exclusion(alias: str = "t") -> str:
+    """剔除谓词:名字像测试数据的行**不**进正式口径(判据的唯一一处实现)。
+
+    用 ``coalesce`` 兜住 NULL:``NOT (NULL ILIKE ...)`` 求值仍是 NULL,写成
+    ``NOT ({alias}.task_name ILIKE ...)`` 会把**任务名为空的行一起剔掉**——
+    那不是选中的判据,是 SQL 三值逻辑的意外。
+    """
+    return f"coalesce({alias}.task_name, '') {_TEST_LIKE_EXCLUDED}"
+
+
+def sql_test_like_match(alias: str = "t") -> str:
+    """上面那条的**补集**(德摩根):名字像测试数据的行。
+
+    口径自述要报"剔了几条",数的是它。两半共用同一份词表、互为补集,所以
+    "自述里 8 条"与"结果少掉 8 条"必然一致。写法与剔除那条**不同**
+    (``ILIKE ANY`` vs ``NOT ILIKE ALL``),于是 ``has_test_like_exclusion``
+    不会把"数被剔了几条"的那条 SQL 误认成"这条已经剔过了"(两者语义正相反)。
+    """
+    return f"coalesce({alias}.task_name, '') ILIKE ANY ({_TEST_LIKE_ARRAY})"
+
+
+def has_test_like_exclusion(sql: str) -> bool:
+    """``sql`` 是否已把剔除当**筛选条件**(别名无关,照样认 ``t`` / ``t2``)。
+
+    口径自述只加在真正受影响的那条返回上:模板里带正式任务门的加;刻意不带门的档
+    (裸表口径 ``whole_table``、在途提交单、审批动作、``unpublished_by_task``)不加 ——
+    给它们加一句"已剔除 N 条"是在描述一件没发生的事。
+    """
+    return _TEST_LIKE_EXCLUDED in sql
 
 
 def sql_published_progress(dialect: str, alias: str = "p") -> str:
