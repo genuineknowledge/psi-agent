@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
@@ -78,7 +79,24 @@ _MESSAGE_REASONING_FIELDS = ("reasoning_content", "reasoning", "thinking")
 # 是 ``any-llm-sdk>=1.21.0``, 所以是一次静默的上游行为变更改掉了我们的线上语义。
 #
 # 只在调用方**没给**时兜底, 给了就用它的 —— 这里是转发层, 不该覆盖上游意图。
-_DEFAULT_REASONING_EFFORT = "medium"
+#
+# **为什么做成可配置** (``PSI_AI_REASONING_EFFORT``): 档位是延迟与可读性的直接权衡,
+# 而各部署的取舍不同 —— 真链路实测同一批 6 题: ``medium`` 23.5s / ``minimal`` 13.1s /
+# ``none`` 5.5s (墙钟)。但**省下的时间不是白来的**: 关掉思考会让上面那条泄漏回来,
+# 实测 ``none`` 时约一半答复的开头变成英文自我对话 (自问自答直接进 ``content``),
+# ``minimal`` 没观察到。所以**默认值一个字不改** (不设这个变量时行为与引入它之前
+# 逐字节相同), 只把「选哪一档」交给部署方, 免得为调档去改安装包里的常量。
+#
+# 值是**模块常量, 进程启动时读一次** —— 调档要重启 AI 进程, 不是热更新。空串/纯空白
+# 按「没设置」处理 (回落 ``_FALLBACK_REASONING_EFFORT``)。这里**刻意不做白名单校验**:
+# 合法取值由上游定义 (any-llm 的 ``ReasoningEffort`` 字面量有 8 个档), 在本层再抄一份
+# 只会在上游加档位时变成假的拒绝; 而非法值上游自己会拒 —— ``reasoning_effort`` 进的是
+# ``CompletionParams``, 那是个 ``extra="forbid"`` 的 pydantic 模型, 值不在字面量集合里
+# 当场报错, 与调用方显式传同一个错值的表现完全一致。
+_REASONING_EFFORT_ENV = "PSI_AI_REASONING_EFFORT"
+# 未设置 (或设成空串/空白) 时下发的档位 —— 与引入本变量之前一字不改。
+_FALLBACK_REASONING_EFFORT = "medium"
+_DEFAULT_REASONING_EFFORT = os.environ.get(_REASONING_EFFORT_ENV, "").strip() or _FALLBACK_REASONING_EFFORT
 # 只对会因缺省 auto 而关掉 thinking 的 provider 兜底 (见上); 其余 provider 保持
 # 不传, 交给上游默认行为。
 _REASONING_EFFORT_DEFAULT_PROVIDERS = frozenset({"deepseek"})
@@ -234,7 +252,8 @@ async def _forward_chat_completion(request: web.Request, body: dict[str, Any]) -
     body.pop("api_base", None)
     body.pop("routing", None)
     # 见 ``_DEFAULT_REASONING_EFFORT``: 不传等于让 DeepSeek provider 关掉思维模式。
-    # ``setdefault`` 而非赋值 —— 调用方显式给的值 (含 ``"none"``) 优先。
+    # ``setdefault`` 而非赋值 —— 调用方显式给的值 (含 ``"none"``) 优先, 部署方定的档位
+    # (``PSI_AI_REASONING_EFFORT``) 只补「谁都没表态」这一种情况。
     # 只对会误关思维的 provider (deepseek) 兜底; openai 打 DeepSeek 兼容端点时强制
     # medium 反而让模型把过程叙述写进 content (线上泄漏), 见常量注释。
     if provider in _REASONING_EFFORT_DEFAULT_PROVIDERS:

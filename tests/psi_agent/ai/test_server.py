@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import contextlib
+import importlib
 import json
 import re
 import socket
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,7 @@ import pytest
 from aiohttp import ClientSession, ClientTimeout, web
 from loguru import logger
 
+from psi_agent.ai import server
 from psi_agent.ai.server import _describe_delta, _describe_messages, handle_chat_completions
 
 
@@ -180,13 +183,53 @@ async def test_handler_omits_client_args_without_http_client(tmp_path: Path, mon
     assert "client_args" not in received
 
 
-async def test_handler_requests_thinking_mode_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+# -- 兜底档位: 默认值可由环境变量改 (PSI_AI_REASONING_EFFORT) ------------------
+#
+# 变量名刻意抄成字面量而不是 import 常量: 它是**部署契约** (部署方在 compose /
+# systemd 里写这个字符串), 改名必须让这里变红, 而不是跟着一起改。
+_REASONING_EFFORT_ENV = "PSI_AI_REASONING_EFFORT"
+
+_SetReasoningEffortEnv = Callable[[str | None], None]
+
+
+@pytest.fixture
+def reasoning_effort_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[_SetReasoningEffortEnv]:
+    """设好 ``PSI_AI_REASONING_EFFORT`` 并重载 server 模块, 让模块常量跟着变。
+
+    ``_DEFAULT_REASONING_EFFORT`` 是**模块常量, 进程启动时读一次**, 所以没有「每请求读
+    环境变量」可以 patch —— 重新执行模块才等价于重启进程。``importlib.reload`` 在**同一个
+    模块字典**里重跑模块代码, 因此本文件顶部 import 进来的 ``handle_chat_completions``
+    也看得到新常量 (函数的 ``__globals__`` 就是那个字典)。
+
+    退出时无条件按「未设置」再重载一次: 常量是模块态, 用例里留下的取值会污染同进程的
+    后续用例, 而 monkeypatch 的 undo 管不到 import 期算出来的常量。
+    """
+
+    def _apply(value: str | None) -> None:
+        if value is None:
+            monkeypatch.delenv(_REASONING_EFFORT_ENV, raising=False)
+        else:
+            monkeypatch.setenv(_REASONING_EFFORT_ENV, value)
+        importlib.reload(server)
+
+    yield _apply
+    monkeypatch.delenv(_REASONING_EFFORT_ENV, raising=False)
+    importlib.reload(server)
+
+
+async def test_handler_requests_thinking_mode_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reasoning_effort_env: _SetReasoningEffortEnv
+) -> None:
     """``deepseek`` provider 不传 ``reasoning_effort`` 时必须兜一个默认值, 否则思维模式被上游关掉。
 
     any-llm 的 DeepSeek provider 把缺省的 ``"auto"`` 读成「没要思维」, 转而下发
     ``extra_body.thinking={"type": "disabled"}``。模型被关掉思维通道后仍要推理,
     就把自我对话写进 ``content`` —— 即线上的 thinking 泄漏。
+
+    不设 ``PSI_AI_REASONING_EFFORT`` 时兜的仍是 ``medium``: 那个变量只把「选哪一档」
+    交出去, 一个字都不改默认行为。
     """
+    reasoning_effort_env(None)
     received: dict[str, Any] = {}
     stream = _TrackingStream([_FakeChunk()])
     # 兜底只对会误关思维的 provider (deepseek) 生效
@@ -199,15 +242,64 @@ async def test_handler_requests_thinking_mode_by_default(tmp_path: Path, monkeyp
     assert received["reasoning_effort"] == "medium"
 
 
+async def test_reasoning_effort_follows_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reasoning_effort_env: _SetReasoningEffortEnv
+) -> None:
+    """部署方用环境变量选档, 不必改安装包里的常量。
+
+    实测真链路同一批 6 题: ``medium`` 23.5s / ``minimal`` 13.1s / ``none`` 5.5s ——
+    档位是延迟与可读性的权衡, 各部署取舍不同, 所以值归部署方。
+    """
+    reasoning_effort_env("minimal")
+    received: dict[str, Any] = {}
+    stream = _TrackingStream([_FakeChunk()])
+    runner, socket_path = await _serve_handler(tmp_path, monkeypatch, stream, received, provider="deepseek")
+    try:
+        await _drain(socket_path)
+    finally:
+        await runner.cleanup()
+
+    assert received["reasoning_effort"] == "minimal"
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t\n"])
+async def test_blank_reasoning_effort_env_falls_back_to_medium(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reasoning_effort_env: _SetReasoningEffortEnv,
+    blank: str,
+) -> None:
+    """空串/纯空白 = 没设置, 回落 ``medium``。
+
+    「变量在、值没填」在部署里太容易发生 (compose 里留了个空的 ``PSI_AI_REASONING_EFFORT=``),
+    而空串若原样下发, 进的是 any-llm ``CompletionParams`` 的**字面量**字段 —— 那不是
+    「用默认档」, 是当场报错。
+    """
+    reasoning_effort_env(blank)
+    received: dict[str, Any] = {}
+    stream = _TrackingStream([_FakeChunk()])
+    runner, socket_path = await _serve_handler(tmp_path, monkeypatch, stream, received, provider="deepseek")
+    try:
+        await _drain(socket_path)
+    finally:
+        await runner.cleanup()
+
+    assert received["reasoning_effort"] == "medium", f"env={blank!r}"
+
+
 async def test_handler_openai_provider_keeps_upstream_reasoning_default(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reasoning_effort_env: _SetReasoningEffortEnv
 ) -> None:
     """``openai`` provider 直连 DeepSeek 兼容端点时, 不传 ``reasoning_effort`` 不能兜默认值。
 
     openai provider 没有 any-llm deepseek provider 的 auto→disabled 逻辑: 不传时
     thinking 本来就开着, 思考照常进 ``reasoning_content``。若强制 ``"medium"``,
     模型反而把过程叙述写进 ``content`` —— 用户在飞书看到整段自我对话 (线上泄漏)。
+
+    配了 ``PSI_AI_REASONING_EFFORT`` 也照样不补: 白名单判的是 provider 会不会误关
+    思维, 与部署方有没有表态无关。
     """
+    reasoning_effort_env("minimal")
     received: dict[str, Any] = {}
     stream = _TrackingStream([_FakeChunk()])
     # _serve_handler 默认 provider="openai"
@@ -220,14 +312,19 @@ async def test_handler_openai_provider_keeps_upstream_reasoning_default(
     assert "reasoning_effort" not in received
 
 
-async def test_handler_keeps_caller_supplied_reasoning_effort(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_handler_keeps_caller_supplied_reasoning_effort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reasoning_effort_env: _SetReasoningEffortEnv
+) -> None:
     """调用方显式给的值优先 —— 含 ``"none"``。
 
-    这里是转发层: 兜底只为补上「谁都没表态」这一种情况, 不该覆盖上游意图。
+    这里是转发层: 兜底只为补上「谁都没表态」这一种情况, 不该覆盖上游意图。环境变量是
+    **部署方**的表态, 比调用方低一级 —— 调用方 (Session) 为某一轮点了 ``"none"``,
+    不能被它盖回去。
     """
+    reasoning_effort_env("minimal")
     received: dict[str, Any] = {}
     stream = _TrackingStream([_FakeChunk()])
-    runner, socket_path = await _serve_handler(tmp_path, monkeypatch, stream, received)
+    runner, socket_path = await _serve_handler(tmp_path, monkeypatch, stream, received, provider="deepseek")
     try:
         async with (
             ClientSession() as session,

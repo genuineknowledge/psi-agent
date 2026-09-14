@@ -50,14 +50,19 @@ Session ── POST /chat/completions ──► AI
 | `api_key` | `--api-key` | `PSI_AI_API_KEY` | 上游 API key |
 | `base_url` | `--base-url` | `PSI_AI_BASE_URL` | 上游 base URL |
 | `max_context_tokens` | `--max-context-tokens` | `PSI_MAX_CONTEXT_TOKENS` | Token 阈值，超过时触发 compaction（默认 100K，0 = 禁用） |
+| `reasoning_effort` 兜底档位 | — | `PSI_AI_REASONING_EFFORT` | 调用方没给 `reasoning_effort` 时下发的档位（默认 `medium`）；只对 `deepseek` provider 生效，进程启动读一次 |
 
 全部参数可选，CLI 优先于环境变量。`model` 在请求处理中被启动配置覆盖（AI 层隐藏上游 model 细节）。
+
+`PSI_AI_REASONING_EFFORT` 是唯一**不走 CLI** 的一项（它不是启动参数，而是那个兜底常量的值）：
+空串/纯空白视为未设置，回落到 `medium`，即不设这个变量时行为与引入它之前逐字节相同。
+取值不做白名单校验，写错由上游拒绝（见下）。
 
 ## 请求透传
 
 Session 发送的 body 中，除 `model` 被启动配置覆盖、`messages` 被显式提取、`stream` 被剥离（AI 层始终强制 `stream=True`）、`provider`/`api_key`/`api_base`/`routing` 防御性剥离（避免与启动配置冲突）外，其余字段（`tools`, `temperature`, `max_tokens` 等）全部通过 `**body` 透传给 any-llm-sdk。
 
-`reasoning_effort` 是唯一被**补默认值**的字段（`setdefault("reasoning_effort", "medium")`，调用方给了就用它的，含 `"none"`）。**兜底只对 `deepseek` provider 生效**（白名单在 `_REASONING_EFFORT_DEFAULT_PROVIDERS`）——只有它会缺省值误读；其余 provider 保持不传，交给上游默认行为。
+`reasoning_effort` 是唯一被**补默认值**的字段（`setdefault("reasoning_effort", <默认档位>)`，调用方给了就用它的，含 `"none"`；默认档位由 `PSI_AI_REASONING_EFFORT` 决定，缺省 `medium`）。**兜底只对 `deepseek` provider 生效**（白名单在 `_REASONING_EFFORT_DEFAULT_PROVIDERS`）——只有它会缺省值误读；其余 provider 保持不传，交给上游默认行为。
 
 ### 为什么必须显式传 `reasoning_effort`
 
@@ -68,6 +73,22 @@ any-llm 的 DeepSeek provider 把缺省值 `"auto"` 读成「调用方没要思�
 该默认值在 1.21.0 之后引入（1.21.0 的同一文件里没有 `thinking` 分支），而依赖声明是 `any-llm-sdk>=1.21.0` —— 一次静默的上游行为变更改掉了线上语义。
 
 **兜底必须 provider 感知，不能无条件对全部 provider 生效（2026-09 修正）**：最初这段默认对**所有** provider 全局生效。ToC 装机版不经过 psi-agent 的 `ai/server.py`（SPA 的 `DEFAULT_REMOTE_AI` 直接打云端 OpenAI 兼容网关），所以恰好没吃到这个默认；但 ToB 自部署若用 `provider: 'openai'` 直连 DeepSeek 兼容端点（如 `api.deepseek.com/v1`）就会吃到 —— 而 `openai` provider 并没有 auto→disabled 逻辑：不传 `reasoning_effort` 时 thinking 本来就开着，思考照常进 `reasoning_content`。强制传 `"medium"` 反而把思考档位压到中档，模型于是把**过程叙述**写进 `content`（每轮 tool call 前一段自述），用户在飞书看到整段自我对话 —— 与本页描述的泄漏形态一致。故兜底范围收敛到 `_REASONING_EFFORT_DEFAULT_PROVIDERS`（`{"deepseek"}`）。实测同一 tool-call prompt：不传 `reasoning_effort` → content=0 / reasoning=306；传 `"medium"` → content=34 / reasoning=345。
+
+### 什么时候该调 `PSI_AI_REASONING_EFFORT`，代价是什么
+
+档位是**延迟与可读性的直接权衡**，各部署的取舍不同 —— 所以值做成可配，不必改安装包里的常量。真链路实测（同一批 6 题）：
+
+| 档位 | 6 题实测墙钟 | 代价 |
+|------|------|------|
+| `medium`（默认，不设变量） | 23.5s | 无 —— 与引入环境变量之前逐字节相同 |
+| `minimal` | 13.1s | 未观察到 thinking 泄漏 |
+| `none` | 5.5s | 约一半答复的**开头变成英文自我对话**（思考泄漏进正文） |
+
+- **`none` 不是免费的**：`none` 正是 any-llm DeepSeek provider 关掉思考的判据之一（`reasoning_effort in (None, "none", "auto")` → `thinking={"type": "disabled"}`），也就是本页开头那条泄漏的成因 —— 模型被关掉思维通道后仍要推理，就把自我对话写进 `content`。拿它换延迟要自己权衡：只有面向内部批处理、对延迟敏感且能容忍正文噪声的部署才值得。`minimal` 是实测里唯一「省掉近一半时间、又没观察到泄漏」的档位。
+- **只对 `deepseek` provider 生效**：其余 provider 根本不读这个值（`_REASONING_EFFORT_DEFAULT_PROVIDERS`），设了不会有任何变化 —— 它们不传 `reasoning_effort`，思考本来就开着。
+- **进程启动读一次**：改环境变量要重启 AI 进程/容器，没有热更新。
+- **调用方优先**：Session 显式传了 `reasoning_effort` 时环境变量不生效（`setdefault` 语义），含显式传 `"none"`。
+- **不校验取值**：合法档位由 any-llm 的 `ReasoningEffort` 定义（`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`auto`）。写错不在这里拦——在本层抄一份名单只会在上游加档位时变成假的拒绝，而非法值上游自己会拒（`CompletionParams` 的该字段是字面量类型）。
 
 ## Provider 支持
 
