@@ -32,10 +32,6 @@ class _MockAgent:
     @asynccontextmanager
     async def turn_lock(self) -> Any:
         yield
-        # 调度触发前会截断会话历史(每轮全新上下文);mock 一个真 Conversation,
-        # 消息含 system 行,模拟真实会话结构。
-        self._conversation = Conversation(messages=[{"role": "system", "content": "sys"}])
-        self._conversation._persisted_bytes = 0  # 无盘落点,避免写文件
 
     async def run(self, msg: object, **_kwargs: object) -> Any:  # type: ignore[return]
         if False:
