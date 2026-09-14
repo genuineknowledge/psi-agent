@@ -209,6 +209,32 @@ def test_reader_does_not_return_verbose_raw_feishu_fields() -> None:
     assert "subject@example.invalid" not in json.dumps(result, ensure_ascii=False)
 
 
+def test_rules_tool_reports_rule_pack_fingerprint_for_provenance() -> None:
+    """规则来源指纹必须由工具给出: agent 不该再去 shell 里 md5sum 规则文件。"""
+    rules_tool = importlib.import_module("positive_negative_rules")
+    payload = json.loads(asyncio.run(rules_tool.positive_negative_rules("及时反馈")))
+
+    assert payload["ok"] is True
+    source = payload["source"]
+    pack_path = TOOLS_DIR.parent / source["file"]
+    raw = pack_path.read_bytes()
+    assert source["sha256"] == hashlib.sha256(raw).hexdigest()[:12]
+    assert source["bytes"] == len(raw)
+    assert source["file"] == "skills/positive-negative-list/6.0-shadow.yaml"
+    # 指纹是给比对用的, 不是给读用的 —— 不能顺手把整份规则正文塞进返回值。
+    assert len(source["sha256"]) == 12
+
+
+def test_rules_tool_rejects_unknown_or_traversal_version_without_leaking_a_path() -> None:
+    rules_tool = importlib.import_module("positive_negative_rules")
+    for version in ("9.9-nope", "../../etc/passwd", "6.0-shadow/../6.0-shadow"):
+        payload = json.loads(asyncio.run(rules_tool.positive_negative_rules("及时反馈", version=version)))
+        assert payload["ok"] is False
+        assert "version" in payload["error"]
+        assert "/" not in payload["error"]
+        assert "\\" not in payload["error"]
+
+
 def test_analyze_tool_returns_user_facing_summary_without_internal_metadata(monkeypatch) -> None:
     analyze = importlib.import_module("positive_negative_case_analyze")
 

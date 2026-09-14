@@ -11,7 +11,7 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 import _feishu_impl as _f  # noqa: E402
-from _positive_negative_list.rules import DEFAULT_VERSION, query_rules  # noqa: E402
+from _positive_negative_list.rules import DEFAULT_VERSION, query_rules, rule_pack_source  # noqa: E402
 
 
 async def positive_negative_rules(query: str, version: str = DEFAULT_VERSION, limit: int = 8) -> str:
@@ -30,6 +30,12 @@ async def positive_negative_rules(query: str, version: str = DEFAULT_VERSION, li
         )
     try:
         rules: list[dict[str, Any]] = query_rules(query, version, limit)
+        source = rule_pack_source(version)
     except ValueError as exc:
         return _f.dumps_result({"ok": False, "error": str(exc)})
-    return _f.dumps_result({"ok": True, "version": version, "rules": rules, "match_count": len(rules)})
+    # ``source`` carries the rule file fingerprint so an agent can cite "which
+    # pack, which bytes" without shelling out to md5sum — the tool now answers
+    # the provenance question itself.
+    return _f.dumps_result(
+        {"ok": True, "version": version, "source": source, "rules": rules, "match_count": len(rules)}
+    )

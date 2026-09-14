@@ -59,6 +59,24 @@ version: v1.2
   影响，**必须先拿到明确确认**。不得以"实测一次发送通道""确认收件人规则"为由真的发一条 ——
   那已经把消息发出去了。要核实收件人规则就读配置与文档。
 
+### 工具调用场景（哪个需求 → 哪个入口）
+
+| 需求 | 入口 | 不要这样替代 |
+|---|---|---|
+| 有哪些场次、某场的 `record_file_id`、投递状态 | `meeting_records_list` | `bash`+`find` 扫 appdata / `ls` 归档目录 |
+| 最新一场的原始转写 | `meeting_transcript_prepare` 取得转写 → `meeting_session_read` 逐块读完 | 自己拼腾讯接口；只读前一块就当全文 |
+| 历史某场次的转写/分析/纪要/manifest | `meeting_session_read(record_file_id=…)` | 直接 `cat` archive 下的文件 |
+| **逐字核对某段原文在不在、出现几次、在第几行** | `meeting_session_read(search=…)`：在**整份**产物上逐行检索，返回 `matches[].line`、命中行文本与 `occurrence_count` | `grep -o` / `sed -n` / `awk`：分块读取看不到全局，shell 又绕开了工具契约，核对结论无法回到入口 |
+| 把产物导出成文件给用户 | `meeting_record_export` | 自己 `write` 一份内容相近的文件 |
+| 把纪要/摘要投递给收件人 | `meeting_session_notify`；腾讯会议侧纪要发布用 `tencent_meeting_minutes_publish` | 用 `feishu_message_send` 直接发：绕开了投递回执、收件人规则和幂等 |
+| 跑整条链路 / 重跑某场 | `meeting_pipeline_run` / `meeting_pipeline_replay`（写盘+投递，需确认） | 手工按步骤复刻 pipeline；分块分析自己写文件 |
+| 腾讯会议侧**没有专用工具封装**的方法 | `tencent_meeting_call(method=…, params_json=…)` 通用透传 | `bash` 去跑 `skills/tencent-meeting-mcp/scripts/*`：工具包的就是同一个脚本，但工具带 token 环境、超时与错误契约 |
+| 会议链路的定时任务（改时间/开关） | `schedule_manage` | 手写 cron 或改别处的调度文件 |
+
+这份表是**入口选择**的唯一依据：同类需求先按行找到入口，再动手。表里没列到的、
+且确实不属于会议链路的需求，才轮到 `bash` 或通用工具；此时仍按"报数字要给得出出处"
+如实标注来源。
+
 ## 判定引擎（本文件生效部分）
 
 1. **证据层级**：原文 > 纪要辅助；区分事实、发言人陈述、Agent 推断。

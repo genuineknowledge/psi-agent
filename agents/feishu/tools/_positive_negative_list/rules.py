@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -110,6 +111,30 @@ def load_rule_pack(version: str = DEFAULT_VERSION) -> RulePack:
 
 def query_rules(query: str, version: str = DEFAULT_VERSION, limit: int = 8) -> list[dict[str, Any]]:
     return load_rule_pack(version).query(query, limit)
+
+
+def rule_pack_source(version: str = DEFAULT_VERSION) -> dict[str, Any]:
+    """规则包来源指纹: ``{file, sha256, bytes}``。
+
+    为什么要有它: SKILL 要求 agent 在"本轮确实重读了、内容未变"时给出证据, 而此前
+    **没有任何工具返回规则文件指纹** —— agent 只能自己 ``md5sum
+    skills/positive-negative-list/<version>.yaml``, 那正是"用 bash 去补工具缺口"的
+    典型来源(实测 P25)。把指纹放回工具返回里, 这条路就不需要了。
+
+    ``file`` 是相对 agent 包根的路径, 便于在原句里引用; ``sha256`` 只取前 12 位 ——
+    够区分且好念。刻意**不**返回全文: 这个字段是给"比对"用的, 不是给"读"用的。
+    """
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+(?:-[a-z0-9-]+)?", version):
+        raise ValueError("invalid rule pack version")
+    path = _CONFIG_DIR / f"{version}.yaml"
+    if not path.is_file():
+        raise ValueError(f"unknown rule pack version: {version}")
+    raw = path.read_bytes()
+    return {
+        "file": f"skills/positive-negative-list/{version}.yaml",
+        "sha256": hashlib.sha256(raw).hexdigest()[:12],
+        "bytes": len(raw),
+    }
 
 
 def validate_rule_pack(pack: RulePack) -> None:
