@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import textwrap
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -21,6 +22,20 @@ from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistr
 
 class _MockAgent:
     _lock = anyio.Lock()
+
+    def __init__(self) -> None:
+        # 调度触发前会截断会话历史(每轮全新上下文);mock 一个真 Conversation,
+        # 消息含 system 行,模拟真实会话结构。
+        self._conversation = Conversation(messages=[{"role": "system", "content": "sys"}])
+        self._conversation._persisted_bytes = 0  # 无盘落点,避免写文件
+
+    @asynccontextmanager
+    async def turn_lock(self) -> Any:
+        yield
+        # 调度触发前会截断会话历史(每轮全新上下文);mock 一个真 Conversation,
+        # 消息含 system 行,模拟真实会话结构。
+        self._conversation = Conversation(messages=[{"role": "system", "content": "sys"}])
+        self._conversation._persisted_bytes = 0  # 无盘落点,避免写文件
 
     async def run(self, msg: object, **_kwargs: object) -> Any:  # type: ignore[return]
         if False:
@@ -382,6 +397,24 @@ async def test_refresh_mixed_changes(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_reset_schedule_context_drops_previous_round() -> None:
+    """每次定时触发前截断会话历史:上一轮的消息不能污染下一轮(只留 system 行)。
+
+    直接测 _reset_schedule_context(_run_one 在 fire 前调用它);不跑 _run_one 本体,
+    避免等待真实 cron 边界。
+    """
+    agent = _MockAgent()
+    # 模拟"上一轮"残留:会话里已有历史消息
+    agent._conversation.messages.append({"role": "user", "content": "14:30 的旧读表名单"})
+    agent._conversation.messages.append({"role": "assistant", "content": "上一轮的结论"})
+    assert len(agent._conversation.messages) == 3
+
+    await ScheduleRegistry._reset_schedule_context(agent)
+    assert len(agent._conversation.messages) == 1
+    assert agent._conversation.messages[0]["role"] == "system"
+    assert "14:30 的旧读表名单" not in str(agent._conversation.messages[0].get("content", ""))
+
+
 async def test_run_one_handles_agent_error() -> None:
     s = Schedule(name="test", cron="* * * * * *", task_content="ping")
     agent = _RaisingAgent()

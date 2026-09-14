@@ -398,6 +398,7 @@ class ScheduleRegistry:
                         # session (the 380k-token attendance task) would never
                         # compact otherwise, and nothing would fail loudly.
                         async with agent.turn_lock():
+                            await ScheduleRegistry._reset_schedule_context(agent)
                             if schedule.fire == FIRE_TOOL:
                                 pending_chunks = await ScheduleRegistry._fire_tool(schedule, agent, response_kind)
                             else:
@@ -424,6 +425,20 @@ class ScheduleRegistry:
                         logger.error(f"Error processing schedule {schedule.name!r}: {e!r}")
         finally:
             logger.info(f"Schedule runner stopped: {schedule.name!r}")
+
+    @staticmethod
+    async def _reset_schedule_context(agent: SessionAgent) -> None:
+        """每个定时触发前,把调度会话历史截到只剩 system 行。
+
+        调度会话按 workspace 长期复用,上一轮任务的消息(读表名单、结论)会
+        留在上下文里污染下一轮 —— 实测 15:00 检测沿用 14:30 轮的未填名单,
+        当期列一次都没读。每轮触发前截断,等价于"每次开新会话、结束即清",
+        跨轮状态一律走 workspace 盘文件,不依赖会话历史。
+        """
+        async with agent._conversation:
+            if len(agent._conversation.messages) > 1:
+                agent._conversation.truncate_to(1)
+                await agent._conversation.commit()
 
     @staticmethod
     async def _fire_prompt(
