@@ -1000,8 +1000,7 @@ class SessionAgent:
                                         if blocked is not None:
                                             r[idx] = blocked
                                             logger.warning(
-                                                f"Tool guard blocked {fn!r} "
-                                                f"in {self._conversation.session_id!r}"
+                                                f"Tool guard blocked {fn!r} in {self._conversation.session_id!r}"
                                             )
                                             return
                                         func = self._tool_registry.get(fn)
