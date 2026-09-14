@@ -219,6 +219,32 @@ class TestSkillsIndexLayering:
         assert found == []
         assert any("could not be read" in r.message for r in caplog.records), "读不了必须告警, 不能静默返回空"
 
+    def test_nested_skill_group_is_indexed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``skills/<组>/<技能>/SKILL.md`` 必须进索引, 名字是 ``<组>/<技能>``。
+
+        为什么要有这条: 会议 SOP 引擎就在 ``skills/meeting-sop/weekday-alignment/``,
+        而全包**只有它**是两层。只认直接子目录时它既不在索引里、模型连路径都看不到 ——
+        人工会话问"发言超过 3 分钟算不算违规"只能凭印象或拿别的域的规则回答(实测 SC02)。
+        名字必须是 ``组/技能``: ``config/meeting-automation.yaml`` 的
+        ``analysis_sop_skills`` 用的就是这个形状, 管道那侧的显式注入靠它对齐。
+        """
+        agent = tmp_path / "agent"
+        _write_skill(agent, "flat-skill")
+        nested = agent / "skills" / "meeting-sop" / "weekday-alignment"
+        nested.mkdir(parents=True)
+        (nested / "SKILL.md").write_text(
+            "---\nname: meeting-sop-weekday-alignment\ndescription: NESTED_SOP\n---\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(_system, "_GLOBAL_AGENT_SKILLS_DIR", anyio.Path(str(tmp_path / "no-global")))
+
+        found = dict(anyio.run(lambda: _system._collect_skill_dirs(anyio.Path(str(agent / "skills")))))
+        assert set(found) == {"flat-skill", "meeting-sop/weekday-alignment"}, found
+
+        # 索引里显示的是 front-matter 的 name(管道那侧的 analysis_sop_skills 用的是**路径**,
+        # 两者不是一回事: 前者给模型认, 后者给显式注入用)。
+        xml = anyio.run(lambda: _system._build_skills_index(anyio.Path(str(agent))))
+        assert "NESTED_SOP" in xml, "嵌套技能没有进提示词的技能索引"
+
     def test_single_root_index_unchanged(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe_lines) -> None:
         """未设 ``PSI_CONTENT_ROOTS``: 仍是 global + agent 两根, 探针形状不变。"""
         agent = tmp_path / "agent"

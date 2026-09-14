@@ -516,16 +516,34 @@ async def _collect_skill_dirs(skills_dir: anyio.Path) -> list[tuple[str, anyio.P
     wrong-permission layer contributed zero skills and looked like a layer that
     simply had none. Still not raised — one unreadable layer must not take down
     the whole prompt — but no longer silent.
+
+    One level of grouping is also collected, as ``<组>/<技能>``: the meeting SOP
+    engine lives at ``skills/meeting-sop/weekday-alignment/SKILL.md`` and is the
+    *only* nested skill in the pack. Counting direct children only left it out of
+    the index entirely — the model could not see its name or path, so a question
+    about meeting criteria ("发言超过 3 分钟算不算违规") was answered from
+    whatever skill did load, i.e. the wrong domain (observed in eval case SC02).
+    The nested name keeps the ``<组>/<技能>`` shape that
+    ``analysis_sop_skills`` in ``config/meeting-automation.yaml`` already uses, so
+    the pipeline's explicit injection is unaffected.
     """
     entries: list[tuple[str, anyio.Path]] = []
     if not await skills_dir.exists():
         return entries
     try:
         async for entry in skills_dir.iterdir():
-            if await entry.is_dir():
-                skill_md = entry / "SKILL.md"
-                if await skill_md.exists():
-                    entries.append((entry.name, skill_md))
+            if not await entry.is_dir():
+                continue
+            skill_md = entry / "SKILL.md"
+            if await skill_md.exists():
+                entries.append((entry.name, skill_md))
+                continue
+            async for nested in entry.iterdir():
+                if not await nested.is_dir():
+                    continue
+                nested_md = nested / "SKILL.md"
+                if await nested_md.exists():
+                    entries.append((f"{entry.name}/{nested.name}", nested_md))
     except OSError as e:
         logger.warning("Skills dir %s exists but could not be read: %r", skills_dir, e)
     return entries
