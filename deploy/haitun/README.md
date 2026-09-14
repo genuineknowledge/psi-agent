@@ -6,6 +6,11 @@
 | --- | --- |
 | `Dockerfile` `Dockerfile.overlay` 两份 `*.dockerignore` `build-image.sh` | **准本**。构建时直接被用, 改这里就是改构建 |
 | `oauth-proxy.py` `launch-gateway.sh` `.env.example` | **副本**。运行中的是目标机上那份, 改这里不生效, 要人工同步 |
+| `audit-workspace-drift.sh` | **判据**。不参与部署, 是投放 `workspace/tools/` 前后拿来量差异的探针 |
+
+还有一类东西**不在这个目录里, 也不在镜像里**: `workspace*/tools/` 那 241 个业务工具文件是
+bind mount 到目标机上的, 靠人手 `docker cp` / `cp` 投放。它们是本目录唯一没有构建闸门把着的
+部分, 见下面「`workspace/tools/` 的投放」。
 
 ---
 
@@ -115,6 +120,101 @@ PYTHONPATH=src .venv/Scripts/python.exe -m pytest -o testpaths= --no-cov tests/d
   但**没有拿它替换过任何在跑的容器** —— 镜像能起、页面能开都没验。
 - 境外机的 build-arg 组合(`APT_MIRROR=` 空值那条路径)**没在境外机上跑过**, 只有本地判据。
   B 机当前 `running=0`, 而那些数字是 9-01 量的。
+
+---
+
+## `workspace/tools/` 的投放
+
+### 为什么这一章必须存在
+
+上面两章覆盖的是「镜像里的东西」和「目标机上的单个脚本」。业务工具是第三类, 而且是最容易
+静默错的一类: `agents/feishu/tools/` 那 241 个 `.py` **不进镜像**, 而是 bind mount 进容器,
+换镜像发布完全不会更新它们, 靠人手投放。没有构建闸门, 没有测试, 漏投一个文件不报错。
+
+2026-09-14 实测的后果: 生产 `_feishu_spec.py` 是新版(683 行, 分层接口 `rules_for_layers` 在
+里面), 而调用它的 `_feishu_api_impl.py` 还是旧版(434 行, 仍调单目录的 `rules_for`)。9-12 那次
+投放投了前者、漏了后者。于是 **195 条飞书 API 护栏规则一条都不生效**, 该拒的调用全部放过,
+唯一线索是一行 INFO 级日志 `0 from 0 of 1 roots [(none)]`。修法不是改代码 —— `origin/main`
+里早就是对的 —— 而是把漏掉的那个文件投上去。
+
+朝最贵的方向错、表面功能跑通、日志不报错, 这三条凑齐就没有判据可言。所以这一章的主体是
+一个脚本, 而不是一串命令。
+
+### 投放前后各跑一次审计
+
+```bash
+# 在目标机上跑(脚本自己找 clone, 或用 REPO= 指定)
+bash /tmp/audit-workspace-drift.sh origin/main                 # 审全部三份 workspace
+bash /tmp/audit-workspace-drift.sh origin/main workspace       # 只审 gateway 那份
+```
+
+它把差异分成四类, **混成一个数字就再也分不开了**:
+
+| 类别 | 判法 | 该怎么处置 |
+| --- | --- | --- |
+| 同 | md5 相等(LF 归一化后) | —— |
+| 落后 | 与 git 不同, mtime 是**整秒** | 部署投放留下的旧版, 可安全覆盖 |
+| 领先 | 与 git 不同, mtime **带纳秒** | ⚠️ 有人在生产上就地写过, 覆盖即丢代码, 必须人工定归属 |
+| 缺失 | git 有而生产没有 | 补投 |
+| 生产独有 | 生产有而 git 没有 | 通常是 git 里已删的文件, 确认后删 |
+
+有「领先」文件时脚本 **退出码 1**, 让调用方停下而不是继续覆盖。
+
+mtime 纳秒位这个判据来自 9-12 的取证: 投放(`cp -p` / tar 保留源 mtime, 或 CI 产物)落在整秒,
+就地编辑落在带纳秒的时刻。uid 不是判据 —— 两种情况都可能是 root。
+
+「落后」和「领先」必须分开, 因为**存在生产领先于 git 的真实文件**: `_card_dsl.py` 是未合并的
+PR #867(fork `Twin-Ghosts`)的代码再往前改出来的, 生产是那个 PR 的超集。当成「旧版」一键同步
+会静默丢掉 607 行功能(原生 table 渲染 / `bind-field` 回写 / `action_id` 撞车防护)。一键同步
+之所以不安全, 全部落在这一个区分上。
+
+### 三份 workspace 不是彼此的副本
+
+目标机上有三份, 各挂给一个容器:
+
+| 目录 | 容器 | 状态(2026-09-14 实测) |
+| --- | --- | --- |
+| `workspace/` | `psi-agent-gateway` | 与 `origin/main` 基本齐平: 同 205 / 落后 32 / 领先 3 / 缺失 1 / 独有 0 |
+| `workspace-luolin/` | `psi-agent-luolin` | **8-07 的旧快照**, 缺 73 个文件 |
+| `workspace-chengxx/` | `psi-agent-chengxx` | **8-07 的旧快照**, 缺 71 个文件 |
+
+⚠️ **不要对两份私有 workspace 做「补依赖闭包」式的增量投放。** 9-12 实测: 为补一条断链投了
+13 个文件, 其中新版 `_feishu_impl.py` 需要新增的 `_feishu/bitable.py`, 而两台机器上是 8-07 的
+旧版, 40+ 文件立刻 `cannot import name 'get_bitable_record_impl'`, 工具数从 198 掉到 87。
+已完整回滚。闭包的边界是整棵依赖树, 不是看得见的那几条报错 —— 所以这两份只能整份铺平, 不能
+增量。
+
+### 投放的硬规则
+
+1. **清单要走全树, 不能用顶层 glob。** 私有子目录 `_feishu/` 下有文件, 顶层 glob 漏掉 6 个,
+   其中 3 个的缺失直接让工具加载失败。脚本用 `find`, 不用 `*.py`。
+2. **md5 比对前先 LF 归一化**(`tr -d '\r' | md5sum`)。生产是 LF、仓库检出可能是 CRLF, 裸比对
+   会报几乎全不一致, 已因此出过一次错误判断。
+3. **重启前先在容器内 import 探一次。** 这是上面那次回滚教的: 文件拷进去时不会报错, 断链要
+   到进程重启后加载工具才暴露, 而那时旧进程已经没了。
+4. **`docker compose` 收的是 service 名, 不是容器名。** service 是 `gateway` / `oauth-proxy` /
+   `private-luolin` / `private-chengxx`; 容器是 `psi-agent-gateway` 等。传容器名会
+   `no such service` —— 而如果顺手把输出重定向掉, 看起来就像重启成功了。
+5. **`restart` 不换镜像。** 换 tag 的发布要 `docker compose up -d`(改 `workspace/` 内容时**绝
+   不能**用它, 见 AGENTS.md); `oauth-proxy` 用 `network_mode: "service:gateway"`, gateway 重建
+   后它必须跟着 `restart`, 否则挂在死掉的 netns 上, 公网静默 502。
+6. **数失败条数要按容器本次启动去重。** gateway 是多会话的, 每个会话都重扫一遍工具, 所以
+   `grep -c 'Failed to load'` 会按会话数翻倍(实测 106 = 2 类报错 × 约 40 个会话)。要按报错
+   消息去重, 并确认 `StartedAt` 真的前进了。
+
+### 判据
+
+脚本本身用一棵人造树做过变异复核(2026-09-14): 全同树报 241/241 且退出 0; 分别造出落后 /
+领先 / 子目录里的缺失 / 生产独有各一个, 四类被各自单独认出且退出码变 1; 再把一个文件整体转成
+CRLF, 仍报「同」, 归一化没有产生假阳性。
+
+### 已知没验到的
+
+- 脚本**没在目标机上跑过**。2026-09-14 起 jump 机 `210.45.70.163` ICMP 100% 丢包、TCP/22
+  超时, 生产不可达。上面 gateway 那组 205/32/3/1/0 是同日手工量的, 脚本在人造树上复现了同一
+  套判法, 但「脚本在真机上输出这组数」这一步未验证。
+- 两份私有 workspace 的整份铺平**没做**。
+- `_card_dsl.py` / `_rookie_sop_card.py` 两个「领先」文件的归属未定, 要 PR #867 作者判断。
 
 ---
 

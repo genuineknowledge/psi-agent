@@ -63,10 +63,16 @@ _DESKTOP_TOOLS = _REPO_ROOT / "agents" / "desktop" / "tools"
 # package must be covered here without anyone remembering to update a constant.
 _FEISHU_MODULES = sorted(p.stem for p in _FEISHU_PKG.glob("*.py") if p.stem != "__init__")
 
-# ``_feishu_impl`` re-exports these 12 and they import it back at module scope,
+# ``_feishu_impl`` re-exports these 14 and they import it back at module scope,
 # so each only imports cleanly once ``_feishu_impl`` is in flight.  Measured, and
 # identical to ``tests/agents/feishu/test_feishu_tool_import_cycles.py``'s
 # ``_KNOWN_CYCLIC``: the cycles are the repo's, not something A1 introduces.
+#
+# ⚠️ 这份清单是**这条测试的「裸名基线」**, 而下面的断言是等值比较, 不是单向的。所以清单漏掉一个
+# 本来就成环的模块时, 报出来的是「A1 下成环, 裸名基线不成环 —— A1 引入了新环路」, 一句自信的错话
+# 指向完全错误的方向。2026-09-14 实测踩到: ``todo_sop`` / ``strike`` 后加进 ``_feishu/`` 时带着
+# 同一个环路, 两份清单都没跟上, 于是这里报 A1 弄坏了环路; 实测裸名下这两个模块**同样成环**,
+# A1 什么都没弄坏。改清单必须两份一起改。
 _KNOWN_CYCLIC = frozenset(
     {
         "approval",
@@ -79,7 +85,9 @@ _KNOWN_CYCLIC = frozenset(
         "leave",
         "message",
         "sheet",
+        "strike",
         "task",
+        "todo_sop",
         "worktree",
     }
 )
