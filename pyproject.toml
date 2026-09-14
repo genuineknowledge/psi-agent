@@ -152,7 +152,22 @@ extra-paths = ["agents/feishu/skills/workflow"]
 exclude = [
     "agents/feishu/skills/workflow/fusion_flow/generated",
     "agents/desktop/skills/workflow/fusion_flow/generated",
+    # 与 ``tool.ruff.extend-exclude`` 同一处置, 两处都要写: 生产「领先」文件的逐字节存底
+    # 不是仓库应用代码。它们裸导入 ``_runtime_paths`` 这类只在 Session 运行期才在
+    # ``sys.path`` 上的模块, 类型检查必然解析不到, 而改导入就毁掉了"与生产逐字节相同"。
+    "docs/superpowers/salvage/**",
 ]
+
+[[tool.ty.overrides]]
+# 这个测试文件刻意在**函数体内**做裸名导入(``tencent_meeting`` 等), 因为它们只有靠文件顶部
+# 往 ``sys.path`` 插入 ``agents/feishu/tools`` 才找得到, 而且必须晚于 ``layers`` fixture 的
+# monkeypatch。裸名解析不到是预期的, 不是缺陷。
+# 不用 ``tool.ty.environment.extra-paths`` 放开: 实测把 ``agents/feishu/tools`` 加进去后,
+# ty 会顺着裸名继续进那些模块, 诊断从 20 涨到 96 —— 换来一堆与本处无关的噪音。
+include = ["tests/agents/feishu/test_skill_path_layering.py"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
 
 [tool.coverage.run]
 source = ["src/psi_agent"]
