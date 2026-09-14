@@ -16,6 +16,13 @@ description: "在人工飞书私聊中，按正负面清单分析行为、补齐
   (同库的战争版 `tblbF6ZVQbNTNxxn`、红线记录表等都不是台账读写目标)。
 - 读写失败(权限/表不存在)时如实转述工具错误, 提示用户在飞书侧检查应用协作者权限,
   绝不静默改坐标、换表或用其它手段绕过。
+
+- **读规则与读台账都走专用工具, 不用 `bash`/`read` 直接翻文件或源码。** 规则用
+  `positive_negative_rules`(它按 `active` 过滤、返回稳定 ID), 台账用
+  `positive_negative_case_read`。拿 `sed`/`grep` 去读 `skills/positive-negative-list/*.yaml`
+  或 `tools/positive_negative_*.py` 得到的是**未经工具契约过滤**的原文: 会混进未生效条目,
+  口径也与工具返回不一致(实测: 直接读文件数出 16 条, 而 `positive_negative_rules` 实际只
+  返回 14 条 —— 红线条目按设计不进检索面), 回答却把来源写成了工具返回。
 - 人员过滤(subject_user_key=涉事人 / reporter_user_key=报告人)只接受 open_id 或
   特殊值 `我/本人/me`(工具自动填当前会话发起人 open_id); 中文姓名会报错, 需要按姓名查时
   先经 `feishu_contact_find` 解析成 open_id, 或全量读取后自行筛选。

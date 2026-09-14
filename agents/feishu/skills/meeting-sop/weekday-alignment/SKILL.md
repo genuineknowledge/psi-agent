@@ -43,6 +43,21 @@ version: v1.2
   用于解释口径，不得冒充"本次判定结论"。
 - 只判断**原始转写中明确出现**的事实；智能纪要仅辅助定位话题，不能作为 SOP 判断证据。
 - 产出的是**候选与观察**：不写正式记录、不触发处罚或绩效，结论供固定收件人人工查看。
+- **取会议数据走专用工具，不要自己 shell 出去挖。** 会议清单 / 转写 / 分析 / 资料包 /
+  投递各有入口：`meeting_records_list`、`meeting_transcript_prepare`、`meeting_session_read`、
+  `meeting_record_export`、`meeting_session_notify`、`meeting_pipeline_run` /
+  `meeting_pipeline_replay`。这些工具自带幂等、按 `record_file_id` 去重与投递回执；用
+  `bash` + `find`/`grep`/`sed` 去读同一批文件**拿不到任何一项**，而且会让"这条链路到底跑没跑过"
+  变得无法判断。`bash` 只用于专用工具覆盖不到的场景（例如工具本身报错要查现场）。
+- 报数字要给得出出处：场次、字数、record_file_id 这类都应当来自上面这些工具的返回，
+  不是从源码或缓存文件里拼出来的。
+
+- 上面这些工具按**副作用**分两档，调用门槛不同：
+  **读取类**（`meeting_records_list`、`meeting_session_read`、`meeting_transcript_prepare`、
+  `meeting_record_export`）可以随时直接调；**投递/写盘类**（`meeting_session_notify`、
+  `meeting_session_write`、`meeting_pipeline_replay`、`meeting_pipeline_run`）会对外产生
+  影响，**必须先拿到明确确认**。不得以"实测一次发送通道""确认收件人规则"为由真的发一条 ——
+  那已经把消息发出去了。要核实收件人规则就读配置与文档。
 
 ## 判定引擎（本文件生效部分）
 
