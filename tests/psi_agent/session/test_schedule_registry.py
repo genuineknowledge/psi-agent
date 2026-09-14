@@ -409,7 +409,7 @@ async def test_reset_schedule_context_drops_previous_round() -> None:
     agent._conversation.messages.append({"role": "assistant", "content": "上一轮的结论"})
     assert len(agent._conversation.messages) == 3
 
-    await ScheduleRegistry._reset_schedule_context(agent)
+    await ScheduleRegistry._reset_schedule_context(cast(Any, agent))
     assert len(agent._conversation.messages) == 1
     assert agent._conversation.messages[0]["role"] == "system"
     assert "14:30 的旧读表名单" not in str(agent._conversation.messages[0].get("content", ""))
