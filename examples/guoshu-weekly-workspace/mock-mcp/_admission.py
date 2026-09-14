@@ -26,6 +26,7 @@ rule can never be written differently in one place and loosened in another.
 from __future__ import annotations
 
 import os
+import re
 
 PUBLISHED = "published"
 
@@ -171,10 +172,16 @@ TEST_LIKE_SUBSTRINGS: tuple[str, ...] = (
     "完整流程",
 )
 
-_TEST_LIKE_ARRAY = "ARRAY[{}]".format(", ".join(f"'%{word}%'" for word in TEST_LIKE_SUBSTRINGS))
+#: 匹配方式:**正则**,不用 LIKE。
+#: 为什么不用 LIKE:本仓的 PG 驱动把查询文本里的 ``%`` 当占位符前缀,LIKE 的模式串
+#: ``'%test%'`` 会让它在**真库上**直接抛 ``only '%s', '%b', '%t' are allowed as
+#: placeholders, got '%'``(信封里表现为 formal_source_unreachable)。本地假库桩测不出来
+#: ——这正是不接真库就发现不了的那类 bug。正则里一个 ``%`` 都没有,``!~*`` / ``~*``
+#: 也天然是大小写不敏感子串匹配,与原来的 LIKE 语义一致。
+TEST_LIKE_REGEX = "({})".format("|".join(re.escape(word) for word in TEST_LIKE_SUBSTRINGS))
 #: 剔除谓词的**内核**(与别名无关)。``sql_test_like_exclusion`` 拼它,
 #: ``has_test_like_exclusion`` 也拿它认 SQL —— 同一个常量,换别名、加词都不会失配。
-_TEST_LIKE_EXCLUDED = f"NOT ILIKE ALL ({_TEST_LIKE_ARRAY})"
+_TEST_LIKE_EXCLUDED = f"!~* '{TEST_LIKE_REGEX}'"
 
 
 def exclude_test_like() -> bool:
@@ -191,8 +198,8 @@ def exclude_test_like() -> bool:
 def sql_test_like_exclusion(alias: str = "t") -> str:
     """剔除谓词:名字像测试数据的行**不**进正式口径(判据的唯一一处实现)。
 
-    用 ``coalesce`` 兜住 NULL:``NOT (NULL ILIKE ...)`` 求值仍是 NULL,写成
-    ``NOT ({alias}.task_name ILIKE ...)`` 会把**任务名为空的行一起剔掉**——
+    用 ``coalesce`` 兜住 NULL:正则对 NULL 求值仍是 NULL,写成
+    ``NOT ({alias}.task_name ~* ...)`` 会把**任务名为空的行一起剔掉**——
     那不是选中的判据,是 SQL 三值逻辑的意外。
     """
     return f"coalesce({alias}.task_name, '') {_TEST_LIKE_EXCLUDED}"
@@ -203,10 +210,10 @@ def sql_test_like_match(alias: str = "t") -> str:
 
     口径自述要报"剔了几条",数的是它。两半共用同一份词表、互为补集,所以
     "自述里 8 条"与"结果少掉 8 条"必然一致。写法与剔除那条**不同**
-    (``ILIKE ANY`` vs ``NOT ILIKE ALL``),于是 ``has_test_like_exclusion``
+    (``~*`` vs ``!~*``),于是 ``has_test_like_exclusion``
     不会把"数被剔了几条"的那条 SQL 误认成"这条已经剔过了"(两者语义正相反)。
     """
-    return f"coalesce({alias}.task_name, '') ILIKE ANY ({_TEST_LIKE_ARRAY})"
+    return f"coalesce({alias}.task_name, '') ~* '{TEST_LIKE_REGEX}'"
 
 
 def has_test_like_exclusion(sql: str) -> bool:

@@ -155,14 +155,14 @@ class TestAdmissionRules:
         monkeypatch.setenv(adm.EXCLUDE_TEST_LIKE_ENV, "1")
         excluded = adm.sql_test_like_exclusion("t")
         matched = adm.sql_test_like_match("t")
-        assert excluded.count("ARRAY[") == 1 and "NOT ILIKE ALL (" in excluded
-        assert "ILIKE ANY (" in matched and "NOT ILIKE ALL" not in matched
+        assert excluded.count("!~*") == 1 and "coalesce(" in excluded
+        assert "~*" in matched and "!~*" not in matched
         for word in adm.TEST_LIKE_SUBSTRINGS:
-            assert f"'%{word}%'" in excluded, word
-            assert f"'%{word}%'" in matched, word
+            assert word in excluded, word
+            assert word in matched, word
         # 客户实测那批名字的形态:7 个词每一个都真能命中(子串,不区分大小写)
         for word in adm.TEST_LIKE_SUBSTRINGS:
-            assert f"'%{word}%'" in adm.sql_task_admission("pg")
+            assert word in adm.sql_task_admission("pg")
 
     def test_two_halves_are_complementary_not_confusable(self, monkeypatch):
         """数"剔了几条"的那条 SQL 不许被认成"这条已经剔过了"(两者语义正相反)。"""
@@ -2877,8 +2877,14 @@ _MATCH_FRAGMENT = adm.sql_test_like_match("t")
 
 
 def _test_like_words(sql: str) -> list[str]:
-    """从被测 SQL 的 ``ARRAY['%x%', …]`` 里取词表 —— 判据只有被测代码那一份。"""
-    return re.findall(r"'%([^%']*)%'", sql)
+    """从被测 SQL 的**正则**里取词表 —— 判据只有被测代码那一份。
+
+    判据形态是 ``coalesce(t.task_name, '') !~* '(test|测试|…)'``:
+    用正则而非 LIKE,是因为驱动的占位符解析会把 LIKE 里的 ``%`` 当占位符前缀,
+    在真库上直接报错(本地桩测不出来)。这里按同一形态解析。
+    """
+    found = re.findall(r"'\(([^)]*)\)'", sql)
+    return found[0].split("|") if found else []
 
 
 def _passes_formal_gate(row: dict[str, Any], sql: str) -> bool:
@@ -3001,7 +3007,7 @@ class TestTestLikeExclusion:
         (2, "集团-信创迁移", True, 0, "published"),
         (3, "技术组-指标体系", True, 0, "published"),
         (4, "集团-数据治理", True, 0, "published"),
-        # 名字为空:必须留下(``NOT (NULL ILIKE …)`` 仍是 NULL 的那个坑)
+        # 名字为空:必须留下(``NULL ~* …`` 仍是 NULL 的那个坑)
         (5, None, False, 0, "published"),
         # 这两条两种模式下都不算:说明"少掉的 8 条"只来自判据,没顺手吞别的行
         (999, "未发布-演示草稿", False, 0, "draft"),

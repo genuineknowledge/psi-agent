@@ -1375,19 +1375,26 @@ podman run --rm --network host -v ./verify_container.py:/tmp/vc.py:ro \
 1. **判据只有一处**:`_admission.sql_test_like_exclusion()`(词表 `TEST_LIKE_SUBSTRINGS`)。
    它贴在 `sql_task_admission()` 的**正式门里面**,而正式门是 81 处计数与清单共用的那一段 ——
    所以"计数与清单同增同减"是**结构性**的,不靠在每个模板里各写一份正则,也不可能出现
-   "列表删了、数还留着"。写法是 `coalesce(t.task_name, '') NOT ILIKE ALL (ARRAY['%test%', …])`
-   而不是 `NOT (t.task_name ILIKE …)`:后者遇到 `NULL` 求值仍是 `NULL`,会把**名字为空的任务
+   "列表删了、数还留着"。写法是 `coalesce(t.task_name, '') !~* '(test|测试|…)'`
+   而不是 `NOT (t.task_name ~* …)`:后者遇到 `NULL` 求值仍是 `NULL`,会把**名字为空的任务
    一起剔掉**(真库上有这种行,这是踩点而不是洁癖)。
 2. **口径自述在唯一的漏斗里追加**:`_formal.envelope()` 是所有正式源返回的必经之处。它先看这条
    SQL 是否真带了剔除谓词(`has_test_like_exclusion()`,别名无关,`t` / `t2` 都认),带了才在
    `caliber` 末尾追加 `已剔除 N 条名称像测试/演示的条目（可用 GUOSHU_WEEKLY_EXCLUDE_TEST_LIKE 关闭）`。
    N 由 `_o2oa_templates.test_like_excluded_total()` 在**同一条连接**上现查 —— 那条模板是剔除
-   判据的**补集**(`ILIKE ANY` vs `NOT ILIKE ALL`,共用同一份词表),所以"自述说剔了 N 条"与
+   判据的**补集**(`~*` vs `!~*`,共用同一份词表),所以"自述说剔了 N 条"与
    "结果少掉 N 行"必然一致;不写死也不缓存(台账变了自述要跟着变)。
 3. **刻意不带发布闸门的档不参与**:裸表口径(`whole_table=true`)、在途提交单
    (`submission_stats`)、审批动作(`workflow_actions`)、`unpublished_by_task`、看板与字段字典 ——
    它们问的本来就不是"正式任务集",剔它们等于答非所问。它们**既不会被剔除,`caliber` 也不会多出
    那句自述**,判据是"这条 SQL 里有没有剔除谓词"(而不是"开关开着没有")。
+
+**为什么判据用正则而不是 LIKE(真库验收才抓到)**:本仓的 PG 驱动把查询文本里的 ``%``
+当占位符前缀,LIKE 的模式串 `'%test%'` 会让它在**真库上**直接抛
+``only '%s', '%b', '%t' are allowed as placeholders, got '%'`` —— 信封里表现为
+``formal_source_unreachable``,看起来像"库连不上",其实是我们自己的 SQL 写错了。
+本地假库桩**测不出来**(桩不解析 SQL),这条只能靠连真库的验收脚本抓;
+正则里一个 `%` 都没有,`!~*` / `~*` 也天然是大小写不敏感子串匹配,语义与 LIKE 一致。
 
 **没有动的东西**:列契约(`columns` 的名字与顺序)一字未改,行里也没加字段;未迁移组合照旧
 `not_migrated` 回落;演示源(MySQL)那支完全不受影响 —— 开关问的是客户的正式台账,演示快照是

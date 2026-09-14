@@ -1014,8 +1014,8 @@ SELECT (SELECT count(*) FROM task t WHERE {gate})      AS formal_task_count,
 def test_like_excluded_total() -> tuple[str, tuple]:
     """开关打开时被剔掉的正式任务条数 —— 口径自述里那个数,**实时算**。
 
-    它是 ``sql_task_admission`` 那道剔除的**补集**:正式门用 ``NOT ILIKE ALL`` 过滤,
-    这里数 ``ILIKE ANY``。两半同一个词表、同一道正式门,所以"自述说剔了 N 条"与
+    它是 ``sql_task_admission`` 那道剔除的**补集**:正式门用 ``!~*`` 过滤掉,
+    这里数 ``~*`` 命中的。两半同一个词表、同一道正式门,所以"自述说剔了 N 条"与
     "上面那条查询少掉 N 行"必然一致。
 
     取名与形状对齐本文件的其余模板(``() -> (sql, params)``),``check_pg_syntax.py``
