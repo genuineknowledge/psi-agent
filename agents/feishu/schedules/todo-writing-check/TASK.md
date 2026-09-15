@@ -24,6 +24,7 @@ fire: prompt
 0. **先补上轮待补发**:检查 workspace 根目录文件 `pending-pm.txt` 是否有「待补发」行——有则按行拼 `items_json`(open_id 从 `feishu_member_status_check` active 名单取),一次调 `feishu_pm_batch_send(pending_file="pending-pm.txt")` 补发(工具自动改标),然后才进入本轮判定。没有该文件或没有待补发行则跳过。
 1. 先加载三个技能,判定口径以技能为准。
 2. 读表:认表头、定位最新日期列(当期列)、读人名列与 mentor 列。
+   - **本轮实时重读纪律:每轮必须 `feishu_sheet_read` 重新实时读表(当期列整列 + 人名列 + mentor 列),名单/判定只能来自本轮读取结果,禁止复用任何上一轮/上一时点的清单;每个被判定的人必须在本轮读表结果中出现过;读表返回 has_more=true 时不得下结论。**
 3. 逐人判定(全员):
    - **离职/无法识别人员先过滤**:名单先交 `feishu_member_status_check` 分类。已离职/冻结(resigned)→ **跳过全部判定,不进违规名单、不私聊,收尾报告完全不体现、不解释**(不出现「疑似离职」字样);解析失败(unresolved,重名)→ 单列「解析失败,需人工」,同样不判违规。不得把离职人员判成「未填违规」;
    - **未填**(空白)→ 先查假:请假免填跳过;无请假 → 按 todo-writing-standard 按时规则违规,私聊提醒;
