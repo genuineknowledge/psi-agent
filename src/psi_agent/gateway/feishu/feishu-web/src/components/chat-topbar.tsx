@@ -73,7 +73,7 @@ export function ChatTopbar({
       <div className="cend2-quick">
         <button
           type="button"
-          className={`chat-top-icon${sending ? " busy" : ""}`}
+          className={`chat-top-icon agent-status-tooltip-wrap${sending ? " busy" : ""}`}
           aria-label={sending ? "Agent 正在思考执行任务" : "Agent 空闲"}
           title={sending ? "Agent 正在思考执行任务" : "Agent 空闲"}
         >
@@ -81,7 +81,7 @@ export function ChatTopbar({
         </button>
         <button
           type="button"
-          className={`chat-top-icon${sending ? " busy" : ""}`}
+          className={`chat-top-icon agent-status-tooltip-wrap${sending ? " busy" : ""}`}
           aria-label={sending ? "Agent 正在思考执行任务" : "Agent 思考完成，任务空闲"}
           title={sending ? "Agent 正在思考执行任务" : "Agent 思考完成，任务空闲"}
         >

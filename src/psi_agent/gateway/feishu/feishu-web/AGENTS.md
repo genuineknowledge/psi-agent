@@ -24,8 +24,32 @@
    `FeishuManager.workspace_for(open_id)` 派生, **前端不传 workspace**。
 2. **IM 那条 session 在网页里正常显示、可续聊**, 打「来自飞书对话」角标, 双向可见。上下文
    将满的提示只挂在这一条上 (只有它会一直长)。
+   - **它显示成「海豚一号」, 不是「未命名任务」。** 这条 session 就是与机器人对话本身
+     (`feishu-<open_id>`), 身份固定, 不该跟着生成式标题走; 后端对它没有标题, 原先落到
+     「未命名任务」, 列表里看不出它是谁。名字由 `taskModel.IM_SESSION_TITLE` **单点**给出,
+     列表与顶栏都走 `displayTitle()` —— 两处各判一次 `from_im` 的话必然有一处先漏, 表现是
+     同一个会话在列表和顶栏显示两个名字。
+   - **它不可删除。** 删掉等于把机器人那侧的上下文一起扔掉, 而用户在 IM 里还会继续用到它。
+     `tasks-view.tsx` 的两个删除入口(列表行内、详情面板)都对 `fromIm` 加闸。**这是显示层
+     的闸, 不是硬闸** —— 底下的 `DELETE /sessions/{id}` 是骨架路由, 按约定语义一字不改
+     (ToC 在用), 所以直打接口仍能删; 要硬闸得新开一条带鉴权的 `/feishu/...` 删除路由, 那是
+     另一件事。
 3. **第一版只做私聊**, 群聊 session (`feishu-chat-*`) 不显示。过滤精确到只滤群聊 ——
    用 `!startsWith('feishu-')` 会把私聊一起滤掉, 与决定 2 冲突。
+
+## 品牌标: 只走 `brandMark()`, 不要自绘
+
+侧栏左上角那个标**必须**用 `brandMark("sidebar")`(→ `.brand-logo-art` → 海豚 PNG)。它原先
+是 `desktop-shell.tsx` 里的 `<span className="ht-app-mark" />`, 样式是一个蓝绿渐变方块
+(`linear-gradient(135deg, #3370ff, #12a594)`)—— 与页面其余位置的品牌标不一致, 在飞书客户端
+里看起来就是「图标不对」。色块那条规则已删, 别加回来。
+
+尺寸在 `.brand-logo-sidebar`(36px, 沿用色块原来的尺寸, 免得侧栏布局跟着挪)。图片 URL 写在
+`.brand-logo-art` 里, 是 `/haitun-dolphin.png` —— **Vite 会按 `base` 改写成
+`/feishu-web/haitun-dolphin.png`**, 所以两种写法都能用, 但别手写成 `../` 之类相对路径。
+
+判据: `tests/psi_agent/gateway/test_feishu_web_im_session_ui.py`(静态核对上面三处 + 品牌标,
+删任一条即红)。
 
 ## 模型: 用机器人那一个, 网页应用不选
 
@@ -315,6 +339,67 @@ FAIL 的行就是要和 `oauth-proxy.py` 的 `ALLOWED_PATHS` 逐条比对的路�
   时「app_id 为空 + 不在飞书客户端内」(正是本地开发的默认组合)抛的是普通 `Error`, 而
   `useAuth` 的退路只认 `FeishuAuthUnavailable`, 于是旁路整段被跳过, 页面停在「登录失败:
   后端未配置飞书 App ID」。只有这一个组合会踩, 所以它藏得住。
+
+## 流式渲染: 四处刻意为之的性能约束(勿"优化"回去)
+
+助手回复是**逐 delta 落到 `msg.text`** 的(见 `hooks/useChatTurn.ts` 的 `onText`), 而
+`ChatThread` 不做窗口化、`ChatMessageItem` 也没有 memo —— 那里的 props 全是内联回调, 每次
+渲染都是新引用, 加了 memo 也恒失效。于是「每个增量重渲染整棵树」是既定事实, 渲染侧**唯一**
+的防线只剩下面四处:
+
+- **`MarkdownBubble` 必须 `memo`, 且解析结果必须 `useMemo`**(`components/markdown.tsx`)。
+  memo 的作用是让**历史消息整条跳过**(它们的 `text` 没变)。没有它时, 每一轮增量都会把会话
+  里**每一条**助手消息重新解析一遍(marked + highlight.js + KaTeX), 开销 O(历史条数 × 平均
+  篇幅)。改回普通函数组件 = 长会话下主线程被打满, 表现是**页面操作卡顿** —— 飞书开发者后台的
+  远程调试工具还要在主线程上做元素拾取, 抢不到时间片。
+- **正在生长的那条用 `useDeferredValue`**: memo 挡不住它(`text` 每个 delta 都变), 而整篇
+  解析是同步的纯主线程开销, 「每 delta 全量重解析」在长回复下是 O(n²)。`useDeferredValue`
+  让 React 在繁忙时跳过中间值 —— 渲染结果不变, 只是可能慢半拍。**别为了让气泡"更跟手"把它删掉**。
+- **`renderMd.ts` 的 `highlightAuto` 必须带语言子集 `AUTO_LANGS`**: 不传子集时它会遍历
+  `highlight.js/lib/common` 全部 30+ 种语法、各扫一遍全文, 是解析里最贵的一步, 而流式期间
+  每个 delta 都要跑一遍。收窄**只影响着色**, 不影响内容渲染; 需要新语言就往 `AUTO_LANGS` 里加。
+- **贴底滚动合并到下一帧**(`chat-thread.tsx` 的 `requestAnimationFrame` + cleanup 里的
+  `cancelAnimationFrame`): 那个 effect 的依赖里有 `messages.at(-1)?.text`, 触发频率就是
+  delta 频率, 而 `scrollIntoView` 每次都强制一次布局。一帧最多滚一次。
+
+判据: `tests/psi_agent/gateway/test_feishu_web_stream_render.py`(静态核对上面四处, 删任一条即红)。
+
+**另注**: `ChatMessage.interimText` 是**死字段** —— 全库只有读、没有写(增量全写进 `text`)。
+`chat-message-item.tsx` 里那个 `interimText` 分支因此永不执行; 留着是为了不动无关代码。谁要
+清理它, 记得连带删掉 `types.ts` 的字段与 `chat-thread.tsx` 依赖数组里的那一项。
+
+## 与 ToC(spa-v2)对齐的功能: 移什么、不移什么
+
+2026-09-15 把 ToC 的**输入与任务体感**五项移植了过来。移植的是**功能**, 不是 ToC 的组件树 ——
+本文件开头说过, PR 版把 ToC 整棵组件树拷进来正是被去掉的「死重量」。
+
+**移过来的五项**(判据: `tests/psi_agent/gateway/test_feishu_web_tob_parity.py`):
+
+| 功能 | 文件 | 移植时的适配 |
+| --- | --- | --- |
+| 拖拽 / 粘贴文件进输入框 | `services/clipboardFiles.ts` · `services/composerFileDrop.ts` | 无(原样) |
+| 排队发送(回合中 Enter 攒一条, 回合结束自动发) | `services/queuedSend.ts` | 无(原样); 触发点从 ToC 的「卡片回合」改成 `turn.sending` 的**下降沿** |
+| 任务置顶 | `services/pinnedTasks.ts` | **不走 ToC 的 `appdataScope`** —— 见下 |
+| 思考耗时「思考过程 · N秒」 | `services/messageTiming.ts` | 数据源两处: 历史 `thinking_ms` + 本回合前端计时 |
+| 顶部状态区首次提示 | `components/task-status-tip.tsx` | 锚点改成 `.cend2-quick`; 「已看过」落 **localStorage** |
+
+### 两处刻意偏离 ToC(别改回去)
+
+- **置顶不按 appdata 分桶。** ToC 的 `appdataScope` 拿 `GET /defaults` 下发的 appdata 路径算指纹,
+  而 ToB 的 `/feishu/defaults` **只回 `{ai_id}`** —— 那个端点刻意不下发部署者的路径与凭证。
+  拿不到指纹就不分桶, 而这个顾虑在 ToB 侧本来也不成立: 网页应用的 origin 是部署域名(或固定端口的
+  `127.0.0.1:8848`), 不像 ToC 装机版那样每次启动换随机端口、把同一份记忆根拆成多个偏好桶。
+  **别为了「和 ToC 一致」去给 `/feishu/defaults` 加 appdata 字段** —— 那是把部署者信息下发给每个
+  B 端用户。
+- **提示的「已看过」落 localStorage**, ToC 用的是内存标记(每次刷新都再弹一遍)。ToB 是天天用的
+  业务页面, 每次刷新都弹会变成噪音。代价是清掉浏览器存储才会再看到这条提示。
+
+### 明确**不**移(产品决定, 见「三条产品决定」一节)
+
+模型配置页 / AI 列表 / 用户中心 / 登录 OTP / workspace 选择器 / 首次使用引导。ToB 是另一种产品:
+AI 由部署者用 `--feishu-ai-id` 定死、身份由飞书免登给定、workspace 由后端派生且前端不传。
+`test_feishu_web_tob_parity.py` 的最后一条判据就是「这些文件不许出现」—— 要把它们做进来, 那是新的
+产品决定, 不是「补功能」。
 
 ## 两条容易踩的约定
 

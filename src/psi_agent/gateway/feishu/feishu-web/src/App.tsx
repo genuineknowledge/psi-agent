@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PanelLeftClose } from "lucide-react";
 import { generateTitle, getSessionHistory, revealWorkspacePath } from "./api";
 import { ArtifactDrawer } from "./components/artifact-drawer";
@@ -9,6 +9,7 @@ import { DeliveryPreviewModal } from "./components/delivery-preview-modal";
 import { NewDeliveriesPanel } from "./components/new-deliveries-panel";
 import { NewTaskPage } from "./components/new-task-page";
 import { TaskFocusDetails } from "./components/task-focus-details";
+import { TaskStatusTip } from "./components/task-status-tip";
 import { TasksView } from "./components/tasks-view";
 import { useAuth } from "./hooks/useAuth";
 import { useChatTurn } from "./hooks/useChatTurn";
@@ -16,7 +17,18 @@ import { useSessionHistory, useSessions } from "./hooks/useSessions";
 import { useTasks } from "./hooks/useTasks";
 import { mapHistory } from "./services/historyMap";
 import { clearPendingDeliveries } from "./services/pendingDeliveries";
+import {
+  loadPinnedTaskIds,
+  prunePinnedTaskIds,
+  savePinnedTaskIds,
+  togglePinnedTaskId,
+} from "./services/pinnedTasks";
+import { buildQueuedSend, type QueuedSend } from "./services/queuedSend";
+import { displayTitle } from "./services/taskModel";
 import "./styles.css";
+
+/** 「顶部状态区都是什么」那条提示是否已经看过 —— 纯前端偏好, 用法见 AuthedApp。 */
+const STATUS_TIP_SEEN_KEY = "feishu-web:status-tip-seen";
 
 type View = "tasks" | "chat" | "new-task";
 
@@ -94,11 +106,20 @@ function AuthedApp({ userName }: { userName: string }) {
     Record<string, { files: string[]; paths: Record<string, string> }>
   >({});
   const [deliveriesRevision, setDeliveriesRevision] = useState(0);
+  /** 置顶: 纯前端偏好(localStorage), 只影响排序与标记; 见 services/pinnedTasks.ts。 */
+  const [pinnedIds, setPinnedIds] = useState<string[]>(() => loadPinnedTaskIds());
+  /** 排队发送: 每个会话最多留一条待发消息, 本回合结束后自动发出。 */
+  const [queuedSends, setQueuedSends] = useState<Record<string, QueuedSend | null>>({});
 
   const sessions = useSessions();
-  const tasks = useTasks(sessions.sessions, sessions.titles, historyDeliverables);
+  const tasks = useTasks(sessions.sessions, sessions.titles, historyDeliverables, pinnedIds);
   const history = useSessionHistory(sessions.currentId);
   const turn = useChatTurn(sessions.currentId);
+
+  // 走 ref 而不是直接读 state: 下面「回合结束就发排队那条」的 effect 只该在 sending 的
+  // **下降沿**触发, 不该因为排队状态本身变化而重跑。
+  const queuedSendsRef = useRef(queuedSends);
+  queuedSendsRef.current = queuedSends;
 
   // 任务总览/交付物抽屉需要的文件来自历史记录, 不能只依赖流式 blob 事件。
   useEffect(() => {
@@ -144,6 +165,18 @@ function AuthedApp({ userName }: { userName: string }) {
     () => tasks.tasks.find((t) => t.id === sessions.currentId),
     [tasks.tasks, sessions.currentId],
   );
+
+  /**
+   * 当前会话的显示名 —— **顶栏与对话区共用这一个**。
+   *
+   * 不直接用 ``currentTask?.title`` 兜底: 首屏 tasks 还没派生出来时会落空, 那时如果各自
+   * 写一个 ``|| "未命名任务"``, IM 共用那条会先闪一下「未命名任务」再变成「海豚一号」。
+   * 这里再走一次 ``displayTitle`` 同一个判据, 于是任何时刻都只有一个名字。
+   */
+  const currentTitle = useMemo(() => {
+    const session = sessions.sessions.find((s) => s.id === sessions.currentId);
+    return currentTask?.title || displayTitle(session, sessions.titles[sessions.currentId]);
+  }, [currentTask, sessions.sessions, sessions.currentId, sessions.titles]);
   const artifactTask = useMemo(
     () => tasks.tasks.find((t) => t.id === artifactTaskId),
     [tasks.tasks, artifactTaskId],
@@ -217,6 +250,32 @@ function AuthedApp({ userName }: { userName: string }) {
     }
   }, [newDraft, pendingFiles, sessions, tasks, turn]);
 
+  /**
+   * 真正把一条消息发出去, 并做首轮后的收尾(补标题 / 刷交付物 / 刷任务)。
+   *
+   * 抽出来是因为它有**三个**调用方: 手动发送、排队消息在回合结束后自动发出、以及将来
+   * 任何新的发送入口。三处各写一遍收尾必然有一处先漏 —— 最典型的是补标题漏了, 于是列表
+   * 里一直是「未命名任务」。
+   */
+  const sendNow = useCallback(
+    async (sessionId: string, text: string, files: File[]) => {
+      const assistantText = await turn.send(sessionId, text, files);
+
+      // 首轮结束后补标题, 否则列表里一直是「未命名任务」。
+      if (!sessions.titles[sessionId]) {
+        try {
+          const { title } = await generateTitle(sessionId, text, assistantText);
+          sessions.setTitles((prev) => ({ ...prev, [sessionId]: title }));
+        } catch {
+          // 标题生成失败不影响对话本身。
+        }
+      }
+      setDeliveriesRevision((n) => n + 1);
+      void tasks.refresh();
+    },
+    [turn, sessions, tasks],
+  );
+
   const handleSend = useCallback(async () => {
     const sessionId = sessions.currentId;
     if (!sessionId) return;
@@ -224,20 +283,89 @@ function AuthedApp({ userName }: { userName: string }) {
     const files = pendingFiles;
     setInput("");
     setPendingFiles([]);
-    const assistantText = await turn.send(sessionId, text, files);
+    await sendNow(sessionId, text, files);
+  }, [sessions.currentId, input, pendingFiles, sendNow]);
 
-    // 首轮结束后补标题, 否则列表里一直是「未命名任务」。
-    if (!sessions.titles[sessionId]) {
-      try {
-        const { title } = await generateTitle(sessionId, text, assistantText);
-        sessions.setTitles((prev) => ({ ...prev, [sessionId]: title }));
-      } catch {
-        // 标题生成失败不影响对话本身。
-      }
+  /** 回合进行中按 Enter: 攒成一条排队消息(同一会话只留最后一条, 后按的覆盖先按的)。 */
+  const handleQueue = useCallback(() => {
+    const sessionId = sessions.currentId;
+    if (!sessionId) return;
+    const next = buildQueuedSend(input, pendingFiles, "附件: ");
+    if (!next) return;
+    setQueuedSends((current) => ({ ...current, [sessionId]: next }));
+    setInput("");
+    setPendingFiles([]);
+  }, [sessions.currentId, input, pendingFiles]);
+
+  const cancelQueued = useCallback(() => {
+    const sessionId = sessions.currentId;
+    if (!sessionId) return;
+    setQueuedSends((current) => ({ ...current, [sessionId]: null }));
+  }, [sessions.currentId]);
+
+  // 回合结束时把排队那条发出去 —— 认 ``turn.sending`` 的**下降沿**, 只在 true→false 那一次动作。
+  // ``turn.sending`` 是**当前选中会话**的状态, 所以排队表也按当前会话取, 两者天然对齐。
+  const wasSendingRef = useRef(false);
+  useEffect(() => {
+    const wasSending = wasSendingRef.current;
+    wasSendingRef.current = turn.sending;
+    if (!wasSending || turn.sending) return;
+    const sessionId = sessions.currentId;
+    if (!sessionId) return;
+    const pending = queuedSendsRef.current[sessionId];
+    if (!pending) return;
+    // 先摘掉再发: 发送过程中若用户又按了一次 Enter, 那是**新的一条**, 不该被这次覆盖或吞掉。
+    setQueuedSends((current) => ({ ...current, [sessionId]: null }));
+    void sendNow(sessionId, pending.text, pending.files);
+  }, [turn.sending, sessions.currentId, sendNow]);
+
+  const togglePin = useCallback((id: string) => {
+    setPinnedIds((current) => {
+      const next = togglePinnedTaskId(current, id);
+      savePinnedTaskIds(window.localStorage, next);
+      return next;
+    });
+  }, []);
+
+  // 会话没了(用户删了或换了身份)就把它的置顶丢掉, 否则置顶表只增不减。
+  useEffect(() => {
+    const activeIds = sessions.sessions.map((s) => s.id);
+    setPinnedIds((current) => {
+      const next = prunePinnedTaskIds(current, activeIds);
+      // 没变就原样返回: 避免每次会话列表刷新都写一次盘、并多触发一轮重渲染。
+      if (next.length === current.length) return current;
+      savePinnedTaskIds(window.localStorage, next);
+      return next;
+    });
+  }, [sessions.sessions]);
+
+  /**
+   * 「顶部那片状态图标是什么」的首次提示。
+   *
+   * ToC 的判据是「是不是首次使用」+ **内存**标记(刷新页面就再来一次); ToB 这边没有首次
+   * 使用的判定, 而且这是个天天用的业务页面 —— 每次刷新都弹一遍会变成噪音, 所以标记落
+   * localStorage: 看过一次就不再弹(清掉存储才会再出现)。
+   */
+  const [statusTipVisible, setStatusTipVisible] = useState(false);
+  useEffect(() => {
+    if (view !== "chat") return;
+    try {
+      if (window.localStorage.getItem(STATUS_TIP_SEEN_KEY)) return;
+    } catch {
+      /* 隐私模式读不到存储: 当作没看过, 弹一次也无害 */
     }
-    setDeliveriesRevision((n) => n + 1);
-    void tasks.refresh();
-  }, [sessions, input, pendingFiles, turn, tasks]);
+    const timer = window.setTimeout(() => setStatusTipVisible(true), 450);
+    return () => window.clearTimeout(timer);
+  }, [view]);
+
+  const closeStatusTip = useCallback(() => {
+    setStatusTipVisible(false);
+    try {
+      window.localStorage.setItem(STATUS_TIP_SEEN_KEY, "1");
+    } catch {
+      /* 存不下就下次再弹, 不影响功能 */
+    }
+  }, []);
 
   const handleOpenFile = useCallback((name: string) => setPreviewFile(name), []);
   const handleReveal = useCallback((path: string) => {
@@ -298,6 +426,7 @@ function AuthedApp({ userName }: { userName: string }) {
             onSearch={tasks.setSearch}
             onSelect={sessions.setCurrentId}
             onDelete={(id) => void sessions.remove(id)}
+            onTogglePin={togglePin}
             onOpenChat={openChat}
             onOpenNewDeliverables={() => setShowNewDeliveries(true)}
             newDeliveryCount={newDeliveryTasks.length}
@@ -347,7 +476,7 @@ function AuthedApp({ userName }: { userName: string }) {
           )}
           <div className="focus-chat-col">
             <ChatTopbar
-              title={currentTask?.title || sessions.titles[sessions.currentId] || "未命名任务"}
+              title={currentTitle}
               sending={turn.sending}
               hasNewDeliveries={(currentTask?.newDeliverables.length ?? 0) > 0}
               taskIndex={taskIndex < 0 ? 0 : taskIndex}
@@ -362,7 +491,7 @@ function AuthedApp({ userName }: { userName: string }) {
             <ChatView
               messages={turn.messages}
               userName={userName}
-              taskTitle={currentTask?.title || sessions.titles[sessions.currentId] || "当前任务"}
+              taskTitle={currentTitle}
               input={input}
               sending={turn.sending}
               error={turn.error || history.error}
@@ -371,6 +500,9 @@ function AuthedApp({ userName }: { userName: string }) {
               onInput={setInput}
               onSend={() => void handleSend()}
               onStop={turn.stop}
+              queued={queuedSends[sessions.currentId] ?? null}
+              onQueue={handleQueue}
+              onCancelQueued={cancelQueued}
               onAddFiles={(files) => setPendingFiles((prev) => [...prev, ...files])}
               onRemoveFile={(index) => setPendingFiles((prev) => prev.filter((_, idx) => idx !== index))}
               onFeedback={(index, kind) =>
@@ -438,6 +570,7 @@ function AuthedApp({ userName }: { userName: string }) {
           onClose={() => setPreviewFile("")}
         />
       )}
+      {statusTipVisible && <TaskStatusTip onClose={closeStatusTip} />}
     </DesktopShell>
   );
 }

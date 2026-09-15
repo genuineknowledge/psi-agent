@@ -99,6 +99,10 @@ export function useChatTurn(activeSessionId: string) {
       const controller = new AbortController();
       abortRef.current[sessionId] = controller;
 
+      // 本回合墙钟起点。SSE 不下发 thinking_ms, 所以刚跑完的这一条由前端自己量 ——
+      // 不量的话它要等下次拉历史才有耗时(见 services/messageTiming.ts 的模块头)。
+      const turnT0 = Date.now();
+
       let rawReasoning = "";
       let toolLines: string[] = [];
       let progress = progressLogStart();
@@ -162,6 +166,8 @@ export function useChatTurn(activeSessionId: string) {
                 ...(reasoning ? { reasoning } : {}),
                 tools: toolLines.length ? toolLines : undefined,
                 progress: undefined,
+                // 整回合(含排队等待与全部工具轮), 与后端 thinking_ms 同一口径。
+                thinkingMs: Date.now() - turnT0,
               };
               if (stopped) {
                 return { ...next, stopped: true, ...(empty ? { failed: true, failedReason: "stopped" as const } : {}) };

@@ -1,6 +1,9 @@
 import { useRef } from "react";
-import { Paperclip, Send, Square, X } from "lucide-react";
+import { Clock, Paperclip, Send, Square, X } from "lucide-react";
 import type { ChatMessage } from "../types";
+import { filesFromClipboard } from "../services/clipboardFiles";
+import { useComposerFileDrop } from "../services/composerFileDrop";
+import type { QueuedSend } from "../services/queuedSend";
 import { brandMark } from "./brand";
 import { ChatThread } from "./chat-thread";
 import { ExecutionStepsPanel, type ExecutionStep } from "./execution-steps-panel";
@@ -30,6 +33,9 @@ export function ChatView({
   onRevealFile,
   filePathOf,
   executionSteps,
+  queued,
+  onQueue,
+  onCancelQueued,
 }: {
   messages: ChatMessage[];
   userName: string;
@@ -50,12 +56,37 @@ export function ChatView({
   onRevealFile: (path: string) => void;
   filePathOf: (name: string) => string | undefined;
   executionSteps?: ExecutionStep[];
+  /** 已排队待发的那条(本回合结束后自动发出); 没有则不显示排队芯片。 */
+  queued?: QueuedSend | null;
+  onQueue: () => void;
+  onCancelQueued: () => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const canSend = !sending && (!!input.trim() || pendingFiles.length > 0);
+  const hasContent = !!input.trim() || pendingFiles.length > 0;
+
+  // 拖拽进来的文件与粘贴、回形针按钮走**同一条** onAddFiles 路径。
+  const { isFileDragOver, dropProps } = useComposerFileDrop({ onFiles: onAddFiles });
+
+  /**
+   * 一个入口两种去向: 空闲时发出去, 正在回复时**排队**(本轮结束后自动发)。
+   *
+   * 回合进行中发送按钮会变成「停止」, 所以排队实际由 Enter 触发 —— 占位文案里写明了这点,
+   * 否则用户根本不知道排队存在。
+   */
+  const submit = () => {
+    if (!hasContent) return;
+    if (sending) onQueue();
+    else onSend();
+  };
 
   return (
-    <div className="focus-chat-pane">
+    <div className="focus-chat-pane" {...dropProps}>
+      {isFileDragOver && (
+        <div className="focus-chat-dropzone" aria-hidden="true">
+          <Paperclip size={22} />
+          <span>松开以添加附件</span>
+        </div>
+      )}
       <div className="focus-chat-scroll">
         {messages.length === 0 ? (
           <div className="focus-chat-empty">
@@ -93,7 +124,7 @@ export function ChatView({
         className="focus-chat-composer"
         onSubmit={(e) => {
           e.preventDefault();
-          if (canSend) onSend();
+          submit();
         }}
       >
         {pendingFiles.length > 0 && (
@@ -106,6 +137,16 @@ export function ChatView({
                 </button>
               </span>
             ))}
+          </div>
+        )}
+        {queued && (
+          <div className="focus-chat-queued" role="status">
+            <Clock size={12} />
+            <span className="focus-chat-queued-label">已排队，本轮结束后自动发送</span>
+            <em>{queued.display}</em>
+            <button type="button" aria-label="取消排队" title="取消排队" onClick={onCancelQueued}>
+              <X size={12} />
+            </button>
           </div>
         )}
         <div className="focus-chat-composer-row">
@@ -129,13 +170,24 @@ export function ChatView({
           </button>
           <textarea
             className="focus-chat-input"
-            placeholder={sending ? "正在回复…" : "输入消息，Enter 发送，Shift+Enter 换行"}
+            placeholder={
+              sending
+                ? "正在回复…（Enter 排队，本轮结束后自动发送）"
+                : "输入消息，Enter 发送，Shift+Enter 换行"
+            }
             value={input}
             onChange={(e) => onInput(e.target.value)}
+            onPaste={(e) => {
+              // 截图/文件直接粘进来。**纯文本粘贴不拦** —— 一拦就把正常打字也吃掉了。
+              const files = filesFromClipboard(e.clipboardData);
+              if (!files.length) return;
+              e.preventDefault();
+              onAddFiles(files);
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
-                if (canSend) onSend();
+                submit();
               }
             }}
           />
@@ -144,7 +196,7 @@ export function ChatView({
               <Square size={16} />
             </button>
           ) : (
-            <button type="submit" className="focus-chat-send" aria-label="发送" disabled={!canSend}>
+            <button type="submit" className="focus-chat-send" aria-label="发送" disabled={!hasContent}>
               <Send size={16} />
             </button>
           )}

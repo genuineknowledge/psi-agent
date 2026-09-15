@@ -10,12 +10,35 @@ export function htmlEscape(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/**
+ * 无语言围栏的代码块走 ``highlightAuto`` 时的候选子集。
+ *
+ * 不传子集时它会遍历 ``highlight.js/lib/common`` 里全部 30+ 种语法, 每种都做一遍全文
+ * 扫描 —— 这是解析里最贵的一步, 而流式期间每个 delta 都要重解析一遍整篇, 代价被放大成
+ * O(n^2)。这里收窄到本产品实际会出现的语言: 仍然自动着色, 但扫描面小了一个量级。
+ * 需要新语言时往这里加一条即可(不在子集里只影响着色, 不影响内容渲染)。
+ */
+const AUTO_LANGS = [
+  "python",
+  "javascript",
+  "typescript",
+  "json",
+  "bash",
+  "shell",
+  "yaml",
+  "sql",
+  "xml",
+  "css",
+  "markdown",
+  "diff",
+];
+
 function highlightCode(code: string, lang: string) {
   const language = hljs.getLanguage(lang) ? lang : null;
   try {
     const out = language
       ? hljs.highlight(code, { language, ignoreIllegals: true })
-      : hljs.highlightAuto(code);
+      : hljs.highlightAuto(code, AUTO_LANGS);
     return { html: out.value, language: out.language || language || "" };
   } catch {
     return { html: htmlEscape(code), language: "" };

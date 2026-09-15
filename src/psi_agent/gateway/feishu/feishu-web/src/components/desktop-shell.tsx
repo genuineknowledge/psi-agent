@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { ListTodo, MessageCircle, Settings } from "lucide-react";
+import { brandMark } from "./brand";
 
 export type ShellNav = "tasks" | "chat";
 
@@ -23,7 +24,7 @@ export function DesktopShell({
       <div className="ht-dt-app">
         <nav className="ht-dt-nav" aria-label="海豚应用导航">
           <div className="ht-dt-brand">
-            <span className="ht-app-mark" aria-hidden="true" />
+            {brandMark("sidebar")}
             <div>
               <strong>海豚 Agent</strong>
               <em>企业版 · 云服务器部署</em>
