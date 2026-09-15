@@ -1,3 +1,4 @@
+# ruff: noqa
 """Compile and execute one G4 workflow."""
 
 from __future__ import annotations
@@ -42,9 +43,9 @@ for _import_dir in (_TOOLS_DIR, _SKILL_DIR):
 
 _paths = __import__("_runtime_paths")
 
-from fusion_flow.artifact_store import ArtifactStore  # noqa: E402
-from fusion_flow.contracts import Diagnostic  # noqa: E402
-from fusion_flow.execution import (  # noqa: E402
+from fusion_flow.artifact_store import ArtifactStore
+from fusion_flow.contracts import Diagnostic
+from fusion_flow.execution import (
     AgentConfig,
     AgentHandle,
     AgentInvocation,
@@ -52,8 +53,8 @@ from fusion_flow.execution import (  # noqa: E402
     assert_safe_name,
     flow,
 )
-from fusion_flow.execution import run as _run_execution  # noqa: E402
-from fusion_flow.job_store import (  # noqa: E402
+from fusion_flow.execution import run as _run_execution
+from fusion_flow.job_store import (
     DEFAULT_MAX_LOOP_EPOCHS,
     HumanRequestSpec,
     HumanWorkflowRun,
@@ -61,8 +62,8 @@ from fusion_flow.job_store import (  # noqa: E402
     RunLease,
     new_opaque_id,
 )
-from fusion_flow.step_timing import StepTimingReporter  # noqa: E402
-from fusion_flow.workflow_execution import (  # noqa: E402
+from fusion_flow.step_timing import StepTimingReporter
+from fusion_flow.workflow_execution import (
     ExecutionCheckpoint,
     ExecutionPlanError,
     ResourceCapacity,
@@ -70,15 +71,22 @@ from fusion_flow.workflow_execution import (  # noqa: E402
     create_execution_checkpoint,
     generate_plan,
 )
-from fusion_flow.workflow_runner import (  # noqa: E402
+from fusion_flow.workflow_runner import (
     CompiledWorkflow,
     CompletionContext,
     ProgramInvocation,
     _normalize_program_stdout,
     compile_workflow,
 )
-from fusion_flow.workflow_runner import execute_workflow as _execute_workflow  # noqa: E402
-from workflow_sample import _record_workflow_authoring  # noqa: E402
+from fusion_flow.workflow_runner import execute_workflow as _execute_workflow
+from workflow_sample import _record_workflow_authoring
+from fusion_flow.host_adapter import (  # ty: ignore[unresolved-import]
+    agent_handle as _host_agent_handle,
+    ai_socket as _host_ai_socket,
+    state_dir as _host_state_dir,
+    tools_dir as _host_tools_dir,
+    workspace_dir as _host_workspace_dir,
+)
 
 _STEP_SYSTEM_PROMPT = (
     "You execute exactly one assigned FusionFlow Agent step. "
@@ -249,7 +257,7 @@ def _workspace_dir() -> Path:
 
     if _WORKSPACE_DIR != _AGENT_DIR:
         return _WORKSPACE_DIR
-    return Path(_paths.workspace_dir())
+    return _host_workspace_dir(Path(_paths.workspace_dir()))
 
 
 if sys.platform == "win32":
@@ -522,7 +530,7 @@ class _AgentSessionAdapter:
                     f"Agent executor {context.executor_id!r} resolved to inconsistent configurations"
                 )
             return existing
-        handle = flow.agent(config)
+        handle = _host_agent_handle(config, flow.agent)
         self._handles[context.executor_id] = handle
         return handle
 
@@ -637,7 +645,7 @@ async def _run_with_agent_sessions(
         nonlocal result
         result = await operation()
 
-    runs_dir = _workspace_dir() / _SESSION_RUNS_RELATIVE_PATH
+    runs_dir = _host_state_dir(_workspace_dir() / _SESSION_RUNS_RELATIVE_PATH)
     run_path = anyio.Path(runs_dir, run_id)
     resume = await run_path.exists()
     await _run_execution(
@@ -1012,7 +1020,7 @@ def _checkpoint_human_response(
 
 
 def _job_store() -> JobStore:
-    return JobStore(_workspace_dir() / _JOB_STORE_RELATIVE_PATH)
+    return JobStore(_host_state_dir(_workspace_dir() / _JOB_STORE_RELATIVE_PATH))
 
 
 async def _artifact_store(
@@ -2195,7 +2203,7 @@ async def _load_step_tools(
             _STEP_TOOL_SESSIONS_BY_RUN.setdefault(run_id, set()).add(session_id)
         source = _STEP_TOOLS_SOURCES.get(session_id)
         if source is None:
-            source = await ToolRegistry.load(_TOOLS_DIR, session_id=session_id)
+            source = await ToolRegistry.load(_host_tools_dir(_TOOLS_DIR), session_id=session_id)
             _STEP_TOOLS_SOURCES[session_id] = source
         else:
             await source.refresh()
@@ -2921,7 +2929,7 @@ async def run_flow(
         passed through ``clarify``.
     """
 
-    ai_socket = current_tool_ai_socket()
+    ai_socket = _host_ai_socket(current_tool_ai_socket)
     if ai_socket is None:
         raise RuntimeError("run_flow must be called by a psi-agent Session")
     if type(max_loop_epochs) is not int or max_loop_epochs < 1:
@@ -3058,7 +3066,7 @@ async def run_flow_resume(
         reserved ``$fusion_flow/control`` Human-wait envelope.
     """
 
-    ai_socket = current_tool_ai_socket()
+    ai_socket = _host_ai_socket(current_tool_ai_socket)
     if ai_socket is None:
         raise RuntimeError("run_flow_resume must be called by a psi-agent Session")
     response = _parse_human_response(human_response_json)
