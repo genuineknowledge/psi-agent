@@ -452,6 +452,7 @@ Runner-specific typed catalog extensions use the grammar's generic operator-call
 - Normal foreach outputs become source-ordered Lists only after every iteration succeeds; an empty source produces empty Lists. Iteration failures are raised, never declared or returned as G4 Artifacts.
 - Bind each step to its executor with `step_executor`.
 - Configure concurrency, timeouts, retries, and resources with the corresponding supported operators. Resources, `step_timeout`, `max_attempts`, and checkpoint progress apply independently to each foreach iteration.
+- While there is no planner, treat those operator families as deliberate planning choices rather than fields to fill in: the runtime default is the safer value unless the task states the constraint or a Step's own output needs a bound, and a value you do set should come with a reason.
 - Treat `independent(step)` only as a hint. Artifact dependencies and `depends_on` still decide when the Step is ready.
 - Declare resource demand with `resource_requirement(step, resource)`. Resource capacities or concrete IDs come from runner configuration, never from `.workflow` source.
 - Agent- and Program-backed foreach Steps are executable. Human-backed foreach is rejected before dispatch until Human requests and responses carry iteration identity.
@@ -509,6 +510,26 @@ protocol; it cannot replace it. `allowed_tool` narrows the host-safe tool
 registry and cannot re-enable a denied workflow launcher. The current workspace
 AI socket fixes provider routing, so a non-default `model`, `engine`, or
 `api_base` is rejected explicitly instead of being ignored.
+
+These operators are planning vocabulary, not decoration: declare one when the
+task calls for it — the user stated a budget, a deadline, a retry requirement, a
+cost or parallelism ceiling, or a Step whose output genuinely needs a bound.
+
+**Until a planner exists, prefer the runtime default.** Natural-language
+decomposition is currently done by you, from this Skill, so an unjustified value
+is the failure mode: it narrows the run without anyone having decided that it
+should be narrowed. Set a limit only when you can say why *this* Step needs it,
+and put that reason in the Step instruction or the design notes.
+
+Two limits hold regardless of who is planning:
+
+- never copy a value in from a similar workflow you have seen — derive it from
+  the task at hand;
+- an output cap (`max_output_tokens`, `max_turns`) must not be smaller than the
+  Step's declared output needs. Observed failure: a self-added `max_output_tokens`
+  truncated the Step that runs right after a Human resume, so the resumed run
+  failed and the next attempt restarted from the first Human question instead of
+  continuing the checkpoint.
 
 Agent-backed Steps execute through the shared `flow.agent()` and
 `flow.session()` primitives inside `fusion_flow.execution.run()`. Their
@@ -663,6 +684,7 @@ Use free-form quoted text only where the typed catalog expects an `Instruction` 
 9. **Sharing mutable state between parallel branches.** Use artifacts and explicit producer/consumer relations.
 10. **Inventing `while`, `for`, `termination_signal`, or a second feedback-state identity.** The committed feedback state keeps one Artifact identity across epochs. A transient `next_state` produced inside the epoch is valid only when one ordinary commit Step consumes it and remains the unique writer of the original feedback state.
 11. **Using a general Artifact or truthy value as loop control.** A TerminalStep has exactly one `BoolArtifact` output and must return the strict Boolean `true` or `false`.
+12. **Setting a limit you cannot justify.** `max_output_tokens`, `temperature`, `reasoning_effort`, `max_turns`, `step_timeout`, `workflow_timeout`, `max_attempts`, `max_concurrency`, and `resource_requirement` all narrow the run. They are legitimate planning tools — the anti-pattern is the unexplained value, not the operator. Either say why this Step needs it, or omit the operator and keep the runtime default.
 
 ### Declarative feedback rules
 
@@ -749,6 +771,7 @@ Before the initial `run_flow` call, inspect the source in order:
 - every other identity is declared with a supported concept;
 - assertions use `==`, while formulas use comparison operators;
 - each operator uses the documented arity and supported shape;
+- every declared limit has a reason this Step needs it, and no output cap can truncate a declared output;
 - each Step has a supported Agent, Human, or Program executor, name, instruction, and explicit data/control dependencies;
 - the planning contract covers intent, success, interfaces, responsibilities, constraint ownership, dependencies, and operational limits;
 - no residual or unsupported operator is emitted.
