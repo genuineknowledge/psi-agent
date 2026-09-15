@@ -152,9 +152,7 @@ async def test_agent_stop_auto_appends_missing_send_after_write() -> None:
                                     "type": "function",
                                     "function": {
                                         "name": "write",
-                                        "arguments": json.dumps(
-                                            {"file_path": path, "content": "hi"}
-                                        ),
+                                        "arguments": json.dumps({"file_path": path, "content": "hi"}),
                                     },
                                 }
                             ]
@@ -248,9 +246,7 @@ async def test_agent_stop_does_not_duplicate_existing_send() -> None:
                                     "type": "function",
                                     "function": {
                                         "name": "write",
-                                        "arguments": json.dumps(
-                                            {"file_path": path, "content": "x"}
-                                        ),
+                                        "arguments": json.dumps({"file_path": path, "content": "x"}),
                                     },
                                 }
                             ]
