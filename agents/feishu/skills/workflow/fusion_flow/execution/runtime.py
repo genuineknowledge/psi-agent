@@ -60,10 +60,37 @@ def _make_run_id() -> str:
     return f"{stamp}-{suffix}"
 
 
+def _leaf_errors(error: BaseException, *, depth: int = 0) -> list[BaseException]:
+    """展开 anyio 任务组的异常外壳, 返回最内层叶子异常。"""
+
+    if isinstance(error, BaseExceptionGroup) and depth < 5:
+        leaves: list[BaseException] = []
+        for nested in error.exceptions:
+            leaves.extend(_leaf_errors(nested, depth=depth + 1))
+        return leaves
+    return [error]
+
+
 def _error_text(error: BaseException) -> str:
-    """提取异常的非空可读文本。"""
-    text = str(error)
-    return text or error.__class__.__name__
+    """提取异常的非空可读文本; 任务组外壳展开为叶子异常。
+
+    anyio 的 ``create_task_group()`` 会把子任务异常包成
+    ``ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)`` —— 这句话既不说是哪个
+    workflow/Step 出了什么事, 读起来还像内核自己的缺陷。展开后: 单个叶子保留原消息
+    (与旧行为一致), 需要展开时连异常类型名一并保留。
+    """
+
+    leaves = _leaf_errors(error)
+    if len(leaves) == 1 and leaves[0] is error:
+        text = str(error)
+        return text or error.__class__.__name__
+    rendered: list[str] = []
+    for leaf in leaves:
+        text = str(leaf).strip()
+        label = f"{type(leaf).__name__}: {text}" if text else type(leaf).__name__
+        if label not in rendered:
+            rendered.append(label)
+    return "; ".join(rendered) if rendered else error.__class__.__name__
 
 
 def stable_payload_hash(value: object) -> str:
