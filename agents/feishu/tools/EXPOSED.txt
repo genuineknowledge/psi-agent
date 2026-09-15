@@ -15,6 +15,15 @@
 # 名字来自 2026-09 生产实测 (3 小时流量, 496 次调用 / 44 个 distinct) 加产品要求的
 # 两条链路, 不是猜的。加工具时想让模型直接看见就在这里加一行; 不加也能用, 只是要搜。
 #
+# 2026-09-15 按生产真实注册名重新校准 (89 条 / 生产 232 个注册名, 38%)。校准前这份
+# 清单**从未在生产生效过** —— 它靠这个文件驱动, 而生产 `find -name EXPOSED*` 返回 0 个,
+# 于是走的是 tool_exposure 的「无清单 = 全放过」分支, 日志里那行 `tools_exposed=232 of 232`
+# 一直在汇报机制已启用。校准依据是 `Tool refresh complete` 那个 dict 的 key(**注册名**,
+# 不是 `ls *.py` 的文件名 —— 232 个工具来自 142 个文件, 一个文件可定义多个工具), 以及
+# 24h 内 `Executing tool:` 的 59 个 distinct 调用。原清单 65 条里有 25 个**在用的工具没列**
+# (python_run 83 次居第三、x_search、feishu_file_download、授权四件套 ...), 照原样投放
+# 会把它们从模型眼前拿掉。
+#
 # 判据: tests/psi_agent/session/test_feishu_pack_manifest.py (名字必须真实存在,
 # 且体积必须仍然显著小于全量)。
 
@@ -29,6 +38,18 @@ search_content
 fetch
 todo
 clarify
+# python_run 是 2026-09-15 实测 24h 流量里的**第三热工具**(83 次, 仅次于 bash 575 /
+# feishu_api 165), 此前不在清单里 —— 清单是按 09 月一次 3 小时窗口定的, 那个窗口没覆盖它。
+python_run
+write_excel
+# 后台执行四件套是一组: start 之后没有 output/list/stop 就没法收尾, 少一个就等于
+# 模型开得了后台任务却拿不回结果。
+background_start
+background_output
+background_list
+background_stop
+run_flow
+skill_manage
 
 # ── 工具发现 (tool_search / tool_describe 另由内核保底) ──────────────────────
 tool_search
@@ -36,7 +57,12 @@ tool_describe
 tool_search_code
 
 # ── 检索与文档解析 ───────────────────────────────────────────────────────────
-serper_google_search
+# ``x_search`` 而非 ``serper_google_search``: 后者由 search.py 的 ``@mcp(keep=...)``
+# 在 import 时生成, 而它依赖的 serper 包在生产装不上 —— 2026-09-15 实测生产 232 个注册名
+# 里没有它, 且日志里有两次 ``Tool not found: 'serper_google_search'``: 清单声明了它,
+# 模型于是照着调, 每次都失败。这正是「清单里的死条目比漏一个更糟」的第二个实例
+# (第一个是 #612 删掉的两个 feishu_* 名字)。联网搜索在生产的真名是 x_search。
+x_search
 wiki_search
 describe_image
 read_document
@@ -50,6 +76,8 @@ sessions_history
 session_status
 memory_search
 memory_answer_context
+memory_add
+history_recall
 
 # ── 飞书 ─────────────────────────────────────────────────────────────────────
 feishu_api
@@ -71,6 +99,23 @@ feishu_image_get
 feishu_identity_get
 feishu_department_members
 trigger_manage
+# 以下这批都是 2026-09-15 实测 24h 内**真的被调用过**、却不在清单里的。授权四件套
+# (auth_request/collect/check/env_check) 尤其不能少: 用户没授权时这是唯一的补救路径,
+# 模型看不见它就只能报错了事。
+feishu_auth_request
+feishu_auth_collect
+feishu_auth_check
+feishu_auth_env_check
+feishu_identity_set
+feishu_doc_export
+feishu_drive_upload
+feishu_file_download
+feishu_message_search
+feishu_message_edit
+feishu_message_send_file
+feishu_chat_get
+feishu_chat_find_member
+feishu_chat_announcement
 
 # ── 正负面清单链路 (2026-09-07 产品要求) ─────────────────────────────────────
 positive_negative_rules
