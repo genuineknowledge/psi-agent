@@ -29,8 +29,15 @@ export function ChatThread({
   const endRef = useRef<HTMLDivElement | null>(null);
 
   // 新消息 / 流式增量到达时贴住底部。
+  //
+  // 依赖里有 ``messages.at(-1)?.text`` —— 它每个流式 delta 都变, 所以这个 effect 是以
+  // delta 的频率触发的, 而 ``scrollIntoView`` 每次都强制一次布局。合并到下一帧: cleanup
+  // 取消上一帧还没跑的预约, 于是一帧最多滚一次, 增量再密也压不满布局。
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "end" });
+    const frame = window.requestAnimationFrame(() => {
+      endRef.current?.scrollIntoView({ block: "end" });
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [messages.length, typing, messages.at(-1)?.text, messages.at(-1)?.interimText]);
 
   return (

@@ -316,6 +316,34 @@ FAIL 的行就是要和 `oauth-proxy.py` 的 `ALLOWED_PATHS` 逐条比对的路�
   `useAuth` 的退路只认 `FeishuAuthUnavailable`, 于是旁路整段被跳过, 页面停在「登录失败:
   后端未配置飞书 App ID」。只有这一个组合会踩, 所以它藏得住。
 
+## 流式渲染: 四处刻意为之的性能约束(勿"优化"回去)
+
+助手回复是**逐 delta 落到 `msg.text`** 的(见 `hooks/useChatTurn.ts` 的 `onText`), 而
+`ChatThread` 不做窗口化、`ChatMessageItem` 也没有 memo —— 那里的 props 全是内联回调, 每次
+渲染都是新引用, 加了 memo 也恒失效。于是「每个增量重渲染整棵树」是既定事实, 渲染侧**唯一**
+的防线只剩下面四处:
+
+- **`MarkdownBubble` 必须 `memo`, 且解析结果必须 `useMemo`**(`components/markdown.tsx`)。
+  memo 的作用是让**历史消息整条跳过**(它们的 `text` 没变)。没有它时, 每一轮增量都会把会话
+  里**每一条**助手消息重新解析一遍(marked + highlight.js + KaTeX), 开销 O(历史条数 × 平均
+  篇幅)。改回普通函数组件 = 长会话下主线程被打满, 表现是**页面操作卡顿** —— 飞书开发者后台的
+  远程调试工具还要在主线程上做元素拾取, 抢不到时间片。
+- **正在生长的那条用 `useDeferredValue`**: memo 挡不住它(`text` 每个 delta 都变), 而整篇
+  解析是同步的纯主线程开销, 「每 delta 全量重解析」在长回复下是 O(n²)。`useDeferredValue`
+  让 React 在繁忙时跳过中间值 —— 渲染结果不变, 只是可能慢半拍。**别为了让气泡"更跟手"把它删掉**。
+- **`renderMd.ts` 的 `highlightAuto` 必须带语言子集 `AUTO_LANGS`**: 不传子集时它会遍历
+  `highlight.js/lib/common` 全部 30+ 种语法、各扫一遍全文, 是解析里最贵的一步, 而流式期间
+  每个 delta 都要跑一遍。收窄**只影响着色**, 不影响内容渲染; 需要新语言就往 `AUTO_LANGS` 里加。
+- **贴底滚动合并到下一帧**(`chat-thread.tsx` 的 `requestAnimationFrame` + cleanup 里的
+  `cancelAnimationFrame`): 那个 effect 的依赖里有 `messages.at(-1)?.text`, 触发频率就是
+  delta 频率, 而 `scrollIntoView` 每次都强制一次布局。一帧最多滚一次。
+
+判据: `tests/psi_agent/gateway/test_feishu_web_stream_render.py`(静态核对上面四处, 删任一条即红)。
+
+**另注**: `ChatMessage.interimText` 是**死字段** —— 全库只有读、没有写(增量全写进 `text`)。
+`chat-message-item.tsx` 里那个 `interimText` 分支因此永不执行; 留着是为了不动无关代码。谁要
+清理它, 记得连带删掉 `types.ts` 的字段与 `chat-thread.tsx` 依赖数组里的那一项。
+
 ## 两条容易踩的约定
 
 - **`dist/` 不进 git**(`.gitignore` 已挡), 与 `spa-v2` 的既有做法一致。源码进 git,
