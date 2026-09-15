@@ -85,6 +85,10 @@ async def todo_fill_status_impl(
     from _feishu.leave import query_leave_impl  # noqa: PLC0415
     from _feishu.sheet import read_sheet_grid_impl  # noqa: PLC0415
 
+    # 0. 参数校验:空 cycle_date 会匹配到表头空单元格、静默返回四桶全空(实测缺陷)
+    if not cycle_date.strip():
+        return _core._error("cycle_date is required (the column header, e.g. 9.11).")
+
     # 1. wiki 链接换 obj_token
     wiki_token = board_link.rstrip("/").split("/")[-1]
     res = await _core._invoke(_build_wiki_get_node_request(wiki_token), user_key=user_key)
