@@ -59,6 +59,7 @@ from psi_agent.session.protocol import (
 from psi_agent.session.request_assembly import RequestAssembler
 from psi_agent.session.runtime_context import runtime_scope
 from psi_agent.session.schedule_registry import ScheduleRegistry
+from psi_agent.session.send_delivery import missing_send_paths, send_marker_suffix
 from psi_agent.session.system_prompt import SystemPrompt
 from psi_agent.session.tool_convergence import ToolCallConvergence  # refusal notices + call-surface gate
 from psi_agent.session.tool_defs import ToolDefsCache, build_tool_defs
@@ -1088,6 +1089,24 @@ class SessionAgent:
                                 f"Stop: content={len(accumulated_content)} chars, "
                                 f"reasoning={len(accumulated_reasoning)} chars"
                             )
+                            # Safety net (刻意为之): prompt already requires
+                            # ``[SEND:]`` after file-create tools, but models
+                            # often write then paste inline with no marker.
+                            # Append ordinary markers onto the existing content
+                            # channel — no new protocol — so Channel's scanner
+                            # and Gateway ``sends`` projection both fire.
+                            missing_sends = missing_send_paths(
+                                self._conversation.messages[turn_start:],
+                                accumulated_content,
+                            )
+                            if missing_sends:
+                                send_suffix = send_marker_suffix(missing_sends)
+                                accumulated_content = accumulated_content + send_suffix
+                                yield AgentChunk(content=send_suffix)
+                                logger.info(
+                                    "Auto-appended missing [SEND:] after file-create "
+                                    f"tools ({len(missing_sends)}): {missing_sends!r}"
+                                )
                             assistant_msg: dict[str, Any] = {"role": "assistant"}
                             if accumulated_content:
                                 assistant_msg["content"] = accumulated_content

@@ -72,12 +72,25 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
    - tool 执行起止 → 仍写入 **同一** `reasoning` 槽（刻意压缩，便于 Session↔AI OpenAI 形同构），`kind="tool_call"|"tool_result"`；正文可继续带 `[Tool Call:]`/`[Tool Result:]` 过渡标记
    - tool_calls → 累积（按 index 拼接 partial JSON）
     - `finish_reason="tool_calls"` → 逐个过 `ToolCallConvergence.refusal_for()`（见「回合收敛」，被拒的**不发出**，改把说明性字符串当结果）→ 执行余下 tool → 结果追加到 history → 回到步骤 4
-    - finish_reason="stop" → 最终 content 追加到 history + `commit()` + 刷新 schedule registry + 若收到 compaction 信号则 `_request_compaction()` 记账 → 释放锁 → 锁外 `drain_pending_compaction()` 才真发压缩调用
+    - finish_reason="stop" → 最终 content 追加到 history + `commit()` + 刷新 schedule registry + 若收到 compaction 信号则 `_request_compaction()` 记账 → 释放锁 → 锁外 `drain_pending_compaction()` 才真发压缩调用。落盘前经 ``send_delivery.missing_send_paths`` 补缺本回合 ``write`` / ``write_*`` 成功结果对应、且回复里尚无的 ``[SEND:]``（见下「缺 [SEND:] 自动补」）
    - finish_reason="error" → 回滚到快照 → `raise AgentError(message)`（早期 `commit` 已清快照，**用户行保留**）
    - Stop / 断开 / `aclose` → `_abandon_incomplete_turn` 截掉本回合再向上传播（**用户行不保留**）
    - 其他未捕获异常 → 同 cancel（abandon）或随 `__aexit__` rollback，视是否走过早期 commit
 6. 最多 `max_tool_rounds` 轮 tool call（默认 `DEFAULT_MAX_TOOL_ROUNDS` = 60），达到上限时追加**面向用户**的说明性 assistant 消息 + commit
 7. **Turn 级别原子性**：``run()`` 所有正常出口调用 ``commit()``（save + clear snapshot）；异常时 ``async with`` 上下文管理器自动 ``rollback()``。内存和磁盘仅在同一检查点同步更新。
+
+### 缺 ``[SEND:]`` 自动补（``send_delivery.py``，刻意为之，勿当新协议）
+
+提示词已要求：本回合用了文件创建类工具后，最终回复**必须**带 ``[SEND:<abs-path>]``，否则 Channel 不上传、spa-v2 宝箱空、Gateway ``/history`` 无 ``sends``。模型仍常 ``write`` 完把正文贴进气泡、只写「已写好: …」而不打标记。
+
+**纯现有线格式上的安全网**——不新增 `finish_reason`、REST、chunk type：
+
+1. ``finish_reason=stop``、落盘前读本回合 history 切片（``turn_start:``）；
+2. 在成功的 ``write`` / ``write_excel`` / ``write_word`` / ``write_word_from_markdown`` 结果里用 ``[OK] … to <path>`` 抽路径（``edit`` / 裸 ``bash`` **不做**——假阳性太多）；
+3. 与 ``extract_send_paths(reply)`` 比对，缺的拼成普通 ``[SEND:]`` 行追加到 ``accumulated_content``，再 ``yield AgentChunk(content=suffix)``——Channel 现有 scanner 照扫；
+4. 跳过 ``tools/`` ``skills/`` ``schedules/`` ``systems/`` ``histories/`` ``channel_events/`` ``triggers/`` 路径段（对齐提示词「勿自动发送能力包」）。
+
+判据：`tests/psi_agent/session/test_send_delivery.py`。
 
 **注意**：
 - Channel 不发送 history。每次请求只带最新一条 user message，Session 自己维护完整 history。
