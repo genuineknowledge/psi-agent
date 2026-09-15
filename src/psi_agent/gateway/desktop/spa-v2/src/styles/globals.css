@@ -5750,6 +5750,39 @@ button.metric-cell:disabled {
   min-width: 0;
   max-width: 100%;
 }
+.focus-chat-bubble-with-copy {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+}
+/* Cursor-style: message-level copy on the bubble (top-right), so long
+   agent replies are copyable without scrolling to the bottom action bar. */
+.focus-chat-bubble-hover-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.focus-chat-bubble-with-copy:hover .focus-chat-bubble-hover-copy,
+.focus-chat-bubble-hover-copy:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+.focus-chat-copy-btn--on-bubble {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(11, 47, 91, 0.12);
+  box-shadow: 0 2px 8px rgba(15, 40, 70, 0.08);
+  color: #4a5d72;
+}
+.focus-chat-copy-btn--on-bubble:hover {
+  background: #fff;
+  color: var(--brand-600);
+  border-color: rgba(24, 119, 242, 0.35);
+}
 .focus-chat-msg-clock {
   font-size: 11px;
   line-height: 1.2;
@@ -5816,6 +5849,10 @@ button.metric-cell:disabled {
 @media (hover: none) {
   .focus-chat-copy-btn {
     opacity: 1;
+  }
+  .focus-chat-bubble-hover-copy {
+    opacity: 1;
+    pointer-events: auto;
   }
 }
 .focus-chat-msg-actions {

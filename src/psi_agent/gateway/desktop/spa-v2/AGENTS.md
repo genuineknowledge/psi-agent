@@ -112,7 +112,7 @@ Hub「使用免费模型」→ **保留**已连接真实模型；hydrateAiForSes
 ### 对话气泡操作（对齐 spa v1）
 
 - **用户消息**：悬停显示复制；发送失败（`failed`）时显示**红色回退箭头**（`RotateCcw`）。加载 `/history` 后经 `normalizeFailedTurns` 把「有 user、无完整 agent 回复」标成 `failed`/`incomplete`（与 spa v1 同款）。**点击箭头 ≠ 立刻重发**：效果对齐 Stop——撤回该 user（及空 agent stub），文案与附件**顶掉**输入框里半成品草稿并 focus，由用户再按发送。
-- **助手消息**：完整回复结束后显示操作栏——点赞 / 点踩（互斥切换）、复制；**重新生成仅挂在最后一条完整助手气泡**（丢掉该气泡并用上一条用户消息重跑 SSE）。**刻意为之**：`runChatTurn` 只往列表末条 agent 写流，中间条点重新生成会清空该气泡却盖掉末条，故 UI 与 `regenerateAgentMessage` 都拒绝非末条。
+- **助手消息**：完整回复结束后显示操作栏——点赞 / 点踩（互斥切换）、复制；**重新生成仅挂在最后一条完整助手气泡**（丢掉该气泡并用上一条用户消息重跑 SSE）。**刻意为之**：`runChatTurn` 只往列表末条 agent 写流，中间条点重新生成会清空该气泡却盖掉末条，故 UI 与 `regenerateAgentMessage` 都拒绝非末条。**Cursor 风**：长回复气泡右上角悬停另有复制键（`.focus-chat-bubble-hover-copy`），不必滚到底部操作栏；MD 表格/代码块仍保留各自内联复制。
 - **停止生成**：流式进行中输入栏右侧为红色停止键；左侧仍可点发送把下一条排进队列。中止后若**无**待发送队列，撤回本轮乐观 user+agent，把原文案与附件还原到输入框（对齐 Cursor）——**不**标 `failed`、不留红箭头气泡。若**有**待发送队列，只撤回气泡、不回填中止草稿，回合 `finally` 里**立刻**发出队列（`bypassSuppress`，避免 Stop 后 400ms 门禁挡住自动发）。**刻意为之**：Stop 后不立刻 `refreshHistory`（会与 Session abandon 竞态，把尚未剥离的 user 灌回并被 `normalizeFailedTurns` 标成异常）；标题只按本地剩余气泡改。停止键用 `pointerdown` + 短时 `suppressSubmit`，避免 Stop 变回 Send 后同一次点击误触重发。另用 `streamEpoch` / `signal.aborted` 丢掉中止后的迟到 SSE。网络等非 Abort 失败仍标记 `failed` / 可重试。
 - **预发送（对齐 Cursor）**：流式中仍可编辑输入框；Enter/Send → `queuedSends[cardId]`（小字条在附件 chip 与 form 之间），清空输入；当前回合结束后自动 `sendMessage`。每卡最多一条待发送，再排队则替换。点 × 取消：有 chip 时还原到输入框；若已进入「成功后延迟发出」窗口（chip 已藏、仍 busy），× 同样可取消 `deferredQueueFlushRef`。
   - **与回合结算正交（刻意为之）**：

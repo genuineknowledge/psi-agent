@@ -565,10 +565,28 @@ export function FocusChatThread({
               )}
               {(message.role === "user" || !isLiveAgent) && displayText.trim() ? (
                 <div className="focus-chat-bubble-stack">
-                  <div
-                    className="focus-chat-bubble"
-                    dangerouslySetInnerHTML={{ __html: finalHtml }}
-                  />
+                  <div className="focus-chat-bubble-with-copy">
+                    <div
+                      className="focus-chat-bubble"
+                      dangerouslySetInnerHTML={{ __html: finalHtml }}
+                    />
+                    {/* Cursor-style: hover copy on the bubble so long replies are
+                        copyable without scrolling to the bottom action bar
+                        (MD tables already have their own inline copy). */}
+                    {message.role === "agent"
+                      && !isLiveAgent
+                      && isCompleteAgent(message)
+                      && (displayText || clean).trim()
+                      ? (
+                        <div className="focus-chat-bubble-hover-copy">
+                          <CopyButton
+                            text={displayText || clean}
+                            className="focus-chat-copy-btn focus-chat-copy-btn--on-bubble"
+                          />
+                        </div>
+                      )
+                      : null}
+                  </div>
                   {message.createdAt ? (
                     <time
                       className={`focus-chat-msg-clock focus-chat-msg-clock--${message.role}`}
