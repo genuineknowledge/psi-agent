@@ -377,8 +377,29 @@ class _AgentStepResultParseError(ValueError):
 
 
 class _StepToolRegistry(ToolRegistry):
+    """A per-Step registry whose tools are chosen here, not by a content layer.
+
+    The session exposure gate narrows the model-facing ``tools`` array by content
+    layer.  A Step registry is assembled in code, so it has to *declare* what it
+    holds: otherwise its tools survive only through the gate's "nothing matched,
+    pass the registry through" fallback, and that fallback stops applying the
+    moment any tool in the same registry is exposed by another route.  That is the
+    same shape as the M2 gate incident, where the Program Step lost ``powershell``,
+    ``execute_program``, ``compile_program`` and ``submit_program_result`` and
+    failed with no usable diagnosis.
+    """
+
     async def refresh(self) -> dict[str, str]:
         return {}
+
+    @property
+    def exposure_manifests(self) -> dict[str, frozenset[str] | None]:
+        """Declare every tool this Step was given, under the file's own layer id."""
+
+        declared: dict[str, frozenset[str] | None] = {}
+        for entry in self._files.values():
+            declared[entry.layer_id] = frozenset(entry.tools)
+        return declared
 
 
 class _StepScheduleRegistry(ScheduleRegistry):
