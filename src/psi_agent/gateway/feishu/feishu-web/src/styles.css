@@ -3879,6 +3879,168 @@ button {
   display: flex;
   flex-direction: column;
   background: #fbfcff;
+  /* 拖拽落点的覆盖层靠它定位(见 .focus-chat-dropzone)。 */
+  position: relative;
+}
+
+/* ---- 拖拽文件进输入框: 覆盖层 ---- */
+.focus-chat-dropzone {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  border: 2px dashed var(--fs-brand);
+  border-radius: 12px;
+  background: rgba(232, 241, 255, 0.86);
+  color: var(--fs-brand-deep);
+  font-size: 13px;
+  font-weight: 700;
+  /* 覆盖层只为提示, 不能吃掉 drop 事件 —— 事件挂在 .focus-chat-pane 上。 */
+  pointer-events: none;
+}
+
+/* ---- 排队发送: 输入框上方的芯片 ---- */
+.focus-chat-queued {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--fs-line);
+  border-left: 3px solid var(--fs-brand);
+  border-radius: 8px;
+  background: var(--fs-card-soft);
+  color: var(--fs-muted);
+  font-size: 12px;
+}
+
+.focus-chat-queued-label {
+  flex: none;
+  font-weight: 700;
+  color: var(--fs-ink);
+}
+
+/* 排队的正文可能很长 —— 截断而不是把输入区顶高。 */
+.focus-chat-queued em {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: normal;
+}
+
+.focus-chat-queued button {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fs-muted);
+  cursor: pointer;
+}
+
+.focus-chat-queued button:hover {
+  background: var(--fs-brand-soft);
+  color: var(--fs-brand-deep);
+}
+
+/* ---- 任务置顶按钮(与 .ht-row-delete 同尺寸, 并排不跳) ---- */
+.ht-row-pin {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fs-muted);
+  cursor: pointer;
+}
+
+.ht-row-pin:hover {
+  background: var(--fs-brand-soft);
+  color: var(--fs-brand-deep);
+}
+
+/* 已置顶: 品牌色 + 图标填色, 一眼能从一排灰图标里认出来。 */
+.ht-row-pin.is-pinned {
+  color: var(--fs-brand);
+  background: var(--fs-brand-soft);
+}
+
+.ht-row-pin.is-pinned svg {
+  fill: currentColor;
+}
+
+/* ---- 「顶部状态区是什么」的首次提示 ---- */
+.task-status-tip {
+  position: fixed;
+  z-index: 84;
+  width: 332px;
+  padding: 14px 16px 16px;
+  border: 1px solid rgba(0, 80, 173, 0.16);
+  border-radius: 14px;
+  background: var(--fs-card);
+  box-shadow: 0 18px 46px rgba(8, 24, 50, 0.2);
+}
+
+.task-status-tip-frame {
+  position: fixed;
+  z-index: 83;
+  pointer-events: none;
+  border: 1.5px solid rgba(51, 112, 255, 0.42);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.32);
+  box-shadow: 0 0 0 5px rgba(51, 112, 255, 0.1), 0 6px 18px rgba(0, 90, 190, 0.14);
+}
+
+.task-status-tip-arrow {
+  position: absolute;
+  top: -9px;
+  border-left: 9px solid transparent;
+  border-right: 9px solid transparent;
+  border-bottom: 9px solid var(--fs-card);
+}
+
+.task-status-tip h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--fs-ink);
+}
+
+.task-status-tip p {
+  margin: 0 0 12px;
+  color: var(--fs-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.task-status-tip button {
+  min-width: 88px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  border: 1px solid var(--fs-brand-deep);
+  border-radius: 9px;
+  color: #fff;
+  background: var(--fs-brand);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.task-status-tip button:hover {
+  filter: brightness(1.05);
 }
 
 .focus-chat-scroll {

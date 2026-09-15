@@ -10,6 +10,13 @@ export interface ChatMessage {
   failed?: boolean;
   failedReason?: "error" | "stopped" | "incomplete";
   stopped?: boolean;
+  /**
+   * 整回合墙钟耗时(毫秒), 用于「思考过程 · N秒」。
+   *
+   * 两个来源: 历史来自后端 ``thinking_ms``(JSONL 的 display-only 字段), 刚跑完的那一回合
+   * 由前端自己量 —— 见 ``services/messageTiming.ts`` 的模块头。
+   */
+  thinkingMs?: number;
 }
 
 export interface Task {
@@ -34,4 +41,6 @@ export interface Task {
   fromIm: boolean;
   /** 这条会话会一直变长(只有 IM 那条会), 提示用户开新会话。不代表已接近上下文上限。 */
   contextWarning: boolean;
+  /** 用户置顶 —— 纯前端偏好(localStorage), 后排在最前。 */
+  pinned: boolean;
 }

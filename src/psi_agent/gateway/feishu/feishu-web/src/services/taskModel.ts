@@ -54,6 +54,8 @@ export interface TaskSource {
   newDeliverables: string[];
   /** 会话是否来自 IM(``from_im``)。 */
   fromIm: boolean;
+  /** 用户是否置顶了这条(纯前端偏好, 见 ``services/pinnedTasks.ts``)。 */
+  pinned: boolean;
 }
 
 /**
@@ -122,6 +124,7 @@ export function buildTask(src: TaskSource): Task {
     phase,
     phaseLabel,
     fromIm: src.fromIm,
+    pinned: src.pinned,
     // 上下文将满只对 IM 那条有意义: 网页新建的会话各有独立 jsonl, 不会替别人长。
     // 判据先用「历史消息条数」的替身 —— 后端目前不下发 token 用量, 故以 ``from_im``
     // 为唯一触发条件, 提示文案写成「这条会话与飞书对话共用, 会一直变长」。

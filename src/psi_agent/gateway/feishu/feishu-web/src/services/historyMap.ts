@@ -52,6 +52,11 @@ export function mapHistory(raw: HistoryMessage[]): {
       ...(item.reasoning ? { reasoning: item.reasoning } : {}),
       ...(item.tools?.length ? { tools: item.tools.map(toolLine) } : {}),
       ...(uniqueFiles.length ? { files: uniqueFiles } : {}),
+      // 整回合耗时: 后端在 JSONL 里记了(display-only), 只在正数时才带上 —— 0 与缺失
+      // 都表现为"不显示", 但显式带上 0 会让「思考过程 · 0秒」这种噪音出现在快回合上。
+      ...(typeof item.thinking_ms === "number" && item.thinking_ms > 0
+        ? { thinkingMs: item.thinking_ms }
+        : {}),
     });
   }
 

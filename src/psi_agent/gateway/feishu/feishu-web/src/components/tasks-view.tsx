@@ -1,4 +1,4 @@
-import { Check, Download, MessageCircle, Plus, Search, Trash2, Workflow } from "lucide-react";
+import { Check, Download, MessageCircle, Pin, Plus, Search, Trash2, Workflow } from "lucide-react";
 import type { Task } from "../types";
 import { statCell, statusPill } from "./brand";
 import { TreasureVisual } from "./treasure";
@@ -14,6 +14,8 @@ export interface TasksViewProps {
   onSearch: (v: string) => void;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
+  /** 置顶/取消置顶 —— 纯前端偏好, 置顶的排在列表最前。 */
+  onTogglePin: (id: string) => void;
   onOpenChat: (id: string) => void;
   onOpenNewDeliverables: () => void;
   newDeliveryCount: number;
@@ -21,7 +23,7 @@ export interface TasksViewProps {
 }
 
 export function TasksView(props: TasksViewProps) {
-  const { filtered, counts, selected, filter, search, onFilter, onSearch, onSelect, onDelete, onOpenChat, onOpenNewDeliverables, newDeliveryCount, onNewTask } = props;
+  const { filtered, counts, selected, filter, search, onFilter, onSearch, onSelect, onDelete, onTogglePin, onOpenChat, onOpenNewDeliverables, newDeliveryCount, onNewTask } = props;
   const filters = [["all", "全部"], ["working", "进行中"], ["attention", "待处理"], ["done", "已完成"]] as const;
   return (
     <>
@@ -82,6 +84,14 @@ export function TasksView(props: TasksViewProps) {
                     <td><span className="ht-avatars"><span className="ht-avatar navy">海</span></span></td>
                     <td className="ht-muted">{t.updated}</td>
                     <td>
+                      <button
+                        type="button"
+                        className={`ht-row-pin${t.pinned ? " is-pinned" : ""}`}
+                        aria-label={t.pinned ? "取消置顶" : "置顶"}
+                        title={t.pinned ? "取消置顶" : "置顶(只影响你自己的列表)"}
+                        aria-pressed={t.pinned}
+                        onClick={(e) => { e.stopPropagation(); onTogglePin(t.id); }}
+                      ><Pin size={14} /></button>
                       {/* IM 共用那条不许删: 它承载的是与飞书机器人的同一条对话, 删了等于
                           把机器人的上下文一起扔掉, 而用户在 IM 里还会继续用到它。 */}
                       {!t.fromIm && (

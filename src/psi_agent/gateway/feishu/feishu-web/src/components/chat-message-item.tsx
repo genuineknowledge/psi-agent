@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ChevronRight, Copy, FolderOpen, RefreshCw, ThumbsDown, ThumbsUp } from "lucide-react";
 import { FAILED_REASON_LABEL } from "../services/messageTurn";
+import { thinkingHeaderWithDuration } from "../services/messageTiming";
 import { stripTransferMarkers } from "../services/sendMarkers";
 import { isBlobPreviewable } from "../services/filePreview";
 import type { ChatMessage } from "../types";
@@ -66,7 +67,7 @@ export function ChatMessageItem({
               <div className={`focus-chat-thinking${thinkingOpen ? " is-open" : ""}`}>
                 <button type="button" className="focus-chat-thinking-toggle" aria-expanded={thinkingOpen} onClick={() => setThinkingOpen((v) => !v)}>
                   <ChevronRight size={14} className="focus-chat-thinking-chevron" aria-hidden />
-                  <span>思考过程</span>
+                  <span>{thinkingHeaderWithDuration("思考过程", msg.thinkingMs)}</span>
                 </button>
                 {thinkingOpen && (
                   <div className="focus-chat-thinking-body" role="region" aria-label="思考过程">{msg.reasoning}</div>

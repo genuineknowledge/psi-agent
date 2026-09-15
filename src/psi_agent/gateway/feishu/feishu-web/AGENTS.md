@@ -368,6 +368,39 @@ FAIL 的行就是要和 `oauth-proxy.py` 的 `ALLOWED_PATHS` 逐条比对的路�
 `chat-message-item.tsx` 里那个 `interimText` 分支因此永不执行; 留着是为了不动无关代码。谁要
 清理它, 记得连带删掉 `types.ts` 的字段与 `chat-thread.tsx` 依赖数组里的那一项。
 
+## 与 ToC(spa-v2)对齐的功能: 移什么、不移什么
+
+2026-09-15 把 ToC 的**输入与任务体感**五项移植了过来。移植的是**功能**, 不是 ToC 的组件树 ——
+本文件开头说过, PR 版把 ToC 整棵组件树拷进来正是被去掉的「死重量」。
+
+**移过来的五项**(判据: `tests/psi_agent/gateway/test_feishu_web_tob_parity.py`):
+
+| 功能 | 文件 | 移植时的适配 |
+| --- | --- | --- |
+| 拖拽 / 粘贴文件进输入框 | `services/clipboardFiles.ts` · `services/composerFileDrop.ts` | 无(原样) |
+| 排队发送(回合中 Enter 攒一条, 回合结束自动发) | `services/queuedSend.ts` | 无(原样); 触发点从 ToC 的「卡片回合」改成 `turn.sending` 的**下降沿** |
+| 任务置顶 | `services/pinnedTasks.ts` | **不走 ToC 的 `appdataScope`** —— 见下 |
+| 思考耗时「思考过程 · N秒」 | `services/messageTiming.ts` | 数据源两处: 历史 `thinking_ms` + 本回合前端计时 |
+| 顶部状态区首次提示 | `components/task-status-tip.tsx` | 锚点改成 `.cend2-quick`; 「已看过」落 **localStorage** |
+
+### 两处刻意偏离 ToC(别改回去)
+
+- **置顶不按 appdata 分桶。** ToC 的 `appdataScope` 拿 `GET /defaults` 下发的 appdata 路径算指纹,
+  而 ToB 的 `/feishu/defaults` **只回 `{ai_id}`** —— 那个端点刻意不下发部署者的路径与凭证。
+  拿不到指纹就不分桶, 而这个顾虑在 ToB 侧本来也不成立: 网页应用的 origin 是部署域名(或固定端口的
+  `127.0.0.1:8848`), 不像 ToC 装机版那样每次启动换随机端口、把同一份记忆根拆成多个偏好桶。
+  **别为了「和 ToC 一致」去给 `/feishu/defaults` 加 appdata 字段** —— 那是把部署者信息下发给每个
+  B 端用户。
+- **提示的「已看过」落 localStorage**, ToC 用的是内存标记(每次刷新都再弹一遍)。ToB 是天天用的
+  业务页面, 每次刷新都弹会变成噪音。代价是清掉浏览器存储才会再看到这条提示。
+
+### 明确**不**移(产品决定, 见「三条产品决定」一节)
+
+模型配置页 / AI 列表 / 用户中心 / 登录 OTP / workspace 选择器 / 首次使用引导。ToB 是另一种产品:
+AI 由部署者用 `--feishu-ai-id` 定死、身份由飞书免登给定、workspace 由后端派生且前端不传。
+`test_feishu_web_tob_parity.py` 的最后一条判据就是「这些文件不许出现」—— 要把它们做进来, 那是新的
+产品决定, 不是「补功能」。
+
 ## 两条容易踩的约定
 
 - **`dist/` 不进 git**(`.gitignore` 已挡), 与 `spa-v2` 的既有做法一致。源码进 git,

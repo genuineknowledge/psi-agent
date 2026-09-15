@@ -32,6 +32,11 @@ export interface HistoryMessage {
   tools?: Array<{ name: string; arguments?: string }>;
   sends?: string[];
   files?: Array<{ name: string; path?: string }>;
+  /**
+   * 整回合墙钟毫秒 —— JSONL 的 display-only 字段(``session/history_display.py`` 的
+   * ``THINKING_MS_KEY``), 由 session 层每回合写入, history 端点原样带出。
+   */
+  thinking_ms?: number;
 }
 
 export interface SessionTodo {
