@@ -195,12 +195,15 @@ button {
   padding: 2px 6px 14px;
 }
 
-.ht-app-mark {
+/* 侧栏品牌标 —— 必须走 ``brandMark`` 的海豚图, 不是自绘色块。
+   原先这里是 ``.ht-app-mark``: 一个蓝绿渐变方块, 与页面其余位置的品牌标(海豚 logo,
+   见 ``.brand-logo-art``)不一致 —— 在飞书客户端左上角看起来就是"图标不对"。
+   尺寸沿用原来的 36px, 免得侧栏布局跟着挪。 */
+.brand-logo-sidebar {
   width: 36px;
   height: 36px;
-  flex: none;
+  padding: 3px;
   border-radius: 11px;
-  background: linear-gradient(135deg, #3370ff, #12a594);
 }
 
 .ht-dt-brand strong {

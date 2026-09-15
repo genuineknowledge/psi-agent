@@ -82,7 +82,11 @@ export function TasksView(props: TasksViewProps) {
                     <td><span className="ht-avatars"><span className="ht-avatar navy">海</span></span></td>
                     <td className="ht-muted">{t.updated}</td>
                     <td>
-                      <button type="button" className="ht-row-delete" aria-label="删除任务" title="删除任务" onClick={(e) => { e.stopPropagation(); onDelete(t.id); }}><Trash2 size={14} /></button>
+                      {/* IM 共用那条不许删: 它承载的是与飞书机器人的同一条对话, 删了等于
+                          把机器人的上下文一起扔掉, 而用户在 IM 里还会继续用到它。 */}
+                      {!t.fromIm && (
+                        <button type="button" className="ht-row-delete" aria-label="删除任务" title="删除任务" onClick={(e) => { e.stopPropagation(); onDelete(t.id); }}><Trash2 size={14} /></button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -106,7 +110,9 @@ export function TasksView(props: TasksViewProps) {
                 <div className="ht-steps">{selected.steps.map((s, i) => <div key={i} className={`ht-step ${s.s}`}><span>{s.s === "done" ? <Check size={12} /> : i + 1}</span><em>{s.t}</em></div>)}</div>
                 <div className="ht-actions">
                   <button type="button" className="ht-btn primary" onClick={() => onOpenChat(selected.id)}><MessageCircle size={13} />继续对话</button>
-                  <button type="button" className="ht-btn" onClick={() => onDelete(selected.id)}><Trash2 size={13} />删除</button>
+                  {!selected.fromIm && (
+                    <button type="button" className="ht-btn" onClick={() => onDelete(selected.id)}><Trash2 size={13} />删除</button>
+                  )}
                 </div>
               </div>
               <div className="ht-card">

@@ -56,6 +56,30 @@ export interface TaskSource {
   fromIm: boolean;
 }
 
+/**
+ * IM 共用会话(``from_im``)的固定显示名。
+ *
+ * 这条会话**就是**与飞书机器人对话本身(``feishu-<open_id>``), 身份是固定的, 不该跟着
+ * 生成式标题走: 后端对它没有标题, 原先落到 "未命名任务", 在列表里看不出它是谁, 用户会
+ * 以为那是个空任务。名字与产品名对齐(「海豚一号」), 也与「海豚二号」那套部署区分开。
+ *
+ * 刻意**不**允许被标题覆盖: 它是身份, 不是话题。真要改这个显示名, 改这一个常量 ——
+ * 列表和顶栏都从这里取。
+ */
+export const IM_SESSION_TITLE = "海豚一号";
+
+/**
+ * 会话显示名 —— **唯一入口**。任务列表与对话顶栏都走这里, 免得两处各判一次 ``from_im``
+ * 而其中一处漏掉: 那会让同一个会话在列表里叫一个名字、在顶栏叫另一个。
+ */
+export function displayTitle(
+  session: Pick<SessionInfo, "from_im"> | undefined,
+  title: string | undefined,
+): string {
+  if (session?.from_im) return IM_SESSION_TITLE;
+  return title || "未命名任务";
+}
+
 export function buildTask(src: TaskSource): Task {
   const { progress, indeterminate } = progressOf(src.todos);
   const status = statusOf(src.todos);
@@ -81,7 +105,7 @@ export function buildTask(src: TaskSource): Task {
       : "本轮已完成";
   return {
     id: src.session.id,
-    title: src.title || "未命名任务",
+    title: displayTitle(src.session, src.title),
     ...(src.summary ? { summary: src.summary } : {}),
     status,
     newDeliverables: src.newDeliverables,

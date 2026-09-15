@@ -16,6 +16,7 @@ import { useSessionHistory, useSessions } from "./hooks/useSessions";
 import { useTasks } from "./hooks/useTasks";
 import { mapHistory } from "./services/historyMap";
 import { clearPendingDeliveries } from "./services/pendingDeliveries";
+import { displayTitle } from "./services/taskModel";
 import "./styles.css";
 
 type View = "tasks" | "chat" | "new-task";
@@ -144,6 +145,18 @@ function AuthedApp({ userName }: { userName: string }) {
     () => tasks.tasks.find((t) => t.id === sessions.currentId),
     [tasks.tasks, sessions.currentId],
   );
+
+  /**
+   * 当前会话的显示名 —— **顶栏与对话区共用这一个**。
+   *
+   * 不直接用 ``currentTask?.title`` 兜底: 首屏 tasks 还没派生出来时会落空, 那时如果各自
+   * 写一个 ``|| "未命名任务"``, IM 共用那条会先闪一下「未命名任务」再变成「海豚一号」。
+   * 这里再走一次 ``displayTitle`` 同一个判据, 于是任何时刻都只有一个名字。
+   */
+  const currentTitle = useMemo(() => {
+    const session = sessions.sessions.find((s) => s.id === sessions.currentId);
+    return currentTask?.title || displayTitle(session, sessions.titles[sessions.currentId]);
+  }, [currentTask, sessions.sessions, sessions.currentId, sessions.titles]);
   const artifactTask = useMemo(
     () => tasks.tasks.find((t) => t.id === artifactTaskId),
     [tasks.tasks, artifactTaskId],
@@ -347,7 +360,7 @@ function AuthedApp({ userName }: { userName: string }) {
           )}
           <div className="focus-chat-col">
             <ChatTopbar
-              title={currentTask?.title || sessions.titles[sessions.currentId] || "未命名任务"}
+              title={currentTitle}
               sending={turn.sending}
               hasNewDeliveries={(currentTask?.newDeliverables.length ?? 0) > 0}
               taskIndex={taskIndex < 0 ? 0 : taskIndex}
@@ -362,7 +375,7 @@ function AuthedApp({ userName }: { userName: string }) {
             <ChatView
               messages={turn.messages}
               userName={userName}
-              taskTitle={currentTask?.title || sessions.titles[sessions.currentId] || "当前任务"}
+              taskTitle={currentTitle}
               input={input}
               sending={turn.sending}
               error={turn.error || history.error}

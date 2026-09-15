@@ -24,8 +24,32 @@
    `FeishuManager.workspace_for(open_id)` 派生, **前端不传 workspace**。
 2. **IM 那条 session 在网页里正常显示、可续聊**, 打「来自飞书对话」角标, 双向可见。上下文
    将满的提示只挂在这一条上 (只有它会一直长)。
+   - **它显示成「海豚一号」, 不是「未命名任务」。** 这条 session 就是与机器人对话本身
+     (`feishu-<open_id>`), 身份固定, 不该跟着生成式标题走; 后端对它没有标题, 原先落到
+     「未命名任务」, 列表里看不出它是谁。名字由 `taskModel.IM_SESSION_TITLE` **单点**给出,
+     列表与顶栏都走 `displayTitle()` —— 两处各判一次 `from_im` 的话必然有一处先漏, 表现是
+     同一个会话在列表和顶栏显示两个名字。
+   - **它不可删除。** 删掉等于把机器人那侧的上下文一起扔掉, 而用户在 IM 里还会继续用到它。
+     `tasks-view.tsx` 的两个删除入口(列表行内、详情面板)都对 `fromIm` 加闸。**这是显示层
+     的闸, 不是硬闸** —— 底下的 `DELETE /sessions/{id}` 是骨架路由, 按约定语义一字不改
+     (ToC 在用), 所以直打接口仍能删; 要硬闸得新开一条带鉴权的 `/feishu/...` 删除路由, 那是
+     另一件事。
 3. **第一版只做私聊**, 群聊 session (`feishu-chat-*`) 不显示。过滤精确到只滤群聊 ——
    用 `!startsWith('feishu-')` 会把私聊一起滤掉, 与决定 2 冲突。
+
+## 品牌标: 只走 `brandMark()`, 不要自绘
+
+侧栏左上角那个标**必须**用 `brandMark("sidebar")`(→ `.brand-logo-art` → 海豚 PNG)。它原先
+是 `desktop-shell.tsx` 里的 `<span className="ht-app-mark" />`, 样式是一个蓝绿渐变方块
+(`linear-gradient(135deg, #3370ff, #12a594)`)—— 与页面其余位置的品牌标不一致, 在飞书客户端
+里看起来就是「图标不对」。色块那条规则已删, 别加回来。
+
+尺寸在 `.brand-logo-sidebar`(36px, 沿用色块原来的尺寸, 免得侧栏布局跟着挪)。图片 URL 写在
+`.brand-logo-art` 里, 是 `/haitun-dolphin.png` —— **Vite 会按 `base` 改写成
+`/feishu-web/haitun-dolphin.png`**, 所以两种写法都能用, 但别手写成 `../` 之类相对路径。
+
+判据: `tests/psi_agent/gateway/test_feishu_web_im_session_ui.py`(静态核对上面三处 + 品牌标,
+删任一条即红)。
 
 ## 模型: 用机器人那一个, 网页应用不选
 
