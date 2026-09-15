@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  bringTaskToFront,
   normalizePinnedIds,
   prunePinnedTaskIds,
   sortTasksByPin,
@@ -39,5 +40,19 @@ describe("sortTasksByPin", () => {
   it("leaves list unchanged when nothing is pinned", () => {
     const tasks = [{ id: "1" }, { id: "2" }];
     expect(sortTasksByPin(tasks, [])).toBe(tasks);
+  });
+});
+
+describe("bringTaskToFront", () => {
+  it("moves an existing id to index 0", () => {
+    const tasks = [{ id: "1" }, { id: "2" }, { id: "3" }];
+    expect(bringTaskToFront(tasks, "3").map((t) => t.id)).toEqual(["3", "1", "2"]);
+  });
+
+  it("returns the same array when already front or missing", () => {
+    const tasks = [{ id: "1" }, { id: "2" }];
+    expect(bringTaskToFront(tasks, "1")).toBe(tasks);
+    expect(bringTaskToFront(tasks, "missing")).toBe(tasks);
+    expect(bringTaskToFront(tasks, "  ")).toBe(tasks);
   });
 });

@@ -79,6 +79,7 @@ import {
 } from "../services/bootstrapAi";
 import { chatFileToFile, filesToChatFiles } from "../services/chatFiles";
 import {
+  bringTaskToFront,
   loadPinnedTaskIds,
   prunePinnedTaskIds,
   savePinnedTaskIds,
@@ -189,6 +190,8 @@ export default function HaiTunAgentWorkspace({
   const taskStatusTipTaskIdRef = useRef<string | null>(null);
   const [hubOpenNonce, setHubOpenNonce] = useState(0);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const currentIndexRef = useRef(currentIndex);
+  currentIndexRef.current = currentIndex;
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>(null);
@@ -313,6 +316,29 @@ export default function HaiTunAgentWorkspace({
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     setToast(message);
     toastTimer.current = window.setTimeout(() => setToast(null), ms);
+  }, []);
+
+  /**
+   * Newest / last-touched task rises to the front of ``tasks`` (ChatGPT-style MRU).
+   * Keeps the focused card on the same Session when the array shifts.
+   */
+  const bumpTaskToTop = useCallback((taskId: string) => {
+    setTasks((current) => {
+      const next = bringTaskToFront(current, taskId);
+      if (next === current) return current;
+      const focused = taskAtCardIndex(current, currentIndexRef.current);
+      const focusedId = focused?.id;
+      if (focusedId) {
+        const newTaskIdx = next.findIndex((item) => item.id === focusedId);
+        if (newTaskIdx >= 0) {
+          const newCardIdx = cardIndexForTask(newTaskIdx);
+          if (newCardIdx !== currentIndexRef.current) {
+            queueMicrotask(() => setCurrentIndex(newCardIdx));
+          }
+        }
+      }
+      return next;
+    });
   }, []);
 
   const refreshTodos = useCallback(async (taskId: string, streaming = false) => {
@@ -610,7 +636,8 @@ export default function HaiTunAgentWorkspace({
             ...(pending.length ? { newDeliverables: pending, deliveryState: "ready" } : {}),
           }, language)
         });
-        setTasks(mapped);
+        // Gateway list is create-order (oldest first); reverse so newest Sessions sit on top.
+        setTasks(mapped.reverse());
         historyLoadedRef.current = new Set(["overview"]);
         setMessages({ overview: [{ role: "agent", text: t("app.overviewWelcome") }] });
         setCurrentIndex(0);
@@ -744,7 +771,15 @@ export default function HaiTunAgentWorkspace({
 
   /** Sidebar / search: jump into split focus with the same expand morph as the dialogue strip. */
   const selectTask = (task: Task) => {
-    const index = tasks.findIndex((item) => item.id === task.id);
+    let index = -1;
+    setTasks((current) => {
+      const ordered = bringTaskToFront(current, task.id);
+      index = ordered.findIndex((item) => item.id === task.id);
+      return ordered;
+    });
+    if (index < 0) {
+      index = tasks.findIndex((item) => item.id === task.id);
+    }
     if (index < 0) return;
     const next = cardIndexForTask(index);
     const fromNonWorkspace = mainView !== "workspace";
@@ -1647,6 +1682,7 @@ export default function HaiTunAgentWorkspace({
     });
     // First user bubble → title immediately (covers cards still stuck at「新任务」).
     applyTitleFromChat(cardId, nextChat);
+    bumpTaskToTop(cardId);
     setChatDrafts((current) => ({ ...current, [cardId]: "" }));
     setChatAttachments((current) => ({ ...current, [cardId]: [] }));
     await runChatTurn(cardId, clean, pendingFiles, userVisible);
@@ -1882,7 +1918,7 @@ export default function HaiTunAgentWorkspace({
       }, language),
       category: category || t("app.freeTask"),
     };
-    setTasks((current) => [...current, newTask]);
+    setTasks((current) => [newTask, ...current]);
     const storedFiles = pendingFiles.length ? await filesToChatFiles(pendingFiles) : [];
     const stampedAt = new Date().toISOString();
     setMessages((current) => ({
@@ -1914,7 +1950,7 @@ export default function HaiTunAgentWorkspace({
 
     if (cardId === "overview") {
       // Overview has no Session — create a task and jump into its dialog.
-      const nextIndex = cardIndexForTask(tasks.length);
+      const nextIndex = cardIndexForTask(0);
       try {
         await createTask(clean, t("app.freeTask"));
         setMainView("workspace");
@@ -1934,11 +1970,11 @@ export default function HaiTunAgentWorkspace({
   };
 
   const viewCreatedTask = (task: Task) => {
-    // Prefer task id; fall back to "just appended" index (same as overview quick-create).
+    // Prefer task id; fall back to front (create prepends newest).
     const index = tasks.findIndex((item) => item.id === task.id);
     const nextIndex = index >= 0
       ? cardIndexForTask(index)
-      : cardIndexForTask(tasks.length);
+      : cardIndexForTask(0);
     setMainView("workspace");
     setSidebarOpen(false);
     setSearchOpen(false);

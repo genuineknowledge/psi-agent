@@ -68,3 +68,22 @@ export function sortTasksByPin<T extends { id: string }>(
     })
     .map((item) => item.task)
 }
+
+/**
+ * Move ``id`` to the front (MRU). Same reference when already front or missing.
+ * Used so newest / last-touched tasks rise above older ones; pin sort still
+ * overlays this order in the sidebar.
+ */
+export function bringTaskToFront<T extends { id: string }>(
+  tasks: T[],
+  id: string,
+): T[] {
+  const clean = id.trim()
+  if (!clean) return tasks
+  const index = tasks.findIndex((task) => task.id === clean)
+  if (index <= 0) return tasks
+  const next = tasks.slice()
+  const [item] = next.splice(index, 1)
+  next.unshift(item)
+  return next
+}
