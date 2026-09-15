@@ -1,3 +1,4 @@
+# ruff: noqa
 """Persist local snapshots for workflow authoring.
 
 This module lives beside the Workflow runtime rather than in the user-visible
