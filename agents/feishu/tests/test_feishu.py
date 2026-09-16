@@ -1960,6 +1960,54 @@ async def test_resumed_turn_can_request_auth_again_without_killing_itself(
 
 
 @pytest.mark.asyncio
+async def test_reauthorizing_inside_a_tool_task_group_does_not_livelock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """上一条用例的**真实形状**: 再次授权发生在工具的 anyio task group 里, 不是裸在回合里。
+
+    生产实测过的卡死 (2026-09-16, ou_d9545bb4): 续跑那一轮跑在 watcher 自己的 asyncio task
+    里, 回合调 ``feishu_auth_request`` → ``auth_start_impl`` → ``forget_and_wait`` 取消**当前
+    任务自己**; ``CancelledError`` 在 ``forget_and_wait`` 的 ``suppress`` 处被吞掉, 任务于是
+    「吸收了一次取消却继续跑」。而这次工具调用外面套着 ``SessionAgent`` 执行工具用的
+    ``anyio.create_task_group`` (``session/agent.py``): 它的 ``__aexit__`` 会不停
+    ``call_soon(_deliver_cancellation)`` 重试, 目标任务永远不进入 cancelled ——
+    事件循环 100% 忙转, ``turn_lock`` 永不释放, 该用户此后所有消息静默排队 (表现就是
+    「机器人卡死无响应」, 且不会自行恢复)。
+
+    上一条用例照不出来: 它直接 ``await forget_and_wait``, 少了那层 task group ——
+    而活锁**只在**取消交付撞上 task group 退出等待时出现。故这里补上那一层。
+    """
+    _granted_pending(tmp_path, monkeypatch)
+    monkeypatch.setattr(_impl, "send_message_impl", _record_dm(dms := []))
+    progress: list[str] = []
+
+    async def _resume_that_reauthorizes(session_id: str, content: str, **kwargs: Any) -> bool:
+        progress.append("turn-start")
+        # 工具在 task group 里并发执行 —— 这是 SessionAgent 跑工具的真实形状。
+        async with anyio.create_task_group() as tg:
+
+            async def _auth_request_tool() -> None:
+                await _watch.forget_and_wait(_impl._norm_user_key("ou_a"))
+
+            tg.start_soon(_auth_request_tool)
+        progress.append("turn-finished")
+        return True
+
+    monkeypatch.setattr(_auth.live_agent, "resume_session_turn", _resume_that_reauthorizes)
+    monkeypatch.setattr(_auth, "get_session_id", lambda: "feishu-ou_a")
+
+    await _impl.auth_collect_impl("ou_a")
+    state = _watch.status("ou_a")
+    assert state is not None and state.task is not None
+    # ``fail_after`` 就是判据本身: 活锁下这个 await 永不返回 (实测忙转不退出)。
+    with anyio.fail_after(5):
+        await asyncio.shield(state.task)
+
+    assert progress == ["turn-start", "turn-finished"]
+    assert dms == []
+
+
+@pytest.mark.asyncio
 async def test_failed_auth_does_not_resume_a_turn(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     """超时/失败没有「接着做」可言: 起一轮只会让模型对着一个没成的授权行动。"""
     _pending_gateway(tmp_path, monkeypatch)

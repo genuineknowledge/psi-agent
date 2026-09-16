@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -74,6 +75,14 @@ class WatchState:
 
 _watchers: dict[str, WatchState] = {}
 
+# 当前执行流正跑在哪个 watcher 的 task 里 (空串 = 不在任何 watcher 里)。
+#
+# 存在的理由是一条**自指**路径: 收码成功后的续跑回合就跑在 watcher 自己的 task 里, 而那一轮
+# 完全可以再发起一次授权 (scope 不够/换能力集), 那条路会 ``forget`` 同一个 user_key ——
+# 于是「取消自己」。``asyncio.current_task()`` 判不出来: 工具在 anyio task group 里跑, 当前
+# 任务是**子任务**而不是 watcher 那个 task。ContextVar 随子任务继承, 所以它判得出来。
+_CURRENT_WATCHER: contextvars.ContextVar[str] = contextvars.ContextVar("psi_feishu_current_watcher", default="")
+
 
 def clamp_timeout(timeout_seconds: float) -> float:
     return float(max(_WATCH_MIN_SECONDS, min(float(timeout_seconds), _WATCH_MAX_SECONDS)))
@@ -95,9 +104,18 @@ def forget(user_key: str) -> asyncio.Task[None] | None:
     返回被取消的 task, 供调用方 ``await`` —— ``cancel()`` 只是**提出**取消, 任务真正收尾
     (以及它持有的资源被释放) 要等事件循环再调度它。需要资源确实腾出来的场景请用
     :func:`forget_and_wait`。
+
+    **绝不取消自己所在的那个 watcher** (见 :data:`_CURRENT_WATCHER`): 记录照样丢 (新一轮
+    授权不能读到旧结果), 但不动那个 task。
     """
     state = _watchers.pop(user_key, None)
     if state is None or state.task is None or state.task.done():
+        return None
+    if _CURRENT_WATCHER.get() == user_key:
+        # 自指: 当前执行流就在这个 watcher 的 task (或它派生的子任务) 里。取消它会把
+        # 「取消已提出、却被 suppress 吞掉」的任务留在活着的状态, 外层 anyio task group
+        # 退出时便无限重试交付取消 —— 实测事件循环 100% 忙转且回合永不结束。
+        logger.info(f"Not cancelling the watcher we are running inside for {user_key!r}; dropped the record only")
         return None
     state.task.cancel()
     return state.task
@@ -132,7 +150,11 @@ async def _run(
 
     这里刻意把所有异常都吞掉并记进 ``state``: 后台任务没有调用方接它的错, 抛出去只会变成
     事件循环里一条 "Task exception was never retrieved", 用户那边则永远等不到回话。
+
+    开头立 :data:`_CURRENT_WATCHER`: 这一整棵执行流 (含 ``notify`` 里的续跑回合和它跑的工具)
+    由此可被 ``forget`` 认出是「自己」, 免得取消自己 —— 详见那里的注释。
     """
+    _CURRENT_WATCHER.set(state.user_key)
     try:
         result = await collect(state.user_key, state.timeout_seconds)
     except asyncio.CancelledError:
