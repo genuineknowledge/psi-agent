@@ -70,6 +70,36 @@ async def test_write_carries_tool_name_onto_the_wire():
 
 
 @pytest.mark.anyio
+async def test_write_carries_tool_args_onto_the_wire():
+    """``AgentChunk.tool_args`` 同样必须写进 SSE delta。
+
+    与 ``tool_name`` 同一个出口、同一个风险, 只是后果更重: 名字漏了下游还能显示
+    兜底文案, 参数漏了就只剩回去解析 ``reasoning`` 文本 —— 而那条正则在参数字面含
+    ``)]`` 时会截断 (实测 ``{"command": "echo )]"}`` 只剩 ``{"command": "echo``)。
+    故这里特意用那条参数, 并比**完整串**。
+    """
+    args = '{"command": "echo )]"}'
+
+    async def chunks() -> AsyncGenerator[AgentChunk]:
+        yield AgentChunk(
+            reasoning=f"[Tool Call: bash({args})]",
+            kind="tool_call",
+            tool_name="bash",
+            tool_args=args,
+        )
+
+    response = _MockResponse()
+    await ChannelAdapter.write(response, chunks())
+
+    payloads = [
+        json.loads(line[len("data: ") :])
+        for line in b"".join(response.written).decode().splitlines()
+        if line.startswith("data: ") and not line.endswith("[DONE]")
+    ]
+    assert [p["choices"][0]["delta"].get("tool_args") for p in payloads] == [args]
+
+
+@pytest.mark.anyio
 async def test_write_catches_agent_error():
     """write() catches AgentError and writes error chunk."""
 

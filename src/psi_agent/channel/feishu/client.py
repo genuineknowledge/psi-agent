@@ -807,9 +807,10 @@ async def _stream_reply(
                                 checking_silent_reply = True
                             if chunk.kind == REASONING_KIND_TOOL_CALL:
                                 if live:
-                                    found = _live_feedback.parse_tool_calls(chunk.text)
-                                    for name, args in found or [(chunk.tool_name or "?", "")]:
-                                        timeline.add_tool_call(name, args)
+                                    # 名字与参数都读**结构化字段**, 不碰 chunk.text ——
+                                    # 参数字面含 ")]" 时正则会提前收尾, 见
+                                    # ``_live_feedback`` 的模块 docstring。
+                                    timeline.add_tool_call(chunk.tool_name or "?", chunk.tool_args or "")
                                     _arm_gate_timer(tg)
                                     await _render_live(force=True)
                                 else:

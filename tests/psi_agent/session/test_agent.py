@@ -430,6 +430,14 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
             ("tool_result", "get_weather"),
         ]
 
+        # ``tool_call`` 还要带结构化参数, 且与 reasoning 文本里那份**同源**: 下游
+        # (飞书 live 过程块) 显示的是这个字段, 不再从文本里正则抠 —— 那条正则在参数
+        # 字面含 ")]" 时会截断。``tool_result`` 没有参数可带, 保持 None。
+        calls = [c for c in chunks if c.kind == "tool_call"]
+        assert [c.tool_args for c in calls] == [json.dumps({"city": "Beijing"}, ensure_ascii=False)]
+        assert all((c.tool_args or "") in (c.reasoning or "") for c in calls), "参数字段与文本不同源"
+        assert [c.tool_args for c in chunks if c.kind == "tool_result"] == [None]
+
         assert request_count >= 2
     finally:
         await mock_server.cleanup()
