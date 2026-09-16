@@ -3,12 +3,15 @@ import { useEffect, useState } from "react";
 /**
  * 指向顶部「当前任务状态区」的非阻塞提示 —— 首次使用时弹一次。
  *
- * 与 ToC 的差别只有两处, 都是**适配**不是删减:
+ * 与 ToC 的差别有三处, 都是**适配**不是删减:
  * * **锚点**: ToC 找 ``.quick-actions .agent-status-tooltip-wrap``, 这里的顶栏是
- *   ``.cend2-quick``(见 ``chat-topbar.tsx``), 那两个状态按钮各自带上了
+ *   ``.cend2-quick``(见 ``chat-topbar.tsx``), 状态按钮各自带上了
  *   ``agent-status-tooltip-wrap`` —— 取全部匹配元素的并集, 于是提示框框住的是整片状态区。
  * * **文案**: ToC 走 i18n(``statusTip.*``), 这里直接写中文 —— ToB 网页应用是单语言,
  *   为三条文案引入整套 i18n 不划算(真要三语言是另一件事)。
+ * * **少一个指示器**: C 端那里是「时钟(思考状态) + 圆点(执行状态) + 宝箱(新交付物)」三个,
+ *   而 ToB 这两个都由同一个 ``sending`` 驱动 —— 同时亮起、同时熄灭, 摆两个只会让人以为
+ *   其中一个坏了(实测反馈「有点重复了」)。所以去掉了时钟, 只留圆点, 文案也跟着改成两个。
  *
  * 用 ``position: fixed`` + ``getBoundingClientRect`` 而不是 DOM 里挂父子关系: 顶栏会在
  * 流式期间频繁重渲染, 挂进去等于让提示跟着重排。
@@ -77,7 +80,7 @@ export function TaskStatusTip({ onClose }: { onClose: () => void }) {
       >
         <span className="task-status-tip-arrow" style={{ left: arrowLeft }} />
         <h3>当前任务状态区</h3>
-        <p>依次标识 Agent 思考状态、执行状态与当前任务的新交付物。</p>
+        <p>圆点标识 Agent 是否在干活，右端宝箱标识当前任务的新交付物。</p>
         <button type="button" onClick={onClose}>知道了</button>
       </div>
     </>

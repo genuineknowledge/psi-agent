@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Clock, Plus } from "lucide-react";
+import { ArrowLeft, ArrowRight, Plus } from "lucide-react";
 import { PanelLeftOpen } from "lucide-react";
 import { brandMark } from "./brand";
 import { TreasureVisual } from "./treasure";
@@ -71,19 +71,22 @@ export function ChatTopbar({
         </div>
       )}
       <div className="cend2-quick">
+        {/*
+          状态区只留**一个**运行指示器(圆点)。
+
+          这里原本还有一只时钟, 与圆点一样跟 `sending` 走 —— 两个图标同时亮、同时灭, 摆在一
+          起只会让人以为其中之一坏了(实测反馈「有点重复了」)。C 端之所以是两个, 是因为它那边
+          各自语义不同(思考状态 / 执行状态); ToB 暂时只有「这一回合在不在跑」这一个信号,
+          与其用同一个布尔量喂两个图标, 不如只留一个说清楚的那颗。
+
+          要再分开, 前提是先有**两个不同的信号**(例如「正在等模型」与「正在跑工具」), 那时
+          再各配一个图标 —— 别靠两个图标演同一个状态。
+        */}
         <button
           type="button"
           className={`chat-top-icon agent-status-tooltip-wrap${sending ? " busy" : ""}`}
           aria-label={sending ? "Agent 正在思考执行任务" : "Agent 空闲"}
           title={sending ? "Agent 正在思考执行任务" : "Agent 空闲"}
-        >
-          <Clock size={15} />
-        </button>
-        <button
-          type="button"
-          className={`chat-top-icon agent-status-tooltip-wrap${sending ? " busy" : ""}`}
-          aria-label={sending ? "Agent 正在思考执行任务" : "Agent 思考完成，任务空闲"}
-          title={sending ? "Agent 正在思考执行任务" : "Agent 思考完成，任务空闲"}
         >
           <span className={`signal-orb ${sending ? "red" : "green"}`} />
         </button>

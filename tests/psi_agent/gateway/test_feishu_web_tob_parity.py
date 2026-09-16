@@ -10,9 +10,11 @@
    ``{ai_id}``。所以这里有一条判据: 这个模块**不许**碰任何后端接口。
 4. **思考耗时** (``messageTiming``): 数据源两处 —— 历史的 ``thinking_ms`` 与刚跑完那一回合的
    前端计时。
-5. **顶部状态区提示** (``task-status-tip``): 锚在 ``.cend2-quick`` 的两个状态按钮上(ToC 找的是
+5. **顶部状态区提示** (``task-status-tip``): 锚在 ``.cend2-quick`` 的状态按钮上(ToC 找的是
    ``.quick-actions``), 且**"已看过"落 localStorage** —— ToC 用内存标记(每次刷新都再弹一遍),
-   那对天天用的业务页面是噪音。
+   那对天天用的业务页面是噪音。**ToB 的状态按钮只有一个**(圆点): C 端是两个(思考状态 /
+   执行状态), 而这两个在 ToB 都由同一个 ``sending`` 驱动, 同时亮同时灭, 摆一起只会让人以为
+   其中一个坏了(实测反馈「有点重复了」)。
 
 **另有一条政策判据**: 与 ToC 对齐**不包括**模型配置页 / 用户中心 / workspace 选择器 ——
 ``feishu-web/AGENTS.md`` 的三条产品决定明令不许搬("网页应用没有「模型」这个概念…别把那套搬
@@ -116,9 +118,15 @@ def test_status_tip_anchor_and_persistence() -> None:
     app = _code(SRC / "App.tsx")
 
     assert "agent-status-tooltip-wrap" in topbar, (
-        "``chat-topbar.tsx`` 的两个状态按钮丢了 ``agent-status-tooltip-wrap`` 类 —— 提示条靠它取"
+        "``chat-topbar.tsx`` 的状态按钮丢了 ``agent-status-tooltip-wrap`` 类 —— 提示条靠它取"
         "包围盒, 丢了就永远锚不到(表现为提示从不出现)。"
     )
+    assert topbar.count("agent-status-tooltip-wrap") == 1, (
+        "顶栏的状态按钮不再是 1 个。C 端是两个(思考状态 / 执行状态), 而 ToB 这两个都由同一个 "
+        "``sending`` 驱动 —— 同时亮同时灭, 摆两个只会让人以为其中一个坏了(实测反馈「有点重复了」)。"
+        "要再加回来, 前提是先有**两个不同的信号**, 而不是拿同一个布尔量喂两个图标。"
+    )
+    assert "Clock" not in topbar, "``chat-topbar.tsx`` 又把那只时钟加回来了 —— 它与圆点表示同一件事(见上一条)。"
     assert ".cend2-quick .agent-status-tooltip-wrap" in tip, (
         "``task-status-tip.tsx`` 的查询选择器与顶栏的类名不再一致 —— 提示会锚不到位置。"
     )
