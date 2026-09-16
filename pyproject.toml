@@ -168,6 +168,7 @@ exclude = [
 # ty 会顺着裸名继续进那些模块, 诊断从 20 涨到 96 —— 换来一堆与本处无关的噪音。
 include = [
     "tests/agents/feishu/test_skill_path_layering.py",
+    "tests/agents/feishu/test_skill_manage.py",
     "agents/feishu/tests/test_card_dsl_template_layering.py",
 ]
 

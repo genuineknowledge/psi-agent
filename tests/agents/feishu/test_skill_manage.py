@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-import os
+import sys
 from pathlib import Path
 
 import anyio
 import pytest
+
+# ruff: noqa: PLC0415
+
+_REPO = Path(__file__).resolve().parents[3]
+_TOOLS = _REPO / "agents" / "feishu" / "tools"
+
+if str(_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_TOOLS))
 
 
 @pytest.fixture
