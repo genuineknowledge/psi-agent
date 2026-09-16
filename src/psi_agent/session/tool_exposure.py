@@ -144,6 +144,55 @@ async def read_manifest(tools_dir: Path) -> frozenset[str] | None:
     return names
 
 
+def report_manifests(manifests: Mapping[str, frozenset[str] | None], *, tier: ExposureTier) -> None:
+    """Log which layers declared a manifest and which did not, one line.
+
+    This exists because the narrowing's real-world failure was not a crash but a
+    **silent no-op**: the mechanism shipped in 2026-09, and for the whole time
+    after it no deployment had a manifest on disk at all (``find -name
+    EXPOSED*`` on production returned nothing), so every layer took the
+    undeclared branch and ``LAYERED`` exposed the full surface. Nothing said so.
+    The one number that could have revealed it — ``tools_exposed=232 of 232`` —
+    reads as *the mechanism is on*, which is exactly how it was read, while
+    request bodies carried 289774 chars of tool schemas per turn for weeks.
+
+    The distinction that has to survive into the log is therefore
+    ``undeclared`` vs ``declared=0``, the same one ``read_manifest``'s
+    ``None``/``frozenset()`` split carries and ``layer_probe`` makes for content
+    roots: a layer with no manifest is a deployment that may have forgotten to
+    ship one, while a layer declaring nothing is a choice. Collapsed into a
+    count they are indistinguishable, and the forgetting is the failure that
+    actually happened.
+
+    ``WARNING`` when nothing was declared under a narrowing tier, because that is
+    the state where the tier's name and its behaviour disagree; ``INFO``
+    otherwise. Never raises — a probe must not become a new failure source.
+    """
+    if tier is ExposureTier.OFF:
+        logger.info(f"tool_exposure tier={tier.value}: narrowing disabled, {len(manifests)} layer(s) exposed in full")
+        return
+
+    detail = " ".join(
+        f"{layer}={'undeclared' if declared is None else len(declared)}"
+        for layer, declared in sorted(manifests.items())
+    )
+    declaring = [layer for layer, declared in manifests.items() if declared is not None]
+    line = (
+        f"tool_exposure tier={tier.value}: {len(declaring)} of {len(manifests)} layer(s) declare a manifest "
+        f"[{detail or '(no layers)'}]"
+    )
+    if not declaring and manifests:
+        # No manifest anywhere: under LAYERED this silently degrades to full
+        # exposure, which is the production state this function was added to
+        # make visible rather than the mechanism working.
+        consequence = (
+            "exposing every tool in full (narrowing is a no-op)" if tier is ExposureTier.LAYERED else "nothing declared"
+        )
+        logger.warning(f"{line} — no {MANIFEST_NAME} found in any layer; {consequence}")
+    else:
+        logger.info(line)
+
+
 def select_exposed[T](
     tools: Mapping[str, T],
     *,

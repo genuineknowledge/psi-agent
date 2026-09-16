@@ -33,7 +33,7 @@ import anyio
 from loguru import logger
 
 from psi_agent.session.content_roots import ContentRoot, content_roots_from_env
-from psi_agent.session.tool_exposure import read_manifest
+from psi_agent.session.tool_exposure import read_manifest, report_manifests, tier_from_env
 from psi_agent.session.tool_layers import Layer, executing_tool_file, layers_open
 
 # ── tools-dir import scope ───────────────────────────────────────────────────
@@ -605,11 +605,13 @@ class ToolRegistry:
         """
         files = await cls._load_from_dir(tools_dir, session_id)
         layer_id = _layer_id(tools_dir)
+        manifests = {layer_id: await read_manifest(tools_dir)}
+        report_manifests(manifests, tier=tier_from_env())
         return cls(
             files=files,
             work_dir=tools_dir,
             session_id=session_id,
-            manifests={layer_id: await read_manifest(tools_dir)},
+            manifests=manifests,
         )
 
     @classmethod
@@ -659,6 +661,7 @@ class ToolRegistry:
         # imports, and holding the hook open longer than the loads need it only
         # widens the window in which ``sys.meta_path`` carries this load's finder.
         manifests = {layer.layer_id: await read_manifest(layer.tools_dir) for layer in ordered}
+        report_manifests(manifests, tier=tier_from_env())
         top = ordered[-1].tools_dir if ordered else None
         return cls(files=files, work_dir=top, session_id=session_id, manifests=manifests)
 
