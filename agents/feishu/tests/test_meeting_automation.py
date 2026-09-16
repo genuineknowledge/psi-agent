@@ -655,6 +655,82 @@ async def test_collect_paragraphs_fallback_preserves_detail_token_cursor(monkeyp
     ) in calls
 
 
+def _paged_transcript_fake(total: int, *, page_size: int = 100):
+    """造一个「分页给正文」的上游: 索引给全部 pid, details 每页 page_size 段。"""
+
+    async def fake_call(name: str, arguments: dict[str, object], *, token_env: str) -> object:
+        if name == "get_transcripts_paragraphs":
+            return {"paragraphs": [{"pid": str(i)} for i in range(total)]}
+        if name == "get_transcripts_details":
+            token = arguments.get("page_token")
+            start = int(token) if isinstance(token, str) and token.isdigit() else 0
+            end = min(start + page_size, total)
+            payload: dict[str, object] = {
+                "paragraphs": [{"pid": str(i), "content": f"第{i}段"} for i in range(start, end)]
+            }
+            if end < total:
+                payload["has_more"] = True
+                payload["next_page_token"] = str(end)
+            return payload
+        raise AssertionError(name)
+
+    return fake_call
+
+
+@pytest.mark.anyio
+async def test_collect_paragraphs_scales_with_pages_not_paragraphs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**调用次数与页数成正比, 与段数无关** —— 这是 8 分钟那次的回归判据。
+
+    2026-09-16 实测: 352 段 314.7 秒、431 段 493.1 秒(≈1.1 秒/段)。根因是它把「取一份转写」
+    实现成了 N+1 —— 索引里有多少段就发多少次 details, 而每次调用都要新起一个 Python 子进程
+    再走一次网络。250 段按页取只要 3 次; 这条用例就是钉住它**不会退回逐段**。
+    """
+
+    async def fake_call(name: str, arguments: dict[str, object], *, token_env: str) -> object:
+        calls.append((name, dict(arguments)))
+        return await _paged_transcript_fake(250)(name, arguments, token_env=token_env)
+
+    calls: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(transcript_prepare, "_call", fake_call)
+    paragraphs = await transcript_prepare._collect_paragraphs("record-big", token_env="TENCENT_MEETING_TOKEN")
+
+    assert len(paragraphs) == 250
+    detail_calls = [c for c in calls if c[0] == "get_transcripts_details"]
+    assert len(detail_calls) == 3, (
+        f"250 段用了 {len(detail_calls)} 次 details 调用 —— 分页应当是 3 次(每页 100)。"
+        "退回到「每段一次」就是那个 8 分钟的病根(≈1.1 秒/段)。"
+    )
+    # 索引仍然取了(用来判有没有漏段), 但它一次就够。
+    assert len([c for c in calls if c[0] == "get_transcripts_paragraphs"]) == 1
+
+
+@pytest.mark.anyio
+async def test_collect_paragraphs_fills_gaps_only_for_missing_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    """分页漏段时**只补缺的那些 pid** —— 老路径降级成补漏, 不是又跑一遍全量。"""
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    async def fake_call(name: str, arguments: dict[str, object], *, token_env: str) -> object:
+        calls.append((name, dict(arguments)))
+        if name == "get_transcripts_paragraphs":
+            return {"paragraphs": [{"pid": str(i)} for i in range(5)]}
+        if name == "get_transcripts_details":
+            # 分页只给前三段(上游漏页), 其余靠补漏。
+            if arguments.get("pid") == "0":
+                return {"paragraphs": [{"pid": str(i), "content": f"第{i}段"} for i in range(3)]}
+            pid = str(arguments.get("pid"))
+            return {"paragraphs": [{"pid": pid, "content": f"第{pid}段"}]}
+        raise AssertionError(name)
+
+    monkeypatch.setattr(transcript_prepare, "_call", fake_call)
+    paragraphs = await transcript_prepare._collect_paragraphs("record-gap", token_env="TENCENT_MEETING_TOKEN")
+
+    assert [item["pid"] for item in paragraphs] == ["0", "1", "2", "3", "4"]
+    detail_calls = [c for c in calls if c[0] == "get_transcripts_details"]
+    # 1 次分页 + 只补缺的 3、4 两段 = 3 次; 补齐的 0/1/2 不该再各来一次。
+    assert len(detail_calls) == 3, [c[1] for c in detail_calls]
+    assert {c[1].get("pid") for c in detail_calls[1:]} == {"3", "4"}
+
+
 @pytest.mark.anyio
 async def test_meeting_session_read_returns_bounded_chunks(tmp_path: Path) -> None:
     root = tmp_path / "meeting-session" / "weekday-alignment"
