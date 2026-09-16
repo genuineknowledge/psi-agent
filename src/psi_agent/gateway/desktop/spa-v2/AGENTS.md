@@ -44,7 +44,7 @@
 
 设置弹窗保留**切换工作区**与**切换 Agent 包**（真实功能）；设置 / 高级设置是**同一弹窗的两个页面**（点「高级设置」换页、可返回设置；`Esc` 先回主页再关闭），不要叠第二个 `HubDialog`。通知/交付位置等占位项已去掉，避免空壳菜单。
 | 任务删除 | 侧栏 trash → DELETE session + 清本地 hist | 侧栏/卡片删除 → ``DELETE /sessions/{id}``（顺带清 JSONL + 标题）+ 清本地状态 |
-| 任务置顶 | 侧栏 pin → `gw-pinned-session-ids` | 侧栏历史任务行 pin 钮（`TaskRow`）→ `gw-v2:{fp}:pinned-task-ids`；**只排侧栏列表**（置顶先、再按 `tasks` 原序），**不改**卡片栈因 pin 而重排。**任务 MRU（刻意为之）**：`tasks` 本身按最近操作排——新建 prepend、boot 时反转 Gateway 创建序、发消息 / 侧栏点选 `bringTaskToFront`；置顶仍压在最上；卡片栈与侧栏共用同一 `tasks` 顺序。bootReady 后再 prune 失效 pin id（冷启动 `tasks=[]` 时不写盘） |
+| 任务置顶 | 侧栏 pin → `gw-pinned-session-ids` | 侧栏历史任务行 pin 钮（`TaskRow`）→ `gw-v2:{fp}:pinned-task-ids`；**只排侧栏列表**（置顶先、再按 `tasks` 原序），**不改**卡片栈因 pin 而重排。**任务 MRU（刻意为之，对齐 DeepSeek）**：`tasks` 按最近**对话**排——新建 prepend、boot 时反转 Gateway 创建序、**发消息** `bumpTaskToTop`；**侧栏点选只切换会话、不重排**（点选就置顶会跟切换冲突）。手动 pin 仍压在最上；卡片栈与侧栏共用同一 `tasks` 顺序。bootReady 后再 prune 失效 pin id（冷启动 `tasks=[]` 时不写盘） |
 | 消息操作栏 | 助手：赞/踩/复制/重新生成；用户：复制 + 失败重试 | 同左（`FocusChatThread`）；**重新生成仅末条助手**；feedback 仅内存态，刷新历史后不保留 |
 | 停止生成 | 输入栏 Send ↔ Stop 切换 | 同左：流式时 Stop + 可排队 Send；停止后草稿回填输入框（有待发送队列则不回填，改为自动发队列） |
 | 预发送队列 | — | 流式中 Enter/Send 把草稿排进输入框上方小字条（每卡一条，再发则替换）；成功后等 `refreshHistory` 再自动发出（期间保持 busy）；Stop 立刻发；身份/网络失败则回填输入框不连发；点 × 取消并还原 |
