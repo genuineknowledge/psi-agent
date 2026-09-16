@@ -12,7 +12,7 @@ license = {text = "MIT"}
 requires-python = ">=3.14"
 dependencies = [
     "anyio>=4.14.2",
-    "aiohttp>=3.14.1",
+    "aiohttp>=3.14.3",
     # 直接依赖而非传递依赖: psi_agent._tls 自己 import 它。冻结包在 macOS 上没有
     # 系统信任库可读, 根证书只能由它提供。
     "certifi>=2026.6.17",
@@ -63,6 +63,8 @@ dependencies = [
     # Windows Python 3.14 不带 IANA 时区库, stdlib zoneinfo 需要 tzdata 才有
     # Asia/Shanghai 等条目 (正负面清单写表/日程/系统 prompt 时间戳都会用到)。
     "tzdata>=2024.1; platform_system == 'Windows'",
+    "cryptography>=50.0.0",
+    "gitpython>=3.1.59",
 ]
 
 [dependency-groups]
@@ -159,13 +161,15 @@ exclude = [
 ]
 
 [[tool.ty.overrides]]
-# 这些测试文件刻意在**函数体内**做裸名导入(``tencent_meeting`` / ``_card_dsl`` 等), 因为它们
+# 这些测试文件/工具刻意在**函数体内**做裸名导入(``tencent_meeting`` / ``_card_dsl`` 等), 因为它们
 # 只有靠文件顶部往 ``sys.path`` 插入 ``agents/feishu/tools`` 才找得到, 而且必须晚于 ``layers``
 # fixture 的 monkeypatch。裸名解析不到是预期的, 不是缺陷。
 # 不用 ``tool.ty.environment.extra-paths`` 放开: 实测把 ``agents/feishu/tools`` 加进去后,
 # ty 会顺着裸名继续进那些模块, 诊断从 20 涨到 96 —— 换来一堆与本处无关的噪音。
 include = [
+    "agents/desktop/tools/skill_manage.py",
     "tests/agents/feishu/test_skill_path_layering.py",
+    "tests/agents/feishu/test_skill_manage.py",
     "agents/feishu/tests/test_card_dsl_template_layering.py",
 ]
 

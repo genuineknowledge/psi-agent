@@ -66,6 +66,7 @@ CONTENT_ROOTS_ENV = "PSI_CONTENT_ROOTS"
 # last entry is the most specific (closest to the user) — the same direction the
 # mount list reads in, ``official:enterprise:users``.
 _ENTRY_SPLIT = re.compile(r"\s*=\s*")
+_DELIM_SPLIT = re.compile(r"\s*(?:;|:(?=[0-9A-Za-z._-]+\s*=))\s*")
 
 # A name goes into a module name via ``Layer.scope_token``, and it is an identity,
 # so the character set is restricted rather than sanitised: sanitising would let
@@ -118,7 +119,7 @@ def parse_content_roots(raw: str) -> list[ContentRoot]:
     """
     roots: list[ContentRoot] = []
     seen: set[str] = set()
-    for piece in raw.split(os.pathsep):
+    for piece in _DELIM_SPLIT.split(raw.strip()):
         entry = piece.strip()
         if not entry:
             continue
