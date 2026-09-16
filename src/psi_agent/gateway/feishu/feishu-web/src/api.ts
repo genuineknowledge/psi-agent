@@ -79,12 +79,6 @@ export interface TodoSegmentDetail extends TodoSegmentSummary {
   todos: SessionTodo[];
 }
 
-export interface WorkspaceFile {
-  name: string;
-  data: string;
-  path: string;
-}
-
 interface ApiError {
   error?: string;
 }
@@ -301,9 +295,35 @@ export async function fetchSessionHistoryFile(sessionId: string): Promise<Blob> 
 
 // ---- workspace ---------------------------------------------------------
 
-export async function readWorkspaceFile(path: string): Promise<WorkspaceFile> {
-  const params = new URLSearchParams({ path });
-  return requestJson<WorkspaceFile>(`/workspace/file?${params.toString()}`);
+/**
+ * 读交付物内容并转成 base64 —— **交付物预览**用。
+ *
+ * 为什么不再走 ``/workspace/file``: 那条归 desktop 面, 云上与调试隧道里都不在反代白名单内
+ * (恒 404), 而交付物抽屉的预览正是打它 —— 表现是「点开文件全 404」。这里走带鉴权的那条
+ * 对等路由(``/feishu/sessions/{id}/files``), 返回形状与 ``/workspace/file`` 的 ``data``
+ * 字段一致(base64), 于是 ``ArtifactFileBody`` 那套渲染(image / blob / markdown / text)
+ * 一行都不用改。
+ */
+export async function readDeliverable(sessionId: string, path: string): Promise<string> {
+  const blob = await fetchDeliverable(sessionId, path);
+  return blobToBase64(blob);
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("读取文件内容失败"));
+    reader.onload = () => {
+      const url = typeof reader.result === "string" ? reader.result : "";
+      const comma = url.indexOf(",");
+      if (comma < 0) {
+        reject(new Error("读取文件内容失败"));
+        return;
+      }
+      resolve(url.slice(comma + 1));
+    };
+    reader.readAsDataURL(blob);
+  });
 }
 
 export async function revealWorkspacePath(path: string): Promise<{ path: string }> {

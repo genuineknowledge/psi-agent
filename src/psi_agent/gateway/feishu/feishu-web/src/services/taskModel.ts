@@ -6,18 +6,57 @@ import type { Task } from "../types";
  *
  * 「任务」在后端没有独立实体: 一个会话就是一个任务, 进度来自它的 todo 汇总。这里是纯函数,
  * 数据获取在 useTasks —— PR 版把这套推导直接写在 App.tsx 的 render 里, 每次输入都重算。
+ *
+ * ## 状态与进度是**两个输入**的函数, 不只是 todo
+ *
+ * 只读 todo 会漏掉一整类会话: 跑完一轮却没写过 todo 的任务(agent 直接回答/直接调工具)。
+ * 它们的 `summary.total` 恒为 0, 于是「刚回完一轮」和「从没动过」在界面上长得一模一样 ——
+ * 都显示「待开始 / 0%」。实测有人因此认为左侧任务上下文完全没用。
+ *
+ * 所以这里照 C 端(spa-v2 的 `services/taskProgress.ts`)的同一套语义, 补两个前端信号:
+ *
+ * * `streaming`: 这一回合的 SSE 还在流(前端自己发的那次);
+ * * `turnSettled`: 至少有一轮回复落定过(本浏览器里刚跑完, 或历史里已经有助手回复)。
+ *
+ * 无 todo 轨道时**不编造百分比**: 运行中给不确定态(转圈), 落定后才是 100%。
  */
 
-export function progressOf(summary: TodoSummary | undefined): { progress: number; indeterminate: boolean } {
+export interface ProgressContext {
+  /** 这一回合正在进行(SSE 还在流)。 */
+  streaming: boolean;
+  /** 至少有一轮回复落定过。 */
+  turnSettled: boolean;
+  /** 这个会话有没有交付物(决定「正在整理交付」还是「正在处理」)。 */
+  hasDeliverables: boolean;
+  /** 有没有活跃的 todo 清单(决定走清单轨道还是单行活动态)。 */
+  hasTodoTrack: boolean;
+}
+
+export function progressOf(
+  summary: TodoSummary | undefined,
+  ctx: Pick<ProgressContext, "streaming" | "turnSettled">,
+): { progress: number; indeterminate: boolean } {
   const total = summary?.total || 0;
-  if (!total) return { progress: 0, indeterminate: false };
+  if (!total) {
+    // 没有清单轨道: 不给假的百分比。运行中转圈; 落定了就是 100%。
+    return { progress: ctx.turnSettled ? 100 : 0, indeterminate: ctx.streaming };
+  }
   const done = (summary?.completed || 0) + (summary?.cancelled || 0);
   return { progress: Math.round((done / total) * 100), indeterminate: false };
 }
 
-export function statusOf(summary: TodoSummary | undefined): string {
+/**
+ * 列表里的状态文案。取值与 C 端一致(进行中 / 待您处理 / 已完成), 另外加一个**运行中** ——
+ * 它是用户唯一能在列表上看出「这条正在干活」的信号, 而「进行中」与「待处理」是 todo 的状态,
+ * 说不了这件事。
+ */
+export function statusOf(
+  summary: TodoSummary | undefined,
+  ctx: Pick<ProgressContext, "streaming" | "turnSettled">,
+): string {
+  if (ctx.streaming) return "运行中";
   const total = summary?.total || 0;
-  if (!total) return "待开始";
+  if (!total) return ctx.turnSettled ? "已完成" : "待开始";
   const done = (summary?.completed || 0) + (summary?.cancelled || 0);
   if (done >= total) return "已完成";
   if (summary?.in_progress) return "进行中";
@@ -58,6 +97,10 @@ export interface TaskSource {
   readOnly: boolean;
   /** 用户是否置顶了这条(纯前端偏好, 见 ``services/pinnedTasks.ts``)。 */
   pinned: boolean;
+  /** 这一回合的 SSE 还在流(前端自己发的那次)。 */
+  streaming: boolean;
+  /** 至少有一轮回复落定过(本浏览器里刚跑完, 或历史里已有助手回复)。 */
+  turnSettled: boolean;
 }
 
 /**
@@ -85,28 +128,68 @@ export function displayTitle(
 }
 
 export function buildTask(src: TaskSource): Task {
-  const { progress, indeterminate } = progressOf(src.todos);
-  const status = statusOf(src.todos);
-  const latest = src.segments.at(-1);
   const activeItems = (src.todoItems || []).filter((todo) => todo.status !== "cancelled");
+  const hasTodoTrack = activeItems.length > 0;
+  const ctx: ProgressContext = {
+    streaming: src.streaming,
+    turnSettled: src.turnSettled,
+    hasDeliverables: src.files.length > 0,
+    hasTodoTrack,
+  };
+  const { progress, indeterminate } = progressOf(src.todos, ctx);
+  const status = statusOf(src.todos, ctx);
+  const latest = src.segments.at(-1);
   const todoSteps = activeItems.map((todo) => ({
     t: todo.content,
     s: stepStateOf(todo.status),
     ...(todo.status === "in_progress" ? { detail: todo.content } : {}),
   }));
-  const working = todoSteps.some((step) => step.s === "working");
-  const idle = activeItems.length === 0 && src.files.length === 0;
-  const steps = activeItems.length
-    ? todoSteps
-    : src.files.length
-      ? [{ t: "本轮已完成", s: "done" as const }]
-      : [{ t: "待继续", s: "waiting" as const, detail: "等待你的下一条" }];
-  const phase = idle || activeItems.length ? ("advance" as const) : ("done" as const);
-  const phaseLabel = idle
-    ? "待继续"
-    : activeItems.length
-      ? (latest?.label || "推进中")
-      : "本轮已完成";
+  const checklistDone = todoSteps.length > 0 && todoSteps.every((step) => step.s === "done");
+  /*
+   * 生命周期阶段 —— 与 C 端 `resolveTaskProgress` 同一套:
+   *   流式中 + 清单做完 / 无清单但有交付物 → deliver; 流式中 → advance; 落定 → done。
+   * `done` 由「有没有落定过一轮」决定, **不再由「有没有交付物」决定** —— 后者会把
+   * 「回完一轮但没产生文件」的会话永远留在「待继续」。
+   */
+  const phase: "advance" | "deliver" | "done" = src.streaming
+    ? hasTodoTrack && checklistDone
+      ? "deliver"
+      : !hasTodoTrack && ctx.hasDeliverables
+        ? "deliver"
+        : "advance"
+    : src.turnSettled
+      ? "done"
+      : "advance";
+  /*
+   * 无清单时的步骤就是**一行活动态**(C 端同款), 不编造三步轨道: 有清单时显示真实清单,
+   * 没清单时显示「正在处理 / 正在整理交付 / 本轮已完成 / 待继续」。
+   */
+  const activity: { t: string; s: "done" | "working" | "waiting"; detail?: string } =
+    phase === "done"
+      ? { t: "本轮已完成", s: "done" }
+      : phase === "deliver"
+        ? { t: "正在整理交付", s: "working", ...(ctx.hasDeliverables ? { detail: "交付物生成中" } : {}) }
+        : src.streaming
+          ? { t: "正在处理", s: "working" }
+          : { t: "待继续", s: "waiting", detail: "等待你的下一条" };
+  const steps = hasTodoTrack
+    ? phase === "deliver"
+      ? [...todoSteps, { t: "正在整理交付", s: "working" as const }]
+      : todoSteps
+    : [activity];
+  const phaseLabel = hasTodoTrack
+    ? phase === "deliver"
+      ? "正在整理交付"
+      : (latest?.label || "推进中")
+    : activity.t;
+  const updated =
+    phase === "done"
+      ? "本轮回复已完成"
+      : phase === "deliver"
+        ? "正在产出"
+        : src.streaming
+          ? "Agent 处理中"
+          : relativeTime(latest?.updated_at) || "待继续";
   return {
     id: src.session.id,
     title: displayTitle(src.session, src.title),
@@ -117,10 +200,10 @@ export function buildTask(src: TaskSource): Task {
     progress,
     indeterminate,
     ...(src.todos?.total ? { progressLabel: `${src.todos.completed}/${src.todos.total}` } : {}),
-    hasTodoTrack: activeItems.length > 0 || src.segments.length > 0,
+    hasTodoTrack: hasTodoTrack || src.segments.length > 0,
     sop: latest?.label || "自动流程",
     owner: "海豚",
-    updated: relativeTime(latest?.updated_at) || (idle ? "待继续" : working ? "进行中" : activeItems.length ? "已同步" : "本轮回复已完成"),
+    updated,
     files: src.files,
     steps,
     phase,
@@ -142,7 +225,9 @@ export type TaskFilter = (typeof TASK_FILTERS)[number];
 export function filterTasks(tasks: Task[], filter: string, search: string): Task[] {
   const q = search.trim().toLowerCase();
   return tasks.filter((t) => {
-    if (filter === "working" && t.status !== "进行中") return false;
+    // 「进行中」这一档把**运行中**也算进去 —— 用户按「进行中」是想看"还在动的那些",
+    // 而在跑的那条恰恰是最该出现的; 单独给它一个筛选项反而多一次点击。
+    if (filter === "working" && t.status !== "进行中" && t.status !== "运行中") return false;
     if (filter === "attention" && t.status !== "待处理") return false;
     if (filter === "done" && t.status !== "已完成") return false;
     if (!q) return true;
@@ -159,7 +244,8 @@ export function filterTasks(tasks: Task[], filter: string, search: string): Task
 export function countTasks(tasks: Task[]): Record<string, number> {
   return {
     all: tasks.length,
-    working: tasks.filter((t) => t.status === "进行中").length,
+    // 与 filterTasks 的 working 同一口径: 运行中 + 进行中。
+    working: tasks.filter((t) => t.status === "进行中" || t.status === "运行中").length,
     attention: tasks.filter((t) => t.status === "待处理").length,
     done: tasks.filter((t) => t.status === "已完成").length,
   };

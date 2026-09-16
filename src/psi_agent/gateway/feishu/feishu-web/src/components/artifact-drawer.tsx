@@ -7,10 +7,12 @@ import { ArtifactFileBody } from "./artifact-file-body";
 /**
  * 一个任务的交付物抽屉: 左侧文件列表, 右侧预览。
  *
- * 数据获取重写过 —— 内容一律由 ArtifactFileBody 走 ``/workspace/file`` 拉, 组件本身只持
- * 「当前选中哪个文件」。PR 版在这里自己缓存 base64 并和 App 的状态互相同步, 两份真相。
+ * 数据获取重写过 —— 内容一律由 ArtifactFileBody 走**带鉴权的交付物路由**拉
+ * (``/feishu/sessions/{id}/files``), 组件本身只持「当前选中哪个文件」。PR 版在这里自己
+ * 缓存 base64 并和 App 的状态互相同步, 两份真相。
  */
 export function ArtifactDrawer({
+  sessionId,
   taskTitle,
   files,
   filePathOf,
@@ -19,6 +21,8 @@ export function ArtifactDrawer({
   onSave,
   onClose,
 }: {
+  /** 会话 id —— 预览用它走带鉴权的交付物路由(见 ArtifactFileBody 的说明)。 */
+  sessionId: string;
   taskTitle: string;
   files: string[];
   filePathOf: (name: string) => string | undefined;
@@ -91,7 +95,7 @@ export function ArtifactDrawer({
           </nav>
           <div className="artifact-file-pane">
             {active && activePath ? (
-              <ArtifactFileBody path={activePath} name={active} />
+              <ArtifactFileBody sessionId={sessionId} path={activePath} name={active} />
             ) : (
               <div className="artifact-file-empty">选择左侧文件查看内容</div>
             )}

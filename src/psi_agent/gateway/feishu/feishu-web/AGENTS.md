@@ -484,6 +484,23 @@ AI 由部署者用 `--feishu-ai-id` 定死、身份由飞书免登给定、works
   (`ORG_SESSION_READ_ONLY`), 并且**每次会话级拒绝都记一条 WARNING**(带 session id / open_id /
   path): 403 那条路径不产生其它日志, 用户截图里只有一句文案时, 服务端必须有东西能对上号。
 
+- **任务上下文会跟着回合走**(2026-09-16): 回合进行中每 2.5 秒重拉那条会话的
+  `todos` / `todo-segments`(`useTasks.refreshOne`, 间隔与 C 端 `HaiTunAgentWorkspace` 的
+  todo 轮询一致), 按下发送时立刻拉一次。**不轮询的表现是「执行过程中一直待继续/0%, 做完才
+  跳成已完成」** —— 左侧面板只在挂载与回合结束时更新。
+- **状态与进度不只由 todo 决定**: 跑完一轮却没写过 todo 的会话(agent 直接回答/直接调工具)
+  `summary.total` 恒为 0, 旧实现把它读成「待开始/0%」。现在照 C 端 `taskProgress.ts` 的语义
+  另加两个前端信号 —— `streaming`(这条的 SSE 还在流)与 `turnSettled`(至少落定过一轮):
+  前者在列表上显示**运行中**(蓝色胶囊, 并从「进行中」筛选项里一起算), 后者让无 todo 的会话
+  显示**已完成 / 100%**。`turnSettled` 有两个来源取或: 本浏览器的回合信号(刷新即失)与
+  **历史里已有助手回复**(`historyDeliverables[id].replied`, 持久) —— 只靠前者, 刷新页面就会
+  退回「待开始」。
+- **交付物预览走带鉴权的对等路由**(`/feishu/sessions/{id}/files?path=`), 不再走
+  `/workspace/file` —— 那条归 desktop 面且在云上/调试隧道里不在白名单内, 表现是「点开文件
+  全 404」。`readDeliverable()` 返回 base64(与 `/workspace/file` 的 `data` 同形), 于是
+  `ArtifactFileBody` 的 image / blob / markdown / text 四条分支一行都不用改。session id 是
+  必填的(`ArtifactDrawer` / `DeliveryPreviewModal` 都接收它), 因为归属判定要用它。
+
 ## 两条容易踩的约定
 
 - **`dist/` 不进 git**(`.gitignore` 已挡), 与 `spa-v2` 的既有做法一致。源码进 git,

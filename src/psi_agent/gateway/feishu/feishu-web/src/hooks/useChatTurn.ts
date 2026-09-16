@@ -21,6 +21,13 @@ interface SessionTurnState {
   sending: boolean;
   error: string;
   filePaths: Record<string, string>;
+  /**
+   * 这条会话**跑完过一轮**(含中途报错/停止 —— 那也是一轮结束了)。
+   *
+   * 任务总览用它把「刚回完」与「从没动过」分开: 只读 todo 的话两者都是空的, 界面上一律
+   * 显示「待开始 / 0%」。发新一条时会重置成 false。
+   */
+  settled: boolean;
 }
 
 const EMPTY_STATE: SessionTurnState = {
@@ -28,6 +35,7 @@ const EMPTY_STATE: SessionTurnState = {
   sending: false,
   error: "",
   filePaths: {},
+  settled: false,
 };
 
 function emptyState(): SessionTurnState {
@@ -112,6 +120,8 @@ export function useChatTurn(activeSessionId: string) {
         ...state,
         error: "",
         sending: true,
+        // 新一轮开始: 上一轮的「已落定」不代表当下, 状态回到运行中。
+        settled: false,
         messages: [
           ...state.messages,
           { role: "user", text: trimmed, ...(files.length ? { files: files.map((f) => f.name) } : {}) },
@@ -175,7 +185,7 @@ export function useChatTurn(activeSessionId: string) {
               if (empty) return { ...next, failed: true, failedReason: "incomplete" as const };
               return next;
             });
-            patch(sessionId, (state) => ({ ...state, sending: false }));
+            patch(sessionId, (state) => ({ ...state, sending: false, settled: true }));
           },
           onError: (err) => {
             if (abortRef.current[sessionId] === controller) abortRef.current[sessionId] = null;
@@ -186,7 +196,8 @@ export function useChatTurn(activeSessionId: string) {
               failed: true,
               failedReason: "error" as const,
             }));
-            patch(sessionId, (state) => ({ ...state, sending: false, error: err.message }));
+            // 报错/停止也算这一轮结束了 —— 任务总览据此显示「已完成」而不是永远「待开始」。
+            patch(sessionId, (state) => ({ ...state, sending: false, settled: true, error: err.message }));
           },
         },
         controller.signal,
@@ -202,6 +213,26 @@ export function useChatTurn(activeSessionId: string) {
     [activeSessionId, turns],
   );
 
+  /**
+   * 「哪条会话正在跑」与「哪条会话跑完过一轮」—— 任务总览/任务上下文要靠它显示**运行中**与
+   * **已完成**。只靠 todo 判不出来: 跑完一轮却没写过 todo 的会话(agent 直接回答/直接调工具)
+   * 在 todo 上恒为空, 于是「刚回完」和「从没动过」长得一模一样(C 端也是这么处理的: 它自己
+   * 维护 streaming / turnSettled 两个信号, 见 spa-v2 的 taskProgress.ts)。
+   *
+   * 两个都是**按会话**的: 后台跑着的会话不该让别的会话显示成运行中。
+   */
+  const sendingSessionId = useMemo(
+    () => Object.keys(turns).find((id) => turns[id]?.sending) || "",
+    [turns],
+  );
+  const settledBySession = useMemo(() => {
+    const out: Record<string, boolean> = {};
+    for (const [id, state] of Object.entries(turns)) {
+      if (state.settled) out[id] = true;
+    }
+    return out;
+  }, [turns]);
+
   return useMemo(
     () => ({
       messages: active.messages,
@@ -213,6 +244,8 @@ export function useChatTurn(activeSessionId: string) {
       stop,
       filePathOf,
       setFilePaths,
+      sendingSessionId,
+      settledBySession,
     }),
     [
       active.messages,
@@ -225,6 +258,8 @@ export function useChatTurn(activeSessionId: string) {
       setFilePaths,
       setMessages,
       stop,
+      sendingSessionId,
+      settledBySession,
     ],
   );
 }

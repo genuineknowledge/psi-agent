@@ -4,10 +4,13 @@ import { ArtifactFileBody } from "./artifact-file-body";
 
 /** 单份交付物的预览弹层。文件内容由 ArtifactFileBody 自己拉, 这里只管框和操作。 */
 export function DeliveryPreviewModal({
+  sessionId,
   name,
   path,
   onClose,
 }: {
+  /** 会话 id —— 预览走带鉴权的交付物路由, 归属判定要用它。 */
+  sessionId: string;
   name: string;
   path?: string;
   onClose: () => void;
@@ -39,7 +42,7 @@ export function DeliveryPreviewModal({
         </header>
         <div className="preview-drawer-body">
           {path ? (
-            <ArtifactFileBody path={path} name={name} />
+            <ArtifactFileBody sessionId={sessionId} path={path} name={name} />
           ) : (
             <div className="artifact-file-empty">这份交付物还没有本地路径, 无法预览</div>
           )}

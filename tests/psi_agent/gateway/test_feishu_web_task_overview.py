@@ -48,6 +48,9 @@ CHEST = SRC / "components" / "deliverables-chest.tsx"
 EXPORT_DIALOG = SRC / "components" / "export-history-dialog.tsx"
 CHAT_VIEW = SRC / "components" / "chat-view.tsx"
 NEW_TASK_PAGE = SRC / "components" / "new-task-page.tsx"
+ARTIFACT_FILE_BODY = SRC / "components" / "artifact-file-body.tsx"
+ARTIFACT_DRAWER = SRC / "components" / "artifact-drawer.tsx"
+USE_CHAT_TURN = SRC / "hooks" / "useChatTurn.ts"
 ROUTES_PY = FEISHU_WEB.parent / "_routes.py"
 
 
@@ -298,6 +301,10 @@ def test_org_session_is_shown_as_read_only() -> None:
         "``chat-view.tsx`` 没有在只读时把输入区换成说明 —— 用户会打完字才吃到一个 403。"
     )
     assert "readOnly={currentTask?.readOnly" in app, "``App.tsx`` 没有把只读标记传给 ChatView。"
+
+
+def test_peer_routes_are_registered_and_authorized() -> None:
+    """只读那一族的五条路由都在, 且共用同一份准入判定。"""
     routes = _code(ROUTES_PY)
 
     for suffix in ("todos", "todo-segments", "files", "export"):
@@ -334,6 +341,93 @@ def test_new_task_failure_is_visible() -> None:
     assert "error={createError || undefined}" in app, "``App.tsx`` 没有把错误传给新建页。"
     assert '{error && <div className="ht-error" role="alert">{error}</div>}' in page, (
         "``new-task-page.tsx`` 不显示建会话失败的原因 —— 用户看到的是「点了发送没反应」。"
+    )
+
+
+def test_running_and_settled_are_real_states() -> None:
+    """状态不能只由 todo 推: 跑完一轮却没写过 todo 的会话必须显示「运行中 / 已完成」。
+
+    实测反馈: 一条会话正常跑完(甚至产生了回复), 任务总览里仍是「待开始 / 0%」—— 因为
+    ``summary.total`` 恒为 0, 而旧实现把 total==0 一律读成「待开始」。C 端不是这么算的:
+    它另有两个信号(``streaming`` / ``turnSettled``, 见 spa-v2 的 ``taskProgress.ts``)。
+    """
+    model = _code(TASK_MODEL)
+
+    assert "streaming: boolean" in model and "turnSettled: boolean" in model, (
+        "``TaskSource`` 里没有 ``streaming`` / ``turnSettled`` —— 只靠 todo 判不出运行中与已完成。"
+    )
+    assert 'if (ctx.streaming) return "运行中";' in model, (
+        "``statusOf`` 不再给出「运行中」—— 列表上就没有任何标记能看出某条正在干活。"
+    )
+    assert 'if (!total) return ctx.turnSettled ? "已完成" : "待开始";' in model, (
+        "无 todo 的会话又被一律判成「待开始」了 —— 那正是「干完活还显示待开始」的来源。"
+    )
+    # 无 todo 轨道时不编造百分比: 运行中转圈, 落定才是 100%。
+    assert "return { progress: ctx.turnSettled ? 100 : 0, indeterminate: ctx.streaming };" in model, (
+        "``progressOf`` 对无 todo 的会话不再区分「运行中(不确定态)」与「已落定(100%)」。"
+    )
+    assert ': src.turnSettled\n      ? "done"' in model, "``buildTask`` 的 phase 不再看 ``turnSettled``。"
+    assert '"正在处理"' in model and '"本轮已完成"' in model, (
+        "无清单时的活动文案不是 C 端那套(正在处理 / 正在整理交付 / 本轮已完成 / 待继续)。"
+    )
+
+
+def test_todos_are_polled_while_a_turn_runs() -> None:
+    """回合进行中要**轮询**那条会话的 todo/子任务, 否则左侧任务上下文整轮都不动。
+
+    实测反馈: 「执行过程中一直待继续/0%, 做完才跳成已完成」。C 端为此专门有个 2.5 秒的
+    轮询(``HaiTunAgentWorkspace`` 里的注释就是「While Agent runs, poll todos so middle
+    step updates mid-turn」), 间隔取的是同一个值。
+    """
+    tasks = _code(USE_TASKS)
+    app = _code(APP_TSX)
+    turn = _code(USE_CHAT_TURN)
+
+    assert "window.setInterval(() => void refreshOne(sendingSessionId), 2500)" in tasks, (
+        "``useTasks`` 不再在回合进行中轮询那条会话的 todo —— 执行过程中左侧上下文不会更新。"
+    )
+    assert "void refreshOne(sendingSessionId);" in tasks, (
+        "按下发送后没有**立刻**拉一次 —— 第一次轮询要等 2.5 秒, 而工具的第一次写入往往在那之前。"
+    )
+    assert "sendingSessionId: turn.sendingSessionId" in app, "``App.tsx`` 没有把「哪条在跑」传给 useTasks。"
+    assert "sendingSessionId" in turn and "settledBySession" in turn, (
+        "``useChatTurn`` 没有暴露按会话的运行中/已落定信号。"
+    )
+    assert "settled: true" in turn, "回合结束时没有标记 settled —— 总览里的状态回不到「已完成」。"
+    assert "settled: false" in turn, "新一轮开始时没有清掉 settled —— 上一轮的结果会被当成本轮。"
+
+
+def test_settled_state_survives_a_reload() -> None:
+    """「跑完过一轮」要能从**历史**恢复: 只靠内存信号的话, 刷新页面就退回「待开始」。"""
+    app = _code(APP_TSX)
+    tasks = _code(USE_TASKS)
+
+    assert "replied = messages.some(" in app, (
+        "``App.tsx`` 不再从历史判断「有没有助手回复过」—— 刷新后状态会退回待开始。"
+    )
+    assert "deliverables[session.id]?.replied === true" in tasks, (
+        "``useTasks`` 没有用历史的 ``replied`` 兜底, 只信内存里的回合信号。"
+    )
+
+
+def test_deliverable_preview_uses_the_authenticated_route() -> None:
+    """预览不能走 ``/workspace/file`` —— 那条在云上/调试隧道里恒 404(实测「预览文件 404」)。"""
+    body = _code(ARTIFACT_FILE_BODY)
+    drawer = _code(ARTIFACT_DRAWER)
+    api = _code(API_TS)
+
+    assert "readDeliverable(sessionId, path)" in body, (
+        "``artifact-file-body.tsx`` 不再走带鉴权的交付物路由 —— 云上点开文件就是 404。"
+    )
+    assert "export async function readDeliverable(sessionId: string, path: string)" in api, (
+        "``api.ts`` 里没有 ``readDeliverable``。"
+    )
+    assert "fetchDeliverable(sessionId, path)" in api, "``readDeliverable`` 没走 ``fetchDeliverable`` 那条对等路由。"
+    assert "<ArtifactFileBody sessionId={sessionId}" in drawer, (
+        "``artifact-drawer.tsx`` 没有把 session id 传给预览 —— 交付物路由要它做归属校验。"
+    )
+    assert "readWorkspaceFile" not in api, (
+        "``api.ts`` 里还留着 ``readWorkspaceFile``(/workspace/file) —— 它在云上不可达, 留着只会被再次误用。"
     )
 
 

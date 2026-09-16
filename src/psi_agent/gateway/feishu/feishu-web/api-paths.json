@@ -103,11 +103,6 @@
       "source": "src/api.ts"
     },
     {
-      "method": "GET",
-      "path": "/workspace/file",
-      "source": "src/api.ts"
-    },
-    {
       "method": "POST",
       "path": "/workspace/reveal",
       "source": "src/api.ts"

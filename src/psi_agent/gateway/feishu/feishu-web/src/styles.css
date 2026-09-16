@@ -722,6 +722,18 @@ button {
   color: #b26a00;
 }
 
+/* 运行中 —— 蓝, 与「已完成」的绿、「待处理」的橙都分开: 它说的是「正在干活」, 不是结果。 */
+.ht-pill.running {
+  background: #e8f1ff;
+  color: #2b5fa8;
+}
+
+/* 待开始 —— 比中性色更淡: 它标的是「还没动」, 不该和「进行中」抢注意力。 */
+.ht-pill.idle {
+  background: #f2f3f5;
+  color: #8a9099;
+}
+
 /* ---------- chat view ---------- */
 .cend2-shell {
   height: 100%;

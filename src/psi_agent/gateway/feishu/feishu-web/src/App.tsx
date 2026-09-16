@@ -109,7 +109,7 @@ function AuthedApp({ userName }: { userName: string }) {
   const [showExportHistory, setShowExportHistory] = useState(false);
   const [contextCollapsed, setContextCollapsed] = useState(false);
   const [historyDeliverables, setHistoryDeliverables] = useState<
-    Record<string, { files: string[]; paths: Record<string, string> }>
+    Record<string, { files: string[]; paths: Record<string, string>; replied?: boolean }>
   >({});
   const [deliveriesRevision, setDeliveriesRevision] = useState(0);
   /** 置顶: 纯前端偏好(localStorage), 只影响排序与标记; 见 services/pinnedTasks.ts。 */
@@ -118,9 +118,17 @@ function AuthedApp({ userName }: { userName: string }) {
   const [queuedSends, setQueuedSends] = useState<Record<string, QueuedSend | null>>({});
 
   const sessions = useSessions();
-  const tasks = useTasks(sessions.sessions, sessions.titles, historyDeliverables, pinnedIds);
   const history = useSessionHistory(sessions.currentId);
   const turn = useChatTurn(sessions.currentId);
+  /*
+   * 任务总览/任务上下文要**实时**信号才能显示「运行中」, 并在执行过程中更新步骤:
+   * `sendingSessionId` 让那条会话的 todo 每 2.5 秒重拉一次, `settledBySession` 让
+   * 没有 todo 的会话在跑完一轮后显示「已完成」而不是永远「待开始」。
+   */
+  const tasks = useTasks(sessions.sessions, sessions.titles, historyDeliverables, pinnedIds, {
+    sendingSessionId: turn.sendingSessionId,
+    settledBySession: turn.settledBySession,
+  });
 
   // 走 ref 而不是直接读 state: 下面「回合结束就发排队那条」的 effect 只该在 sending 的
   // **下降沿**触发, 不该因为排队状态本身变化而重跑。
@@ -131,14 +139,22 @@ function AuthedApp({ userName }: { userName: string }) {
   useEffect(() => {
     let alive = true;
     void (async () => {
-      const next: Record<string, { files: string[]; paths: Record<string, string> }> = {};
+      const next: Record<string, { files: string[]; paths: Record<string, string>; replied: boolean }> = {};
       await Promise.all(
         sessions.sessions.map(async (session) => {
           try {
             const rows = await getSessionHistory(session.id);
             const { messages, filePaths } = mapHistory(rows);
             const files = Array.from(new Set(messages.flatMap((m) => m.files || [])));
-            next[session.id] = { files, paths: filePaths };
+            /*
+             * ``replied`` = 历史里已经有一条**有内容**的助手回复。
+             *
+             * 任务总览用它把「跑完过一轮」与「从没动过」分开 —— 只读 todo 的话两者都是空的,
+             * 界面上一律「待开始/0%」, 而用户明明看着它干完活(实测反馈)。它**持久**: 刷新
+             * 页面、换设备都在, 而本浏览器的回合信号(settledBySession)只在这次会话里有效。
+             */
+            const replied = messages.some((m) => m.role === "assistant" && m.text.trim().length > 0);
+            next[session.id] = { files, paths: filePaths, replied };
           } catch {
             // 没有历史/接口失败时这一项保持缺省, 不影响任务列表本身。
           }
@@ -646,6 +662,7 @@ function AuthedApp({ userName }: { userName: string }) {
 
       {artifactTask && (
         <ArtifactDrawer
+          sessionId={artifactTask.id}
           taskTitle={artifactTask.title}
           files={[...new Set([...artifactTask.files, ...artifactTask.newDeliverables])]}
           filePathOf={(name) =>
@@ -664,6 +681,7 @@ function AuthedApp({ userName }: { userName: string }) {
 
       {previewFile && (
         <DeliveryPreviewModal
+          sessionId={sessions.currentId}
           name={previewFile}
           path={turn.filePathOf(previewFile)}
           onClose={() => setPreviewFile("")}

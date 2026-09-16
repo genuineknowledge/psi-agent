@@ -19,12 +19,21 @@ import { buildTask, countMonthlyRuns, countTasks, filterTasks } from "../service
  *
  * ``pinnedIds`` 是纯前端偏好(见 ``services/pinnedTasks.ts``): 传进来只做两件事 ——
  * 排在最前、打 ``pinned`` 标记。它**不进后端**, 也不参与过滤计数。
+ *
+ * ``live`` 是回合的实时信号(来自 ``useChatTurn``):
+ *
+ * * ``sendingSessionId``: 哪条会话正在跑 → 那条的 todo/子任务**每 2.5 秒重拉一次**。
+ *   没有这一步, 左侧任务上下文就只在挂载与回合结束时更新 —— 表现是「执行过程中一直
+ *   待继续/0%, 任务做完了才跳成已完成」(实测反馈)。C 端是同一套做法, 间隔也一样。
+ * * ``settledBySession``: 哪条会话跑完过一轮 → 无 todo 的会话据此显示「已完成」而不是
+ *   「待开始」(见 ``taskModel.statusOf``)。
  */
 export function useTasks(
   sessions: SessionInfo[],
   titles: Record<string, string>,
-  deliverables: Record<string, { files: string[]; paths: Record<string, string> }> = {},
+  deliverables: Record<string, { files: string[]; paths: Record<string, string>; replied?: boolean }> = {},
   pinnedIds: string[] = [],
+  live: { sendingSessionId?: string; settledBySession?: Record<string, boolean> } = {},
 ) {
   const [todos, setTodos] = useState<Record<string, TodoSummary>>({});
   const [todoItems, setTodoItems] = useState<Record<string, SessionTodo[]>>({});
@@ -33,6 +42,7 @@ export function useTasks(
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [pendingRevision, setPendingRevision] = useState(0);
+  const sendingSessionId = live.sendingSessionId || "";
 
   useEffect(() => subscribePendingDeliveries(() => setPendingRevision((n) => n + 1)), []);
 
@@ -69,6 +79,39 @@ export function useTasks(
     void refresh();
   }, [refresh]);
 
+  /**
+   * 只重拉**一条**会话的 todo/子任务 —— 回合进行中的轮询用它。
+   *
+   * 不复用上面的 ``refresh``: 那个会把所有会话全打一遍(会话多时每 2.5 秒几十个请求),
+   * 而回合进行中真正会变的只有当前这条。
+   */
+  const refreshOne = useCallback(async (sessionId: string) => {
+    if (!sessionId) return;
+    const [todoResp, segs] = await Promise.all([
+      getSessionTodos(sessionId).catch(() => null),
+      listTodoSegments(sessionId).catch(() => [] as TodoSegmentSummary[]),
+    ]);
+    if (todoResp?.summary) {
+      setTodos((prev) => ({ ...prev, [sessionId]: todoResp.summary }));
+    }
+    setTodoItems((prev) => ({ ...prev, [sessionId]: todoResp?.todos ?? [] }));
+    setSegments((prev) => ({ ...prev, [sessionId]: segs }));
+  }, []);
+
+  /*
+   * 回合进行中: 每 2.5 秒重拉当前会话的 todo 与子任务, 并**立刻**拉一次。
+   *
+   * 立刻那一次不能省: 用户按下发送到第一次轮询之间有两秒多, 而「正在处理」这一步是靠
+   * 前端信号给出的(见 taskModel), todo 只是随后补上 —— 但工具的第一次写入往往就在那一刻
+   * 发生。间隔取 2.5s: 与 C 端 `HaiTuanAgentWorkspace` 的 todo 轮询一致, 再密就是白打请求。
+   */
+  useEffect(() => {
+    if (!sendingSessionId) return;
+    void refreshOne(sendingSessionId);
+    const timer = window.setInterval(() => void refreshOne(sendingSessionId), 2500);
+    return () => window.clearInterval(timer);
+  }, [sendingSessionId, refreshOne]);
+
   useEffect(() => {
     void listSummaries()
       .then(setSummaries)
@@ -88,6 +131,14 @@ export function useTasks(
        * 用户会以为文件没生成。
        */
       const files = [...new Set([...(deliverables[session.id]?.files ?? []), ...newDeliverables])];
+      /*
+       * 「跑完过一轮」有两个来源, 取或:
+       *   * 本浏览器里刚跑完(``settledBySession``) —— 刷新页面就没了;
+       *   * 历史里已经有助手回复(``deliverables[..].replied``) —— 持久, 重开也在。
+       * 两个都要: 只靠前者会让「昨天跑完的任务」重开后回到「待开始」, 只靠后者则刚发出去
+       * 还没写进历史的这一轮判不出来。
+       */
+      const settled = live.settledBySession?.[session.id] === true || deliverables[session.id]?.replied === true;
       return buildTask({
         session,
         title: titles[session.id] || "",
@@ -100,6 +151,8 @@ export function useTasks(
         fromIm: session.from_im === true,
         readOnly: session.read_only === true,
         pinned: pinnedSet.has(session.id),
+        streaming: session.id === sendingSessionId,
+        turnSettled: settled,
       });
     });
     /*
@@ -124,6 +177,8 @@ export function useTasks(
     deliverables,
     pendingRevision,
     pinnedIds,
+    sendingSessionId,
+    live.settledBySession,
   ]);
 
   const filtered = useMemo(() => filterTasks(tasks, filter, search), [tasks, filter, search]);
@@ -143,5 +198,7 @@ export function useTasks(
     segments,
     todoItems,
     refresh,
+    /** 回合进行中由轮询写入; 回合结束后 App 仍调 ``refresh`` 兜一次全量。 */
+    refreshOne,
   };
 }

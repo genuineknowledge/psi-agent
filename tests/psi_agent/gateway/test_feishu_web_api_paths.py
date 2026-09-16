@@ -119,7 +119,10 @@ def test_extract_is_not_fooled_by_nested_generics() -> None:
     # 聊天那条已从裸 `/sessions/{id}/chat` 换成带鉴权的 `/feishu/` 对等物(裸的那条无身份
     # 校验却能驱动 agent 执行工具), 归一判据跟着换 —— 它要的只是「模板插值变成 {param}」。
     assert "/feishu/sessions/{param}/chat" in paths, "模板字面量里的路径没被归一"
-    assert "/workspace/file" in paths, "带查询串的路径没被截掉 `?` 之后的部分"
+    # 带查询串那条的锚点也换过一次: 从前是 `/workspace/file`(交付物预览), 那条在云上不可达,
+    # 预览改走 `/feishu/sessions/{id}/files?path=` 之后锚点跟着走 —— 要测的从来不是某一条
+    # 具体路径, 而是「`?` 之后的部分不进路径」这件事。
+    assert "/feishu/sessions/{param}/files" in paths, "带查询串的路径没被截掉 `?` 之后的部分"
 
 
 def test_every_http_call_site_lives_in_a_scanned_file() -> None:

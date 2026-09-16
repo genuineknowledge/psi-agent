@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { readWorkspaceFile } from "../api";
+import { readDeliverable } from "../api";
 import { decodeBase64Text, mimeOf, previewKindOf } from "../services/filePreview";
 import { renderBlobPreview } from "../services/blobPreview";
 import { renderMarkdownHtml } from "./markdown";
@@ -45,13 +45,16 @@ function BlobPreviewHost({ name, data }: { name: string; data: string }) {
 }
 
 /**
- * 单个交付物的内容区。数据走 ``GET /workspace/file`` (后端已存在)。
+ * 单个交付物的内容区。数据走 ``GET /feishu/sessions/{id}/files?path=``(带鉴权的对等路由)。
  *
- * 注意后端**总是**返回 ``{name, data, path}`` 且 ``data`` 是 base64 (见
- * ``_workspace_manager.read_file``) —— 没有「原始字节」这种响应形式, 所以图片走 data URL,
- * 文本要先解 base64 再显示; 二进制格式由 blobPreview.ts 动态渲染。
+ * 后端**总是**返回文件原始字节(Content-Disposition 附件), 前端转成 base64 —— 与
+ * ``/workspace/file`` 的 ``data`` 字段同形, 所以图片走 data URL、文本先解 base64、
+ * 二进制由 ``blobPreview.ts`` 动态渲染, 三种分支都不用改。
+ *
+ * 为什么不用 ``/workspace/file``: 那条归 desktop 面且不在云上反代白名单里, 预览点开必 404
+ * (实测反馈)。对等路由要 session id 才能判定归属, 所以它是一路传下来的必填项。
  */
-export function ArtifactFileBody({ path, name }: { path: string; name: string }) {
+export function ArtifactFileBody({ sessionId, path, name }: { sessionId: string; path: string; name: string }) {
   const [data, setData] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -59,18 +62,26 @@ export function ArtifactFileBody({ path, name }: { path: string; name: string })
 
   useEffect(() => {
     let alive = true;
-    if (!path || kind === "none") {
+    if (!sessionId || !path || kind === "none") {
       setData("");
       return;
     }
     setLoading(true);
     setError("");
-    readWorkspaceFile(path)
-      .then((f) => {
-        if (alive) setData(f.data || "");
+    readDeliverable(sessionId, path)
+      .then((base64) => {
+        if (alive) setData(base64 || "");
       })
       .catch((err: unknown) => {
-        if (alive) setError(err instanceof Error ? err.message : String(err));
+        if (!alive) return;
+        const message = err instanceof Error ? err.message : String(err);
+        // 「不是本会话声明过的交付物」= 文件刚交付、历史行还没写进去。说清楚, 别让用户
+        // 以为文件坏了(判据在后端, 见 _session_deliverable_paths)。
+        setError(
+          message.includes("not a deliverable")
+            ? "这个文件刚交付, 还没写进会话记录, 稍后重试或直接下载。"
+            : message,
+        );
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -78,7 +89,7 @@ export function ArtifactFileBody({ path, name }: { path: string; name: string })
     return () => {
       alive = false;
     };
-  }, [path, kind]);
+  }, [sessionId, path, kind]);
 
   if (kind === "none") return <div className="artifact-file-empty">该格式暂不支持预览</div>;
   if (loading) return <div className="artifact-file-empty">加载中…</div>;
