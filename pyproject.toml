@@ -161,12 +161,13 @@ exclude = [
 ]
 
 [[tool.ty.overrides]]
-# 这些测试文件刻意在**函数体内**做裸名导入(``tencent_meeting`` / ``_card_dsl`` 等), 因为它们
+# 这些测试文件/工具刻意在**函数体内**做裸名导入(``tencent_meeting`` / ``_card_dsl`` 等), 因为它们
 # 只有靠文件顶部往 ``sys.path`` 插入 ``agents/feishu/tools`` 才找得到, 而且必须晚于 ``layers``
 # fixture 的 monkeypatch。裸名解析不到是预期的, 不是缺陷。
 # 不用 ``tool.ty.environment.extra-paths`` 放开: 实测把 ``agents/feishu/tools`` 加进去后,
 # ty 会顺着裸名继续进那些模块, 诊断从 20 涨到 96 —— 换来一堆与本处无关的噪音。
 include = [
+    "agents/desktop/tools/skill_manage.py",
     "tests/agents/feishu/test_skill_path_layering.py",
     "tests/agents/feishu/test_skill_manage.py",
     "agents/feishu/tests/test_card_dsl_template_layering.py",
