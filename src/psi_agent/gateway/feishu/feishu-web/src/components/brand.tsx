@@ -11,9 +11,10 @@ export function statusPill(status: string) {
   return <span className={`ht-pill ${cls}`}>{status}</span>;
 }
 
-export function statCell(num: string, label: string) {
+/** ``title`` 用来交代这一格的口径 —— 四个数字都是算出来的, 悬停能看清怎么算的。 */
+export function statCell(num: string, label: string, title?: string) {
   return (
-    <div className="ht-stat">
+    <div className="ht-stat" title={title}>
       <strong>{num}</strong>
       <em>{label}</em>
     </div>

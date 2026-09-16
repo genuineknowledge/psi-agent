@@ -49,7 +49,32 @@
     },
     {
       "method": "GET",
+      "path": "/feishu/sessions/{param}/export",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/feishu/sessions/{param}/files",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "GET",
       "path": "/feishu/sessions/{param}/history",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/feishu/sessions/{param}/todo-segments",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/feishu/sessions/{param}/todo-segments/{param}",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/feishu/sessions/{param}/todos",
       "source": "src/api.ts"
     },
     {
@@ -65,21 +90,6 @@
     {
       "method": "DELETE",
       "path": "/sessions/{param}",
-      "source": "src/api.ts"
-    },
-    {
-      "method": "GET",
-      "path": "/sessions/{param}/todo-segments",
-      "source": "src/api.ts"
-    },
-    {
-      "method": "GET",
-      "path": "/sessions/{param}/todo-segments/{param}",
-      "source": "src/api.ts"
-    },
-    {
-      "method": "GET",
-      "path": "/sessions/{param}/todos",
       "source": "src/api.ts"
     },
     {

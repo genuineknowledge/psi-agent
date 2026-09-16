@@ -59,7 +59,18 @@ PROBE_SENTINEL = "__psi_path_probe__"
 
 #: 发 HTTP 的构造。`http_call_sites()` 拿它扫全部前端源码, 出现在 `SOURCE_FILES`
 #: 之外就说明清单的取材范围已经不够了。
-_HTTP_CONSTRUCTS = ("fetch", "EventSource", "XMLHttpRequest", "sendBeacon", "axios")
+#:
+#: 每一项都写成**调用形状**(`fetch(`, `new EventSource(` …), 不是光秃秃的名字: 本产品里
+#: 有个工具就叫 ``fetch``, 进度文案那张表里写着字符串 ``"fetch"`` —— 只匹配词本身的话
+#: 那种一行就被报成「这里有 HTTP 调用」, 于是这条判据变成永远红的噪音。实测踩过
+#: (`services/turnProgress.ts` 的工具名映射)。
+_HTTP_CONSTRUCTS = (
+    r"fetch\s*\(",
+    r"new\s+EventSource\s*\(",
+    r"new\s+XMLHttpRequest\s*\(",
+    r"navigator\s*\.\s*sendBeacon\s*\(",
+    r"axios\s*[.(]",
+)
 
 _CALLEE_RE = re.compile(r"\b(fetch|requestJson)\b")
 
@@ -241,10 +252,13 @@ def http_call_sites(root: Path | None = None) -> list[tuple[str, int, str]]:
     `extract_paths` 只读 `SOURCE_FILES` 两个文件。有人在第三个文件里直接 `fetch(`,
     或换用 `EventSource` / `axios`, 提取器不会报错 —— 它只是少提一条, 于是清单齐全、
     测试全绿、云上照旧 404。这个函数是那一层的判据取材。
+
+    判据是 `_HTTP_CONSTRUCTS` 里那些**调用形状**, 不是光秃秃的构造名 —— 理由见那里的注释。
+    「构造名」这一列因此是匹配到的写法本身(`fetch(`, `axios.` …), 读日志时够定位就行。
     """
     base = root or _FEISHU_WEB
     src = base / "src"
-    pattern = re.compile(r"\b(" + "|".join(_HTTP_CONSTRUCTS) + r")\b")
+    pattern = re.compile("|".join(_HTTP_CONSTRUCTS))
     hits = []
     for path in sorted(src.rglob("*")):
         if path.suffix not in (".ts", ".tsx") or not path.is_file():
@@ -255,7 +269,7 @@ def http_call_sites(root: Path | None = None) -> list[tuple[str, int, str]]:
             if code.lstrip().startswith("*"):
                 continue  # 块注释正文
             for match in pattern.finditer(code):
-                hits.append((rel, lineno, match.group(1)))
+                hits.append((rel, lineno, match.group(0)))
     return hits
 
 

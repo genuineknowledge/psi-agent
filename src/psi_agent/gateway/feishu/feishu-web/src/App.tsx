@@ -5,7 +5,9 @@ import { ArtifactDrawer } from "./components/artifact-drawer";
 import { ChatTopbar } from "./components/chat-topbar";
 import { ChatView } from "./components/chat-view";
 import { DesktopShell, type ShellNav } from "./components/desktop-shell";
+import { DeliverablesChest, type ChestItem } from "./components/deliverables-chest";
 import { DeliveryPreviewModal } from "./components/delivery-preview-modal";
+import { ExportHistoryDialog, type ExportableSession } from "./components/export-history-dialog";
 import { NewDeliveriesPanel } from "./components/new-deliveries-panel";
 import { NewTaskPage } from "./components/new-task-page";
 import { TaskFocusDetails } from "./components/task-focus-details";
@@ -101,6 +103,8 @@ function AuthedApp({ userName }: { userName: string }) {
   const [artifactFile, setArtifactFile] = useState("");
   const [previewFile, setPreviewFile] = useState("");
   const [showNewDeliveries, setShowNewDeliveries] = useState(false);
+  const [showChest, setShowChest] = useState(false);
+  const [showExportHistory, setShowExportHistory] = useState(false);
   const [contextCollapsed, setContextCollapsed] = useState(false);
   const [historyDeliverables, setHistoryDeliverables] = useState<
     Record<string, { files: string[]; paths: Record<string, string> }>
@@ -186,6 +190,51 @@ function AuthedApp({ userName }: { userName: string }) {
     [tasks.tasks],
   );
 
+  /**
+   * 宝箱内容 —— 全部会话的交付物(存量, 含历史), 按会话分组在组件里做。
+   *
+   * 路径优先取历史恢复的那份(``historyDeliverables``), 当前会话再用流式里刚收到的路径兜底:
+   * 刚交付、还没来得及写进历史的文件只在流式那份里有 path, 少了这个兜底它就会出现在宝箱里
+   * 却点不动。两条都没有的文件保留在列表里、标记为不可下载 —— 见 ChestItem.path 的说明。
+   */
+  const chestItems = useMemo<ChestItem[]>(() => {
+    const out: ChestItem[] = [];
+    const seen = new Set<string>();
+    for (const task of tasks.tasks) {
+      const names = [...new Set([...task.files, ...task.newDeliverables])];
+      const newOnes = new Set(task.newDeliverables);
+      for (const name of names) {
+        const path =
+          historyDeliverables[task.id]?.paths[name] ??
+          (task.id === sessions.currentId ? turn.filePathOf(name) : undefined) ??
+          "";
+        const key = `${task.id}\u0000${path || name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({
+          sessionId: task.id,
+          sessionTitle: task.title,
+          name,
+          path,
+          isNew: newOnes.has(name),
+        });
+      }
+    }
+    return out;
+  }, [tasks.tasks, historyDeliverables, sessions.currentId, turn.filePathOf]);
+
+  /** 导出对话历史用的列表 —— 会话列表本身就是服务端按身份过滤后的可见集。 */
+  const exportableSessions = useMemo<ExportableSession[]>(
+    () =>
+      tasks.tasks.map((t) => ({
+        id: t.id,
+        title: t.title,
+        fromIm: t.fromIm,
+        updated: t.updated,
+      })),
+    [tasks.tasks],
+  );
+
   const openChat = useCallback(
     (id: string) => {
       sessions.setCurrentId(id);
@@ -194,6 +243,19 @@ function AuthedApp({ userName }: { userName: string }) {
     },
     [sessions],
   );
+
+  /*
+   * 换会话就把「正在看哪段历史子任务」收回当前清单。
+   *
+   * ``selectedSegment`` 全局只有一个 id, 而它属于**上一个**会话: 从任务总览里点另一条
+   * (``onSelect`` 直接是 ``setCurrentId``, 不走 ``openChat``)、或在新建页建好会话切进来时,
+   * 它不会被重置, 于是左侧面板一直停在只读的历史态 (``TaskFocusDetails`` 的 ``viewingHistory``),
+   * 表现就是「进度永远不会更新」。``openChat`` / ``createFromDraft`` 里也各重置了一次:
+   * 那两处是为了**当帧**就切回当前清单, 不必等这次 effect 跑完闪一下历史。
+   */
+  useEffect(() => {
+    setSelectedSegment("live");
+  }, [sessions.currentId]);
 
   const handleNewTask = useCallback(async () => {
     setView("new-task");
@@ -399,6 +461,10 @@ function AuthedApp({ userName }: { userName: string }) {
       if (event.key !== "Escape") return;
       if (previewFile) {
         setPreviewFile("");
+      } else if (showChest) {
+        setShowChest(false);
+      } else if (showExportHistory) {
+        setShowExportHistory(false);
       } else if (showNewDeliveries) {
         setShowNewDeliveries(false);
       } else if (artifactTaskId) {
@@ -408,7 +474,7 @@ function AuthedApp({ userName }: { userName: string }) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [previewFile, showNewDeliveries, artifactTaskId]);
+  }, [previewFile, showNewDeliveries, showChest, showExportHistory, artifactTaskId]);
 
   return (
     <DesktopShell nav={view === "tasks" ? "tasks" : "chat"} userName={userName} onNavigate={navigate}>
@@ -419,6 +485,7 @@ function AuthedApp({ userName }: { userName: string }) {
             tasks={tasks.tasks}
             filtered={tasks.filtered}
             counts={tasks.counts}
+            monthlyRuns={tasks.monthlyRuns}
             selected={currentTask}
             filter={tasks.filter}
             search={tasks.search}
@@ -430,6 +497,8 @@ function AuthedApp({ userName }: { userName: string }) {
             onOpenChat={openChat}
             onOpenNewDeliverables={() => setShowNewDeliveries(true)}
             newDeliveryCount={newDeliveryTasks.length}
+            onOpenChest={() => setShowChest(true)}
+            onExportHistory={() => setShowExportHistory(true)}
             onNewTask={() => void handleNewTask()}
           />
         </>
@@ -543,6 +612,12 @@ function AuthedApp({ userName }: { userName: string }) {
           }}
           onClose={() => setShowNewDeliveries(false)}
         />
+      )}
+
+      {showChest && <DeliverablesChest items={chestItems} onClose={() => setShowChest(false)} />}
+
+      {showExportHistory && (
+        <ExportHistoryDialog sessions={exportableSessions} onClose={() => setShowExportHistory(false)} />
       )}
 
       {artifactTask && (

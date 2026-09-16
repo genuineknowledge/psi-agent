@@ -138,6 +138,25 @@ def test_every_http_call_site_lives_in_a_scanned_file() -> None:
     )
 
 
+def test_http_construct_scan_matches_calls_not_bare_words(tmp_path: Path) -> None:
+    """判据是**调用形状**, 不是构造名本身 —— 否则这条判据永远是红的。
+
+    本产品有个工具就叫 ``fetch``: ``services/turnProgress.ts`` 的工具名映射里写着字符串
+    ``"fetch"``。只按 ``\\bfetch\\b`` 扫的话, 那一行会被报成「这里在发 HTTP 请求」, 而它
+    与网络毫无关系 —— 判据于是变成噪音, 真漂移混在里面没人看。实测踩过。
+
+    两个方向都钉: 字符串不算, 真调用算。
+    """
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "labels.ts").write_text('if (key === "fetch") return "拉取网页";\n', encoding="utf-8")
+    (src / "sneaky.ts").write_text("const r = await fetch('/sessions/' + id);\n", encoding="utf-8")
+
+    hits = {(f, line) for f, line, _ in _M.http_call_sites(tmp_path)}
+    assert ("src/labels.ts", 1) not in hits, '字符串 "fetch" 被当成了 HTTP 调用'
+    assert ("src/sneaky.ts", 1) in hits, "真调用没被扫出来 —— 这条判据已经失效"
+
+
 def test_manifest_paths_are_absolute_and_parameterized() -> None:
     """形状判据: 必须是绝对路径, 不带查询串, 参数写成 `{...}`。"""
     for entry in _M.load_manifest():

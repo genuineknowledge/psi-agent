@@ -139,6 +139,19 @@ AI 落进 `$DEV_APPDATA/state/latest.json` 后就**持久**了 —— 之后每�
 **跨身份隔离在真实飞书环境下的表现本地测不到** —— 那要真 open_id、真 `tt.requestAccess` 换回
 来的 code、真容器拓扑。本地能验的只有用例层面那三条。
 
+### 云上还剩两条裸路由没换(已报备, 未做)
+
+路径清单里另有 5 条仍打**骨架的裸路由**, 在云上过不了白名单, 表现与上面那族一样是静默失败:
+
+| 路径 | 云上表现 |
+| --- | --- |
+| `POST /titles` · `POST /titles/generate` | 补标题失败 → 列表里一直是「未命名任务」 |
+| `DELETE /sessions/{id}` | 删除按钮点了没反应 |
+
+没跟着换的原因是它们**不是只读**: 补标题要在服务端跑一次模型, 删除要先把跨进程状态摘干净
+(骨架的 delete 逻辑目前在 `server.py` 里, 抽出来才能给对等路由复用)。共享会话那条也已经
+不允许删。要做的话是**单独一轮**, 别顺手塞进只读那一族 —— 那是把写路径混进已经审过的只读面。
+
 ## 常用命令
 
 ```bash
@@ -247,6 +260,31 @@ gateway 容器。本地是浏览器 → vite dev server(proxy) → gateway, **�
 | 挂了哪几面 | 文档里的起法是 `--gateway feishu` **单挂** | `launch-gateway.sh` **两面全挂** | 能验, 但**默认起法与云上不同**, 见下面那条 |
 | 跨身份隔离 | 造不出第二个身份(旁路只认一个环境变量) | 真实多用户 | **不能**, 靠 `test_feishu_identity.py` + 云上真机 |
 
+### 会话级只读一族走 `/feishu/sessions/{id}/…`, 不打骨架的裸路由
+
+任务进度、历史子任务、交付物下载、对话历史导出这四件事, 前端打的是**带鉴权的对等物**
+(`_routes.py` 里的 `_web_todos` / `_web_todo_segments` / `_web_todo_segment` /
+`_web_download_file` / `_web_export_history`), 不打骨架的 `/sessions/{id}/todos` 那一族。
+
+两条理由, 任一条都足够:
+
+- **云上**那几条不在 `oauth-proxy.py` 的 `ALLOWED_PATHS` 里, 恒 404(而前端只显示一个
+  笼统的失败)。表现是左侧任务上下文永远停在「待继续」、进度恒 0。
+- **本地**它们一行鉴权都没有 —— 下载那条与 `/workspace/file` 一样能按任意路径读服务器上的
+  文件。对等物走 cookie 身份 + 归属校验, 且落在**已在白名单里的** `/feishu/sessions/`
+  前缀下, 所以加这几条**不需要动 oauth-proxy**。
+
+下载(`/feishu/sessions/{id}/files?path=`)的边界是**那条会话自己在 history 里声明过的文件**
+(`sends` / `recvs` / `files[].path`), 不是"落在 workspace 下" —— 交付物完全可能落在 workspace
+之外(agent 写到别的目录、用户上传的附件被 channel 下到 `~/Downloads/.psi/`)。归属校验 +
+这份白名单已经封住了越权面。行为判据在 `tests/integration/test_feishu_web_peer_routes.py`
+(未登录 401 / 别人的 403 / 不存在 404 / 非本会话交付物 403 / 缺 `path` 400 / 导出与磁盘逐字节相同)。
+
+导出(`/feishu/sessions/{id}/export`)回的是磁盘上的**原始 jsonl**, 不是 `/history` 那种投影:
+投影丢了工具调用参数与 `thinking_ms`, 用户拿回去与原始记录对不上。前端那一侧对应
+「宝箱」(挑交付物下载)与「导出对话历史」(挑会话下 jsonl)两个入口 —— 它们**不是同一件事**,
+所以是两个按钮。
+
 ### `/workspace/*` 归 desktop 那面 —— 单挂时本地就 404
 
 `GET /workspace/file` 与 `POST /workspace/reveal`(交付物抽屉在打)的 handler 住在
@@ -269,7 +307,7 @@ psi-agent gateway --gateway desktop feishu --listen http://127.0.0.1:8765
 
 ## 路径清单: 挡「本地全通、云上全 404」
 
-前端会打的后端路径有一份**从源码提取**的清单: `api-paths.json`(20 条), 生成与消费都走
+前端会打的后端路径有一份**从源码提取**的清单: `api-paths.json`(22 条), 生成与消费都走
 `scripts/feishu_web_paths.py`。
 
 **不人手维护**是关键: 前端加一个端点没人会想起来更新清单, 而漂移的表现恰好就是云上 404。
@@ -288,7 +326,9 @@ python scripts/feishu_web_paths.py --print-shell > check-feishu-web-paths.sh
   不会去核对白名单的那条)。
 - 有人在**第三个文件**里直接 `fetch(` → 红。提取器只读 `src/api.ts` 与
   `src/services/chatStream.ts`, 多一个发请求的文件它不报错、只是少提一条: 清单齐全、测试
-  全绿、云上照旧 404。
+  全绿、云上照旧 404。判据匹配的是**调用形状**(`fetch(` / `new EventSource(` / `axios.`),
+  不是构造名本身 —— 本产品有个工具就叫 `fetch`, 进度文案表里写着字符串 `"fetch"`, 只认词
+  会让这条判据永远是红的噪音。
 
 **判据是路由存在性, 不是状态码为 200。** `/feishu/*` 一族未登录是 **401**, 写成 `== 200`
 会因为没带身份而假红; 拿哨兵 id 打 `/sessions/{id}/todos` 回的是 handler 自己判出的 404
@@ -400,6 +440,25 @@ FAIL 的行就是要和 `oauth-proxy.py` 的 `ALLOWED_PATHS` 逐条比对的路�
 AI 由部署者用 `--feishu-ai-id` 定死、身份由飞书免登给定、workspace 由后端派生且前端不传。
 `test_feishu_web_tob_parity.py` 的最后一条判据就是「这些文件不许出现」—— 要把它们做进来, 那是新的
 产品决定, 不是「补功能」。
+
+## 任务总览: 四件事的结论(2026-09-16)
+
+判据在 `tests/psi_agent/gateway/test_feishu_web_task_overview.py`, 逐条对着这里的结论:
+
+- **首屏落在与机器人共用的那条会话上**, 且它在列表里排最前(`from_im` 优先; 用户自己置顶的
+  仍压过它)。用户从飞书工作台点进来, 想接着说的是刚才在 IM 里那句, 而 `list[0]` 常常是网页
+  新建的别的会话。
+- **新建对话不继承机器人那条的历史** —— 那是 bug, 不是设计。后端给新会话发新 uuid、写新
+  jsonl, 不复制任何东西; 前端 `useSessionHistory` 曾把上一次的结果留在 state 里, 切会话那一瞬
+  被铺进新会话, 而真正的空结果回来时又被 `messages.length > 0` 守卫挡住。修法是让历史行
+  **与它所属的会话 id 绑在一起存**(陈旧数据在结构上不可见), 不是靠 effect 先后。
+- **左下「任务上下文」的进度能到了** —— 根因是端点(见上一节), 另有两处同源毛病一并修了:
+  换会话时 `selectedSegment` 必须收回 `live`(否则面板一直停在只读历史态), 交付物列表要把
+  「本轮流式刚收到、还没写进 history」的那几个一起算(否则刚交付完的会话显示「0 份」而右侧
+  抽屉显示 1 份)。
+- **四个统计口径**都是真算出来的: 进行中 / 待处理 / 新交付物 / **本月执行**(本自然月跑过
+  todo 的会话数, 按会话去重 —— 口径写在 `taskModel.countMonthlyRuns`)。此前那一格写死
+  `"128"`, 而「导出」是个没有 `onClick` 的死按钮。
 
 ## 两条容易踩的约定
 

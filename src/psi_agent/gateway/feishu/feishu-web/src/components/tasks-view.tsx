@@ -1,4 +1,4 @@
-import { Check, Download, MessageCircle, Pin, Plus, Search, Trash2, Workflow } from "lucide-react";
+import { Check, Download, MessageCircle, Package, Pin, Plus, Search, Trash2, Workflow } from "lucide-react";
 import type { Task } from "../types";
 import { statCell, statusPill } from "./brand";
 import { TreasureVisual } from "./treasure";
@@ -7,6 +7,8 @@ export interface TasksViewProps {
   tasks: Task[];
   filtered: Task[];
   counts: Record<string, number>;
+  /** 本月执行过的会话数 —— 口径见 services/taskModel.ts 的 countMonthlyRuns。 */
+  monthlyRuns: number;
   selected?: Task;
   filter: string;
   search: string;
@@ -19,28 +21,44 @@ export interface TasksViewProps {
   onOpenChat: (id: string) => void;
   onOpenNewDeliverables: () => void;
   newDeliveryCount: number;
+  /** 打开宝箱: 全部会话的交付物, 里面挑着下载。 */
+  onOpenChest: () => void;
+  /** 导出对话历史: 勾选会话, 下载原始 jsonl。 */
+  onExportHistory: () => void;
   onNewTask: () => void;
 }
 
 export function TasksView(props: TasksViewProps) {
-  const { filtered, counts, selected, filter, search, onFilter, onSearch, onSelect, onDelete, onTogglePin, onOpenChat, onOpenNewDeliverables, newDeliveryCount, onNewTask } = props;
+  const { filtered, counts, monthlyRuns, selected, filter, search, onFilter, onSearch, onSelect, onDelete, onTogglePin, onOpenChat, onOpenNewDeliverables, newDeliveryCount, onOpenChest, onExportHistory, onNewTask } = props;
   const filters = [["all", "全部"], ["working", "进行中"], ["attention", "待处理"], ["done", "已完成"]] as const;
+  const deliverableTotal = props.tasks.reduce((sum, t) => sum + (t.files?.length || 0), 0);
   return (
     <>
       <div className="ht-dt-head">
         <div><h2>任务总览</h2><p>跨群任务与交付物统一管理</p></div>
         <div className="ht-actions">
-          <button type="button" className="ht-btn"><Download size={14} />导出</button>
+          {/*
+            宝箱与「导出对话历史」是两回事, 所以是两个按钮:
+            - 宝箱装着**全部**会话的交付物, 进去挑着下载(原先那个位置是个没有 onClick 的
+              死按钮, 点了什么都不发生)。
+            - 导出对话历史导的是对话本身(原始 jsonl), 与交付物无关。
+          */}
+          <button type="button" className="ht-btn" onClick={onOpenChest} title="打开宝箱：全部会话的交付物，挑着下载">
+            <Package size={14} />宝箱{deliverableTotal > 0 ? ` ${deliverableTotal}` : ""}
+          </button>
+          <button type="button" className="ht-btn" onClick={onExportHistory} title="导出对话历史：勾选会话，下载原始 jsonl">
+            <Download size={14} />导出对话历史
+          </button>
           <button type="button" className="ht-btn primary" onClick={onNewTask}><Plus size={14} />新建任务</button>
         </div>
       </div>
       <div className="ht-stat-row">
-        {statCell(String(counts.working), "进行中")}
-        {statCell(String(counts.attention), "待处理")}
-        <button type="button" className="ht-stat ht-stat-action" onClick={onOpenNewDeliverables}>
+        {statCell(String(counts.working), "进行中", "todo 汇总里还有未完成项的会话数")}
+        {statCell(String(counts.attention), "待处理", "有 todo 但没有任何一项在推进的会话数")}
+        <button type="button" className="ht-stat ht-stat-action" onClick={onOpenNewDeliverables} title="本轮新收到、还没打开过的交付物">
           <TreasureVisual state={newDeliveryCount > 0 ? "ready" : "none"} size="compact" /><strong>{newDeliveryCount}</strong><em>新交付物</em>
         </button>
-        {statCell("128", "本月执行")}
+        {statCell(String(monthlyRuns), "本月执行", "本自然月内跑过 todo 的会话数（按会话去重，同一会话多次只算一次）")}
       </div>
       <div className="ht-task-toolbar">
         <div className="ht-filter-chips">
@@ -129,6 +147,8 @@ export function TasksView(props: TasksViewProps) {
                 <div className="ht-section-label"><span>新交付物</span><em>{newDeliveryCount}</em></div>
                 <p>点击统计数字或下方按钮，从右侧打开待确认的新交付物。</p>
                 <button type="button" className="ht-btn soft" onClick={onOpenNewDeliverables}><TreasureVisual state={newDeliveryCount > 0 ? "ready" : "none"} size="mini" />打开新交付物</button>
+                {/* 新交付物只装「这一轮新收到的」, 想翻旧的得进宝箱 —— 全部会话的交付物都在那里。 */}
+                <button type="button" className="ht-btn soft" onClick={onOpenChest}><Package size={13} />打开宝箱（全部交付物）</button>
               </div>
             </>
           )}

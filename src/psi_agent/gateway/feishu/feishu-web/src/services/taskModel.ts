@@ -160,3 +160,35 @@ export function countTasks(tasks: Task[]): Record<string, number> {
     done: tasks.filter((t) => t.status === "已完成").length,
   };
 }
+
+/**
+ * 「本月执行」—— 本自然月内**跑过**的会话数。
+ *
+ * 定义: 某个会话只要有一段 todo 段是本月创建或更新的, 就算它本月执行过一次。按会话去重,
+ * 所以同一会话本月跑十次仍只算一次 —— 这格是「有几天在干活」的规模感, 不是调用次数。
+ *
+ * 取数用的是 ``todo-segments`` 的时间戳, 这是前端唯一能拿到的「什么时候跑过」: history 行
+ * 里没有时间字段, ``SessionInfo`` 也不下发。代价是**全程没写过 todo 的会话不计入** ——
+ * 那种会话在列表里也永远停在「待开始」, 两处口径一致。
+ *
+ * 传 ``now`` 是为了可测: 纯函数里不藏 ``new Date()``。
+ */
+export function countMonthlyRuns(
+  segmentsBySession: Record<string, TodoSegmentSummary[]>,
+  now: Date = new Date(),
+): number {
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  let count = 0;
+  for (const list of Object.values(segmentsBySession)) {
+    const hit = (list || []).some((segment) => {
+      const raw = segment.updated_at || segment.created_at;
+      if (!raw) return false;
+      const at = new Date(raw);
+      if (Number.isNaN(at.getTime())) return false;
+      return at.getFullYear() === year && at.getMonth() === month;
+    });
+    if (hit) count += 1;
+  }
+  return count;
+}

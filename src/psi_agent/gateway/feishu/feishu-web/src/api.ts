@@ -232,14 +232,20 @@ export async function setTitle(id: string, title: string): Promise<void> {
 }
 
 // ---- todo (任务进度的数据源) -------------------------------------------
+//
+// **走带鉴权的 ``/feishu/`` 对等物, 不是裸 ``/sessions/...``**: 裸那三条在云端被反代
+// 白名单挡着(它们一行鉴权都没有, 不该放行), 于是网页应用的「任务进度 / 执行步骤 /
+// 当前阶段 / 历史子任务」在正式环境里恒为空 —— 表现就是左侧任务上下文永远停在
+// 「待继续」、进度恒为 0。带鉴权那条落在 ``/feishu/sessions/`` 前缀下, 该前缀本来
+// 就在白名单里。
 
 export async function getSessionTodos(sessionId: string): Promise<SessionTodosResponse> {
-  return requestJson<SessionTodosResponse>(`/sessions/${encodeURIComponent(sessionId)}/todos`);
+  return requestJson<SessionTodosResponse>(`/feishu/sessions/${encodeURIComponent(sessionId)}/todos`);
 }
 
 export async function listTodoSegments(sessionId: string): Promise<TodoSegmentSummary[]> {
   const data = await requestJson<TodoSegmentSummary[] | { value?: TodoSegmentSummary[] }>(
-    `/sessions/${encodeURIComponent(sessionId)}/todo-segments`,
+    `/feishu/sessions/${encodeURIComponent(sessionId)}/todo-segments`,
   );
   return asList(data);
 }
@@ -249,8 +255,37 @@ export async function getTodoSegment(
   segmentId: string,
 ): Promise<TodoSegmentDetail> {
   return requestJson<TodoSegmentDetail>(
-    `/sessions/${encodeURIComponent(sessionId)}/todo-segments/${encodeURIComponent(segmentId)}`,
+    `/feishu/sessions/${encodeURIComponent(sessionId)}/todo-segments/${encodeURIComponent(segmentId)}`,
   );
+}
+
+// ---- 交付物下载 / 对话历史导出（宝箱与导出用）---------------------------
+//
+// 两条都用 ``fetch`` 取回 **Blob** 再由前端触发保存, 而不是丢一个 ``<a href>`` 让浏览器
+// 直接导航: 勾选多个时要能逐个取、逐个存(没有打包需求就不引入 zip 依赖), 失败也能给出
+// 可读的错误, 而不是让用户对着一个静默下载的空白页。
+
+/** 取回一个交付物的字节。**只允许该会话历史里声明过的文件** —— 边界在后端。 */
+export async function fetchDeliverable(sessionId: string, path: string): Promise<Blob> {
+  const params = new URLSearchParams({ path });
+  const resp = await fetch(
+    `/feishu/sessions/${encodeURIComponent(sessionId)}/files?${params.toString()}`,
+  );
+  if (!resp.ok) {
+    const data = (await resp.json().catch(() => ({}))) as ApiError;
+    throw new Error(data.error || `HTTP ${resp.status}`);
+  }
+  return resp.blob();
+}
+
+/** 取回一条会话的**原始** jsonl(磁盘上那份, 不是 /history 的投影行)。 */
+export async function fetchSessionHistoryFile(sessionId: string): Promise<Blob> {
+  const resp = await fetch(`/feishu/sessions/${encodeURIComponent(sessionId)}/export`);
+  if (!resp.ok) {
+    const data = (await resp.json().catch(() => ({}))) as ApiError;
+    throw new Error(data.error || `HTTP ${resp.status}`);
+  }
+  return resp.blob();
 }
 
 // ---- workspace ---------------------------------------------------------
