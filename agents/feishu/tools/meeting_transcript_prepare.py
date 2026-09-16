@@ -123,53 +123,39 @@ def _next_detail_cursor(payload: Any) -> tuple[str, str] | None:
     return None
 
 
-async def _collect_paragraphs(record_file_id: str, *, token_env: str) -> list[dict[str, Any]]:
-    paragraph_ids: list[str] = []
-    paragraph_payload = await _call(
-        "get_transcripts_paragraphs", {"record_file_id": record_file_id}, token_env=token_env
-    )
-    paragraph_ids.extend(extract_paragraph_ids(paragraph_payload))
-    # The MCP provider may page the paragraph index even though the normal
-    # response contains a list of ids. Follow either cursor spelling without
-    # assuming one fixed envelope shape.
+async def _collect_via_index(record_file_id: str, *, token_env: str) -> list[str]:
+    """取段落**索引**里的全部 pid(索引本身也可能分页)。
+
+    The MCP provider may page the paragraph index even though the normal
+    response contains a list of ids. Follow either cursor spelling without
+    assuming one fixed envelope shape.
+    """
+    ids: list[str] = []
+    payload = await _call("get_transcripts_paragraphs", {"record_file_id": record_file_id}, token_env=token_env)
+    ids.extend(extract_paragraph_ids(payload))
     visited_index_cursors: set[str] = set()
-    while isinstance(paragraph_payload, dict) and paragraph_payload.get("has_more"):
-        next_pid = paragraph_payload.get("next_pid")
-        next_token = paragraph_payload.get("next_page_token") or paragraph_payload.get("next_token")
+    while isinstance(payload, dict) and payload.get("has_more"):
+        next_pid = payload.get("next_pid")
+        next_token = payload.get("next_page_token") or payload.get("next_token")
         cursor = next_pid or next_token
         if not cursor or str(cursor) in visited_index_cursors:
             break
         cursor_text = str(cursor)
         visited_index_cursors.add(cursor_text)
         cursor_arg = "pid" if next_pid else "page_token"
-        paragraph_payload = await _call(
+        payload = await _call(
             "get_transcripts_paragraphs",
             {"record_file_id": record_file_id, cursor_arg: cursor_text},
             token_env=token_env,
         )
-        paragraph_ids.extend(extract_paragraph_ids(paragraph_payload))
-    paragraphs: list[dict[str, Any]] = []
-    if paragraph_ids:
-        for pid in paragraph_ids:
-            cursor_arg, cursor = "pid", pid
-            visited_detail_cursors: set[tuple[str, str]] = set()
-            while cursor and (cursor_arg, cursor) not in visited_detail_cursors:
-                visited_detail_cursors.add((cursor_arg, cursor))
-                detail = await _call(
-                    "get_transcripts_details",
-                    {"record_file_id": record_file_id, cursor_arg: cursor, "limit": 100},
-                    token_env=token_env,
-                )
-                _merge_paragraphs(paragraphs, detail)
-                next_cursor = _next_detail_cursor(detail)
-                if next_cursor is None:
-                    break
-                cursor_arg, cursor = next_cursor
-        return paragraphs
+        ids.extend(extract_paragraph_ids(payload))
+    return ids
 
-    # Some recordings do not expose the paragraph index.  Fall back to the
-    # details cursor and continue until the server says there is no next page.
-    cursor_arg, cursor = "pid", "0"
+
+async def _collect_paged(record_file_id: str, *, token_env: str, start_pid: str = "0") -> list[dict[str, Any]]:
+    """按**游标分页**取正文, 直到上游说没有下一页。"""
+    paragraphs: list[dict[str, Any]] = []
+    cursor_arg, cursor = "pid", start_pid
     visited: set[tuple[str, str]] = set()
     for _ in range(10_000):
         if (cursor_arg, cursor) in visited:
@@ -185,6 +171,60 @@ async def _collect_paragraphs(record_file_id: str, *, token_env: str) -> list[di
         if next_cursor is None:
             break
         cursor_arg, cursor = next_cursor
+    return paragraphs
+
+
+def _paragraph_key(item: dict[str, Any]) -> str:
+    return str(item.get("pid") or item.get("paragraph_id") or item.get("id") or "").strip()
+
+
+async def _collect_paragraphs(record_file_id: str, *, token_env: str) -> list[dict[str, Any]]:
+    """取整场转写的段落 —— **主路径走分页, 不逐段取**。
+
+    ## 为什么不是「每个 pid 一次请求」
+
+    那是最初的写法, 也是 2026-09-16 那次「卡住 8 分钟」的根因: 它把「取一份转写」实现成
+    N+1 —— 索引里有多少段就发多少次 ``get_transcripts_details``, 而每次 ``_call`` 都要
+    **新起一个 Python 子进程**再走一次 TLS/HTTP。实测(同一台机器, 两次真实调用):
+
+        352 段 → 314.7 秒 (894 ms/段)
+        431 段 → 493.1 秒 (1144 ms/段)
+
+    与段落内容无关, 纯粹是「一次调用 ≈ 1.1 秒」乘以段数。而同样的内容走分页
+    (``limit: 100``)只要**几次**调用 —— 本文件里一直有分页实现, 但它过去只当索引为空时的
+    兜底。成本随**页数**走, 不随段数走, 才是这条路径该有的形状。
+
+    ## 索引仍然要取
+
+    分页是主路径, 但索引拿到的 pid 列表**不是白拿的**: 它用来在两处兜底 ——
+
+    1. **补齐**: 分页少给了几段时(上游分页偶有漏页), 只对缺的那些 pid 逐段追一次;
+    2. **完全没有索引**时(部分录制不暴露索引), 仍然是纯分页。
+
+    也就是说: 逐段那条老路径还在, 只是从"默认"降级成"补漏", 一次最多补缺的那几段。
+    """
+    index_ids = await _collect_via_index(record_file_id, token_env=token_env)
+    paragraphs = await _collect_paged(record_file_id, token_env=token_env)
+    if not index_ids:
+        return paragraphs
+    got = {_paragraph_key(item) for item in paragraphs}
+    missing = [pid for pid in index_ids if pid and pid not in got]
+    # 只在**缺段**时逐段追 —— 正常情况这里是空的, 于是调用次数与页数成正比。
+    for pid in missing:
+        cursor_arg, cursor = "pid", pid
+        visited_detail_cursors: set[tuple[str, str]] = set()
+        while cursor and (cursor_arg, cursor) not in visited_detail_cursors:
+            visited_detail_cursors.add((cursor_arg, cursor))
+            detail = await _call(
+                "get_transcripts_details",
+                {"record_file_id": record_file_id, cursor_arg: cursor, "limit": 100},
+                token_env=token_env,
+            )
+            _merge_paragraphs(paragraphs, detail)
+            next_cursor = _next_detail_cursor(detail)
+            if next_cursor is None:
+                break
+            cursor_arg, cursor = next_cursor
     return paragraphs
 
 
