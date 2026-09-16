@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import _feishu_impl as _f
@@ -132,6 +132,59 @@ def _field_name_list(
 
 def _config_value(name: str, explicit: str) -> str:
     return explicit.strip() or os.environ.get(name, "").strip()
+
+
+# Semantics a healthy public ledger must expose for a read to be trustworthy.
+# When one of them cannot be matched to an existing column the read must fail
+# loudly: Feishu answers a search that names an unknown column with zero rows,
+# which previously looked like "the ledger is empty" instead of "the contract
+# no longer matches the table".
+REQUIRED_READ_SEMANTICS = ("nature", "subject_user_key", "reporter_user_key", "occurred_at", "fact_summary")
+
+
+def _candidate_names(
+    semantic: str,
+    field_name: str,
+    extra_aliases: Mapping[str, Sequence[str]],
+) -> list[str]:
+    candidates = [field_name, *_FIELD_ALIASES.get(semantic, ()), *extra_aliases.get(semantic, ())]
+    seen: set[str] = set()
+    names: list[str] = []
+    for candidate in candidates:
+        name = str(candidate or "").strip()
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
+
+
+def resolve_available_field_names(
+    field_names: Mapping[str, str],
+    available: frozenset[str] | set[str] | None,
+    *,
+    extra_aliases: Mapping[str, Sequence[str]] | None = None,
+    required_semantics: Sequence[str] = REQUIRED_READ_SEMANTICS,
+) -> tuple[dict[str, str], tuple[str, ...]]:
+    """Narrow configured column labels to the columns this table actually has.
+
+    Resolution is exact matching against ``available`` — the configured label
+    first, then the labels declared as aliases for the same semantic (built-in
+    read aliases plus the deployment's ``ledger.column_aliases``).  Nothing is
+    guessed: a semantic whose labels are all absent is reported as ``missing``.
+    """
+    if available is None:
+        return dict(field_names), ()
+    aliases = {str(semantic): tuple(str(name) for name in names) for semantic, names in (extra_aliases or {}).items()}
+    resolved: dict[str, str] = {}
+    for semantic, field_name in field_names.items():
+        match = next(
+            (name for name in _candidate_names(str(semantic), str(field_name or ""), aliases) if name in available),
+            None,
+        )
+        if match is not None:
+            resolved[str(semantic)] = match
+    missing = tuple(str(semantic) for semantic in required_semantics if str(semantic) not in resolved)
+    return resolved, missing
 
 
 def parse_query(query_json: str, *, page_size: int = 100, page_token: str = "", view_id: str = "") -> LedgerQuery:
@@ -270,6 +323,28 @@ class FeishuLedgerClient:
         self._configured_semantics = frozenset(self._requested_field_names)
         self._strict_field_names = strict_field_names
         self.field_names = {**_FIELD_NAMES, **self._requested_field_names}
+
+    def restrict_to_available_columns(
+        self,
+        available: frozenset[str] | set[str] | None,
+        extra_aliases: Mapping[str, Sequence[str]] | None = None,
+    ) -> tuple[dict[str, str], tuple[str, ...]]:
+        """Drop requested labels this table does not have.
+
+        Returns ``(resolved, missing)``; ``missing`` lists the required business
+        semantics that could not be matched, so the caller can report a contract
+        break instead of an empty ledger.
+        """
+        resolved, missing = resolve_available_field_names(
+            self._requested_field_names,
+            available,
+            extra_aliases=extra_aliases,
+        )
+        if available is not None:
+            self._requested_field_names = dict(resolved)
+            self._configured_semantics = frozenset(resolved)
+            self.field_names = {**_FIELD_NAMES, **resolved}
+        return resolved, missing
 
     async def list_records(self, query: LedgerQuery, user_key: str) -> dict[str, Any]:
         if query.record_id:

@@ -104,6 +104,30 @@ async def positive_negative_case_read(
         blocker = await reader.reject_unavailable_filters(query, actual_names)
         if blocker is not None:
             return _f.dumps_result(blocker)
+        # Fail loudly when the table no longer carries the contracted columns.
+        # A search that names an unknown column comes back with zero rows, so an
+        # unresolved contract used to be reported to the user as "没有记录"
+        # (2026-09-16: the ledger's 事件描述 column had been renamed).
+        client = adapter._client
+        if isinstance(client, reader.FeishuLedgerClient):
+            _, missing = client.restrict_to_available_columns(
+                actual_names,
+                runtime.configured_column_aliases(),
+            )
+            if missing:
+                logger.warning(f"pnl case_read: ledger contract mismatch, missing={missing}")
+                return _f.dumps_result(
+                    {
+                        "ok": False,
+                        "状态": "读取失败",
+                        "说明": (
+                            "正负面清单表的列名与工具契约不一致，已停止读取——不会把「列名不匹配」"
+                            "当成「表里没有记录」。请维护者对表列名或 config/positive-negative-list.yaml 对齐后重试。"
+                        ),
+                        "缺失列（语义）": list(missing),
+                        "表中实际列名": sorted(actual_names) if actual_names else [],
+                    }
+                )
         result = await reader.read_records(cast(reader.FeishuLedgerClient, adapter._client), query, user_key)
         result = await reader.public_result_with_names(result)
     except (TypeError, ValueError) as exc:
@@ -111,7 +135,9 @@ async def positive_negative_case_read(
         result = {
             "ok": False,
             "状态": "读取失败",
-            "说明": "查询条件无法解析，请调整后重试。",
+            # 带上具体原因: 只说"无法解析"会让"按中文姓名过滤被拒"这类可纠正的用法
+            # 无从下手(人员字段必须先解析成 open_id)。
+            "说明": f"查询条件无法解析，请调整后重试。（{exc}）",
             "error": str(exc),
         }
     except (OSError, RuntimeError) as exc:
