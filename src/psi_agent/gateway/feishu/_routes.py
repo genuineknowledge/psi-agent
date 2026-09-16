@@ -390,11 +390,12 @@ def _web_session_data(info: SessionInfo, *, from_im: bool) -> dict[str, Any]:
 
     * ``from_im``: IM 里那条 session 在网页里正常显示、可续聊, 但用户要能看出它与 IM
       共通(在里面发言 IM 侧也看得到)。
-    * ``read_only``: 组织共享的调度会话。它对所有登录用户**只读可见**(历史能看、消息不能发),
-      而它和用户自己的会话在列表里长得一模一样 —— 不说出来的话, 用户点进去打字, 只会收到
-      一句看不懂的 403(实测踩过: 有人以为那是自己刚新建的对话)。
-      这个标记是**显示用**的, 真正的闸在 ``_authorize_session(write=True)``;
-      下发给前端不泄漏任何东西 —— 那条历史本来就已经可见了。
+    * ``read_only``: 组织共享的调度会话。它对所有登录用户**只读**(历史能看、消息不能发)。
+      2026-09-16 起这类会话**不进列表**(见 ``_web_list_sessions``), 所以这个标记在日常路径上
+      不会出现; 留着是因为它是「这条会话不能写」的唯一机器可读判据 —— 直打
+      ``/feishu/sessions/{id}/…`` 的调用方(深链、将来的入口)靠它把输入框关掉, 而不是让用户
+      打完字才吃一个 403。真正的闸在 ``_authorize_session(write=True)``, 与这个标记同源
+      (都走 ``is_org_session``)。
     """
     data = _session_data(info)
     data["from_im"] = from_im
@@ -403,11 +404,19 @@ def _web_session_data(info: SessionInfo, *, from_im: bool) -> dict[str, Any]:
 
 
 async def _web_list_sessions(request: web.Request) -> web.Response:
-    """``GET /feishu/sessions`` —— 只回当前身份可见的私聊会话。
+    """``GET /feishu/sessions`` —— 只回当前身份**能干活**的会话(自己的私聊会话)。
 
     与骨架 ``GET /sessions`` 的关系: 骨架那条**语义一行不改**(ToC 的 spa-v2 在用), 本条
     是飞书链上单独包的一层。过滤在**服务端**做 —— PR 755 在浏览器里 filter, 那只是显示
     过滤, 谁都能直接打裸路由拿全量。
+
+    **组织共享的调度会话不进这个列表**(2026-09-16 产品决定, 实测反馈「感觉没有什么用」):
+    它在网页应用里只能只读查看 —— 不能发消息、不能删、没有标题(显示成「未命名任务」),
+    只能永远停在「待开始/0%」, 却和用户自己的任务混在同一排里。组织级任务的产出由机器人以
+    卡片发到飞书 IM, 那里才是它的入口。
+
+    **隐藏 ≠ 放开**: 归属判定一字未改, 直打 ``/feishu/sessions/{id}/…`` 仍然是「历史可读、
+    写入 403」(``is_org_session`` 那条闸还在 ``_authorize_session`` 里)。
     """
     try:
         identity = _require_identity(request)
@@ -417,7 +426,10 @@ async def _web_list_sessions(request: web.Request) -> web.Response:
     sm: SessionManager = request.app["sm"]
     bot_sid = fm.session_id_for(identity.open_id)
     rows = visible_sessions(identity.open_id, await sm.list_all(include_scheduler=True), fm)
-    return _json([_web_session_data(r, from_im=r.id == bot_sid) for r in rows])
+    # 组织共享的调度会话不进列表 —— 理由见 docstring。判定仍走 ``is_org_session`` 那一份,
+    # 于是「列表里看不到」与「写不进去」用的是同一个判据, 不会各说各话。
+    owned = [r for r in rows if not is_org_session(r.id, r.workspace or "")]
+    return _json([_web_session_data(r, from_im=r.id == bot_sid) for r in owned])
 
 
 async def _web_create_session(request: web.Request) -> web.Response:

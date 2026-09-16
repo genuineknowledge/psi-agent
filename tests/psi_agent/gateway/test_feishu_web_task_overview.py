@@ -267,12 +267,33 @@ def test_no_duplicate_chest_button_in_the_detail_panel() -> None:
     )
 
 
-def test_org_session_is_shown_as_read_only() -> None:
-    """组织共享会话必须在界面上标出来, 并把输入框关掉。
+def test_org_session_is_hidden_from_the_task_list() -> None:
+    """组织共享会话**不进**任务列表 —— 它在网页应用里只能只读查看, 混在用户任务里只有干扰。
 
-    现象(2026-09-16 实测): 用户以为自己在一条新对话里, 打了字发出去, 只收到一句
-    ``org session is read-only`` —— 那条会话是组织共享的调度会话, 本来就只读。它在列表里与
-    用户自己的会话长得一模一样, 不标出来就只能靠撞一次 403 才知道。
+    2026-09-16 产品决定(实测反馈「感觉没有什么用」)。隐藏 ≠ 放开: 归属判定一字未改, 直打
+    ``/feishu/sessions/{id}/…`` 仍然是「历史可读、写入 403」。两处用的是同一个
+    ``is_org_session`` 判据, 免得「列表藏起来了」与「闸还在不在」各说各话。
+    """
+    routes = _code(ROUTES_PY)
+
+    assert 'owned = [r for r in rows if not is_org_session(r.id, r.workspace or "")]' in routes, (
+        "``_web_list_sessions`` 不再过滤组织共享会话 —— 它又会出现在任务列表里(只读、无标题、永远停在待开始)。"
+    )
+    assert "return _json([_web_session_data(r, from_im=r.id == bot_sid) for r in owned])" in routes, (
+        "列表返回的不是过滤后的那份 —— 过滤写了但没用上。"
+    )
+    # 闸还在: 隐藏它不等于放开写。
+    assert "raise _AccessDeniedError(403, ORG_SESSION_READ_ONLY)" in routes, (
+        "组织共享会话的只读闸被一起删掉了 —— 隐藏它只是不显示, 不代表谁都能往里写。"
+    )
+
+
+def test_org_session_read_only_ui_remains_as_a_guard() -> None:
+    """只读那套界面留着当**兜底**: 列表里看不到它了, 但直打深链的人仍会撞上 403。
+
+    历史: 2026-09-16 上午先做的是「在列表里把它标成只读」(那时它还在列表里), 下午按实测
+    反馈把它从列表里去掉。界面那套(角标 + 关掉输入框 + 中文文案)因此变成**兜底**而不是死代码
+    —— 万一它从另一个入口露出来, 用户不该再次「打完字才收到一句拒绝」。
     """
     api = _code(API_TS)
     model = _code(TASK_MODEL)
@@ -283,11 +304,10 @@ def test_org_session_is_shown_as_read_only() -> None:
     routes = _code(ROUTES_PY)
 
     assert "read_only?: boolean" in api, (
-        "``SessionInfo`` 里没有 ``read_only`` —— 后端已经在 ``/feishu/sessions`` 里下发了, "
-        "前端不接就没法把只读会话标出来。"
+        "``SessionInfo`` 里没有 ``read_only`` —— 后端已在下发, 前端不接就没法把关掉输入框的判据拿到手里。"
     )
     assert 'data["read_only"] = is_org_session(' in routes, (
-        "``_web_session_data`` 不再下发 ``read_only`` —— 前端拿不到这个判据, 只读会话又会和用户自己的会话长得一模一样。"
+        "``_web_session_data`` 不再下发 ``read_only`` —— 深链进来的人又会打完字才吃 403。"
     )
     assert "readOnly: session.read_only === true" in tasks, "``useTasks`` 没有把 ``read_only`` 传进 Task。"
     assert "readOnly: src.readOnly" in model, "``buildTask`` 没有把只读标记带出来。"
