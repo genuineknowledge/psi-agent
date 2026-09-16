@@ -39,9 +39,11 @@ TOOL_ALIASES: dict[str, str] = {
     "list_dir": "正在浏览目录",
     "find_files": "正在查找文件",
     "search_content": "正在检索代码库",
+    "python_run": "正在跑代码",
     # 网络与外部检索
     "fetch": "正在抓取网页",
     "serper_google_search": "正在搜索网络",
+    "x_search": "正在搜索 X",
     "wiki_search": "正在查维基百科",
     # 会话自身
     "todo": "正在整理待办",
@@ -50,6 +52,7 @@ TOOL_ALIASES: dict[str, str] = {
     "tool_describe": "正在查看工具说明",
     "tool_search_code": "正在检索工具实现",
     "trigger_manage": "正在设置定时任务",
+    "schedule_manage": "正在安排定时任务",
     # 文档与图像理解
     "describe_image": "正在看图",
     "read_document": "正在读文档",
@@ -93,6 +96,8 @@ TOOL_ALIASES: dict[str, str] = {
     "meeting_record_export": "正在打包会议资料",
     "meeting_records_list": "正在列历史场次",
     "meeting_pipeline_replay": "正在补跑会议场次",
+    "tencent_meeting_call": "正在查腾讯会议",
+    "tencent_meeting_minutes_publish": "正在发布会议纪要",
     # 正负面清单 (2026-09-07 起进入 M2 核心集; 2026-09-10 补别名, 此前判据是红的)
     "positive_negative_rules": "正在查清单规则",
     "positive_negative_case_prepare": "正在整理记录草稿",

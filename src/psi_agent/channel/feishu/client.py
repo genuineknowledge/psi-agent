@@ -14,6 +14,7 @@ from typing import Any, Protocol
 import aiohttp
 import anyio
 import platformdirs
+from anyio.abc import TaskGroup
 from anyio.from_thread import BlockingPortal
 from lark_channel import FeishuChannel, PolicyConfig
 from lark_channel.api.im.v1.model.create_message_reaction_request import CreateMessageReactionRequest
@@ -28,7 +29,7 @@ from loguru import logger
 
 from psi_agent import _private_space
 from psi_agent._appdata import resolve_appdata_root
-from psi_agent._card_markers import SILENT_REPLY
+from psi_agent._card_markers import CARD_ACTION_TAG, SILENT_REPLY
 from psi_agent._feishu_routing import is_group_chat, route_key
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._errors import ChannelError
@@ -38,7 +39,9 @@ from psi_agent.channel.feishu._agent_events import register_feishu_agent_events
 from psi_agent.protocol import REASONING_KIND_TOOL_CALL, REASONING_KIND_TOOL_RESULT
 from psi_agent.session import VisibleMarkerFilter, strip_transfer_markers
 
+from . import _live_feedback
 from ._card_action import CardActionBatcher, handle_card_action
+from ._live_feedback import ProcessTimeline
 from ._tool_status import ToolStatusTracker
 
 _EMOJI_PROCESSING = "Typing"
@@ -598,6 +601,96 @@ async def _stream_reply(
         # carry must live for the whole turn (see VisibleMarkerFilter).
         marker_filter = VisibleMarkerFilter()
 
+        # -- live 反馈 (opt-in, 见 ._live_feedback) --------------------------------
+        # 卡片回调一律走原路: 它的静默是刻意的 (「卡片回调静默成功」, 见本层
+        # AGENTS.md), 放开会在按钮点击后弹出一张只有过程的空答卡。判定用
+        # CARD_ACTION_TAG 而不是字面量 —— 与 session 侧共享同一份定义。
+        is_card_callback = any(CARD_ACTION_TAG in str(getattr(c, "text", "") or "") for c in chunks)
+        live = _live_feedback.live_feedback_enabled() and not is_card_callback
+        timeline = ProcessTimeline()
+        # 门: 关着时一次 set_content 都不发, 于是卡片根本不存在 (_ensure_started
+        # 只在首次写入时建卡)。正文到达或首个过程事件满 CARD_DELAY_SECONDS 才开。
+        gate_open = False
+        timer_armed = False
+        last_render = 0.0
+        # set_content / _ensure_started 都没有并发保护, 而门的计时器与主循环是两个
+        # 任务, 会同时进来 —— 不串行化就可能建出两张卡。
+        render_lock = anyio.Lock()
+
+        async def _render_live(*, force: bool = False, final: bool = False) -> None:
+            """live 模式下卡片的唯一出口; 门没开时什么都不做。
+
+            ``final=True`` 只留正文 —— 过程是脚手架, 答案出来就该撤掉。静默回合
+            (没有正文) 不走 final, 过程留在卡上, 否则点按钮会看到一张空卡。
+            """
+            nonlocal last_render
+            async with render_lock:
+                if not gate_open:
+                    return
+                now = anyio.current_time()
+                if not force and now - last_render < _live_feedback.RENDER_INTERVAL_SECONDS:
+                    return
+                last_render = now
+                if final:
+                    text = body
+                else:
+                    parts = [p for p in (timeline.render(), body) if p]
+                    text = "\n\n".join(parts)
+                if not text:
+                    return
+                # ** INFO 而非 DEBUG, 刻意 **: 补丁里这行是 DEBUG, 生产钉死 INFO,
+                # 实测 40 分钟输出 0 条 —— 于是 TOTAL_CAP 至今没有实测依据, 卡片被
+                # 飞书拒绝时也无人知晓。这是本层唯一能量到真实峰值的地方。
+                logger.info(f"live render: {len(text)} chars (body={len(body)} events={len(timeline)} final={final})")
+                await stream.set_content(text)
+
+        async def _open_gate_after_delay() -> None:
+            """等满 ``CARD_DELAY_SECONDS`` 再开门 —— 「静默回合不弹卡」全靠这个。
+
+            静默回合在毫秒级走完, 主循环退出时计时器被 cancel, 门始终没开, 一次
+            写入都没发生, 卡片也就不存在。真跑几十秒的回合才亮过程。
+
+            吞掉自身异常并只记 WARNING: 它跑在 task group 里, 让异常逃出去会把
+            整条回复变成 ExceptionGroup, 一个渲染失败不该让用户收不到答案。
+            ``CancelledError`` 不是 ``Exception``, 照旧向上传播。
+            """
+            nonlocal gate_open
+            try:
+                await anyio.sleep(_live_feedback.CARD_DELAY_SECONDS)
+                gate_open = True
+                logger.info(f"live gate opened after {_live_feedback.CARD_DELAY_SECONDS}s (events={len(timeline)})")
+                await _render_live(force=True)
+            except Exception as e:
+                logger.warning(f"live gate timer failed — {e!r}")
+
+        def _arm_gate_timer(task_group: TaskGroup) -> None:
+            """首个过程事件到达时武装计时器 (只武装一次)。
+
+            必须是后台计时器而不是「下个事件到达时看看过了多久」: 一次
+            ``python_run`` 实测跑 143 秒, 期间流上一个 chunk 都没有, 按事件驱动就
+            要等它跑完才显示 —— 那正好是最需要反馈的那种回合。
+            """
+            nonlocal timer_armed
+            if timer_armed:
+                return
+            timer_armed = True
+            task_group.start_soon(_open_gate_after_delay)
+
+        async def _open_gate_now() -> None:
+            """正文到达 —— 立刻开门, 不等计时器。
+
+            这里安全: 走到这一步说明文本已过嗅探 (``append_body`` 的调用点),
+            也就是说这一回合**确定**有正文要发, 不是静默回合。
+
+            首次开门强制刷新一次 (让第一段正文立刻可见), 之后照常受
+            ``RENDER_INTERVAL_SECONDS`` 节流 —— 否则每个正文 chunk 都发一次
+            ``set_content``, 就成了按字符更新。
+            """
+            nonlocal gate_open
+            just_opened = not gate_open
+            gate_open = True
+            await _render_live(force=just_opened)
+
         async def render_status(line: str | None) -> None:
             """Rewrite the status line in place; ``None`` erases it.
 
@@ -644,8 +737,20 @@ async def _stream_reply(
             and this is the user-visible half of the same discipline the Gateway
             history projection applies. The request keeps its handles; only this
             outbound copy loses them.
+
+            **live 模式走整块重写而不是 ``append``**: 过程块在 ``_content`` 里时
+            ``merge_streaming_text`` 的去重会吃掉正文开头的字 (判据 5 锁的正是这
+            件事)。嗅探那半段逐字节未变 —— ``visible`` 拿到的文本一定已过嗅探。
             """
             nonlocal body
+            if live:
+                visible = marker_filter.feed(text)
+                if not visible:
+                    logger.debug(f"outbound text withheld by marker filter ({len(text)} chars)")
+                    return
+                body += visible
+                await _open_gate_now()
+                return
             await render_status(None)
             visible = marker_filter.feed(text)
             if not visible:
@@ -671,52 +776,86 @@ async def _stream_reply(
             else:
                 await append_body(candidate)
 
-        try:
-            async with aclosing(core.post(chunks)) as gen:
-                async for chunk in gen:
-                    if isinstance(chunk, TextChunk):
-                        if checking_silent_reply:
-                            silent_candidate += chunk.text
-                            normalized = silent_candidate.strip()
-                            if not normalized or _SILENT_REPLY_TOKEN.startswith(normalized):
+        # ** task group 只为了那个门计时器 **, 且**异常绝不穿过它**: 本层约定
+        # ``ChannelError`` 是裸异常而不是 ``ExceptionGroup`` (见 channel/AGENTS.md),
+        # 让异常从 task group 里逃出去会被 anyio 包一层, 调用点的 except 全部落空。
+        # 故循环里的异常先接住存进 ``failure``, 出了 group 再原样 raise。
+        # ``CancelledError`` 不是 ``Exception``, 不进这条路 —— cancel 的行为逐字节
+        # 与改动前一致 (aclose → group → 计时器)。
+        failure: Exception | None = None
+        async with anyio.create_task_group() as tg:
+            try:
+                async with aclosing(core.post(chunks)) as gen:
+                    async for chunk in gen:
+                        if isinstance(chunk, TextChunk):
+                            if checking_silent_reply:
+                                silent_candidate += chunk.text
+                                normalized = silent_candidate.strip()
+                                if not normalized or _SILENT_REPLY_TOKEN.startswith(normalized):
+                                    continue
+                                await flush_silent_candidate()
+                                checking_silent_reply = False
+                            else:
+                                await append_body(chunk.text)
+                        elif isinstance(chunk, ReasoningChunk):
+                            # 两件事读同一个 chunk, 各走各的 —— 抑制那半段一个字没动。
+                            # ``tool_result`` 早已被征用为「上一次卡片动作办完了、下一段
+                            # 重新开始攒」的时钟信号; 状态行只是**另外**读一遍同一个
+                            # chunk, 不碰 checking_silent_reply 也不碰 silent_candidate。
+                            if suppress_silent_reply and chunk.kind == "tool_result":
+                                await flush_silent_candidate()
+                                checking_silent_reply = True
+                            if chunk.kind == REASONING_KIND_TOOL_CALL:
+                                if live:
+                                    found = _live_feedback.parse_tool_calls(chunk.text)
+                                    for name, args in found or [(chunk.tool_name or "?", "")]:
+                                        timeline.add_tool_call(name, args)
+                                    _arm_gate_timer(tg)
+                                    await _render_live(force=True)
+                                else:
+                                    await render_status(tools.on_tool_call(chunk.tool_name))
+                            elif chunk.kind == REASONING_KIND_TOOL_RESULT:
+                                if live:
+                                    parsed = _live_feedback.parse_tool_result(chunk.text)
+                                    timeline.add_tool_result(chunk.tool_name or "?", parsed or chunk.text or "")
+                                    await _render_live(force=True)
+                                else:
+                                    await render_status(tools.on_tool_result(chunk.tool_name))
+                            elif live and chunk.text:
+                                # 思考 (kind 为 None 或 "thinking"): 只追加, 一个字不掐。
+                                timeline.add_thinking(chunk.text)
+                                _arm_gate_timer(tg)
+                                await _render_live()
+                        elif isinstance(chunk, FileChunk):
+                            logger.debug(f"received FileChunk ({chunk.path})")
+                            # 私密区守卫: 只有主人自己收得到自己的私密文件, 其他人一律拦。
+                            # 放在发送前而非 session 侧 —— channel 手里就有发送者 open_id,
+                            # 按「发送者是不是该私密区的主人」判权比绕一圈更直接。
+                            if _private_space.blocks_send(chunk.path, sender_open_id):
+                                logger.warning(f"private file withheld from {sender_open_id!r}: {chunk.path}")
                                 continue
-                            await flush_silent_candidate()
-                            checking_silent_reply = False
-                        else:
-                            await append_body(chunk.text)
-                    elif isinstance(chunk, ReasoningChunk):
-                        # 两件事读同一个 chunk, 各走各的 —— 抑制那半段一个字没动。
-                        # ``tool_result`` 早已被征用为「上一次卡片动作办完了、下一段
-                        # 重新开始攒」的时钟信号; 状态行只是**另外**读一遍同一个
-                        # chunk, 不碰 checking_silent_reply 也不碰 silent_candidate。
-                        if suppress_silent_reply and chunk.kind == "tool_result":
-                            await flush_silent_candidate()
-                            checking_silent_reply = True
-                        if chunk.kind == REASONING_KIND_TOOL_CALL:
-                            await render_status(tools.on_tool_call(chunk.tool_name))
-                        elif chunk.kind == REASONING_KIND_TOOL_RESULT:
-                            await render_status(tools.on_tool_result(chunk.tool_name))
-                    elif isinstance(chunk, FileChunk):
-                        logger.debug(f"received FileChunk ({chunk.path})")
-                        # 私密区守卫: 只有主人自己收得到自己的私密文件, 其他人一律拦。
-                        # 放在发送前而非 session 侧 —— channel 手里就有发送者 open_id,
-                        # 按「发送者是不是该私密区的主人」判权比绕一圈更直接。
-                        if _private_space.blocks_send(chunk.path, sender_open_id):
-                            logger.warning(f"private file withheld from {sender_open_id!r}: {chunk.path}")
-                            continue
-                        try:
-                            await _send_file(channel, chat_id, chunk.path, chunk.source)
-                        except OutboundFileError as e:
-                            # 如实告诉用户这个文件没发出去, 而不是让它静默消失 (静默正是本 bug
-                            # 的症状)。就地告知而非抛出: 这里在卡片流式渲染的 _produce 里,
-                            # 抛出去会中断整条回复 —— 一个附件失败不该让用户连文字也收不到。
-                            # 其余 chunk 继续处理, 多个文件失败就各报一次。
-                            logger.error(f"outbound file failed — {e}")
-                            await channel.send(chat_id, {"text": str(e)})
-        except Exception:
-            await flush_silent_candidate()
-            raise
+                            try:
+                                await _send_file(channel, chat_id, chunk.path, chunk.source)
+                            except OutboundFileError as e:
+                                # 如实告诉用户这个文件没发出去, 而不是让它静默消失 (静默正是本 bug
+                                # 的症状)。就地告知而非抛出: 这里在卡片流式渲染的 _produce 里,
+                                # 抛出去会中断整条回复 —— 一个附件失败不该让用户连文字也收不到。
+                                # 其余 chunk 继续处理, 多个文件失败就各报一次。
+                                logger.error(f"outbound file failed — {e}")
+                                await channel.send(chat_id, {"text": str(e)})
+            except Exception as e:
+                await flush_silent_candidate()
+                failure = e
+            # 门计时器是唯一的常驻任务, 循环结束 (正常或异常) 就该撤掉; 不撤的话
+            # 静默回合要多等 CARD_DELAY_SECONDS 才收尾, 而且门会在收尾之后才开。
+            tg.cancel_scope.cancel()
+        if failure is not None:
+            raise failure
         await flush_silent_candidate()
+        if live:
+            # 正文出完了, 过程脚手架撤掉; 没有正文 (静默回合) 就别动卡片 ——
+            # final=True 会把内容写成空串, 而门若已开那就是把过程抹成空卡。
+            await _render_live(force=True, final=bool(body))
         dropped = marker_filter.flush()
         if dropped:
             # By construction a marker prefix, never user text; log for triage.
