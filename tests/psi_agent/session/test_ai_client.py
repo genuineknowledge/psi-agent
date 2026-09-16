@@ -2,11 +2,47 @@ from __future__ import annotations
 
 import json
 import socket as _s
+from typing import TYPE_CHECKING
 
 import pytest
 from aiohttp import web
+from loguru import logger
+
+if TYPE_CHECKING:
+    # ``Message`` is stub-only — importing it at runtime raises ImportError.
+    from loguru import Message
 
 from psi_agent.session.ai_client import AiClient
+
+
+class _LoguruSink:
+    """Capture loguru records with their level names.
+
+    ``caplog`` sees nothing from loguru — it never reaches the stdlib logging
+    handlers — so a negative assertion written against ``caplog`` passes no
+    matter what.  Recording the level here is the point: the TTFT probe has to
+    be INFO, because production runs at INFO and a DEBUG probe emits nothing.
+    """
+
+    def __init__(self) -> None:
+        self.records: list[tuple[str, str]] = []
+
+    def __call__(self, message: Message) -> None:
+        record = message.record
+        self.records.append((record["level"].name, record["message"]))
+
+    def messages_at(self, level: str) -> list[str]:
+        return [msg for lvl, msg in self.records if lvl == level]
+
+
+@pytest.fixture
+def loguru_sink():
+    sink = _LoguruSink()
+    sink_id = logger.add(sink, level="DEBUG")
+    try:
+        yield sink
+    finally:
+        logger.remove(sink_id)
 
 
 @pytest.mark.anyio
@@ -426,3 +462,135 @@ async def test_ai_client_choice_not_a_dict():
         assert deltas[0].content == "good"
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_ttft_logged_at_info_with_bytes(loguru_sink):
+    """TTFT is recorded, at INFO, carrying the request byte count.
+
+    Level is asserted explicitly: DEBUG would emit nothing in production.
+    """
+    seen_body: dict = {}
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        # Guards the ``json=`` → ``data=`` switch: the body must still arrive as
+        # parseable JSON with the right Content-Type, or the byte count would be
+        # bought at the cost of a broken request.
+        seen_body["raw"] = await request.read()
+        seen_body["content_type"] = request.headers.get("Content-Type")
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        data = {"id": "a", "choices": [{"delta": {"content": "hi"}, "finish_reason": "stop"}]}
+        await resp.write(f"data: {json.dumps(data)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+    try:
+        client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
+        request_body = {"messages": [{"role": "user", "content": "中文也要按字节算"}], "stream": True}
+        deltas = [d async for d in client.stream(request_body)]
+        assert [d.content for d in deltas] == ["hi"]
+    finally:
+        await runner.cleanup()
+
+    assert seen_body["content_type"] == "application/json"
+    assert json.loads(seen_body["raw"]) == request_body
+
+    info_msgs = [m for m in loguru_sink.messages_at("INFO") if "ttft=" in m]
+    assert len(info_msgs) == 1, f"expected exactly one INFO ttft line, got {loguru_sink.records}"
+    assert "kind=content" in info_msgs[0]
+    # Bytes, not characters.  ``json.dumps`` escapes CJK to ``\uXXXX``, so each
+    # character of user text costs 6 bytes here — the gap against a character
+    # count like ``prompt_budget``'s is wide, and in the wrong direction to
+    # ignore.
+    expected_bytes = len(json.dumps(request_body).encode())
+    assert f"req_bytes={expected_bytes}" in info_msgs[0]
+    content_chars = len(request_body["messages"][0]["content"])
+    assert expected_bytes > content_chars * 3, "req_bytes must not be a character count"
+    # No ttft line may hide at DEBUG.
+    assert [m for m in loguru_sink.messages_at("DEBUG") if "ttft=" in m] == []
+
+
+@pytest.mark.anyio
+async def test_ttft_counts_reasoning_and_fires_once(loguru_sink):
+    """A leading ``reasoning`` chunk is the first token, and TTFT logs once.
+
+    The card renders thinking live, so keying on ``content`` alone would skip
+    past the reasoning chunks here and overstate the user-visible wait.
+    """
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        for delta in [
+            {"reasoning": "thinking..."},
+            {"reasoning": " more"},
+            {"content": "answer"},
+        ]:
+            chunk = {"id": "r", "choices": [{"delta": delta, "finish_reason": None}]}
+            await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+    try:
+        client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
+        deltas = [d async for d in client.stream({"messages": [], "stream": True})]
+        assert len(deltas) == 3
+    finally:
+        await runner.cleanup()
+
+    info_msgs = [m for m in loguru_sink.messages_at("INFO") if "ttft=" in m]
+    assert len(info_msgs) == 1, f"ttft must fire once per turn, got {info_msgs}"
+    assert "kind=reasoning" in info_msgs[0]
+
+
+@pytest.mark.anyio
+async def test_status_line_marks_itself_as_not_first_token(loguru_sink):
+    """The status line reports the first-hop header time and says so.
+
+    Reading that line as TTFB is what produced the retracted "upstream 0.18s"
+    figure, so it must be distinguishable from the real TTFT line.
+    """
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        data = {"id": "s", "choices": [{"delta": {"content": "x"}, "finish_reason": "stop"}]}
+        await resp.write(f"data: {json.dumps(data)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+    try:
+        client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
+        _ = [d async for d in client.stream({"messages": [], "stream": True})]
+    finally:
+        await runner.cleanup()
+
+    status_msgs = [m for m in loguru_sink.messages_at("INFO") if "AI response status" in m]
+    assert len(status_msgs) == 1
+    assert "非首字" in status_msgs[0]
+    assert "ttft=" not in status_msgs[0]

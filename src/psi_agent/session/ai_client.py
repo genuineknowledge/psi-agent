@@ -6,6 +6,7 @@ and protocol types.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import AsyncGenerator
 
 import aiohttp
@@ -63,11 +64,26 @@ class AiClient:
 
     async def stream(self, request_body: dict) -> AsyncGenerator[AiDelta]:
         connector, endpoint = self._build_connector_and_endpoint()
+        # Serialize once ourselves instead of passing ``json=``: aiohttp would
+        # run the same ``json.dumps`` internally, so doing it here buys the exact
+        # request byte count for free.  Bytes are half the latency model —
+        # ``delay ≈ bytes / bandwidth`` — and without them a slow turn cannot be
+        # attributed (bigger request vs. worse bandwidth).  Note ``prompt_budget``
+        # counts *characters*, which at ~3.47 bytes/char for Chinese is not a
+        # usable substitute.
+        payload = json.dumps(request_body).encode()
+        t0 = time.monotonic()
+        ttft_logged = False
         async with (
             aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=None)) as session,
-            session.post(endpoint, json=request_body) as resp,
+            session.post(endpoint, data=payload, headers={"Content-Type": "application/json"}) as resp,
         ):
-            logger.info(f"AI response status: {resp.status}")
+            # First hop only (this process → ``psi_agent.ai.server`` over the
+            # local socket): steady 50-70ms, independent of context size.  It is
+            # *not* the first token — reading this line as TTFB is what produced
+            # the since-retracted "upstream TTFB 0.18s" claim.
+            t_headers = time.monotonic() - t0
+            logger.info(f"AI response status: {resp.status} (第一跳响应头 {t_headers:.3f}s, 非首字)")
             if resp.status != 200:
                 error_text = await resp.text()
                 logger.error(f"AI error from {self.ai_socket!r}: {error_text[:1000]!r}")
@@ -120,6 +136,29 @@ class AiClient:
                 delta_data = c.get("delta")
                 if not isinstance(delta_data, dict):
                     delta_data = {}
+                # Time to first token, measured once per turn.  ``reasoning``
+                # counts as a first token because the card renders thinking live —
+                # what the user sees first is usually reasoning, so keying on
+                # ``content`` alone would systematically overstate the wait.
+                #
+                # Scope: excludes queue wait (``t0`` is already past the queue;
+                # enqueue→dequeue is a separate probe, not done here).  ``req_bytes``
+                # is the body sent to ``ai.server``, which then injects
+                # ``stream_options.include_usage`` before forwarding — so it runs a
+                # few dozen bytes under the true on-wire size and should not be
+                # read as an exact line count.
+                #
+                # INFO, deliberately: production runs at INFO, and a DEBUG probe
+                # here emits nothing at all.
+                if not ttft_logged:
+                    reasoning_first = delta_data.get("reasoning")
+                    if reasoning_first or delta_data.get("content"):
+                        ttft_logged = True
+                        logger.info(
+                            f"AI first token: ttft={time.monotonic() - t0:.3f}s "
+                            f"req_bytes={len(payload)} "
+                            f"kind={'reasoning' if reasoning_first else 'content'}"
+                        )
                 compaction_signal = data.get("psi_compaction", {})
                 compaction_needed = isinstance(compaction_signal, dict) and compaction_signal.get("needed", False)
                 yield AiDelta(
