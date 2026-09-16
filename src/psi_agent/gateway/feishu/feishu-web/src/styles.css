@@ -502,6 +502,18 @@ button {
   background: var(--fs-brand-soft);
 }
 
+/* ---- 任务行: 单击选中 / 双击打开 ---- */
+/* 双击可用这件事必须**看得出来**, 否则等于没做: 多给一个「打开」的光标语义(pointer 已有),
+   悬停时把标题颜色压深一点, 并让「继续对话」那个按钮不要跟整行的双击抢注意力 —— 按钮仍
+   可点(它是键盘/触屏用户唯一的入口), 只是从视觉上退到次要位置。 */
+.ht-table tbody tr.ht-row:hover .ht-cell-main strong {
+  color: var(--fs-brand);
+}
+
+.ht-table tbody tr.ht-row .ht-cell-main strong {
+  transition: color 120ms ease;
+}
+
 .ht-cell-main strong {
   display: block;
   font-size: 13px;
@@ -3252,22 +3264,55 @@ button {
   justify-content: flex-end;
 }
 
+/* 遮罩: 压暗 + 轻微虚化, 与 C 端 `.drawer-backdrop` 同一手法(那层 rgba 只负责「这不是当前
+   一屏」, 真正把预览与页面分开的是抽屉自己的不透明底色)。 */
 .preview-scrim {
   position: absolute;
   inset: 0;
   border: 0;
   background: rgba(17, 25, 38, 0.35);
+  backdrop-filter: blur(3px);
   cursor: default;
+  animation: preview-fade-in 220ms ease both;
 }
 
-.file-preview.preview-drawer {
+/*
+ * 侧边预览抽屉 —— **不透明**、贴右边、整高。
+ *
+ * 这里曾经写作 `.file-preview.preview-drawer`: 选择器要求 ``file-preview`` 这个类, 而两个
+ * 组件(ArtifactDrawer / DeliveryPreviewModal)render 的都是 ``preview-drawer``(+``wide``),
+ * 于是整条规则**一条都没命中** —— 抽屉没有底色、没有宽度, 变成一块半透明浮在页面上、页面
+ * 文字从里面透出来的东西(实测截图确认)。规则挂在**实际在用的类**上, 别再顺手加前缀:
+ * 类名对不上时 CSS 不报错, 只是安静地不生效。
+ */
+.preview-drawer {
   position: relative;
-  width: min(720px, 92vw);
   height: 100%;
+  width: min(720px, 92vw);
   display: flex;
   flex-direction: column;
   background: #fff;
-  box-shadow: -12px 0 34px rgba(13, 27, 46, 0.22);
+  border-left: 1px solid rgba(16, 31, 43, 0.12);
+  box-shadow: -18px 0 44px rgba(13, 27, 46, 0.22);
+  animation: drawer-in 330ms cubic-bezier(0.22, 0.85, 0.24, 1) both;
+}
+
+@keyframes drawer-in {
+  from {
+    transform: translateX(102%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes preview-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .preview-drawer-header {
@@ -4366,14 +4411,10 @@ button {
 }
 
 /* ---------- 当前交付物抽屉布局 ---------- */
+/* 只覆盖宽度: 底色/边框/阴影/动画都在上面的 ``.preview-drawer`` 基线上, 不重复一份
+   (重复过的后果就是这次: 两处各写一半, 改一处另一处还留着旧样子)。 */
 .preview-drawer.wide {
-  position: relative;
   width: min(1000px, 96vw);
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  background: #fff;
-  box-shadow: -12px 0 34px rgba(13, 27, 46, 0.22);
 }
 
 .artifact-drawer-split {

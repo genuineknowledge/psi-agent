@@ -50,7 +50,9 @@ CHAT_VIEW = SRC / "components" / "chat-view.tsx"
 NEW_TASK_PAGE = SRC / "components" / "new-task-page.tsx"
 ARTIFACT_FILE_BODY = SRC / "components" / "artifact-file-body.tsx"
 ARTIFACT_DRAWER = SRC / "components" / "artifact-drawer.tsx"
+DELIVERY_PREVIEW_MODAL = SRC / "components" / "delivery-preview-modal.tsx"
 USE_CHAT_TURN = SRC / "hooks" / "useChatTurn.ts"
+STYLES_CSS = SRC / "styles.css"
 ROUTES_PY = FEISHU_WEB.parent / "_routes.py"
 
 
@@ -449,6 +451,51 @@ def test_deliverable_preview_uses_the_authenticated_route() -> None:
     assert "readWorkspaceFile" not in api, (
         "``api.ts`` 里还留着 ``readWorkspaceFile``(/workspace/file) —— 它在云上不可达, 留着只会被再次误用。"
     )
+
+
+def test_task_row_opens_on_double_click() -> None:
+    """任务行双击 = 进对话。此前「打开」只有详情面板里那个按钮一个入口。"""
+    view = _code(TASKS_VIEW)
+
+    assert "onDoubleClick={() => onOpenChat(t.id)}" in view, (
+        "任务行没有双击打开 —— 想进对话得先点行、再把视线挪到右侧面板、再点「继续对话」。"
+    )
+    assert 'title="双击打开对话"' in view, (
+        "双击这件事没有任何提示 —— 用户不会去试(行的主要用途就是进去接着聊, 值得说出来)。"
+    )
+    assert "onClick={() => onSelect(t.id)}" in view, "单击不再选中了 —— 单击留作「先看看右侧详情」, 双击才进对话。"
+
+
+def test_preview_drawer_is_an_opaque_side_panel() -> None:
+    """预览必须是**贴着右边的实底侧栏**, 不是一层透明的浮层。
+
+    实测现象(2026-09-16): 预览打开后整个页面从它里面透出来, 像一层贴纸。根因是那条规则写作
+    ``.file-preview.preview-drawer`` —— 选择器要求 ``file-preview`` 这个类, 而两个组件
+    (ArtifactDrawer / DeliveryPreviewModal)render 的都是 ``preview-drawer``(+``wide``),
+    整条规则一条都没命中: 没底色、没宽度、没阴影。CSS 的失败方式就是**安静地不生效**。
+    """
+    css = _code(STYLES_CSS)
+    block = re.search(r"\.preview-drawer \{[^}]*\}", css)
+
+    assert block is not None, "``styles.css`` 里没有 ``.preview-drawer`` 这条基线规则。"
+    rule = block.group(0)
+    assert "background: #fff" in rule, "侧栏没有实底 —— 页面会从预览里透出来。"
+    assert "width: min(720px, 92vw)" in rule, "侧栏没有宽度, 内容多宽它就多宽(会盖住整屏)。"
+    assert "box-shadow" in rule, "侧栏与页面之间没有分隔阴影, 看起来像一层浮贴纸。"
+    assert "animation: drawer-in" in rule, "侧栏没有滑入动画(C 端是 330ms 曲线)。"
+    assert ".file-preview.preview-drawer" not in css, (
+        "``.file-preview.preview-drawer`` 又出现了 —— 那个前缀类没有任何组件在用, 写着它的规则"
+        "不会生效(这正是「预览透明」的根因)。规则要挂在组件实际 render 的类上。"
+    )
+    # 遮罩: 压暗 + 轻虚化, 与 C 端 ``.drawer-backdrop`` 同一手法。
+    scrim = re.search(r"\.preview-scrim \{[^}]*\}", css)
+    assert scrim is not None and "backdrop-filter: blur" in scrim.group(0), (
+        "遮罩没有虚化 —— 与 C 端 `.drawer-backdrop` 的手法不一致。"
+    )
+    # 「随时可关」的三条路都在: 头部 X、点遮罩、Esc。
+    assert "onClick={onClose}" in _code(ARTIFACT_DRAWER), "交付物抽屉没有关闭按钮/遮罩点击关闭。"
+    assert "onClick={onClose}" in _code(DELIVERY_PREVIEW_MODAL), "单文件预览没有关闭按钮/遮罩点击关闭。"
+    assert "if (previewFile) {" in _code(APP_TSX), "Esc 关不掉单文件预览。"
 
 
 def test_title_and_delete_routes_go_through_the_write_family() -> None:

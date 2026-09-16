@@ -90,7 +90,22 @@ export function TasksView(props: TasksViewProps) {
               <tbody>
                 {filtered.length === 0 && <tr><td colSpan={7} className="ht-table-empty">没有找到匹配的任务</td></tr>}
                 {filtered.map((t) => (
-                  <tr key={t.id} onClick={() => onSelect(t.id)} aria-selected={selected?.id === t.id}>
+                  /*
+                   * 单击 = 选中(右侧详情面板跟着换); **双击 = 直接打开这条对话**。
+                   *
+                   * 加双击是因为「打开」此前只有详情面板里那个「继续对话」一个入口 —— 想进对话
+                   * 得先点行、再把视线挪到右侧面板、再点一次, 而这一行的主要用途就是进去接着聊。
+                   * 保留单击选中(不是直接打开): 双击的第一下会先把它选中, 于是「先看看再决定进不进去」
+                   * 这条路没有被堵掉。
+                   */
+                  <tr
+                    key={t.id}
+                    className="ht-row"
+                    onClick={() => onSelect(t.id)}
+                    onDoubleClick={() => onOpenChat(t.id)}
+                    title="双击打开对话"
+                    aria-selected={selected?.id === t.id}
+                  >
                     <td>
                       <div className="ht-cell-main">
                         <strong>{t.title}</strong>
