@@ -310,6 +310,14 @@ class _AccessDeniedError(Exception):
         self.message = message
 
 
+#: 组织共享会话的只读拒绝文案。
+#:
+#: 给**用户看**的: 它会被前端原样显示在对话底部。所以是中文、说的是「你能做什么」, 而不是
+#: 一句 ``org session is read-only`` 那种只有实现者看得懂的英文 —— 实测有人把它当成了
+#: 「新建的对话坏了」, 而真相是那条会话本来就不接受消息。
+ORG_SESSION_READ_ONLY = "这是组织共享任务, 只能查看历史, 不能在里面发消息。想继续做, 请点「新建任务」开一个自己的会话。"
+
+
 def _authorize_session(request: web.Request, *, write: bool = False) -> tuple[Identity, str, str]:
     """路径参数版: 会话 id 取自 ``{session_id}``。判定体在 :func:`_authorize_owned`。"""
     return _authorize_owned(request, request.match_info["session_id"], write=write)
@@ -331,20 +339,34 @@ def _authorize_owned(request: web.Request, session_id: str, *, write: bool = Fal
     ``session_id`` 由调用方给而不是固定从 ``match_info`` 取: 标题那两条的 id 在 **body**
     里(前端那侧的形状就是 ``{id, title}``), 而判定必须与路径参数版**完全同一份** ——
     谁再写一遍谁就可能漏掉 ``write`` 那一步。
+
+    **拒绝一律记一条 WARNING**, 带上会话 id 与原因: 403 这条路径不产生任何其它日志, 用户
+    截图里只有一句错误文案时, 服务端这边必须有东西能对上号(实测踩过 —— 「新建对话报 org
+    session is read-only」查了半天才定位到是哪条会话)。**不记 cookie / 身份细节**: 记的是
+    open_id 与 session id, 与访问日志同级。
     """
     try:
         identity = _require_identity(request)
     except PermissionError as e:
+        logger.warning(f"[feishu] 会话级路由拒绝: 未登录 path={request.path}")
         raise _AccessDeniedError(401, str(e)) from e
     fm: FeishuManager = request.app["fm"]
     sm: SessionManager = request.app["sm"]
     try:
         workspace = sm.get_workspace(session_id)
     except LookupError:
+        logger.warning(f"[feishu] 会话级路由拒绝: 会话不存在 session={session_id!r} open_id={identity.open_id}")
         raise _AccessDeniedError(404, f"Session '{session_id}' not found") from None
     if write and is_org_session(session_id, workspace):
-        raise _AccessDeniedError(403, "org session is read-only")
+        logger.warning(
+            f"[feishu] 会话级路由拒绝: 组织共享会话只读 "
+            f"session={session_id!r} open_id={identity.open_id} path={request.path}"
+        )
+        raise _AccessDeniedError(403, ORG_SESSION_READ_ONLY)
     if not owns_session(identity.open_id, session_id, workspace, fm):
+        logger.warning(
+            f"[feishu] 会话级路由拒绝: 越权 session={session_id!r} open_id={identity.open_id} path={request.path}"
+        )
         raise _AccessDeniedError(403, "forbidden")
     return identity, session_id, workspace
 
@@ -364,13 +386,19 @@ def _download_response(path: Path | str, *, filename: str = "") -> web.FileRespo
 
 
 def _web_session_data(info: SessionInfo, *, from_im: bool) -> dict[str, Any]:
-    """骨架的 ``_session_data`` 再加一个 ``from_im`` —— 前端据此打「来自飞书对话」角标。
+    """骨架的 ``_session_data`` 再加 ``from_im`` / ``read_only`` 两个前端判据。
 
-    角标本身是产品决定二: IM 里那条 session 在网页里正常显示、可续聊, 但用户要能看出
-    它与 IM 共通 (在里面发言 IM 侧也看得到)。
+    * ``from_im``: IM 里那条 session 在网页里正常显示、可续聊, 但用户要能看出它与 IM
+      共通(在里面发言 IM 侧也看得到)。
+    * ``read_only``: 组织共享的调度会话。它对所有登录用户**只读可见**(历史能看、消息不能发),
+      而它和用户自己的会话在列表里长得一模一样 —— 不说出来的话, 用户点进去打字, 只会收到
+      一句看不懂的 403(实测踩过: 有人以为那是自己刚新建的对话)。
+      这个标记是**显示用**的, 真正的闸在 ``_authorize_session(write=True)``;
+      下发给前端不泄漏任何东西 —— 那条历史本来就已经可见了。
     """
     data = _session_data(info)
     data["from_im"] = from_im
+    data["read_only"] = is_org_session(info.id, info.workspace or "")
     return data
 
 

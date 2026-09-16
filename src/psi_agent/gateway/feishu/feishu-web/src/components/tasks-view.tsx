@@ -1,4 +1,4 @@
-import { Check, Download, MessageCircle, Package, Pin, Plus, Search, Trash2, Workflow } from "lucide-react";
+import { Check, Download, MessageCircle, Pin, Plus, Search, Trash2, Workflow } from "lucide-react";
 import type { Task } from "../types";
 import { statCell, statusPill } from "./brand";
 import { TreasureVisual } from "./treasure";
@@ -38,13 +38,19 @@ export function TasksView(props: TasksViewProps) {
         <div><h2>任务总览</h2><p>跨群任务与交付物统一管理</p></div>
         <div className="ht-actions">
           {/*
-            宝箱与「导出对话历史」是两回事, 所以是两个按钮:
-            - 宝箱装着**全部**会话的交付物, 进去挑着下载(原先那个位置是个没有 onClick 的
-              死按钮, 点了什么都不发生)。
-            - 导出对话历史导的是对话本身(原始 jsonl), 与交付物无关。
+            宝箱 = **全部交付物**, 与对话顶栏那颗是同一个图标 (``TreasureVisual``, ToC 那边
+            也是它)。只给图标不给文字: 这一行右边已经有「新建任务」, 再加一个带字的按钮会把
+            「导出对话历史」挤掉。名字挂在 ``title``/``aria-label`` 上 —— 鼠标停上去显示
+            「所有交付物」。
           */}
-          <button type="button" className="ht-btn" onClick={onOpenChest} title="打开宝箱：全部会话的交付物，挑着下载">
-            <Package size={14} />宝箱{deliverableTotal > 0 ? ` ${deliverableTotal}` : ""}
+          <button
+            type="button"
+            className={`chat-top-icon${deliverableTotal > 0 ? " busy" : ""}`}
+            aria-label="所有交付物"
+            title="所有交付物"
+            onClick={onOpenChest}
+          >
+            <TreasureVisual state={deliverableTotal > 0 ? "ready" : "none"} size="mini" />
           </button>
           <button type="button" className="ht-btn" onClick={onExportHistory} title="导出对话历史：勾选会话，下载原始 jsonl">
             <Download size={14} />导出对话历史
@@ -93,6 +99,11 @@ export function TasksView(props: TasksViewProps) {
                             来自飞书对话
                           </span>
                         )}
+                        {t.readOnly && (
+                          <span className="ht-badge-ro" title="组织共享任务: 历史公开可读, 但谁都不能在里面发消息">
+                            组织共享 · 只读
+                          </span>
+                        )}
                         <em>{t.sop}</em>
                       </div>
                     </td>
@@ -111,8 +122,10 @@ export function TasksView(props: TasksViewProps) {
                         onClick={(e) => { e.stopPropagation(); onTogglePin(t.id); }}
                       ><Pin size={14} /></button>
                       {/* IM 共用那条不许删: 它承载的是与飞书机器人的同一条对话, 删了等于
-                          把机器人的上下文一起扔掉, 而用户在 IM 里还会继续用到它。 */}
-                      {!t.fromIm && (
+                          把机器人的上下文一起扔掉, 而用户在 IM 里还会继续用到它。
+                          组织共享那条也不给删: 后端对它的写操作一律 403, 摆一个点了必失败的
+                          按钮只会让人以为是坏的。 */}
+                      {!t.fromIm && !t.readOnly && (
                         <button type="button" className="ht-row-delete" aria-label="删除任务" title="删除任务" onClick={(e) => { e.stopPropagation(); onDelete(t.id); }}><Trash2 size={14} /></button>
                       )}
                     </td>
@@ -134,11 +147,16 @@ export function TasksView(props: TasksViewProps) {
                     这条会话与飞书对话共用同一份上下文, 会越来越长。建议点上方「新建任务」开一个新会话。
                   </p>
                 )}
+                {selected.readOnly && (
+                  <p className="ht-card-hint">
+                    组织共享任务: 历史对所有人可读, 但谁都不能在里面发消息。点上方「新建任务」开一个自己的会话继续做。
+                  </p>
+                )}
                 <div className="ht-bar" role="progressbar" aria-valuenow={selected.progress} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${selected.progress}%` }} /></div>
                 <div className="ht-steps">{selected.steps.map((s, i) => <div key={i} className={`ht-step ${s.s}`}><span>{s.s === "done" ? <Check size={12} /> : i + 1}</span><em>{s.t}</em></div>)}</div>
                 <div className="ht-actions">
-                  <button type="button" className="ht-btn primary" onClick={() => onOpenChat(selected.id)}><MessageCircle size={13} />继续对话</button>
-                  {!selected.fromIm && (
+                  <button type="button" className="ht-btn primary" onClick={() => onOpenChat(selected.id)}><MessageCircle size={13} />{selected.readOnly ? "查看历史" : "继续对话"}</button>
+                  {!selected.fromIm && !selected.readOnly && (
                     <button type="button" className="ht-btn" onClick={() => onDelete(selected.id)}><Trash2 size={13} />删除</button>
                   )}
                 </div>
@@ -147,8 +165,8 @@ export function TasksView(props: TasksViewProps) {
                 <div className="ht-section-label"><span>新交付物</span><em>{newDeliveryCount}</em></div>
                 <p>点击统计数字或下方按钮，从右侧打开待确认的新交付物。</p>
                 <button type="button" className="ht-btn soft" onClick={onOpenNewDeliverables}><TreasureVisual state={newDeliveryCount > 0 ? "ready" : "none"} size="mini" />打开新交付物</button>
-                {/* 新交付物只装「这一轮新收到的」, 想翻旧的得进宝箱 —— 全部会话的交付物都在那里。 */}
-                <button type="button" className="ht-btn soft" onClick={onOpenChest}><Package size={13} />打开宝箱（全部交付物）</button>
+                {/* 全部交付物的入口是页头那颗宝箱图标(「所有交付物」), 这里不再重复一个按钮:
+                    同一件事在一屏里出现两次, 只会让人犹豫点哪个。 */}
               </div>
             </>
           )}

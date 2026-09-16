@@ -46,6 +46,7 @@ TASKS_VIEW = SRC / "components" / "tasks-view.tsx"
 TASK_MODEL = SRC / "services" / "taskModel.ts"
 CHEST = SRC / "components" / "deliverables-chest.tsx"
 EXPORT_DIALOG = SRC / "components" / "export-history-dialog.tsx"
+CHAT_VIEW = SRC / "components" / "chat-view.tsx"
 ROUTES_PY = FEISHU_WEB.parent / "_routes.py"
 
 
@@ -228,7 +229,74 @@ def test_chest_and_history_export_are_separate_entries() -> None:
     )
 
 
-def test_peer_routes_are_registered_and_authorized() -> None:
+def test_chest_entry_is_an_icon_with_a_tooltip() -> None:
+    """宝箱 = 全部交付物, **只给图标**(与 ToC 同一个图标), 名字挂在鼠标提示上。
+
+    页头那一行右边已经有「新建任务」, 再塞一个带字的按钮会把「导出对话历史」挤掉; 而宝箱
+    与对话顶栏那颗是同一件事, 用同一个图标才认得出。判据: 图标是 ``TreasureVisual``(ToC
+    的 ``TreasureButton`` 里也是它), 文案只出现在 ``title``/``aria-label`` 上。
+    """
+    view = _code(TASKS_VIEW)
+
+    assert 'aria-label="所有交付物"' in view and 'title="所有交付物"' in view, (
+        "宝箱那颗图标按钮的鼠标提示不再是「所有交付物」—— 只有图标没有名字时, 提示就是它唯一的"
+        "说明(tooltip 与 aria-label 要一起写, 否则读屏用户只听到「按钮」)。"
+    )
+    assert ">宝箱" not in view, "宝箱按钮又带上了文字。它要与对话顶栏那颗图标保持一致: 图标 + 悬停提示, 不写文字。"
+    assert "<TreasureVisual state={deliverableTotal > 0" in view, (
+        "宝箱不再是 ``TreasureVisual`` —— 与 ToC 的交付物图标就不是同一个了。"
+    )
+
+
+def test_no_duplicate_chest_button_in_the_detail_panel() -> None:
+    """详情面板里不再重复一个「打开宝箱」按钮 —— 同一件事在一屏出现两次只会让人犹豫。"""
+    view = _code(TASKS_VIEW)
+
+    assert "打开宝箱" not in view, (
+        "``tasks-view.tsx`` 里又出现了「打开宝箱(全部交付物)」按钮。全部交付物的入口是页头"
+        "那颗宝箱图标, 面板里只留「打开新交付物」。"
+    )
+    assert view.count("onClick={onOpenChest}") == 1, (
+        "``onOpenChest`` 的**按钮**不再是 1 个 —— 全部交付物的入口只该有一处(页头那颗图标);"
+        "面板里再来一个, 同一件事就在一屏里出现两次。"
+        "(数的是 ``onClick={onOpenChest}``: 属性声明与解构里各还会出现一次同名标识符。)"
+    )
+
+
+def test_org_session_is_shown_as_read_only() -> None:
+    """组织共享会话必须在界面上标出来, 并把输入框关掉。
+
+    现象(2026-09-16 实测): 用户以为自己在一条新对话里, 打了字发出去, 只收到一句
+    ``org session is read-only`` —— 那条会话是组织共享的调度会话, 本来就只读。它在列表里与
+    用户自己的会话长得一模一样, 不标出来就只能靠撞一次 403 才知道。
+    """
+    api = _code(API_TS)
+    model = _code(TASK_MODEL)
+    tasks = _code(USE_TASKS)
+    view = _code(TASKS_VIEW)
+    chat = _code(CHAT_VIEW)
+    app = _code(APP_TSX)
+    routes = _code(ROUTES_PY)
+
+    assert "read_only?: boolean" in api, (
+        "``SessionInfo`` 里没有 ``read_only`` —— 后端已经在 ``/feishu/sessions`` 里下发了, "
+        "前端不接就没法把只读会话标出来。"
+    )
+    assert 'data["read_only"] = is_org_session(' in routes, (
+        "``_web_session_data`` 不再下发 ``read_only`` —— 前端拿不到这个判据, 只读会话又会和用户自己的会话长得一模一样。"
+    )
+    assert "readOnly: session.read_only === true" in tasks, "``useTasks`` 没有把 ``read_only`` 传进 Task。"
+    assert "readOnly: src.readOnly" in model, "``buildTask`` 没有把只读标记带出来。"
+    # 角标**要挂在 readOnly 这个闸上**: 光有 ``ht-badge-ro`` 这个类名不算数(把闸改成
+    # ``false`` 时样式还在源码里, 判据却什么都测不到 —— 变异复核时实测踩过)。
+    assert "{t.readOnly && (" in view, "任务列表里没有按 ``readOnly`` 打只读角标。"
+    assert 'className="ht-badge-ro"' in view, "只读角标的样式类名不见了。"
+    assert "selected.readOnly" in view, "详情面板对只读会话没有任何说明。"
+    # 输入框整块换成说明, 而不是「能打字但发不出去」。
+    assert "readOnly ? (" in chat and "focus-chat-readonly" in chat, (
+        "``chat-view.tsx`` 没有在只读时把输入区换成说明 —— 用户会打完字才吃到一个 403。"
+    )
+    assert "readOnly={currentTask?.readOnly" in app, "``App.tsx`` 没有把只读标记传给 ChatView。"
     routes = _code(ROUTES_PY)
 
     for suffix in ("todos", "todo-segments", "files", "export"):

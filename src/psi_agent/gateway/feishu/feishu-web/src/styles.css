@@ -534,10 +534,45 @@ button {
   vertical-align: middle;
 }
 
+/* 组织共享会话 —— 与「来自飞书对话」同为角标, 但刻意用**灰**而不是蓝: 它标的是限制
+   (发不出消息), 不是身份。涂成醒目色反而会让人以为那是个可以点的入口。 */
+.ht-badge-ro {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: #f0f2f5;
+  color: #6b7280;
+  font-size: 0.72rem;
+  vertical-align: middle;
+}
+
+/* 只读会话的输入区替代品: 占住输入框那块位置, 免得界面看起来「少了什么」 */
+.focus-chat-readonly {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid #e6e9ef;
+  border-radius: 12px;
+  background: #f7f8fa;
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.focus-chat-readonly svg {
+  flex: none;
+  color: #9aa3af;
+}
+
 .ht-card-hint {
   margin: 0.4rem 0 0;
   color: #8a6d3b;
   font-size: 0.78rem;
+
   line-height: 1.5;
 }
 

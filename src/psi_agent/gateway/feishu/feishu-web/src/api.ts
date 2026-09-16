@@ -22,6 +22,13 @@ export interface SessionInfo {
   ai_id?: string;
   /** 是否 IM 里那条会话(``feishu-<open_id>``) —— 列表上打「来自飞书对话」角标。 */
   from_im?: boolean;
+  /**
+   * 组织共享的调度会话: 历史对所有登录用户可见, 但**只读**(发消息一律 403)。
+   *
+   * 后端下发的显示判据(见 ``_web_session_data``)。没有它的话, 这类会话在列表里与用户自己的
+   * 会话长得一模一样 —— 用户点进去打字, 发出去了才收到一句看不懂的拒绝(实测踩过)。
+   */
+  read_only?: boolean;
 }
 
 export interface HistoryMessage {

@@ -100,16 +100,22 @@ def test_im_session_title_is_single_sourced() -> None:
 
 
 def test_shared_session_cannot_be_deleted() -> None:
-    """两个删除入口都要对 ``fromIm`` 加闸, 且不能新增第三个入口。"""
+    """两个删除入口都要加闸, 且不能新增第三个入口。
+
+    闸门有两个, 缺一不可: ``fromIm``(与机器人共用那条)与 ``readOnly``(组织共享会话 ——
+    后端对它的写一律 403, 摆一个点了必失败的按钮只会让人以为界面坏了)。
+    """
     view = _code(TASKS_VIEW)
 
-    assert "{!t.fromIm && (" in view, (
-        "``tasks-view.tsx`` 列表行内的删除按钮没有对 ``fromIm`` 加闸 —— 与飞书机器人共用的"
-        "那条会话不该能被删除(删了等于把机器人侧上下文一起扔掉)。"
+    assert "{!t.fromIm && !t.readOnly && (" in view, (
+        "``tasks-view.tsx`` 列表行内的删除按钮没有对 ``fromIm`` / ``readOnly`` 加闸 —— "
+        "共用那条删了等于把机器人侧上下文一起扔掉; 组织共享那条后端本来就不许任何人写。"
     )
-    assert "{!selected.fromIm && (" in view, "``tasks-view.tsx`` 详情面板的「删除」按钮没有对 ``fromIm`` 加闸。"
+    assert "{!selected.fromIm && !selected.readOnly && (" in view, (
+        "``tasks-view.tsx`` 详情面板的「删除」按钮没有对 ``fromIm`` / ``readOnly`` 加闸。"
+    )
     assert view.count("onDelete(") == 2, (
-        "``tasks-view.tsx`` 里的删除调用点不再是 2 处。新增删除入口时必须同时加 ``fromIm`` "
-        "闸(共用会话不可删), 所以这条计数是刻意的 —— 见到它红, 先确认新入口也加了闸, "
+        "``tasks-view.tsx`` 里的删除调用点不再是 2 处。新增删除入口时必须同时加 ``fromIm`` / "
+        "``readOnly`` 两道闸, 所以这条计数是刻意的 —— 见到它红, 先确认新入口也加了闸, "
         "再把这个数字改掉。"
     )

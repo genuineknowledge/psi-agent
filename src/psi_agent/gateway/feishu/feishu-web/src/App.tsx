@@ -181,6 +181,15 @@ function AuthedApp({ userName }: { userName: string }) {
     const session = sessions.sessions.find((s) => s.id === sessions.currentId);
     return currentTask?.title || displayTitle(session, sessions.titles[sessions.currentId]);
   }, [currentTask, sessions.sessions, sessions.currentId, sessions.titles]);
+  /**
+   * 当前会话**自己**那条记录 —— 只读这类判据取它而不是 ``currentTask``:
+   * 首屏 tasks 还没派生出来时 ``currentTask`` 是 undefined, 那时输入框会短暂地可编辑,
+   * 用户手快就撞上 403。会话列表一到就有值。
+   */
+  const currentSession = useMemo(
+    () => sessions.sessions.find((s) => s.id === sessions.currentId),
+    [sessions.sessions, sessions.currentId],
+  );
   const artifactTask = useMemo(
     () => tasks.tasks.find((t) => t.id === artifactTaskId),
     [tasks.tasks, artifactTaskId],
@@ -572,6 +581,9 @@ function AuthedApp({ userName }: { userName: string }) {
               queued={queuedSends[sessions.currentId] ?? null}
               onQueue={handleQueue}
               onCancelQueued={cancelQueued}
+              // 组织共享会话只读: 后端对它的写一律 403, 所以输入框整块换成一句说明,
+              // 而不是让用户打完字再吃一个错误(理由见 ChatView 里 readOnly 的注释)。
+              readOnly={currentTask?.readOnly ?? currentSession?.read_only ?? false}
               onAddFiles={(files) => setPendingFiles((prev) => [...prev, ...files])}
               onRemoveFile={(index) => setPendingFiles((prev) => prev.filter((_, idx) => idx !== index))}
               onFeedback={(index, kind) =>

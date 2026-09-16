@@ -98,6 +98,7 @@ export function useTasks(
         files,
         newDeliverables,
         fromIm: session.from_im === true,
+        readOnly: session.read_only === true,
         pinned: pinnedSet.has(session.id),
       });
     });

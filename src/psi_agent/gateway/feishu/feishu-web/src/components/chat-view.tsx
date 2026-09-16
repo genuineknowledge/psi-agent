@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { Clock, Paperclip, Send, Square, X } from "lucide-react";
+import { Clock, Lock, Paperclip, Send, Square, X } from "lucide-react";
 import type { ChatMessage } from "../types";
 import { filesFromClipboard } from "../services/clipboardFiles";
 import { useComposerFileDrop } from "../services/composerFileDrop";
@@ -36,6 +36,7 @@ export function ChatView({
   queued,
   onQueue,
   onCancelQueued,
+  readOnly = false,
 }: {
   messages: ChatMessage[];
   userName: string;
@@ -60,6 +61,13 @@ export function ChatView({
   queued?: QueuedSend | null;
   onQueue: () => void;
   onCancelQueued: () => void;
+  /**
+   * 只读会话(组织共享任务): 历史能看, 消息不能发。
+   *
+   * 后端对这类会话一律 403, 所以**输入框整块换成一句说明** —— 让用户先打字再收到一句错误,
+   * 是拿他的时间去发现一件本来可以写在界面上的事(实测有人以为那是自己新建的对话坏了)。
+   */
+  readOnly?: boolean;
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const hasContent = !!input.trim() || pendingFiles.length > 0;
@@ -150,6 +158,13 @@ export function ChatView({
           </div>
         )}
         <div className="focus-chat-composer-row">
+          {readOnly ? (
+            <p className="focus-chat-readonly" role="note">
+              <Lock size={14} />
+              这是组织共享任务，只能查看历史，不能在里面发消息。想继续做，请点右上角「新建任务/聊天」开一个自己的会话。
+            </p>
+          ) : (
+            <>
           <input
             ref={fileInputRef}
             type="file"
@@ -199,6 +214,8 @@ export function ChatView({
             <button type="submit" className="focus-chat-send" aria-label="发送" disabled={!hasContent}>
               <Send size={16} />
             </button>
+          )}
+            </>
           )}
         </div>
       </form>
