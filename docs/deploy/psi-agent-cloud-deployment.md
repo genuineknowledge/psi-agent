@@ -265,15 +265,21 @@ deploy/haitun/build-image.sh full <commit>
 └── docs/                       交付文档（不进 git）
 ```
 
-### 3.2 三个服务
+### 3.2 四个服务
 
 | 服务 | 容器名 | 网络 | 卷 |
 |---|---|---|---|
 | `gateway` | `psi-agent-gateway` | 发布 `127.0.0.1:8090` | `./workspace:/workspace` |
 | `private-luolin` | `psi-agent-luolin` | 仅 compose 网内 `8081` | `./workspace-luolin:/workspace` |
+| `private-chengxx` | `psi-agent-chengxx` | 仅 compose 网内 `8081` | `./workspace-chengxx:/workspace` |
 | `oauth-proxy` | `psi-agent-oauth-proxy` | `network_mode: "service:gateway"` | `oauth-proxy.py:ro` |
 
-**容器名 `psi-agent-luolin` 不可改** —— `PSI_FEISHU_EXTERNAL_SESSIONS` 按容器 DNS 名硬绑定。
+**容器名 `psi-agent-luolin` / `psi-agent-chengxx` 不可改** —— `PSI_FEISHU_EXTERNAL_SESSIONS`
+按容器 DNS 名硬绑定。
+
+**两个私有容器和主容器同镜像、不同 workspace。** compose 里 4 行 `image:` 中有 3 行是
+`psi-agent-gateway:<tag>`(gateway / private-luolin / private-chengxx), 第 4 行是 oauth-proxy 的
+`psi-agent-gateway:local`, **换 tag 时那一行不动**。2026-09-16 实测三个业务容器都在 `223a2996`。
 
 gateway 用 `launch-gateway.sh` 起**双进程**：`psi-agent gateway`（监听容器内
 `127.0.0.1:8080`）+ `psi-agent channel feishu --gateway-url`，后者实现按 open_id 独立 session。
@@ -369,10 +375,12 @@ FUSION_MEMORY_TOKEN_MAP_FILE               XFYUN_STT_APP_ID / _API_KEY / _API_SE
                                            XFYUN_TTS_APP_ID / _API_KEY / _API_SECRET
 ```
 
-### 4.2 `workspace-luolin/.env`（18 个键）
+### 4.2 `workspace-luolin/.env` 与 `workspace-chengxx/.env`（各 18 个键）
 
 同上，去掉 `PSI_PRIVATE_OPEN_IDS`、`PSI_FEISHU_EXTERNAL_SESSIONS`、`PSI_APPDATA`。
 **仍需飞书凭据**（`PSI_FEISHU_APP_ID` / `_SECRET`）—— 它虽不连 WS，但工具侧要调飞书 API。
+
+两份的**键集完全相同**（2026-09-16 实测双向 `comm` 都为空），只有值不同。主容器那份是 27 个键。
 
 ### 4.3 `fm-secrets/.config/fusion-memory/mcp.env`
 
@@ -522,7 +530,7 @@ docker compose -f docker-compose.postgres.yml up -d
 # 2) 宿主 systemd：embed-proxy → mcp
 systemctl enable --now fusion-memory-embed-proxy fusion-memory-mcp
 
-# 3) psi-agent 三容器
+# 3) psi-agent 四容器
 cd /srv/haitun/psi-agent
 docker compose up -d
 
@@ -549,8 +557,40 @@ NAMES                    STATUS
 psi-agent-oauth-proxy    Up 2 hours
 psi-agent-gateway        Up 2 hours
 psi-agent-luolin         Up 2 hours
+psi-agent-chengxx        Up 2 hours
 fusion-memory-postgres   Up 2 hours (healthy)
 ```
+
+⚠️ **`Up` 和 `LISTEN` 是两个假阴性, 都不算判据 —— 只有真打一次请求算数。** netns 死掉时
+`docker-proxy` 仍在宿主上 `LISTEN 8090`, 容器状态仍是 `Up`, 但请求全 502。见 §3.3。
+
+**①之二 两个私有容器必须和主容器一起验**
+
+发布不是只发 gateway。每次换 tag 或改内容层, 这两个容器都要跟着更新并**逐个**验证 ——
+它们不连飞书 WebSocket, 出问题没有任何用户可见信号, 只能主动量。三项:
+
+```console
+# a) 镜像 tag 与主容器一致
+$ for c in gateway luolin chengxx; do \
+    printf "%-8s %s\n" "$c" "$(docker inspect -f '{{.Config.Image}}' psi-agent-$c)"; done
+gateway  psi-agent-gateway:223a2996
+luolin   psi-agent-gateway:223a2996
+chengxx  psi-agent-gateway:223a2996
+
+# b) 收窄清单到位(WARNING 那行必须消失, 判据见 deploy/haitun/README.md)
+$ docker logs psi-agent-luolin --since 10m 2>&1 | grep "declare a manifest"
+... tool_exposure tier=layered: 1 of 1 layer(s) declare a manifest [agent=89]
+
+# c) 工具加载失败按消息去重后计数
+$ docker logs psi-agent-chengxx --since 10m 2>&1 | grep "Failed to load" \
+    | sed 's/.*Failed to load/Failed to load/' | sort -u | wc -l
+1
+```
+
+2026-09-16 基线: 工具 **239**, 加载失败 **1**(`run_flow.py` 缺 `fusion_flow`, 主容器同样缺)。
+
+**重启用 `docker restart psi-agent-luolin psi-agent-chengxx`, 然后核 `StartedAt` 真的前进了。**
+不要靠命令有没有报错下结论 —— 管道(`| head`)会把退出码换掉, 一次没生效的重启读起来像成功。
 
 **② postgres 与 pgvector**
 
