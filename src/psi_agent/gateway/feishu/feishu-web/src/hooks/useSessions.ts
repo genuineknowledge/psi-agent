@@ -65,10 +65,18 @@ export function useSessions() {
     })();
   }, [refresh]);
 
-  const create = useCallback(async () => {
+  /**
+   * 开一个新会话。成功返回新 id, 失败返回 ``""`` —— 同时**把原因写进 ``error``**。
+   *
+   * 唯一的调用方(App.tsx 的 ``createFromDraft``)拿到的第二个返回值就是那个原因:
+   * 失败时它必须显示在新建页上, 否则用户看到的是「点了发送没反应」, 然后多半会退回去在
+   * 别的会话里接着打字 —— 实测那次就是这么落到一条只读的组织共享会话里的。
+   * 返回值而不是让它 throw: 调用方已经要判空字符串了, 加一个 try/catch 只是多一层。
+   */
+  const create = useCallback(async (): Promise<{ id: string; error: string }> => {
     if (!defaultAiId) {
       setError(NO_AI_CONFIGURED);
-      return "";
+      return { id: "", error: NO_AI_CONFIGURED };
     }
     try {
       // 不传 id → 后端发新 uuid → 新 jsonl。这是「网页里能开多个会话」的全部机制。
@@ -80,10 +88,11 @@ export function useSessions() {
       setTitles((prev) => ({ ...prev, [info.id]: placeholder }));
       await refresh();
       setCurrentId(info.id);
-      return info.id;
+      return { id: info.id, error: "" };
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      return "";
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      return { id: "", error: `新建会话失败: ${message}` };
     }
   }, [defaultAiId, refresh]);
 

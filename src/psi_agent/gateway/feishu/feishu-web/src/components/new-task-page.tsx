@@ -43,6 +43,7 @@ export function NewTaskPage({
   draft,
   sending,
   pendingFiles,
+  error,
   onDraft,
   onBack,
   onSubmit,
@@ -52,6 +53,14 @@ export function NewTaskPage({
   draft: string;
   sending: boolean;
   pendingFiles: File[];
+  /**
+   * 建会话失败的原因(``sessions.error``)。
+   *
+   * 非有不可: 建会话失败时 ``createFromDraft`` 直接 return, 页面**什么都不显示** ——
+   * 用户看到的是「点了发送没反应」, 然后多半会退回去在别的会话里接着打字(实测那次就是
+   * 这么落到一条只读的组织共享会话里的)。失败必须说出来。
+   */
+  error?: string;
   onDraft: (value: string) => void;
   onBack: () => void;
   onSubmit: () => void;
@@ -77,6 +86,8 @@ export function NewTaskPage({
             <h2>有什么可以帮您？</h2>
             <p>描述希望得到的结果、截止时间，以及手头已有的材料。发送后会进入任务分屏继续对话。</p>
           </div>
+
+          {error && <div className="ht-error" role="alert">{error}</div>}
 
           <div className="new-task-compose-block">
             <div className="new-task-presets">

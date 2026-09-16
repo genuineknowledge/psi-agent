@@ -97,6 +97,8 @@ function AuthedApp({ userName }: { userName: string }) {
   const [input, setInput] = useState("");
   const [newDraft, setNewDraft] = useState("");
   const [creatingTask, setCreatingTask] = useState(false);
+  /** 建会话失败的原因 —— 显示在新建页上, 不让「点了发送没反应」这种情况静默过去。 */
+  const [createError, setCreateError] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [selectedSegment, setSelectedSegment] = useState("live");
   const [artifactTaskId, setArtifactTaskId] = useState("");
@@ -273,6 +275,7 @@ function AuthedApp({ userName }: { userName: string }) {
   const backToTasks = useCallback(() => {
     setView("tasks");
     setNewDraft("");
+    setCreateError("");
   }, []);
 
   const navigate = useCallback(
@@ -295,9 +298,15 @@ function AuthedApp({ userName }: { userName: string }) {
     const files = pendingFiles;
     if (!draft && !files.length) return;
     setCreatingTask(true);
+    setCreateError("");
     try {
-      const id = await sessions.create();
-      if (!id) return;
+      const { id, error } = await sessions.create();
+      if (!id) {
+        // 建会话失败**必须显示**: 否则用户看到的是「点了发送没反应」, 然后退回去在别的会话
+        // 里接着打字 —— 那正是落到只读的组织共享会话里的路径之一。
+        setCreateError(error || "新建会话失败, 请稍后重试。");
+        return;
+      }
       setNewDraft("");
       setPendingFiles([]);
       setSelectedSegment("live");
@@ -516,6 +525,9 @@ function AuthedApp({ userName }: { userName: string }) {
           draft={newDraft}
           sending={creatingTask}
           pendingFiles={pendingFiles}
+          // 建会话失败时必须说出来 —— 此前这条路径是「点了发送没反应」, 用户会退回去在别的
+          // 会话里接着打字, 而那正是落到只读的组织共享会话里的路径之一。
+          error={createError || undefined}
           onDraft={setNewDraft}
           onBack={backToTasks}
           onSubmit={() => void createFromDraft()}

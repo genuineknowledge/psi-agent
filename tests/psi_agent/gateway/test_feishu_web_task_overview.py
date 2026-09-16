@@ -47,6 +47,7 @@ TASK_MODEL = SRC / "services" / "taskModel.ts"
 CHEST = SRC / "components" / "deliverables-chest.tsx"
 EXPORT_DIALOG = SRC / "components" / "export-history-dialog.tsx"
 CHAT_VIEW = SRC / "components" / "chat-view.tsx"
+NEW_TASK_PAGE = SRC / "components" / "new-task-page.tsx"
 ROUTES_PY = FEISHU_WEB.parent / "_routes.py"
 
 
@@ -312,6 +313,27 @@ def test_org_session_is_shown_as_read_only() -> None:
     assert "_session_deliverable_paths(" in routes and "not a deliverable of this session" in routes, (
         "下载路由不再校验「这份文件是这条会话声明过的交付物」。只判路径存在的话, 任何登录用户"
         "都能拿别人的任意路径去读服务器上的文件。"
+    )
+
+
+def test_new_task_failure_is_visible() -> None:
+    """新建会话失败必须**显示出来** —— 静默失败会把人推到别的会话里去。
+
+    实测那条路径: 建会话失败 → ``createFromDraft`` 直接 return → 新建页什么都不显示 →
+    用户以为「点了没反应」→ 退回去在列表里找一条接着打字 → 正好落在只读的组织共享会话上。
+    所以 ``create()`` 要把原因交出来, 新建页要把它渲染出来。
+    """
+    sessions = _code(USE_SESSIONS)
+    page = _code(NEW_TASK_PAGE)
+    app = _code(APP_TSX)
+
+    assert "Promise<{ id: string; error: string }>" in sessions, (
+        "``useSessions.create`` 不再把失败原因交出来(只返回空 id) —— 调用方就没得显示。"
+    )
+    assert "setCreateError(error ||" in app, "``createFromDraft`` 建会话失败时没有设置错误文案。"
+    assert "error={createError || undefined}" in app, "``App.tsx`` 没有把错误传给新建页。"
+    assert '{error && <div className="ht-error" role="alert">{error}</div>}' in page, (
+        "``new-task-page.tsx`` 不显示建会话失败的原因 —— 用户看到的是「点了发送没反应」。"
     )
 
 
