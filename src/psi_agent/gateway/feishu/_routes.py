@@ -41,7 +41,15 @@ from psi_agent.gateway.feishu._feishu_manager import FeishuManager
 from psi_agent.gateway.feishu._identity import is_org_session, owns_session, visible_sessions
 from psi_agent.gateway.feishu._jsapi import FeishuJsapiSigner, JsapiError
 from psi_agent.gateway.feishu._oauth_manager import OAuthRelay
-from psi_agent.gateway.server import _error, _json, _read_json, _serve_chat_sse, _session_data
+from psi_agent.gateway.server import (
+    _delete_session,
+    _error,
+    _json,
+    _read_json,
+    _serve_chat_sse,
+    _session_ai_socket,
+    _session_data,
+)
 from psi_agent.runtime._history_manager import HistoryManager
 from psi_agent.runtime._scheduler_manager import SchedulerManager
 from psi_agent.runtime._session_manager import SessionInfo, SessionManager
@@ -303,6 +311,11 @@ class _AccessDeniedError(Exception):
 
 
 def _authorize_session(request: web.Request, *, write: bool = False) -> tuple[Identity, str, str]:
+    """路径参数版: 会话 id 取自 ``{session_id}``。判定体在 :func:`_authorize_owned`。"""
+    return _authorize_owned(request, request.match_info["session_id"], write=write)
+
+
+def _authorize_owned(request: web.Request, session_id: str, *, write: bool = False) -> tuple[Identity, str, str]:
     """把「谁在问、问的是哪条会话、归不归他」一次判完 → ``(identity, session_id, workspace)``。
 
     失败抛 :class:`_AccessDeniedError`, 每个 handler 只需三行把它映射成响应。
@@ -314,6 +327,10 @@ def _authorize_session(request: web.Request, *, write: bool = False) -> tuple[Id
     ``write=True`` 额外拒绝组织共享调度会话 (只读): 任何人可读它的历史, 但任何人不得驱动
     其中的工具。这条规则原先只写在 ``_web_chat`` 里 —— 抽出来是为了让**后加的**会话级
     读写路由不可能漏掉它。
+
+    ``session_id`` 由调用方给而不是固定从 ``match_info`` 取: 标题那两条的 id 在 **body**
+    里(前端那侧的形状就是 ``{id, title}``), 而判定必须与路径参数版**完全同一份** ——
+    谁再写一遍谁就可能漏掉 ``write`` 那一步。
     """
     try:
         identity = _require_identity(request)
@@ -321,7 +338,6 @@ def _authorize_session(request: web.Request, *, write: bool = False) -> tuple[Id
         raise _AccessDeniedError(401, str(e)) from e
     fm: FeishuManager = request.app["fm"]
     sm: SessionManager = request.app["sm"]
-    session_id = request.match_info["session_id"]
     try:
         workspace = sm.get_workspace(session_id)
     except LookupError:
@@ -606,6 +622,83 @@ async def _web_export_history(request: web.Request) -> web.StreamResponse:
     return _download_response(str(history), filename=f"{session_id}.jsonl")
 
 
+async def _web_set_title(request: web.Request) -> web.Response:
+    """``POST /feishu/titles`` —— 改**自己**会话的标题。
+
+    裸的 ``POST /titles`` 无鉴权且在白名单外, 云上恒 404 —— 表现是列表里那条会话永远是
+    「未命名任务」, 用户也没法给它改名。这里把 id 从 body 里取出来先判归属, 再走
+    ``tm.set`` 那一份(不复制实现)。
+
+    ``write=True``: 组织共享的调度会话对所有人只读, 谁都不能给它改名。
+    """
+    body = await _read_json(request) or {}
+    session_id = str(body.get("id") or "")
+    title = str(body.get("title") or "")
+    if not session_id or not title:
+        return _error("id and title are required", status=400)
+    try:
+        _identity, session_id, _workspace = _authorize_owned(request, session_id, write=True)
+    except _AccessDeniedError as e:
+        return _error(e.message, status=e.status)
+    tm: TitleManager = request.app["tm"]
+    await tm.set(session_id, title)
+    return _json({"id": session_id, "title": title})
+
+
+async def _web_generate_title(request: web.Request) -> web.Response:
+    """``POST /feishu/titles/generate`` —— 用首轮问答派生的标题(带归属校验)。
+
+    与 ``_web_set_title`` 同样是「先判归属再交给骨架那一份」, 区别是这里要在服务端跑一次
+    模型, 所以**它是这一族里除了 chat 之外唯一会产生费用的路由**: 归属校验不是可选项。
+    """
+    body = await _read_json(request) or {}
+    session_id = str(body.get("id") or "")
+    if not session_id:
+        return _error("id is required", status=400)
+    try:
+        _identity, session_id, _workspace = _authorize_owned(request, session_id, write=True)
+    except _AccessDeniedError as e:
+        return _error(e.message, status=e.status)
+    try:
+        ai_socket = await _session_ai_socket(request, session_id)
+    except LookupError as e:
+        return _error(str(e), status=404)
+    tm: TitleManager = request.app["tm"]
+    title = await tm.generate(
+        session_id,
+        ai_socket,
+        str(body.get("user_text") or ""),
+        str(body.get("assistant_text") or ""),
+    )
+    if not title:
+        logger.warning(f"Title generation returned no result for session {session_id!r}")
+        return _error("Failed to generate title", status=500)
+    return _json({"id": session_id, "title": title})
+
+
+async def _web_delete_session(request: web.Request) -> web.Response:
+    """``DELETE /feishu/sessions/{id}`` —— 删自己的会话(**硬闸**, 不只是前端隐藏按钮)。
+
+    裸的 ``DELETE /sessions/{id}`` 在云上被白名单挡着, 网页应用的删除按钮点了没反应。
+    这里补的是**带鉴权的对等物**, 正文交给骨架的 ``_delete_session``(会话/历史/todo/标题/
+    摘要五处一起清) —— 不复制那份实现。
+
+    比只读那一族多一条闸: **与飞书机器人共用的那条不许删**。它承载的是机器人那侧的同一份
+    上下文, 删掉等于把 IM 里的对话一起扔掉, 而用户还会在 IM 里继续用它 —— 前端本来就把
+    那条的删除按钮藏了, 但那只是显示层的闸, 直打接口照样能删。这里按会话 id 判(**不是**
+    按前端传来的 from_im): 同一条会话在前端是不是"来自飞书对话"由后端算, 判据必须同源,
+    否则改一个 body 字段就能绕过。
+    """
+    try:
+        identity, session_id, _workspace = _authorize_session(request, write=True)
+    except _AccessDeniedError as e:
+        return _error(e.message, status=e.status)
+    fm: FeishuManager = request.app["fm"]
+    if session_id == fm.session_id_for(identity.open_id):
+        return _error("the session shared with the Feishu bot cannot be deleted", status=403)
+    return await _delete_session(request)
+
+
 async def _web_owned_ids(request: web.Request) -> set[str]:
     """当前身份可见的 session id 集合 —— titles/summaries 过滤共用。"""
     identity = _require_identity(request)
@@ -836,6 +929,11 @@ def register_feishu_routes(
     app.router.add_get("/feishu/sessions/{session_id}/todo-segments/{segment_id}", _web_todo_segment)
     app.router.add_get("/feishu/sessions/{session_id}/files", _web_download_file)
     app.router.add_get("/feishu/sessions/{session_id}/export", _web_export_history)
+    # 会话级**写**一族(标题 / 生成标题 / 删除): 裸路由在云上被白名单挡着, 而它们都要先判
+    # 归属。删除那条另有硬闸: 与机器人共用那条不许删(见 handler 的说明)。
+    app.router.add_delete("/feishu/sessions/{session_id}", _web_delete_session)
+    app.router.add_post("/feishu/titles", _web_set_title)
+    app.router.add_post("/feishu/titles/generate", _web_generate_title)
     app.router.add_get("/feishu/titles", _web_list_titles)
     app.router.add_get("/feishu/summaries", _web_list_summaries)
     # ``/oauth/*`` 归本包(取件方全在 ToB 一侧), 但注册与 ``--gateway`` 解耦 —— 见

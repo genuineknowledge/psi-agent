@@ -206,3 +206,171 @@ async def test_peer_routes_require_identity_and_respect_ownership(tmp_path: str)
                 await sm.delete(sid)
         await aim.delete("ai1")
         await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_title_routes_are_ownership_checked(tmp_path: str) -> None:
+    """标题那两条的 id 在 **body** 里 —— 判定必须与路径参数版同一份, 否则这里先漏。"""
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+    aim, sm, app = await _make_app(tg, str(tmp_path))
+    auth: FeishuAuth = app["feishu_auth"]
+    sid_a = auth.issue(Identity(open_id="ou_alice", name="Alice"))
+    sid_b = auth.issue(Identity(open_id="ou_bob", name="Bob"))
+    base_url, runner = await _start_app_on_free_port(app)
+    created: list[str] = []
+    try:
+        timeout = ClientTimeout(total=10)
+        async with ClientSession(timeout=timeout) as http:
+            async with http.post(
+                f"{base_url}/ais",
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-test",
+                    "base_url": "https://api.example.com",
+                    "id": "ai1",
+                },
+            ) as resp:
+                assert resp.status == 201
+
+            ck_a = {SID_COOKIE: sid_a}
+            ck_b = {SID_COOKIE: sid_b}
+
+            async with http.post(f"{base_url}/feishu/sessions", json={"backend_id": "ai1"}, cookies=ck_a) as resp:
+                a_sid = (await resp.json())["id"]
+            created.append(a_sid)
+            async with http.post(f"{base_url}/feishu/sessions", json={"backend_id": "ai1"}, cookies=ck_b) as resp:
+                b_sid = (await resp.json())["id"]
+            created.append(b_sid)
+
+            # --- 未登录: 401(标题那两条都在写身份表之前就该挡住) ---
+            async with http.post(f"{base_url}/feishu/titles", json={"id": a_sid, "title": "x"}) as resp:
+                assert resp.status == 401
+            async with http.post(f"{base_url}/feishu/titles/generate", json={"id": a_sid, "user_text": "hi"}) as resp:
+                assert resp.status == 401
+
+            # --- 缺字段: 400(而不是拿空 id 去查会话, 那会变成 404 而看不出是调用方写错了) ---
+            async with http.post(f"{base_url}/feishu/titles", json={"title": "没有 id"}, cookies=ck_a) as resp:
+                assert resp.status == 400
+            async with http.post(f"{base_url}/feishu/titles", json={"id": a_sid}, cookies=ck_a) as resp:
+                assert resp.status == 400
+            async with http.post(f"{base_url}/feishu/titles/generate", json={}, cookies=ck_a) as resp:
+                assert resp.status == 400
+
+            # --- 别人的会话: 403, 而且**在生成之前**就挡住 —— 那条会在服务端跑一次模型 ---
+            async with http.post(
+                f"{base_url}/feishu/titles", json={"id": b_sid, "title": "B 的标题"}, cookies=ck_a
+            ) as resp:
+                assert resp.status == 403
+            async with http.post(
+                f"{base_url}/feishu/titles/generate",
+                json={"id": b_sid, "user_text": "hi", "assistant_text": "yo"},
+                cookies=ck_a,
+            ) as resp:
+                assert resp.status == 403
+            # 不存在的会话 → 404。
+            async with http.post(
+                f"{base_url}/feishu/titles", json={"id": "no-such", "title": "x"}, cookies=ck_a
+            ) as resp:
+                assert resp.status == 404
+
+            # --- 自己的: 200, 且真的写进了标题表(前端下次 listTitles 能看到) ---
+            async with http.post(
+                f"{base_url}/feishu/titles", json={"id": a_sid, "title": "周会纪要"}, cookies=ck_a
+            ) as resp:
+                assert resp.status == 200
+                assert (await resp.json())["title"] == "周会纪要"
+            async with http.get(f"{base_url}/feishu/titles", cookies=ck_a) as resp:
+                assert (await resp.json())[a_sid] == "周会纪要"
+            # B 看不到 A 的标题(过滤在服务端, 不是显示层)。
+            async with http.get(f"{base_url}/feishu/titles", cookies=ck_b) as resp:
+                assert a_sid not in await resp.json()
+    finally:
+        await runner.cleanup()
+        for sid in created:
+            with anyio.CancelScope(shield=True):
+                await sm.delete(sid)
+        await aim.delete("ai1")
+        await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_delete_route_has_a_hard_gate_on_the_im_shared_session(tmp_path: str) -> None:
+    """删除那条: 归属校验 + **与机器人共用那条不许删**(前端藏按钮只是显示层的闸)。"""
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+    aim, sm, app = await _make_app(tg, str(tmp_path))
+    auth: FeishuAuth = app["feishu_auth"]
+    sid_a = auth.issue(Identity(open_id="ou_alice", name="Alice"))
+    sid_b = auth.issue(Identity(open_id="ou_bob", name="Bob"))
+    base_url, runner = await _start_app_on_free_port(app)
+    created: list[str] = []
+    try:
+        timeout = ClientTimeout(total=10)
+        async with ClientSession(timeout=timeout) as http:
+            async with http.post(
+                f"{base_url}/ais",
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-test",
+                    "base_url": "https://api.example.com",
+                    "id": "ai1",
+                },
+            ) as resp:
+                assert resp.status == 201
+
+            ck_a = {SID_COOKIE: sid_a}
+            ck_b = {SID_COOKIE: sid_b}
+
+            async with http.post(f"{base_url}/feishu/sessions", json={"backend_id": "ai1"}, cookies=ck_a) as resp:
+                a_sid = (await resp.json())["id"]
+            created.append(a_sid)
+            async with http.post(f"{base_url}/feishu/sessions", json={"backend_id": "ai1"}, cookies=ck_b) as resp:
+                b_sid = (await resp.json())["id"]
+            created.append(b_sid)
+            # 机器人那条私聊会话 —— 与网页自建的那条是**不同** id。
+            async with http.post(f"{base_url}/feishu/route", json={"open_id": "ou_alice", "ai_id": "ai1"}) as resp:
+                assert resp.status == 201
+                im_sid = (await resp.json())["session_id"]
+            created.append(im_sid)
+            assert im_sid != a_sid, "IM 会话与网页自建会话撞成同一个 id, 本用例的判据就失效了"
+
+            # --- 未登录 / 别人的 / 不存在 ---
+            async with http.delete(f"{base_url}/feishu/sessions/{a_sid}") as resp:
+                assert resp.status == 401
+            async with http.delete(f"{base_url}/feishu/sessions/{b_sid}", cookies=ck_a) as resp:
+                assert resp.status == 403
+            async with http.delete(f"{base_url}/feishu/sessions/no-such-session", cookies=ck_a) as resp:
+                assert resp.status == 404
+            # 越权那次不能真把它删掉。
+            async with http.get(f"{base_url}/feishu/sessions", cookies=ck_b) as resp:
+                assert b_sid in {r["id"] for r in await resp.json()}
+
+            # --- 硬闸: 自己那条与机器人共用的, 谁都不能删(包括本人) ---
+            async with http.delete(f"{base_url}/feishu/sessions/{im_sid}", cookies=ck_a) as resp:
+                assert resp.status == 403
+                assert "cannot be deleted" in (await resp.json())["error"]
+            async with http.get(f"{base_url}/feishu/sessions", cookies=ck_a) as resp:
+                assert im_sid in {r["id"] for r in await resp.json()}, "硬闸没挡住, 会话真被删了"
+
+            # --- 自己那条网页自建的: 删得掉, 且五处一起清 ---
+            async with http.post(f"{base_url}/feishu/titles", json={"id": a_sid, "title": "待删"}, cookies=ck_a) as r:
+                assert r.status == 200
+            async with http.delete(f"{base_url}/feishu/sessions/{a_sid}", cookies=ck_a) as resp:
+                assert resp.status == 200
+            created.remove(a_sid)
+            async with http.get(f"{base_url}/feishu/sessions", cookies=ck_a) as resp:
+                assert a_sid not in {r["id"] for r in await resp.json()}
+            async with http.get(f"{base_url}/feishu/sessions/{a_sid}/history", cookies=ck_a) as resp:
+                assert resp.status == 404
+            async with http.get(f"{base_url}/feishu/titles", cookies=ck_a) as resp:
+                assert a_sid not in await resp.json(), "标题没跟着清 —— 删掉的会话会在标题表里留一条"
+    finally:
+        await runner.cleanup()
+        for sid in created:
+            with anyio.CancelScope(shield=True):
+                await sm.delete(sid)
+        await aim.delete("ai1")
+        await tg.__aexit__(None, None, None)

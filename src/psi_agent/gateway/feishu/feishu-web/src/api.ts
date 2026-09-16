@@ -196,7 +196,9 @@ export async function createSession(backendId: string): Promise<SessionInfo> {
 }
 
 export async function deleteSession(id: string): Promise<void> {
-  await requestJson<unknown>(`/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+  // 带鉴权的对等物: 裸 ``DELETE /sessions/{id}`` 在云上被反代白名单挡着(它无鉴权),
+  // 表现是删除按钮点了没反应。后端那条另有一道硬闸 —— 与机器人共用那条不许删。
+  await requestJson<unknown>(`/feishu/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function getSessionHistory(id: string): Promise<HistoryMessage[]> {
@@ -217,8 +219,10 @@ export async function generateTitle(
   userText: string,
   assistantText: string,
 ): Promise<{ id: string; title: string }> {
+  // 同 setTitle: 裸 ``/titles/generate`` 无鉴权且在白名单外, 云上恒 404 → 列表里那条
+  // 会话永远是「未命名任务」。这条在服务端跑一次模型, 所以后端**先判归属**再生成。
   return requestJson<{ id: string; title: string }>(
-    "/titles/generate",
+    "/feishu/titles/generate",
     jsonPost({ id, user_text: userText, assistant_text: assistantText }),
   );
 }
@@ -228,7 +232,7 @@ export async function listSummaries(): Promise<Record<string, string>> {
 }
 
 export async function setTitle(id: string, title: string): Promise<void> {
-  await requestJson<unknown>("/titles", jsonPost({ id, title }));
+  await requestJson<unknown>("/feishu/titles", jsonPost({ id, title }));
 }
 
 // ---- todo (任务进度的数据源) -------------------------------------------

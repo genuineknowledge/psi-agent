@@ -245,3 +245,54 @@ def test_peer_routes_are_registered_and_authorized() -> None:
         "下载路由不再校验「这份文件是这条会话声明过的交付物」。只判路径存在的话, 任何登录用户"
         "都能拿别人的任意路径去读服务器上的文件。"
     )
+
+
+def test_title_and_delete_routes_go_through_the_write_family() -> None:
+    """标题 / 生成标题 / 删除三条也换到带鉴权的对等物上 —— 它们此前在云上是静默失败的。
+
+    裸的 ``POST /titles`` 与 ``DELETE /sessions/{id}`` 都不在反代白名单里且一行鉴权都没有,
+    云上的表现是「列表里永远是未命名任务」与「删除按钮点了没反应」。
+    """
+    api = _code(API_TS)
+    routes = _code(ROUTES_PY)
+
+    assert 'requestJson<unknown>("/feishu/titles", jsonPost({ id, title }))' in api, (
+        "``setTitle`` 不再走 ``/feishu/titles`` —— 云上那条无鉴权裸路由被白名单挡着, 改不了名。"
+    )
+    assert '"/feishu/titles/generate"' in api, (
+        "``generateTitle`` 不再走 ``/feishu/titles/generate`` —— 云上生成不了标题, 列表里那条"
+        "会话就永远是「未命名任务」。"
+    )
+    assert '`/feishu/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }' in api, (
+        "``deleteSession`` 不再走 ``DELETE /feishu/sessions/{id}``。"
+    )
+    for bare in ('"/titles"', '"/titles/generate"', "`/sessions/${encodeURIComponent(id)}`"):
+        assert bare not in api, f"``api.ts`` 里还有裸路由 {bare} —— 云上过不了白名单。"
+
+    assert '"/feishu/sessions/{session_id}", _web_delete_session' in routes, (
+        "``_routes.py`` 里没注册 ``DELETE /feishu/sessions/{session_id}``。"
+    )
+    assert '"/feishu/titles", _web_set_title' in routes, "``_routes.py`` 里没注册 ``POST /feishu/titles``。"
+    assert '"/feishu/titles/generate", _web_generate_title' in routes, (
+        "``/feishu/titles/generate`` 没注册 —— 它是一条**精确路径**, 只在 deploy 侧加白名单"
+        "是不够的(本地与容器里都会 404)。"
+    )
+
+
+def test_the_im_shared_session_delete_gate_is_server_side() -> None:
+    """删除的硬闸必须在**后端按会话 id**判, 不能只靠前端藏按钮。
+
+    前端藏的是「显示层的闸」: 直打接口照样能删。而判据也不能改成读前端传来的 ``from_im`` ——
+    那等于让调用方自己声明自己有没有权限, 改个 body 字段就绕过。
+    """
+    routes = _code(ROUTES_PY)
+
+    assert "fm.session_id_for(identity.open_id)" in routes, (
+        "删除路由不再用 ``fm.session_id_for(identity.open_id)`` 认出「与机器人共用那条」—— "
+        "那条承载的是 IM 里的同一份上下文, 删掉等于把机器人那侧一起扔掉。"
+    )
+    assert "cannot be deleted" in routes, "删除路由的硬闸没了(错误文案是这条判据的锚点)。"
+    assert "_delete_session(request)" in routes, (
+        "删除路由不再复用骨架的 ``_delete_session`` —— 会话/历史/todo/标题/摘要五处要一起清, "
+        "复制一份实现必然有一处先漏。"
+    )

@@ -139,18 +139,31 @@ AI 落进 `$DEV_APPDATA/state/latest.json` 后就**持久**了 —— 之后每�
 **跨身份隔离在真实飞书环境下的表现本地测不到** —— 那要真 open_id、真 `tt.requestAccess` 换回
 来的 code、真容器拓扑。本地能验的只有用例层面那三条。
 
-### 云上还剩两条裸路由没换(已报备, 未做)
+### 云上不再打裸路由了(2026-09-16 收口)
 
-路径清单里另有 5 条仍打**骨架的裸路由**, 在云上过不了白名单, 表现与上面那族一样是静默失败:
+前端现在**只打 `/feishu/` 前缀下的路由**(`api-paths.json` 里除两条 `desktop` 面的
+`/workspace/*` 之外全是 `/feishu/`)。骨架的裸路由一条都不再走 —— 它们在云上既过不了白名单
+(静默 404), 又一行鉴权都没有:
 
-| 路径 | 云上表现 |
-| --- | --- |
-| `POST /titles` · `POST /titles/generate` | 补标题失败 → 列表里一直是「未命名任务」 |
-| `DELETE /sessions/{id}` | 删除按钮点了没反应 |
+| 前端原来在打 | 云上表现 | 现在的对等物 |
+| --- | --- | --- |
+| `GET /sessions/{id}/todos` · `/todo-segments` | 进度/步骤恒空 | `GET /feishu/sessions/{id}/…`(只读一族) |
+| `POST /sessions/{id}/chat` | 不可达 | `POST /feishu/sessions/{id}/chat`(SSE) |
+| `POST /titles` · `POST /titles/generate` | 列表里永远是「未命名任务」 | `POST /feishu/titles` · `/feishu/titles/generate` |
+| `DELETE /sessions/{id}` | 删除按钮点了没反应 | `DELETE /feishu/sessions/{id}` |
 
-没跟着换的原因是它们**不是只读**: 补标题要在服务端跑一次模型, 删除要先把跨进程状态摘干净
-(骨架的 delete 逻辑目前在 `server.py` 里, 抽出来才能给对等路由复用)。共享会话那条也已经
-不允许删。要做的话是**单独一轮**, 别顺手塞进只读那一族 —— 那是把写路径混进已经审过的只读面。
+三条写路由共用 `_authorize_owned()` / `_authorize_session(write=True)` 那一份判定(身份 401 →
+存在性 404 → 归属 403 + 组织共享会话只读)。**删除另有一道硬闸**: 与机器人共用那条不许删, 由
+后端按 `fm.session_id_for(identity.open_id)` 判 —— 前端藏按钮只是显示层的闸, 直打接口照样能删,
+而判据**不能**改成读前端传来的 `from_im`(那等于让调用方自己声明自己有没有权限)。
+
+`POST /feishu/titles/generate` 在服务端跑一次模型, 所以它是这一族里除 chat 之外唯一**会产生
+费用**的路由, 归属校验必须发生在生成之前。它同时是白名单里新加的一条**精确路径**(`titles` 那
+条是精确匹配, 不给它加前缀 —— 加了会把将来任何标题路由一并放出去)。
+
+`/workspace/file` 仍是唯一的例外: 它是 desktop 面的路由(交付物抽屉里的**预览**在用), 云上
+`launch-gateway.sh` 只挂 `--gateway feishu`, 那条既不注册也不在白名单里。下载与预览要用带鉴权
+那条(`/feishu/sessions/{id}/files?path=`)得把 session id 传到抽屉里 —— 那是另一轮的事。
 
 ## 常用命令
 
@@ -265,6 +278,7 @@ gateway 容器。本地是浏览器 → vite dev server(proxy) → gateway, **�
 任务进度、历史子任务、交付物下载、对话历史导出这四件事, 前端打的是**带鉴权的对等物**
 (`_routes.py` 里的 `_web_todos` / `_web_todo_segments` / `_web_todo_segment` /
 `_web_download_file` / `_web_export_history`), 不打骨架的 `/sessions/{id}/todos` 那一族。
+标题与删除那三条写路由同理, 见下面「云上不再打裸路由了」。
 
 两条理由, 任一条都足够:
 

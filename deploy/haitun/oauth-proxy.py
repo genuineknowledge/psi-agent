@@ -68,6 +68,11 @@ ALLOWED_PATHS = frozenset(
         "/feishu/sessions",
         "/feishu/summaries",
         "/feishu/titles",
+        # 用首轮问答派生标题。**必须逐条列**: 它是 /feishu/titles 的子路径而不是
+        # /feishu/titles/ 前缀下的, 而给 titles 加前缀会把将来任何标题路由一起放出去。
+        # 这条在服务端跑一次模型(等于产生费用), 所以后端那侧先判归属再生成 —— 它仍然
+        # 是"登录用户能花自己的额度", 与 chat 那条同一档。
+        "/feishu/titles/generate",
     }
 )
 
