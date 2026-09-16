@@ -1903,7 +1903,9 @@ def test_read_rejects_person_name_filter_without_identity(monkeypatch) -> None:
     )
     assert payload["ok"] is False
     assert "姓名" in payload["说明"]
-    assert "涉事人" in payload["说明"]
+    # 人员字段只接受 open_id: 这条过滤现在由 _normalize_person_filters 更早拦下(#864 起),
+    # 说明里直接给出可纠正的原因, 不再走到列守卫的「涉事人」文案。
+    assert "open_id" in payload["说明"]
 
 
 def test_read_accepts_trusted_identity_filter_and_reads(monkeypatch) -> None:
@@ -2222,3 +2224,196 @@ def test_cancel_after_written_is_rejected_and_other_writer_is_unauthorized(monke
         asyncio.run(confirm.positive_negative_case_confirm(_cancel_callback(other), user_key="ou_stranger"))
     )
     assert stranger["ok"] is False and stranger["status"] == "unauthorized"
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-16 事故回归: 全员版把「事件描述」改名为「事件描述(时间  客观事实描述)」
+# (括号内两个空格)并新增自关联列「父记录」。写入预检因此 fact_summary.field 失败,
+# 正面记录无法进表; 读取则因请求了不存在的列被飞书静默返回 0 行, 被误读成「表里没有记录」。
+# 修复: 列名仍是精确匹配, 但允许部署在 config 里显式登记「同义列名」与「不读不写的列」。
+# ---------------------------------------------------------------------------
+
+_RENAMED_FACT_SUMMARY = "事件描述（时间  客观事实描述）"
+
+
+def _ledger_fields(*, renamed: bool, extra: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+    # ``ConfiguredTableClient.preflight`` reads the live field listing, whose
+    # entries carry ``name``/``type``/``field_id`` (see the fake used by
+    # ``test_official_write_target_preflight_uses_public_ledger_view_without_extra_config``).
+    fields: list[dict[str, Any]] = [
+        {"field_id": "f_rec", "name": "记录ID", "type": 1005},
+        {
+            "field_id": "f_nature",
+            "name": "正负面归属",
+            "type": 3,
+            "property": {"options": [{"name": name} for name in ("正面清单", "负面清单", "中性", "证据不足")]},
+        },
+        {"field_id": "f_subject", "name": "员工姓名", "type": 11},
+        {"field_id": "f_desc", "name": _RENAMED_FACT_SUMMARY if renamed else "事件描述", "type": 1},
+        {"field_id": "f_date", "name": "记录日期", "type": 5},
+        {"field_id": "f_reporter", "name": "填写人", "type": 11},
+        {"field_id": "f_note", "name": "备注", "type": 1},
+    ]
+    fields.extend({"field_id": f"f_extra_{index}", "name": name, "type": 18} for index, name in enumerate(extra))
+    return fields
+
+
+def _write_config(runtime, *, aliases=None, ignored=None) -> dict[str, Any]:
+    config: dict[str, Any] = {
+        "write_target": {"mode": "existing_columns", "field_names": dict(runtime._LEDGER_FIELD_NAMES)}
+    }
+    if aliases is not None:
+        config["column_aliases"] = aliases
+    if ignored is not None:
+        config["ignored_columns"] = ignored
+    return config
+
+
+def _preflight_existing(monkeypatch, runtime, fields, config):
+    client = runtime.ConfiguredTableClient(runtime._SOURCE_APP_TOKEN, runtime._SOURCE_TABLE_ID, config)
+
+    async def fake_list_fields(*args, **kwargs):
+        return {"ok": True, "fields": fields}
+
+    monkeypatch.setattr(runtime._f, "list_bitable_fields_impl", fake_list_fields)
+    return asyncio.run(client.preflight("ou_writer")), client
+
+
+def test_write_preflight_resolves_renamed_column_through_declared_alias(monkeypatch) -> None:
+    runtime = importlib.import_module("_positive_negative_list.runtime")
+    config = _write_config(
+        runtime,
+        aliases={"fact_summary": [_RENAMED_FACT_SUMMARY]},
+        ignored=["父记录"],
+    )
+    result, client = _preflight_existing(monkeypatch, runtime, _ledger_fields(renamed=True, extra=("父记录",)), config)
+
+    assert result.ok is True
+    assert result.schema is not None
+    assert result.schema.field_ids_by_semantic_name["fact_summary"] == "f_desc"
+    encoded = client.build_existing_case_fields(_negative_case(), result.schema)
+    assert encoded["f_desc"] == _negative_case().fact_summary
+    assert "父记录" not in encoded
+
+
+def test_write_preflight_fails_closed_on_undeclared_extra_column(monkeypatch) -> None:
+    runtime = importlib.import_module("_positive_negative_list.runtime")
+    config = _write_config(runtime, aliases={"fact_summary": [_RENAMED_FACT_SUMMARY]})
+    result, _ = _preflight_existing(monkeypatch, runtime, _ledger_fields(renamed=True, extra=("父记录",)), config)
+
+    assert result.ok is False
+    assert any(error.startswith("unexpected_fields:") and "父记录" in error for error in result.errors)
+
+
+def test_write_preflight_fails_closed_when_no_label_matches_the_table(monkeypatch) -> None:
+    runtime = importlib.import_module("_positive_negative_list.runtime")
+    config = _write_config(runtime, ignored=["父记录"])
+    result, _ = _preflight_existing(monkeypatch, runtime, _ledger_fields(renamed=True, extra=("父记录",)), config)
+
+    assert result.ok is False
+    assert "fact_summary.field" in result.errors
+
+
+def test_read_resolves_renamed_column_and_reports_missing_required_columns() -> None:
+    reader = importlib.import_module("_positive_negative_list.reader")
+    configured = {
+        "nature": "正负面归属",
+        "subject_user_key": "员工姓名",
+        "reporter_user_key": "填写人",
+        "occurred_at": "记录日期",
+        "fact_summary": "事件描述",
+        "case_id": "记录ID",
+        "observed_behavior": "事件描述",
+    }
+    available = {
+        "记录ID",
+        "正负面归属",
+        "员工姓名",
+        _RENAMED_FACT_SUMMARY,
+        "记录日期",
+        "填写人",
+        "备注",
+        "父记录",
+    }
+
+    resolved, missing = reader.resolve_available_field_names(configured, available)
+    assert missing == ("fact_summary",)
+    assert resolved["nature"] == "正负面归属"
+    assert "observed_behavior" not in resolved
+
+    resolved, missing = reader.resolve_available_field_names(
+        configured, available, extra_aliases={"fact_summary": [_RENAMED_FACT_SUMMARY]}
+    )
+    assert missing == ()
+    assert resolved["fact_summary"] == _RENAMED_FACT_SUMMARY
+    # ``observed_behavior`` shares the fact-summary column but has no registered
+    # alias of its own, so it is dropped rather than guessed.
+    assert "observed_behavior" not in resolved
+
+
+def _renamed_table_reader():
+    reader = importlib.import_module("_positive_negative_list.reader")
+    client = reader.FeishuLedgerClient(
+        "app_test",
+        "table_test",
+        {
+            "nature": "正负面归属",
+            "subject_user_key": "员工姓名",
+            "reporter_user_key": "填写人",
+            "occurred_at": "记录日期",
+            "fact_summary": "事件描述",
+        },
+        strict_field_names=True,
+    )
+    return reader, client
+
+
+async def _renamed_table_names(*args):
+    return frozenset(
+        {"记录ID", "正负面归属", "员工姓名", _RENAMED_FACT_SUMMARY, "记录日期", "填写人", "备注", "父记录"}
+    )
+
+
+def test_read_tool_fails_loudly_when_ledger_contract_no_longer_matches(monkeypatch) -> None:
+    read_tool = importlib.import_module("positive_negative_case_read")
+    reader, client = _renamed_table_reader()
+    runtime = importlib.import_module("_positive_negative_list.runtime")
+
+    async def fail_read_records(*args, **kwargs):
+        raise AssertionError("a broken contract must not reach the table read")
+
+    monkeypatch.setattr(runtime, "configured_read_table_adapter", lambda: SimpleNamespace(_client=client))
+    monkeypatch.setattr(runtime, "configured_column_aliases", lambda: {})
+    monkeypatch.setattr(reader, "list_table_field_names", _renamed_table_names)
+    monkeypatch.setattr(reader, "read_records", fail_read_records)
+
+    payload = json.loads(asyncio.run(read_tool.positive_negative_case_read(query_json="{}", user_key="ou_writer")))
+    assert payload["ok"] is False
+    assert payload["状态"] == "读取失败"
+    assert payload["缺失列（语义）"] == ["fact_summary"]
+    assert _RENAMED_FACT_SUMMARY in payload["表中实际列名"]
+    assert "没有记录" in payload["说明"]
+
+
+def test_read_tool_reads_once_alias_resolves_the_renamed_column(monkeypatch) -> None:
+    read_tool = importlib.import_module("positive_negative_case_read")
+    reader, client = _renamed_table_reader()
+    runtime = importlib.import_module("_positive_negative_list.runtime")
+
+    async def fake_read_records(inner_client, query, user_key):
+        assert inner_client is client
+        assert inner_client._requested_field_names["fact_summary"] == _RENAMED_FACT_SUMMARY
+        return {"ok": True, "records": [], "has_more": False, "page_token": ""}
+
+    async def fake_public(result):
+        return {"ok": True, "记录": [], "本页记录数": 0, "读取状态": "已读完全部记录"}
+
+    monkeypatch.setattr(runtime, "configured_read_table_adapter", lambda: SimpleNamespace(_client=client))
+    monkeypatch.setattr(runtime, "configured_column_aliases", lambda: {"fact_summary": (_RENAMED_FACT_SUMMARY,)})
+    monkeypatch.setattr(reader, "list_table_field_names", _renamed_table_names)
+    monkeypatch.setattr(reader, "read_records", fake_read_records)
+    monkeypatch.setattr(reader, "public_result_with_names", fake_public)
+
+    payload = json.loads(asyncio.run(read_tool.positive_negative_case_read(query_json="{}", user_key="ou_writer")))
+    assert payload["ok"] is True
+    assert payload["读取状态"] == "已读完全部记录"

@@ -137,6 +137,20 @@ def _ledger_file_config() -> dict[str, Any]:
         names = {str(semantic): str(field_name) for semantic, field_name in columns.items() if str(field_name).strip()}
         if names:
             result["columns"] = names
+    aliases = ledger.get("column_aliases")
+    if isinstance(aliases, dict):
+        cleaned = {
+            str(semantic): [str(name) for name in names if str(name).strip()]
+            for semantic, names in aliases.items()
+            if isinstance(names, (list, tuple)) and any(str(name).strip() for name in names)
+        }
+        if cleaned:
+            result["column_aliases"] = cleaned
+    ignored = ledger.get("ignored_columns")
+    if isinstance(ignored, (list, tuple)):
+        kept = [str(name) for name in ignored if str(name).strip()]
+        if kept:
+            result["ignored_columns"] = kept
     return result
 
 
@@ -155,6 +169,45 @@ def _default_ledger_field_names() -> dict[str, str]:
     file_config = _ledger_file_config()
     columns = file_config.get("columns") if file_config else None
     return dict(columns) if columns else dict(_LEDGER_FIELD_NAMES)
+
+
+def _default_ledger_column_aliases() -> dict[str, list[str]]:
+    file_config = _ledger_file_config()
+    aliases = file_config.get("column_aliases") if file_config else None
+    if not isinstance(aliases, dict):
+        return {}
+    return {str(semantic): [str(name) for name in names] for semantic, names in aliases.items()}
+
+
+def _default_ledger_ignored_columns() -> list[str]:
+    file_config = _ledger_file_config()
+    ignored = file_config.get("ignored_columns") if file_config else None
+    if not isinstance(ignored, (list, tuple)):
+        return []
+    return [str(name) for name in ignored]
+
+
+def _column_aliases(config: dict[str, Any]) -> dict[str, tuple[str, ...]]:
+    """Accepted alternative column labels per semantic, preferred name excluded."""
+    raw = config.get("column_aliases")
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, tuple[str, ...]] = {}
+    for semantic, names in raw.items():
+        if not isinstance(names, (list, tuple)):
+            continue
+        kept = tuple(str(name) for name in names if str(name).strip())
+        if kept:
+            result[str(semantic)] = kept
+    return result
+
+
+def _ignored_columns(config: dict[str, Any]) -> tuple[str, ...]:
+    """Column labels the ledger may carry without the tool reading or writing them."""
+    raw = config.get("ignored_columns")
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(str(name) for name in raw if str(name).strip())
 
 
 def _default_ledger_web_host() -> str:
@@ -360,6 +413,8 @@ class ConfiguredTableClient(FeishuLedgerClient):
             "note": names.get("note", ""),
             "reporter_user_key": names.get("reporter_user_key", ""),
         }
+        aliases = _column_aliases(self._config)
+        ignored = _ignored_columns(self._config)
         fields_by_name = {
             str(field.get("field_name")): field
             for field in fields
@@ -375,11 +430,22 @@ class ConfiguredTableClient(FeishuLedgerClient):
             "reporter_user_key": 11,
         }
         field_ids: dict[str, str] = {}
+        resolved_names: dict[str, str] = {}
         for semantic, field_name in required_names.items():
-            field = fields_by_name.get(field_name)
+            # Exact match only: the configured label first, then the labels the
+            # deployment explicitly declared as aliases for the same semantic
+            # (e.g. a ledger column renamed to the label carrying a parenthetical
+            # suffix).  Nothing is guessed: a semantic with no matching label
+            # still fails.
+            candidates = (field_name, *aliases.get(semantic, ()))
+            field = next(
+                (fields_by_name[candidate] for candidate in candidates if candidate and candidate in fields_by_name),
+                None,
+            )
             if field is None:
                 errors.append(f"{semantic}.field")
                 continue
+            resolved_names[semantic] = str(field.get("field_name"))
             field_id = str(field.get("field_id") or "")
             if not field_id:
                 errors.append(f"{semantic}.field_id")
@@ -389,7 +455,9 @@ class ConfiguredTableClient(FeishuLedgerClient):
             expected_type = type_requirements[semantic]
             if actual_type != expected_type:
                 errors.append(f"{semantic}.type")
-        allowed_names = set(required_names.values()) | {"记录ID"}
+        allowed_names = set(required_names.values()) | {"记录ID"} | set(ignored)
+        for aliases_for_semantic in aliases.values():
+            allowed_names.update(aliases_for_semantic)
         unexpected = sorted(name for name in fields_by_name if name not in allowed_names)
         if unexpected:
             errors.append("unexpected_fields:" + ",".join(unexpected))
@@ -409,45 +477,52 @@ class ConfiguredTableClient(FeishuLedgerClient):
             resolved_app, resolved_table, resolved_view = _default_ledger_coordinates()
             if self.app_token == resolved_app and self.table_id == resolved_table:
                 view_purposes = {resolved_view or _SOURCE_VIEW_ID: "public_ledger"}
+
+        # ``required_names`` holds the configured labels; ``resolved_names`` holds
+        # the label each semantic actually matched in this table (identical unless
+        # an alias was used).  Downstream writes must use the resolved label.
+        def _label(semantic: str) -> str:
+            return resolved_names.get(semantic, required_names[semantic])
+
         required = {
             "nature": {
                 "field_id": field_ids.get("nature", ""),
-                "field_name": required_names["nature"],
+                "field_name": _label("nature"),
                 "type": type_requirements["nature"],
             },
             "subject_user_key": {
                 "field_id": field_ids.get("subject_user_key", ""),
-                "field_name": required_names["subject_user_key"],
+                "field_name": _label("subject_user_key"),
                 "type": type_requirements["subject_user_key"],
             },
             "fact_summary": {
                 "field_id": field_ids.get("fact_summary", ""),
-                "field_name": required_names["fact_summary"],
+                "field_name": _label("fact_summary"),
                 "type": type_requirements["fact_summary"],
             },
             "occurred_at": {
                 "field_id": field_ids.get("occurred_at", ""),
-                "field_name": required_names["occurred_at"],
+                "field_name": _label("occurred_at"),
                 "type": type_requirements["occurred_at"],
             },
             "reporter_user_key": {
                 "field_id": field_ids.get("reporter_user_key", ""),
-                "field_name": required_names["reporter_user_key"],
+                "field_name": _label("reporter_user_key"),
                 "type": type_requirements["reporter_user_key"],
             },
             "source_key": {
                 "field_id": field_ids.get("note", ""),
-                "field_name": required_names["note"],
+                "field_name": _label("note"),
                 "type": type_requirements["note"],
             },
             "canonical_incident_id": {
                 "field_id": field_ids.get("note", ""),
-                "field_name": required_names["note"],
+                "field_name": _label("note"),
                 "type": type_requirements["note"],
             },
             "cross_source_fingerprint": {
                 "field_id": field_ids.get("note", ""),
-                "field_name": required_names["note"],
+                "field_name": _label("note"),
                 "type": type_requirements["note"],
             },
         }
@@ -565,6 +640,8 @@ def configured_table_adapter() -> TableAdapter:
     effective = config or {
         "write_target": {"mode": "existing_columns", "field_names": _default_ledger_field_names()},
         "web_host": _default_ledger_web_host(),
+        "column_aliases": _default_ledger_column_aliases(),
+        "ignored_columns": _default_ledger_ignored_columns(),
     }
     return TableAdapter(ConfiguredTableClient(app_token, table_id, effective))
 
@@ -597,8 +674,25 @@ def read_target_coordinates() -> tuple[str, str]:
     return app_token, table_id
 
 
+def configured_column_aliases() -> dict[str, tuple[str, ...]]:
+    """Accepted alternative column labels for the configured ledger.
+
+    Shared by the read path so a ledger column that was renamed (and registered
+    as an alias in ``config/positive-negative-list.yaml``) resolves to the same
+    column on both the read and the write path.
+    """
+    config = _load_config()
+    if config:
+        return _column_aliases(config)
+    return {
+        str(semantic): tuple(str(name) for name in names)
+        for semantic, names in _default_ledger_column_aliases().items()
+    }
+
+
 __all__ = [
     "ConfiguredTableClient",
+    "configured_column_aliases",
     "configured_read_table_adapter",
     "configured_read_view_id",
     "configured_table_adapter",
