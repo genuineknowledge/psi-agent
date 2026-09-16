@@ -13,12 +13,13 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import anyio
 import pytest
 from lark_channel.channel.outbound.streaming.markdown_stream import MarkdownStreamController
 
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._types import ReasoningChunk, TextChunk
-from psi_agent.channel.feishu import client
+from psi_agent.channel.feishu import _live_feedback, client
 from psi_agent.channel.feishu._tool_status import GENERIC_TOOL_LABEL
 
 
@@ -391,3 +392,138 @@ async def test_concurrent_tool_calls_report_a_count():
     await client._stream_reply(channel, core, "oc_1", [], reply_to=None, sender_open_id="ou_1")
 
     assert "另有 2 个工具在跑" in rec.everything
+
+
+# -- live 模式 (PSI_FEISHU_LIVE_FEEDBACK=1) -------------------------------------
+#
+# 判据都落在 ``_stream_reply`` + 真控制器上, 与上面那批同层 —— live 改的就是这一层
+# 的渲染出口, 拿 ProcessTimeline 单独测只能证明「拼字符串对了」, 证不了「卡片何时
+# 建、建了几张」, 而那恰恰是本次唯一的回归风险。
+
+
+def _core_with_delays(*items: Any) -> ChannelCore:
+    """``(chunk, 之后睡多久)`` 序列 —— 让门计时器有真实时间可等。
+
+    没有停顿的话整个回合在毫秒内走完, 计时器永远来不及开门, 「慢回合亮过程」这
+    条判据就只能靠改常量假装, 测不到真实时序。
+    """
+
+    async def _post(_chunks: list[Any]) -> Any:
+        for chunk, pause in items:
+            yield chunk
+            if pause:
+                await anyio.sleep(pause)
+
+    return cast(ChannelCore, SimpleNamespace(post=_post))
+
+
+@pytest.fixture
+def live_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(_live_feedback.ENV_FLAG, "1")
+
+
+@pytest.mark.anyio
+async def test_live_fast_silent_turn_still_creates_no_card(live_on: None):
+    """live 开着, 但静默回合照旧一张卡都不建 —— 补丁破掉的正是这条。
+
+    补丁在 tool_call 时就建卡, 于是普通聊天里模型最终回 NO_REPLY 时会冒出一张
+    只有过程、没有答案的卡。这里的门槛是时间: 静默回合毫秒级走完, 计时器还没到
+    点就被撤了。
+    """
+    rec = _CardRecorder()
+    channel, _ = _recording_channel(rec)
+    core = _core_yielding(
+        _tool_call("todo"),
+        _tool_result("todo"),
+        TextChunk("NO_REPLY"),
+    )
+
+    await client._stream_reply(
+        channel, core, "oc_1", [], reply_to=None, suppress_silent_reply=True, sender_open_id="ou_1"
+    )
+
+    assert rec.create_calls == [], "live 静默回合建了卡片"
+    assert rec.updates == [], f"live 静默回合发出了内容: {rec.updates!r}"
+    assert "NO_REPLY" not in rec.everything
+
+
+@pytest.mark.anyio
+async def test_live_gate_is_what_suppresses_the_card_not_something_else(live_on: None, monkeypatch: pytest.MonkeyPatch):
+    """同一条静默序列, 只把门槛调短就该建卡 —— 证明上一条不是「live 压根没生效」。
+
+    缺这条差分, 上一条判据无法区分「门挡住了」和「live 分支根本没走到」: 后者同样
+    是 0 张卡、全绿, 而它意味着整个 live 机制是死代码。
+    """
+    monkeypatch.setattr(_live_feedback, "CARD_DELAY_SECONDS", 0.01)
+    rec = _CardRecorder()
+    channel, _ = _recording_channel(rec)
+    core = _core_with_delays(
+        (_tool_call("todo"), 0.15),
+        (_tool_result("todo"), 0),
+        (TextChunk("NO_REPLY"), 0),
+    )
+
+    await client._stream_reply(
+        channel, core, "oc_1", [], reply_to=None, suppress_silent_reply=True, sender_open_id="ou_1"
+    )
+
+    assert len(rec.create_calls) == 1, "门槛调短后仍没建卡, 说明 live 分支没生效"
+    # 已知取舍: 跑过门槛的静默回合会留下一张只有过程的卡 (见 CARD_DELAY_SECONDS
+    # 的 docstring)。但**正文半段仍然一个字都不能漏** —— 这才是不可让的那条。
+    assert "NO_REPLY" not in rec.everything, "live 模式把未过嗅探的 NO_REPLY 发上了卡片"
+    assert "todo" in rec.everything
+
+
+@pytest.mark.anyio
+async def test_live_slow_turn_shows_thinking_and_real_tool_name_with_args(
+    live_on: None, monkeypatch: pytest.MonkeyPatch
+):
+    """慢回合的过程块: 思考原文 + 工具**真名** + 参数 + 返回, 都要真上卡片。
+
+    这条锁的是 live 相对老路径的全部增量。特意用表外工具 ``python_run``——老路径
+    对它只会显示 ``GENERIC_TOOL_LABEL`` 那句没有信息量的兜底 (实测单回合 143 秒),
+    所以「真名出现」同时也证明它没有退回别名表。
+    """
+    monkeypatch.setattr(_live_feedback, "CARD_DELAY_SECONDS", 0.01)
+    rec = _CardRecorder()
+    channel, _ = _recording_channel(rec)
+    core = _core_with_delays(
+        (ReasoningChunk(text="先跑一段代码验证。", kind=None, tool_name=None), 0.05),
+        (_tool_call("python_run", '{"code": "print(6*7)"}'), 0.05),
+        (_tool_result("python_run", "42"), 0),
+    )
+
+    await client._stream_reply(
+        channel, core, "oc_1", [], reply_to=None, suppress_silent_reply=True, sender_open_id="ou_1"
+    )
+
+    shown = rec.everything
+    assert "先跑一段代码验证。" in shown, "思考没上卡片"
+    assert "python_run" in shown, "工具真名没上卡片 (疑似退回了别名表)"
+    assert "print(6*7)" in shown, "参数没上卡片"
+    assert "42" in shown, "返回没上卡片"
+    assert GENERIC_TOOL_LABEL not in shown, "live 路径不该再走兜底文案"
+
+
+@pytest.mark.anyio
+async def test_live_final_render_drops_the_process_block_and_keeps_only_the_answer(
+    live_on: None, monkeypatch: pytest.MonkeyPatch
+):
+    """正文流完后过程脚手架撤掉, 卡片只剩答案 —— 过程中途必须真出现过。"""
+    monkeypatch.setattr(_live_feedback, "CARD_DELAY_SECONDS", 0.01)
+    rec = _CardRecorder()
+    channel, _ = _recording_channel(rec)
+    core = _core_with_delays(
+        (ReasoningChunk(text="查一下再回答。", kind=None, tool_name=None), 0.05),
+        (_tool_call("search_content", '{"q": "rsi"}'), 0.05),
+        (_tool_result("search_content", "找到 10 条"), 0),
+        (TextChunk("结论是这样。"), 0),
+    )
+
+    await client._stream_reply(
+        channel, core, "oc_1", [], reply_to=None, suppress_silent_reply=True, sender_open_id="ou_1"
+    )
+
+    assert "查一下再回答。" in rec.everything, "过程压根没出现过, 这条判据没吃劲"
+    assert rec.final == "结论是这样。", f"终态不是纯正文: {rec.final!r}"
+    assert "🔧" not in rec.final
