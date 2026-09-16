@@ -175,19 +175,26 @@ function normalizeRow(row: unknown): unknown[] {
 
 function createTable(rows: unknown[][]): HTMLElement {
   const wrap = document.createElement('div')
+  // Same card chrome as `.md-table-card` / `.docx-table-scroll`; scroll lives on this wrap.
   wrap.className = 'preview-table-wrap'
   const table = document.createElement('table')
   table.className = 'preview-table'
+  const colCount = rows.reduce((max, row) => Math.max(max, row.length), 0)
   const tbody = document.createElement('tbody')
-  rows.forEach((row, rowIndex) => {
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex] ?? []
     const tr = document.createElement('tr')
-    row.forEach((cell) => {
+    for (let col = 0; col < colCount; col += 1) {
+      const cell = row[col]
       const td = document.createElement(rowIndex === 0 ? 'th' : 'td')
-      td.textContent = cell == null ? '' : String(cell)
+      const text = cell == null || cell === '' ? '' : String(cell)
+      td.textContent = text
+      // Ellipsis truncates wide cells; title keeps full value on hover.
+      if (text) td.title = text
       tr.append(td)
-    })
+    }
     tbody.append(tr)
-  })
+  }
   table.append(tbody)
   wrap.append(table)
   return wrap

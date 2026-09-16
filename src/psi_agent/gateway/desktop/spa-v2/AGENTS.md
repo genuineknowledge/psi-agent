@@ -32,13 +32,13 @@
 | 技术栈 | Vue 3 + Pinia | React 19 + Vite |
 | base | `/spa/` | `/spa-v2/` |
 | 对话 | Gateway SSE | 同左（同一套 API） |
-| 交付物 | 气泡 blob chip | 宝箱 UI；SSE `blob` 写入 `deliverables`；抽屉内按 blob 真实渲染（对齐 spa v1：MD/HTML/图片音视频/代码/CSV/PDF/DOCX/XLSX/PPTX，重库动态 `import()`；无 blob 时明确空态）。MD 预览与聊天气泡共用 `renderMd` + `.md-table-card`。**刻意为之**：`renderMd` 超链接 `target=_blank`；附件 chip / 预览抽屉仍本页。DOCX：`ignoreWidth` 去掉页宽；**页边距仍是绝对长度**，预览 CSS 强制 `section.docx` 宽 100% + 适中 padding，避免窄抽屉里正文挤成细条；表格/图片 `max-width:100%` 防横向溢出。视觉对齐 MD：`fitDocxTables()` 清 Word 绝对列宽、包 `.docx-table-scroll`、首行标 `docx-table-header-row`；host CSS 用深色标题 / 灰边卡片表 / 正文 15px（勿保留 Word 主题蓝标题）。有 `[SEND:]` path 时，气泡 chip / 宝箱 / 预览抽屉可「在文件夹中显示」（`POST /workspace/reveal`）。宝箱抽屉无「保存到成果库 / 让 Agent 修改」；金色熄灭 = 打开查看新交付物 |
+| 交付物 | 气泡 blob chip | 宝箱 UI；SSE `blob` 写入 `deliverables`；抽屉内按 blob 真实渲染（对齐 spa v1：MD/HTML/图片音视频/代码/CSV/PDF/DOCX/XLSX/PPTX，重库动态 `import()`；无 blob 时明确空态）。MD 预览与聊天气泡共用 `renderMd` + `.md-table-card`。**刻意为之**：`renderMd` 超链接 `target=_blank`；附件 chip / 预览抽屉仍本页。DOCX：`ignoreWidth` 去掉页宽；**页边距仍是绝对长度**，预览 CSS 强制 `section.docx` 宽 100% + 适中 padding，避免窄抽屉里正文挤成细条；表格/图片 `max-width:100%` 防横向溢出。视觉对齐 MD：`fitDocxTables()` 清 Word 绝对列宽、包 `.docx-table-scroll`、首行标 `docx-table-header-row`；host CSS 用深色标题 / 灰边卡片表 / 正文 15px（勿保留 Word 主题蓝标题）。**XLSX/CSV（刻意为之）**：表宽 `max-content` + 横向滚动（勿 `width:100%` 挤列），单元格 `nowrap`+ellipsis+`title` 悬停看全量——对齐 spa v1 与 MD/DOCX 卡片色（灰边 / 表头 tint）；`width:100%`+`word-break` 会把多列表格压成一字一行。有 `[SEND:]` path 时，气泡 chip / 宝箱 / 预览抽屉可「在文件夹中显示」（`POST /workspace/reveal`）。宝箱抽屉无「保存到成果库 / 让 Agent 修改」；金色熄灭 = 打开查看新交付物 |
 | 账户区 | 头像菜单合一 | 头像菜单仅账号/登录（「我的资料」已并进账号，入口已删）；**模型池**与**设置**为侧栏独立快捷入口 |
 | 默认工作区 | 无 / 必须先选 | 启动读 ``GET /defaults``.workspace（Gateway 软默认 `{Desktop}/haitun交付`，**只宣布不建目录**；首个 Session/对话时服务端再 mkdir）；遗留 `*-workspace` / 字面量 `workspace` / `haitun-workspace` 会忽略 |
 | 工作区切换 | 侧栏打开 PathPicker | 设置「切换工作区」→ 全屏选择页；**只更新新建任务默认路径** + `gw-v2:{fp}:workspace`（AppData 分区）；**不** remount、**不**按目录过滤侧栏 |
 | Agent 包切换 | — | 设置「切换 Agent 包」同区；只影响**新建** `POST /sessions` 的 `agent`；已有任务不变 |
 | 任务迁移 | — | 侧栏行「迁移」：选目标 workspace → 选 agent 包 → `POST /sessions/{id}/relocate`（拷贝后删旧）；置顶 / 新交付物键随新 id 搬 |
-| 顶栏新建 | — | 右上角「新建任务/聊天」+ 侧栏同入口（**刻意为之**：不绑 `⌘/Ctrl N`，与 Edge「打开新窗口」冲突；侧栏按钮亦不展示该快捷键）；**分屏聚焦**时对话栏「收起」旁也有同款入口（左栏收起后**仅**保留展开上下文钮，不再并排再建入口） |
+| 顶栏新建 | — | 右上角「新建任务/聊天」+ 侧栏同入口（**刻意为之**：不绑 `⌘/Ctrl N`，与 Edge「打开新窗口」冲突；侧栏按钮亦不展示该快捷键）；**分屏聚焦**时对话栏「收起」旁也有同款入口（左栏收起后**仅**保留展开上下文钮，不再并排再建入口）。**窄屏/窄主栏（刻意为之）**：文案包在 `<span>`；`≤880px` 与 `@container (max-width: 820px)` 仅把**顶栏/对话栏**新建收成图标（`aria-label` 保留），空态大 CTA 仍横排完整文案——勿对 `.topbar-create-button` 全局 `width:36px`，否则空态会被挤成一字一行竖排 |
 | Agent 包 | 与 workspace 合一 | ``GET /defaults``.agent → 新建任务/聊天 ``POST /sessions`` 带 `agent`（可与用户工作区不同）。设置「切换 Agent 包」与工作区同区；全屏 `WorkspaceGate kind=agent`；偏好 `gw-v2:{fp}:agent`（覆盖 defaults）。**刻意为之**：只影响**新建** Session；已有任务仍用创建时绑定的 `agent` |
 | 任务模板库 | — | 卡片正文/分类/交付物/页脚等字号 ≥12–14px（勿回退 8–10px 设计稿字号）。「新建模板」抽屉经 `createPortal` 挂 `document.body`：全屏遮罩 + 右侧贴边抽屉（勿嵌在 `.main-stage` 内导致四边露白） |
 
