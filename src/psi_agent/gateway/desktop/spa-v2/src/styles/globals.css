@@ -1082,6 +1082,9 @@ textarea:focus-visible {
   box-shadow: 0 7px 18px rgba(0, 90, 200, 0.22), inset 0 1px rgba(255, 255, 255, 0.18);
   font-size: 10px;
   font-weight: 750;
+  /* 窄栏勿挤成一字一行竖排（刻意为之） */
+  white-space: nowrap;
+  flex-shrink: 0;
   cursor: pointer;
   transition: transform 160ms ease, filter 160ms ease;
 }
@@ -2790,36 +2793,71 @@ button.metric-cell:disabled {
   margin: 12px auto;
 }
 
+/* XLSX/CSV: align with spa v1 spreadsheet preview + MD/DOCX card chrome.
+ * 刻意为之: table is ``max-content`` (not width:100%) so many columns scroll
+ * horizontally instead of crushing cells into one-glyph-per-line stacks. */
 .artifact-preview-host .preview-table-wrap,
 .preview-host .preview-table-wrap {
+  width: 100%;
+  max-width: 100%;
   overflow: auto;
   margin: 8px 0 16px;
-  border: 1px solid #d5dde6;
-  border-radius: 10px;
+  border: 1px solid rgba(11, 47, 91, 0.12);
+  border-radius: 12px;
+  background: #f7f9fc;
+  box-sizing: border-box;
 }
 
 .artifact-preview-host .preview-table,
 .preview-host .preview-table {
-  width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
+  width: max-content;
+  min-width: 100%;
   font-size: 13px;
+  color: #1f3348;
+  background: transparent;
 }
 
 .artifact-preview-host .preview-table th,
 .artifact-preview-host .preview-table td,
 .preview-host .preview-table th,
 .preview-host .preview-table td {
-  padding: 8px 10px;
-  border-bottom: 1px solid #e6ebf0;
+  padding: 8px 12px;
+  height: 40px;
+  min-width: 96px;
+  max-width: 360px;
+  border-right: 1px solid rgba(11, 47, 91, 0.12);
+  border-bottom: 1px solid rgba(11, 47, 91, 0.12);
   text-align: left;
-  vertical-align: top;
-  word-break: break-word;
+  vertical-align: middle;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+  color: #1f3348;
+  background: transparent;
 }
 
 .artifact-preview-host .preview-table th,
 .preview-host .preview-table th {
-  background: #f3f6f9;
-  font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgba(11, 47, 91, 0.04);
+  font-weight: 700;
+}
+
+.artifact-preview-host .preview-table tr:last-child td,
+.preview-host .preview-table tr:last-child td {
+  border-bottom: none;
+}
+
+.artifact-preview-host .preview-table th:last-child,
+.artifact-preview-host .preview-table td:last-child,
+.preview-host .preview-table th:last-child,
+.preview-host .preview-table td:last-child {
+  border-right: none;
 }
 
 .artifact-preview-host .sheet-preview + .sheet-preview,
@@ -2831,8 +2869,8 @@ button.metric-cell:disabled {
 .preview-host .sheet-title {
   margin: 0 0 8px;
   font-size: 13px;
-  font-weight: 600;
-  color: #334155;
+  font-weight: 700;
+  color: #1f3348;
 }
 
 .artifact-preview-host .pdf-pages,
@@ -4182,13 +4220,53 @@ button.metric-cell:disabled {
     white-space: nowrap;
   }
 
-  .topbar-create-button {
+  /* 仅顶栏收成图标；空态 CTA 仍保留完整文案（勿共用 width:36px） */
+  .stage-actions .topbar-create-button {
     width: 36px;
     padding: 0;
+    gap: 0;
     justify-content: center;
   }
 
-  .topbar-create-button > span { display: none; }
+  .stage-actions .topbar-create-button > span { display: none; }
+
+  .workspace-empty {
+    gap: 12px;
+    padding: 0 18px;
+  }
+
+  .workspace-empty h1 {
+    font-size: clamp(22px, 6.5vw, 28px);
+  }
+
+  .workspace-empty p {
+    margin: 0 0 4px;
+    max-width: min(420px, 92vw);
+    font-size: clamp(14px, 3.8vw, 17px);
+    line-height: 1.5;
+  }
+
+  .workspace-empty .topbar-create-button {
+    width: auto;
+    max-width: 100%;
+    height: 46px;
+    padding: 0 18px;
+    gap: 10px;
+    font-size: 14px;
+  }
+
+  .workspace-empty .topbar-create-button > span {
+    display: inline;
+  }
+
+  .quick-actions .chat-new-task {
+    width: 28px;
+    padding: 0;
+    gap: 0;
+    justify-content: center;
+  }
+
+  .quick-actions .chat-new-task > span { display: none; }
 
   .card-stage {
     height: calc(100dvh - 62px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
@@ -5037,6 +5115,8 @@ button.metric-cell:disabled {
   box-shadow: 0 6px 16px rgba(0, 91, 200, 0.22), inset 0 1px rgba(255, 255, 255, 0.22);
   font-size: 12px;
   font-weight: 700;
+  white-space: nowrap;
+  flex-shrink: 0;
   cursor: pointer;
   transition: transform 160ms ease, filter 160ms ease;
 }
@@ -6337,6 +6417,38 @@ button.metric-cell:disabled {
   .compact-step { min-height: 42px; grid-template-columns: 17px minmax(0, 1fr); align-content: center; }
   .compact-step > span { width: 16px; height: 16px; }
   .compact-step em { grid-column: 2; margin-top: -3px; }
+  /* 主栏变窄（侧栏挤占 / 分屏）时顶栏新建收成图标，空态 CTA 仍完整横排 */
+  .stage-actions .topbar-create-button {
+    width: 36px;
+    padding: 0;
+    gap: 0;
+    justify-content: center;
+  }
+  .stage-actions .topbar-create-button > span { display: none; }
+  .workspace-empty {
+    gap: 12px;
+    padding: 0 16px;
+  }
+  .workspace-empty h1 { font-size: clamp(22px, 5cqi, 28px); }
+  .workspace-empty p {
+    margin: 0 0 4px;
+    max-width: min(420px, 90cqi);
+    font-size: clamp(14px, 3.2cqi, 17px);
+    line-height: 1.5;
+  }
+  .workspace-empty .topbar-create-button {
+    width: auto;
+    height: 46px;
+    padding: 0 18px;
+  }
+  .workspace-empty .topbar-create-button > span { display: inline; }
+  .quick-actions .chat-new-task {
+    width: 28px;
+    padding: 0;
+    gap: 0;
+    justify-content: center;
+  }
+  .quick-actions .chat-new-task > span { display: none; }
 }
 
 /* Functional inbox drawer. */
