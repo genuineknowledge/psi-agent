@@ -73,6 +73,9 @@ ALLOWED_PATHS = frozenset(
         # 这条在服务端跑一次模型(等于产生费用), 所以后端那侧先判归属再生成 —— 它仍然
         # 是"登录用户能花自己的额度", 与 chat 那条同一档。
         "/feishu/titles/generate",
+        # 跨会话的只读聚合: 任务总览「本月执行」那一格。**自己一条精确路径** —— 它不属于任何
+        # 一条会话, 塞不进 `/feishu/sessions/` 前缀。未登录 401, 且只统计本人可见的会话。
+        "/feishu/stats/monthly",
     }
 )
 

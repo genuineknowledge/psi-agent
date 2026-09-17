@@ -41,6 +41,7 @@ from psi_agent.gateway.feishu._feishu_manager import FeishuManager
 from psi_agent.gateway.feishu._identity import is_org_session, owns_session, visible_sessions
 from psi_agent.gateway.feishu._jsapi import FeishuJsapiSigner, JsapiError
 from psi_agent.gateway.feishu._oauth_manager import OAuthRelay
+from psi_agent.gateway.feishu._stats import current_month, month_bounds, monthly_run_stats, stats_tz
 from psi_agent.gateway.server import (
     _delete_session,
     _error,
@@ -769,6 +770,46 @@ async def _web_list_summaries(request: web.Request) -> web.Response:
     return _json({k: v for k, v in sum_m.get_all().items() if k in owned})
 
 
+async def _web_monthly_stats(request: web.Request) -> web.Response:
+    """``GET /feishu/stats/monthly[?month=YYYY-MM]`` —— 任务总览「本月执行」那一格的取数。
+
+    **为什么要有一条接口**: 那一格此前是前端对**每个会话**各打一次 ``/todo-segments`` 再自己
+    数 —— 会话一多就是 N 次请求; 更糟的是它只看 todo 段, 于是 agent 直接回答/直接调工具的那些
+    回合(不写 todo)全被算成「这个月没干活」, 而列表里它们的状态早就显示「已完成」了。同一屏
+    两个数字互相打架。
+
+    口径与取数都在 :mod:`psi_agent.gateway.feishu._stats` 里, 这里只做身份与参数两件事:
+
+    * 身份: 未登录 401。**只统计自己可见的会话**(与 ``/feishu/sessions`` 同一份过滤 ——
+      组织共享会话那边不进列表, 这里也不进, 否则两个数字的"人口"不一致)。
+    * 参数: ``month`` 缺省 = 服务端当前自然月; 形状不对是 400 而不是回 0 —— 回 0 会把
+      「参数写错了」伪装成「本月什么都没跑」。
+    """
+    try:
+        identity = _require_identity(request)
+    except PermissionError as e:
+        return _error(str(e), status=401)
+    raw_month = (request.query.get("month") or "").strip()
+    month = raw_month or current_month(tz=stats_tz())
+    try:
+        start, end = month_bounds(month, tz=stats_tz())
+    except ValueError:
+        return _error("month must be YYYY-MM", status=400)
+    fm: FeishuManager = request.app["fm"]
+    sm: SessionManager = request.app["sm"]
+    todom: TodoManager = request.app["todom"]
+    rows = visible_sessions(identity.open_id, await sm.list_all(include_scheduler=True), fm)
+    owned = [(r.id, r.workspace or "") for r in rows if not is_org_session(r.id, r.workspace or "")]
+    stats = await monthly_run_stats(
+        sessions=owned,
+        appdata_root=str(request.app.get("appdata") or ""),
+        todom=todom,
+        start=start,
+        end=end,
+    )
+    return _json({"month": month, **stats})
+
+
 def register_auth_routes(app: web.Application) -> web.Application:
     """把登录四条路由贴到 *app*。
 
@@ -976,6 +1017,9 @@ def register_feishu_routes(
     app.router.add_post("/feishu/titles/generate", _web_generate_title)
     app.router.add_get("/feishu/titles", _web_list_titles)
     app.router.add_get("/feishu/summaries", _web_list_summaries)
+    # 跨会话的只读聚合(「本月执行」那一格)。**精确路径**而不是塞进
+    # ``/feishu/sessions/`` 前缀: 它不属于任何一条会话。
+    app.router.add_get("/feishu/stats/monthly", _web_monthly_stats)
     # ``/oauth/*`` 归本包(取件方全在 ToB 一侧), 但注册与 ``--gateway`` 解耦 —— 见
     # ``register_oauth_routes``。在此处调用是为了让两面全挂时的注册顺序与拆分前逐条不变;
     # 幂等由调用方保证 (``Gateway.run`` 只在不挂飞书时自己调)。
