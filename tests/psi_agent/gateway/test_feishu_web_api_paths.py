@@ -123,6 +123,35 @@ def test_extract_is_not_fooled_by_nested_generics() -> None:
     # 预览改走 `/feishu/sessions/{id}/files?path=` 之后锚点跟着走 —— 要测的从来不是某一条
     # 具体路径, 而是「`?` 之后的部分不进路径」这件事。
     assert "/feishu/sessions/{param}/files" in paths, "带查询串的路径没被截掉 `?` 之后的部分"
+    # 「本月执行」那条把查询串整个装在变量里(`?month=` 在 `${query}` 内部), 于是段首判据之外的
+    # 插值不能再按 `{param}` 归一 —— 否则清单里会凭空多出 `/feishu/stats/monthly{param}`,
+    # 前端从没打过、路由表里也没有, 两条判据一起红。见 `_scan_string` 的 docstring。
+    assert "/feishu/stats/monthly" in paths, "段外插值被当成了路径参数, 真实路径没提出来"
+    assert "/feishu/stats/monthly{param}" not in paths, "查询串插值被归一成了路径参数"
+
+
+def test_only_segment_leading_interpolation_becomes_a_param(tmp_path: Path) -> None:
+    """`${...}` 只有在段首才算路径参数 —— 段中间那个是查询串, 不是参数。
+
+    判据不能只看真实源码那一条: 它只说明「现在提对了」, 说明不了「为什么」。这里把两种写法
+    摆在一起比对, 删掉段首判据就会**两个方向同时**红(段中间那条多出 `{param}`, 段首那条
+    少了它) —— 只钉一条的话, 把归一整个关掉也能蒙过去。
+
+    为什么值得单独钉: 提出来的路径要拿去两处消费(路由存在性 + 云上白名单逐条比对), 清单里多
+    一条假路径, 两处都报错, 而报的是清单 —— 读起来像产品代码少了一条路由。
+    """
+
+    src = tmp_path / "src"
+    (src / "services").mkdir(parents=True)
+    (src / "api.ts").write_text(
+        "export const a = () => requestJson<X>(`/feishu/stats/monthly${query}`);\n"
+        "export const b = () => requestJson<X>(`/feishu/sessions/${encodeURIComponent(id)}/files?${p}`);\n",
+        encoding="utf-8",
+    )
+    (src / "services" / "chatStream.ts").write_text("export {};\n", encoding="utf-8")
+
+    paths = {e.path for e in _M.extract_paths(tmp_path)}
+    assert paths == {"/feishu/stats/monthly", "/feishu/sessions/{param}/files"}, paths
 
 
 def test_every_http_call_site_lives_in_a_scanned_file() -> None:

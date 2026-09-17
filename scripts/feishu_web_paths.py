@@ -135,10 +135,27 @@ def _scan_string(text: str, i: int) -> tuple[str, int]:
 
     模板里的 `${...}` 归一成 `{param}` —— 嵌套的 `}`(如 `${f({a:1})}`)要靠数括号,
     否则会在第一个 `}` 处提前收尾。
+
+    **只有落在段首的 `${...}` 才算路径参数**: 判据是它前面那个字符是 `/`。路径参数占的是
+    整整一段, 段中间的插值不是参数。踩过的坑是 ``getMonthlyStats`` ——
+
+        const query = month ? `?month=${...}` : "";
+        requestJson(`/feishu/stats/monthly${query}`)
+
+    同一个插值有时装查询串、有时什么都不装, 一律归一成 `{param}` 就凭空多出一条
+    `/feishu/stats/monthly{param}`: 前端从没打过它, 路由表里也没有 —— 于是「清单里的路径
+    都真有路由」与「白名单放行了清单里每条路径」两条判据一起红, 而错的是清单, 不是产品代码。
+
+    段中间的插值之后**不再收集**: 查询串还是后缀已经不可知, 拿它拼出来的路径只会是假的。
+    (真实写法里那个插值前面都有 `?`, 于是留下的正好是真路由 —— 这也是 `_call_sites_in`
+    要按 `?` 截断的原因。真要是有人写 `/a-${b}` 这种段内插值, 留下的是个不存在的路径,
+    判据会红 —— 比静默归一成参数强。)位置照常走到闭合引号, 否则调用方 `_scan_args`
+    会从这里开始按代码数括号。
     """
     quote = text[i]
     i += 1
-    out = []
+    out: list[str] = []
+    known = True  # False = 已经越过一个段外插值, 后面的字面量不再可信
     while i < len(text):
         ch = text[i]
         if ch == "\\":
@@ -159,9 +176,13 @@ def _scan_string(text: str, i: int) -> tuple[str, int]:
                         i += 1
                         break
                 i += 1
-            out.append("{param}")
+            if known and out and out[-1].endswith("/"):
+                out.append("{param}")
+            else:
+                known = False
             continue
-        out.append(ch)
+        if known:
+            out.append(ch)
         i += 1
     return "".join(out), i
 

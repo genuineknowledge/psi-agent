@@ -232,6 +232,33 @@ export async function listSummaries(): Promise<Record<string, string>> {
   return requestJson<Record<string, string>>("/feishu/summaries");
 }
 
+/**
+ * 「本月执行」那一格的数 —— **一次请求**, 后端算好。
+ *
+ * 以前是前端对每个会话各打一次 `/todo-segments` 再自己数: 会话一多就是 N 次请求, 而且只看
+ * todo 段 —— agent 直接回答的回合不写 todo, 那类会话于是被算成「这个月没干活」, 而列表里它们
+ * 的状态早就显示「已完成」了(同一屏两个数字互相打架)。口径现在统一在后端, 见
+ * `gateway/feishu/_stats.py`。
+ */
+export interface MonthlyStats {
+  month: string;
+  /** 本月跑过的会话数(按会话去重)。 */
+  count: number;
+  /** 其中有本月 todo 清单的。 */
+  checklist: number;
+  /** 其中没写清单、但有本月问答的。 */
+  reply: number;
+}
+
+/**
+ * ``month`` 传 ``YYYY-MM``(**浏览器本地月**)。「月」是用户日历上的月, 由调用方给出才不会出现
+ * 「服务端按 UTC 切月、用户在 +8」那种一整个早上算错月的情况; 不传则用服务端当前自然月。
+ */
+export async function getMonthlyStats(month?: string): Promise<MonthlyStats> {
+  const query = month ? `?month=${encodeURIComponent(month)}` : "";
+  return requestJson<MonthlyStats>(`/feishu/stats/monthly${query}`);
+}
+
 export async function setTitle(id: string, title: string): Promise<void> {
   await requestJson<unknown>("/feishu/titles", jsonPost({ id, title }));
 }
