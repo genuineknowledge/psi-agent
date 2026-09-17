@@ -84,6 +84,11 @@
     },
     {
       "method": "GET",
+      "path": "/feishu/stats/monthly{param}",
+      "source": "src/api.ts"
+    },
+    {
+      "method": "GET",
       "path": "/feishu/summaries",
       "source": "src/api.ts"
     },

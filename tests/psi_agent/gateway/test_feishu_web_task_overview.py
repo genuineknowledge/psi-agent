@@ -176,25 +176,45 @@ def test_new_deliverables_count_in_the_task_files() -> None:
 # ---- 4. 四个指标 / 宝箱 / 导出对话历史 ------------------------------------
 
 
-def test_monthly_metric_is_computed_not_hardcoded() -> None:
+def test_monthly_metric_comes_from_the_backend_endpoint() -> None:
+    """「本月执行」现在是**后端一条聚合接口**算出来的, 前端不再自己数。
+
+    经历了三版:
+    1. 写死 ``"128"`` —— 四个指标里唯一假的;
+    2. 前端拿 ``todo-segments`` 的时间戳按自然月数会话 —— 对每个会话各打一次请求, 而且只看
+       todo 段: agent 直接回答/直接调工具的回合不写 todo, 那类会话被算成「这个月没干活」,
+       而列表里它们的状态早就显示「已完成」了;
+    3. **现在**: ``GET /feishu/stats/monthly`` 一次拿数, 口径(跑过就算, 有清单的 + 只回了话的)
+       统一在后端 ``gateway/feishu/_stats.py``。
+
+    判据要挡住"退回去": 前端不许再有第二份实现(两个实现迟早会因为口径不同而对不上)。
+    """
     view = _code(TASKS_VIEW)
     tasks = _code(USE_TASKS)
     model = _code(TASK_MODEL)
+    api = _code(API_TS)
 
     assert 'statCell("128"' not in view, (
         '「本月执行」又写死成 ``statCell("128", …)`` 了。四个指标里只有它是假的: 另外三个都是'
         "真算出来的计数, 用户会拿它当真实用量。"
     )
     assert 'statCell(String(monthlyRuns), "本月执行"' in view, "「本月执行」不再是 ``monthlyRuns`` 了。"
-    assert "export function countMonthlyRuns(" in model, (
-        "``taskModel.ts`` 里没有 ``countMonthlyRuns`` —— 口径必须住在纯函数里才解释得清、也才"
-        "测得了(按会话去重, 取 todo 段的时间戳)。"
+    # 数来自接口, 且带上**浏览器本地月**(服务端时区未必与用户一致)。
+    assert "getMonthlyStats" in api and "`/feishu/stats/monthly${query}`" in api, (
+        "``api.ts`` 没有打 ``/feishu/stats/monthly`` —— 那一格又回到前端自己数了。"
     )
-    assert "getFullYear() === year && at.getMonth() === month" in model, (
-        "``countMonthlyRuns`` 不再按**自然月**判断了 —— 改成滚动 30 天之类的口径前先想清楚: "
-        "它旁边的三个指标都是「当前状态」, 这一格是「这个月」, 口径要能一句话说清。"
+    assert "setMonthlyStats(await getMonthlyStats(month))" in tasks, "``useTasks`` 没有用接口的返回值。"
+    assert "const monthlyRuns = monthlyStats?.count ?? 0" in tasks, (
+        "``monthlyRuns`` 不再取自接口结果 —— 又出现了第二份本地口径。"
     )
-    assert "countMonthlyRuns(segments)" in tasks, "``useTasks`` 没有把 todo 段喂给 ``countMonthlyRuns``。"
+    assert "countMonthlyRuns" not in model, (
+        "``taskModel.ts`` 里又长出了本地的 ``countMonthlyRuns``。口径只该有一份(后端那条接口), "
+        "两份实现迟早因为口径不同而对不上 —— 那正是这次要修的问题。"
+    )
+    assert "const now = new Date()" in tasks and "now.getMonth() + 1" in tasks, (
+        "``useTasks`` 没有把**浏览器本地月**传给接口 —— 月是用户日历上的月, 用服务端的月会让"
+        "跨时区的那几个小时算错月份。"
+    )
 
 
 def test_export_button_is_not_dead() -> None:
@@ -405,12 +425,14 @@ def test_todos_are_polled_while_a_turn_runs() -> None:
     app = _code(APP_TSX)
     turn = _code(USE_CHAT_TURN)
 
-    assert "window.setInterval(() => void refreshOne(sendingSessionId), 2500)" in tasks, (
+    assert "const timer = window.setInterval(() => {" in tasks and "}, 2500);" in tasks, (
         "``useTasks`` 不再在回合进行中轮询那条会话的 todo —— 执行过程中左侧上下文不会更新。"
     )
     assert "void refreshOne(sendingSessionId);" in tasks, (
         "按下发送后没有**立刻**拉一次 —— 第一次轮询要等 2.5 秒, 而工具的第一次写入往往在那之前。"
     )
+    # 这一格也要跟着刷: 本回合要是这个会话本月第一次干活, 数字该当场 +1。
+    assert "void refreshMonthly();" in tasks, "回合进行中没有一起刷「本月执行」—— 这一格要等下一次整页刷新才更新。"
     assert "sendingSessionId: turn.sendingSessionId" in app, "``App.tsx`` 没有把「哪条在跑」传给 useTasks。"
     assert "sendingSessionId" in turn and "settledBySession" in turn, (
         "``useChatTurn`` 没有暴露按会话的运行中/已落定信号。"

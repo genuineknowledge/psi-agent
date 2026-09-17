@@ -251,34 +251,12 @@ export function countTasks(tasks: Task[]): Record<string, number> {
   };
 }
 
-/**
- * 「本月执行」—— 本自然月内**跑过**的会话数。
+/*
+ * 「本月执行」不再在这里算 —— 它改成后端一条聚合接口(``GET /feishu/stats/monthly``,
+ * 见 ``api.getMonthlyStats`` 与 ``gateway/feishu/_stats.py``)。
  *
- * 定义: 某个会话只要有一段 todo 段是本月创建或更新的, 就算它本月执行过一次。按会话去重,
- * 所以同一会话本月跑十次仍只算一次 —— 这格是「有几天在干活」的规模感, 不是调用次数。
- *
- * 取数用的是 ``todo-segments`` 的时间戳, 这是前端唯一能拿到的「什么时候跑过」: history 行
- * 里没有时间字段, ``SessionInfo`` 也不下发。代价是**全程没写过 todo 的会话不计入** ——
- * 那种会话在列表里也永远停在「待开始」, 两处口径一致。
- *
- * 传 ``now`` 是为了可测: 纯函数里不藏 ``new Date()``。
+ * 原先那版是前端拿 ``todo-segments`` 的时间戳按自然月数会话, 两个毛病: (1) 对每个会话各打一次
+ * ``/todo-segments``, 会话一多就是 N 次请求; (2) 只看 todo 段 —— agent 直接回答/直接调工具的
+ * 回合不写 todo, 那类会话于是被算成「这个月没干活」, 而列表里它们的状态早就显示「已完成」了。
+ * 口径现在只有后端那一份, 前端不再有第二份实现。
  */
-export function countMonthlyRuns(
-  segmentsBySession: Record<string, TodoSegmentSummary[]>,
-  now: Date = new Date(),
-): number {
-  const year = now.getFullYear();
-  const month = now.getMonth();
-  let count = 0;
-  for (const list of Object.values(segmentsBySession)) {
-    const hit = (list || []).some((segment) => {
-      const raw = segment.updated_at || segment.created_at;
-      if (!raw) return false;
-      const at = new Date(raw);
-      if (Number.isNaN(at.getTime())) return false;
-      return at.getFullYear() === year && at.getMonth() === month;
-    });
-    if (hit) count += 1;
-  }
-  return count;
-}
