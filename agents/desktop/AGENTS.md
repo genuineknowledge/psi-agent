@@ -121,6 +121,7 @@ service tools:
 
 | Tool | Notes |
 |---|---|
+| `saving_facts` (`saving_facts.py`) | 省钱事实草稿 → **事实契约 payload**（校验 + 组装）。**只做校验与组装，不判定、不计算、不联网** —— 判定与计算在本体侧（本体 §3.1 的公式通道就是通用计算引擎），本工具是 agent 侧的**事实供给方**，是《Agent 组 → 本体组：运行期事实供给契约》在 agent 侧的可执行版本。两条最容易丢的契约在这里被机械挡住：① **`MISSING` 不得被静默填成 `false`** —— 草稿里 `held: null` 表示「不知道」→ 进 `missing[]`；写 `false` 是**否定断言，必须给 `source`**，否则 `E_NEGATION_WITHOUT_EVIDENCE` 直接拒；② **金额基数必须标明**（`price_basis` 只能是 `标价`/`结算价`，缺了报 `E_PRICE_BASIS`），因为基数传错不报错、只会安静算错（实测差 30 元且返回体看不出异常）。校验不通过返回稳定错误码 + `path`，**不产出半成品 payload**。刻意**不认识任何政策参数**：比例、上限、门槛值、品类枚举全由调用方给出，这里只查「形状对不对」。 |
 | `profile_update` | Manually update the workspace-local topic-aware learner profile; successful `finish_reason="stop"` turns are aggregated automatically by `system_after_turn`. Only per-topic dimensions and statistics are persisted, not raw transcripts. This profile is keyed by workspace, not by channel user identity. |
 | `bash` | Shell commands (anyio, Windows-aware bash detection). On Windows the installer bundles MSYS2 at `{app}\msys64`, added to PATH by the launcher, so bash works out-of-the-box. **cwd = workspace**. |
 | `powershell` | Windows-native shell. **默认 cwd = workspace**. |
