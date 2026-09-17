@@ -167,7 +167,6 @@ service tools:
 | `x_search` (`x_search.py` + `_x_search_impl.py`) | Search recent public posts on X (Twitter) via the X API v2 recent-search endpoint (last ~7 days). `x_search(query, max_results, sort_order)` supports X search operators (`from:`, `#tag`, `"phrase"`, `lang:`, `-is:retweet`). Uses `aiohttp` (already a core dep), no extra packages. Requires `X_BEARER_TOKEN` (X API v2 App-only OAuth 2.0 bearer token). |
 | `canvas` (`canvas.py` + `_canvas_impl.py` + `_mcp.py`) | 共享的 Excalidraw 实时画布（架构图/流程图/思维导图/线框图）。**26 个能力全部经 `canvas_call(tool, args_json)`**，一个常驻工具，参数表在 `canvas-mcp` 技能里。画布状态存在 canvas 服务器里、跨调用保留；截图和 mermaid 渲染要用户打开 `http://127.0.0.1:3000`。Requires Node.js/`npx`。**已知问题**：`describe_scene` / `query_elements` 在刚建元素后可能回空（直调 MCP 也一样，非派发引入）。 |
 | `browser` (`browser.py` + `_browser_impl.py` + `_mcp.py`) | Browser automation via Playwright MCP driving the system browser (Edge). **六个高频工具常驻** —— `browser_navigate` / `browser_snapshot` / `browser_click` / `browser_type` / `browser_tabs` / `browser_take_screenshot`（实测 146 个会话里 ≥8 次调用的全部）。**其余 35 个走 `browser_call(tool, args_json)`**，参数表在 `browser-mcp` 技能里（生成的，别手改；技能含「调用面约束」：禁止把表内名当顶层工具连打）。上游 schema 不由我们写，只能选暴露几个：42 个全常驻要吃 26% 的工具上下文。One long-lived `npx @playwright/mcp` server with `--shared-browser-context` keeps page state across calls. Requires Node.js/`npx`. |
-| `browser_cdp` (`browser_cdp.py` + `_browser_cdp_impl.py`) | Send a **raw Chrome DevTools Protocol** command to a browser — the escape hatch for anything the `browser_*` tools don't wrap (any CDP domain: `Page.*`, `Network.*`, `Emulation.*`, `Runtime.*`, `Browser.*`, `Target.*`, …). `browser_cdp(method, params, target="page"/"browser", timeout_s)` where `params` is a **JSON object string** (e.g. `'{"url": "https://example.com"}'`, empty for no-arg methods); returns the raw CDP result JSON. Launches a **dedicated** debug browser (Edge, then Chrome, with `--remote-debugging-port` + isolated profile — separate from the Playwright MCP browser) on first use and reuses it, or connects to an existing browser when `CDP_ENDPOINT` is set. CDP is JSON-over-WebSocket; uses `aiohttp` (already a core dep), no extra packages. |
 | `speech_to_text` | iFLYTEK streaming STT for WAV/PCM/MP3 files received through `[RECV:]`. |
 | `text_to_speech` | iFLYTEK online TTS; creates MP3 files delivered through `[SEND:]`. |
 | `computer_use` | Apple toolset. Drive the macOS desktop in the background (screenshot/click/type/scroll/drag) via the `cua-driver` CLI — no cursor/focus/Space theft. macOS only; needs `cua-driver` installed + Accessibility & Screen Recording permissions. See `skills/macos-computer-use/`. |
@@ -294,12 +293,6 @@ service tools:
   missing the `browser_*` tools are skipped at load time (logged), not fatal. A server that died or
   went half-dead is detected and replaced on the next call, so the tools self-heal without a
   Gateway restart.
-- **`browser_cdp` (raw CDP)**: a Chromium-family browser (Edge/Chrome) installed, **or**
-  `CDP_ENDPOINT` pointing at a browser started with `--remote-debugging-port` (e.g.
-  `http://localhost:9222`). No Node needed — it launches the browser directly and speaks
-  CDP over a WebSocket with `aiohttp`. Optional env: `CDP_ENDPOINT`, `CDP_BROWSER_CHANNEL`
-  (`msedge`/`chrome`), `CDP_HEADLESS` (`1`/`0`, default headed), `CDP_STARTUP_TIMEOUT`,
-  `CDP_COMMAND_TIMEOUT`. If no browser is found the tool returns `ok=false` (not fatal).
 
 ## ⚠️ Intentionally-kept un-wired code (future extension)
 
