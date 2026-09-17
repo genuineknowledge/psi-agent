@@ -48,11 +48,20 @@ class ReasoningChunk:
     a whitelist key, where a mis-parse silently degrades to the generic
     fallback. ``None`` for every other kind, and for streams produced before
     this field existed.
+
+    ``tool_args`` is the JSON-dumped arguments of a ``tool_call``, carried the
+    same way and for a stronger version of the same reason: the Feishu live
+    process block *displays* them, and the regex that used to recover them from
+    ``text`` ended at the first ``)]`` — an argument containing those two
+    characters literally (measured: ``{"command": "echo )]"}``) was shown
+    truncated to ``{"command": "echo``. ``None`` for ``tool_result`` and every
+    other kind.
     """
 
     text: str
     kind: str | None = None
     tool_name: str | None = None
+    tool_args: str | None = None
 
 
 InputChunk = FileChunk | TextChunk

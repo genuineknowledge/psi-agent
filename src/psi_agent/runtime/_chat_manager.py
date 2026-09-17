@@ -36,7 +36,9 @@ class ChatManager:
             Dicts suitable for SSE output:
 
             - ``{"type": "text", "text": "..."}``
-            - ``{"type": "reasoning", "text": "...", "kind": "thinking"|"tool_call"|"tool_result"?}``
+            - ``{"type": "reasoning", "text": "...", "kind":
+              "thinking"|"tool_call"|"tool_result"?, "tool_name": "..."?,
+              "tool_args": "<json>"?}``
             - ``{"type": "blob", "name": "...", "data": "<base64>"}``
             - ``{"type": "error", "error": "..."}`` — on blob read failure
         """
@@ -78,6 +80,13 @@ class ChatManager:
                     event: dict[str, Any] = {"type": "reasoning", "text": chunk.text}
                     if chunk.kind:
                         event["kind"] = chunk.kind
+                    # 名字与参数一起转发。只转 kind 的话消费方 (desktop) 知道"这是一次
+                    # 工具调用"却不知道是哪个工具, 只能显示兜底文案 —— 而这两个字段一路
+                    # 从 session 传到这里, 就断在最后一跳。
+                    if chunk.tool_name:
+                        event["tool_name"] = chunk.tool_name
+                    if chunk.tool_args:
+                        event["tool_args"] = chunk.tool_args
                     yield event
                 elif isinstance(chunk, FileChunk):
                     yield await self._file_blob(chunk.path)
