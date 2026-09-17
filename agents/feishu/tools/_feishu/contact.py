@@ -12,9 +12,14 @@ from __future__ import annotations
 import re
 from typing import Any
 
-import _feishu_impl as _core
 from lark_channel.core.enum import AccessTokenType, HttpMethod
 from lark_channel.core.model import BaseRequest
+
+# _core 在文件末尾导入(见末尾注释):本模块被顶层 import 时(如 ledger_reconcile.py
+# 先于 _feishu_impl 被加载),若顶部就 import _feishu_impl,会触发
+# _feishu_impl 底部 re-export `from _feishu.contact import ...` 而本模块尚未执行完
+# → `cannot import name '_BATCH_GET_ID_MAX' from partially initialized module`
+# 循环导入。移到末尾后,两条加载顺序都安全。
 
 # ── Contact (通讯录) — list department members ────────────────────────────────
 #
@@ -770,7 +775,7 @@ async def member_status_check_impl(names: list[str], user_key: str = "") -> dict
     """
     # 看板人名列常带 @ 前缀(如 @张三),通讯录是裸名——入口先归一,否则
     # 全员匹配不上、被静默判成离职(实测:fill_status 四桶全空的根因)。
-    names = [_norm_name(n) for n in names]
+    names = list(dict.fromkeys(_norm_name(n) for n in names))
     # 全公司通讯录一次拉全(递归),名字比对纯确定性,不靠模型判断。
     res = await list_department_members_impl("0", "open_department_id", "open_id", recursive=True)
     if not res.get("ok"):
@@ -838,3 +843,8 @@ def _classify_names(names: list[str], members: list[dict[str, Any]]) -> dict[str
         "resigned": resigned,
         "unresolved": unresolved,
     }
+
+
+# 延迟到文件末尾导入,打破与 _feishu_impl 底部 re-export 的循环导入(见顶部注释)。
+# 本模块所有 _core 用法都在函数体内,定义期不需要它。
+import _feishu_impl as _core  # noqa: E402
