@@ -1,0 +1,23 @@
+# 京东 —— agent 以用户身份读取其账户页面的接入定义
+#
+# 这一层是「平台怎么进」的数据：改平台不用改代码（扩场景=加数据，不改能力）。
+# 授权记录**不在这里** —— 那在 AppData 的 `{appdata}/saving/platforms.json`，
+# 因为它是运行期状态，不是出厂内容。
+
+key: jd
+name: 京东
+
+# 配置本身的核验日期。平台会改域名/改登录流程，过期了就该重新核。
+verified_at: "2026-09-17"
+
+home: "https://www.jd.com"
+
+# 「门」页面：需要登录才可达。未登录访问会自动跳到登录页，用户直接在那儿登录，
+# 登录成功后自动回到这里 —— 所以它同时是「打开以便登录」和「登录态探测」的入口。
+gate: "https://order.jd.com/center/list.action"
+
+# 落到这些 host 即判定「未登录」。这是 `report` 判定的**可信依据**。
+login_hosts:
+  - passport.jd.com
+
+notes: "订单页需登录；未登录会跳 passport.jd.com。"

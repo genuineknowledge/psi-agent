@@ -41,7 +41,7 @@ ToB 没有安装器, 结构上不存在这个问题 —— 这一节只对 ToC �
 
 | 类 | 内容 | 谁写 |
 |---|---|---|
-| 出厂内容 | `systems/` `tools/` `skills/` `triggers/` `channel_events/` `bin/` `config/` `docs/` `flows/` `fact-cards/`, 以及 `AGENTS.md` / `IDENTITY.md` / `TOOLS.md` / `BOOTSTRAP.md` / `HEARTBEAT.md` 这些提示词模板 | 安装器 (每次安装覆盖为本版内容) |
+| 出厂内容 | `systems/` `tools/` `skills/` `triggers/` `channel_events/` `bin/` `config/` `docs/` `flows/` `fact-cards/` `platforms/`, 以及 `AGENTS.md` / `IDENTITY.md` / `TOOLS.md` / `BOOTSTRAP.md` / `HEARTBEAT.md` 这些提示词模板 | 安装器 (每次安装覆盖为本版内容) |
 | 用户数据 | `SOUL.md` `USER.md` `schedules/` | agent 自己改写 / 用户积累 / `schedule_manage` 写 |
 
 **当前状态: `.iss` 里这两类仍混在同一条通配 `Source` 里, 结构上分不出来。**
@@ -151,6 +151,7 @@ service tools:
 | `policy_query` (`policy_query.py` + `_fact_cards.py` + `_guobu_categories.py`) | 国补政策参数查询：给定品类（+可选省份），返回 2026 现行口径的结构化参数 —— 补贴比例 / 单件上限 / 能效要求 / 价格门槛 / 件数 / 来源文号 / 2025 旧口径对照，外加 `fact_card_version` / `verified_at` / `expires_at` 时效三元组。**参数全部来自 `fact-cards/guobu-2026.yaml`**（见上「政策资料卡」），本文件不持有任何比例/上限/门槛字面量。未知品类（电视柜/空调扇/手机壳等）返回 `ok=false` + `suggest_search=true`，要求检索官方源而非凭记忆编造。**不联网、不实时检索**，回答必须标注「以官方文件/结算页为准」。 |
 | `subsidy_calc` (`subsidy_calc.py` + `_fact_cards.py` + `_guobu_categories.py`) | 国补确定性补贴计算：`min(结算价 × rate, cap)`，返回补贴 / 到手价 / **公式**（把算式原样写给用户看）/ `region_basis` 口径声明 / `assumption`（额度假设）。三道前置闸门不满足即 `ok=false` 并给下一步开关字段：品类不可归一 → `suggest_search`；家电缺能效 → `need_energy_level`；能效不在白名单（「1.5匹」「不是1级」不放行）或数码超 `price_gate` → 给 `reason`。**档位不是代码里的 if/elif**，而是卡里的 `energy_required` / `price_gate` —— 加档位只改卡。`price` 传**结算价**（扣完平台券/会员/店铺优惠后的成交价），不是标价。 |
 | `review_search` (`review_search.py`) | 导购候选文章检索：给定品类/预算/约束/地区，返回**真实抓取到**的候选文章（多源：ZOL/太平洋垂直源 → bing RSS → DuckDuckGo 降级 → 全失败给兜底话术）。只返回文章，类型判断/型号提取/排序交给模型（配合提示词的「≥2 独立源才标 `[Confirmed]`」）。注意品类源只覆盖笔记本/电脑/游戏本/手机/平板/耳机，**手表/眼镜/空调/冰箱/洗衣机/电视/热水器这 7 个国补品类没有垂直源**，只能走降级路径。 |
+| `saving_login` (`saving_login.py` + `platforms/*.yaml`) | **省钱场景的平台授权层** —— 「agent 以用户身份读账户」这条链路的第一环。五个 action：`list`（列出所有平台及授权状态，用户能看见 agent 记住了哪些）/ `status`（查状态，**只读记录不探测**）/ `report`（把浏览器**地址栏**的当前 URL 报进来，按平台定义判定）/ `confirm`（拿不到 URL 时由用户确认）/ `forget`（撤销授权）。**判定保守**：落到 `login_hosts` → `logged_out`（可信）；到达 `gate` 页本身 → `logged_in`（依赖配置正确）；其余一律 `unknown` 且**不写记录** —— 与 facts 契约「`MISSING` 不得填成 `false`」同一条纪律，说错比说不出坏得多。**两个数据面刻意分开**：平台怎么进在出厂内容 `platforms/<key>.yaml`（加平台 = 加文件，不改代码），授权记录在运行期状态 `{appdata}/saving/platforms.json`（记的是这台机器上这个用户核过什么）。记录**不自动失效**（一次授权覆盖后续），超期只回 `stale` 提示；`forget` 才撤销。 |
 | `profile_update` | Manually update the workspace-local topic-aware learner profile; successful `finish_reason="stop"` turns are aggregated automatically by `system_after_turn`. Only per-topic dimensions and statistics are persisted, not raw transcripts. This profile is keyed by workspace, not by channel user identity. |
 | `bash` | Shell commands (anyio, Windows-aware bash detection). On Windows the installer bundles MSYS2 at `{app}\msys64`, added to PATH by the launcher, so bash works out-of-the-box. **cwd = workspace**. |
 | `powershell` | Windows-native shell. **默认 cwd = workspace**. |

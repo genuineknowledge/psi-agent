@@ -1,0 +1,18 @@
+# 淘宝 —— agent 以用户身份读取其账户页面的接入定义
+#
+# 与 jd.yaml 同构；字段含义见 jd.yaml 的逐行注释。
+
+key: taobao
+name: 淘宝
+
+verified_at: "2026-09-17"
+
+home: "https://www.taobao.com"
+
+# 我的淘宝：需要登录才可达，未登录跳 login.taobao.com。
+gate: "https://i.taobao.com/my_taobao.htm"
+
+login_hosts:
+  - login.taobao.com
+
+notes: "我的淘宝需登录；未登录会跳 login.taobao.com。"
