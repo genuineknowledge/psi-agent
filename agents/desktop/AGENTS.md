@@ -41,7 +41,7 @@ ToB 没有安装器, 结构上不存在这个问题 —— 这一节只对 ToC �
 
 | 类 | 内容 | 谁写 |
 |---|---|---|
-| 出厂内容 | `systems/` `tools/` `skills/` `triggers/` `channel_events/` `bin/` `config/` `docs/` `flows/`, 以及 `AGENTS.md` / `IDENTITY.md` / `TOOLS.md` / `BOOTSTRAP.md` / `HEARTBEAT.md` 这些提示词模板 | 安装器 (每次安装覆盖为本版内容) |
+| 出厂内容 | `systems/` `tools/` `skills/` `triggers/` `channel_events/` `bin/` `config/` `docs/` `flows/` `fact-cards/`, 以及 `AGENTS.md` / `IDENTITY.md` / `TOOLS.md` / `BOOTSTRAP.md` / `HEARTBEAT.md` 这些提示词模板 | 安装器 (每次安装覆盖为本版内容) |
 | 用户数据 | `SOUL.md` `USER.md` `schedules/` | agent 自己改写 / 用户积累 / `schedule_manage` 写 |
 
 **当前状态: `.iss` 里这两类仍混在同一条通配 `Source` 里, 结构上分不出来。**
@@ -119,8 +119,37 @@ service tools:
 
 **刻意为之**：AppData 路径用 `platformdirs` / `--appdata` / `PSI_APPDATA`，禁止手写死 `%AppData%`；不把 AppData 塞进 Session ContextVar。
 
+### 政策资料卡（`fact-cards/`）—— 政策参数的唯一数据源
+
+国补（省钱决策）那条链路的政策参数**全部住在 `fact-cards/guobu-2026.yaml`**，`policy_query`
+与 `subsidy_calc` 都经 `tools/_fact_cards.py` 读它。改政策改那张卡，**不要在 `.py` 里再留第二份**。
+
+- **为什么**：参数原先是两处硬编码（`policy_query.py` 的参数表 + `subsidy_calc.py` 的
+  比例/上限/门槛字面量），改一处漏一处就分叉。这是《省钱场景交接》接手顺序第 1 步
+  「把政策参数挪出代码（做成资料卡，单一数据源）」，该文 §7 坑 1 记的就是这个隐患。
+- **改完即生效**：`load_card()` 按 `(mtime_ns, size)` 失效缓存，无需重启进程。工具注册表按
+  文件 hash 热重载是同一套期望，只是资料卡不在 `tools/` 下，内核不会替我们盯着它。
+- **合并只在一处**：档位默认 + 品类覆盖由 `_fact_cards.params_of()` 做一次；两个工具各写一遍
+  就等于把刚消掉的分叉换个地方重建。
+- **卡的结构**：`tiers`（档位 = 一套规则参数，含 `rate` / `cap` / `price_gate` /
+  `energy_required` 四个机器值 + 展示措辞）、`categories`（品类 → 档位）、`labels`（口径标签）、
+  `notes`（话术模板）、`supported_text`（「支持哪些品类」那句人话的拼装规则）、`previous_year`
+  （2025 旧口径对照）。加档位只改卡、不加代码分支 —— 对齐《省钱决策 Workspace 方案》§4
+  「不要为每个场景各写一个计算器」。
+- **卡根用 `__file__` 定位，不走 `_runtime_paths.agent_dir()`**（**刻意为之**）：两个能力包
+  （desktop / feishu）各有一份 `tools/_runtime_paths.py`，裸名 import 时谁先在 `sys.path` 上谁赢。
+  全量跑测试时两个包的 tools 目录同时在场，`agent_dir()` 会指到 feishu 包，资料卡直接找不到。
+  `__file__` 按构造就是「定义这两个工具的那个包」，与内核解析私有模块时「提问层优先」同源。
+  回归判据见 `tests/agents/desktop/test_guobu_fact_card.py`。
+- **能效白名单留在代码里**（`_ENERGY_LEVEL_1` / `_norm_energy`）：那是**输入归一化**
+  （「一级」「国标一级」是同一个意思的不同说法），不是政策参数；政策参数只有「要求 1 级」
+  这一个事实，即档位里的 `energy_required`。品类别名表（`_guobu_categories.ALIASES`）同理。
+
 | Tool | Notes |
 |---|---|
+| `policy_query` (`policy_query.py` + `_fact_cards.py` + `_guobu_categories.py`) | 国补政策参数查询：给定品类（+可选省份），返回 2026 现行口径的结构化参数 —— 补贴比例 / 单件上限 / 能效要求 / 价格门槛 / 件数 / 来源文号 / 2025 旧口径对照，外加 `fact_card_version` / `verified_at` / `expires_at` 时效三元组。**参数全部来自 `fact-cards/guobu-2026.yaml`**（见上「政策资料卡」），本文件不持有任何比例/上限/门槛字面量。未知品类（电视柜/空调扇/手机壳等）返回 `ok=false` + `suggest_search=true`，要求检索官方源而非凭记忆编造。**不联网、不实时检索**，回答必须标注「以官方文件/结算页为准」。 |
+| `subsidy_calc` (`subsidy_calc.py` + `_fact_cards.py` + `_guobu_categories.py`) | 国补确定性补贴计算：`min(结算价 × rate, cap)`，返回补贴 / 到手价 / **公式**（把算式原样写给用户看）/ `region_basis` 口径声明 / `assumption`（额度假设）。三道前置闸门不满足即 `ok=false` 并给下一步开关字段：品类不可归一 → `suggest_search`；家电缺能效 → `need_energy_level`；能效不在白名单（「1.5匹」「不是1级」不放行）或数码超 `price_gate` → 给 `reason`。**档位不是代码里的 if/elif**，而是卡里的 `energy_required` / `price_gate` —— 加档位只改卡。`price` 传**结算价**（扣完平台券/会员/店铺优惠后的成交价），不是标价。 |
+| `review_search` (`review_search.py`) | 导购候选文章检索：给定品类/预算/约束/地区，返回**真实抓取到**的候选文章（多源：ZOL/太平洋垂直源 → bing RSS → DuckDuckGo 降级 → 全失败给兜底话术）。只返回文章，类型判断/型号提取/排序交给模型（配合提示词的「≥2 独立源才标 `[Confirmed]`」）。注意品类源只覆盖笔记本/电脑/游戏本/手机/平板/耳机，**手表/眼镜/空调/冰箱/洗衣机/电视/热水器这 7 个国补品类没有垂直源**，只能走降级路径。 |
 | `profile_update` | Manually update the workspace-local topic-aware learner profile; successful `finish_reason="stop"` turns are aggregated automatically by `system_after_turn`. Only per-topic dimensions and statistics are persisted, not raw transcripts. This profile is keyed by workspace, not by channel user identity. |
 | `bash` | Shell commands (anyio, Windows-aware bash detection). On Windows the installer bundles MSYS2 at `{app}\msys64`, added to PATH by the launcher, so bash works out-of-the-box. **cwd = workspace**. |
 | `powershell` | Windows-native shell. **默认 cwd = workspace**. |

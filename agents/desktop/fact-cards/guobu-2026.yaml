@@ -1,0 +1,125 @@
+# 国补政策资料卡 —— 2026 现行口径
+#
+# **这是政策参数的唯一数据源。** policy_query 与 subsidy_calc 都从这里读，
+# 那两个 .py 里不得再出现比例 / 上限 / 门槛 / 品类清单的字面量。
+# 改政策只改本文件；加载器按 (mtime, size) 失效缓存，改完即生效，无需重启进程。
+#
+# 出处：《省钱场景交接》接手顺序第 1 步「把政策参数挪出代码（做成资料卡，单一数据源）」，
+# 目的写明是「消掉『两处各写一份』的隐患」（该文档 §7 坑 1、坑 2）。
+#
+# 结构：
+#   tiers       档位 = 一套规则参数（机器值 + 对外展示措辞）
+#   categories  品类 -> 档位；只登记机器侧认得的键，别名映射在 _guobu_categories.py
+#   labels      对外话术里的口径标签
+#   notes       各类话术模板
+
+card: guobu
+year: "2026"
+version: "guobu-v1.0"
+verified_at: "2026-08-18"
+expires_at: "2026-12-31"
+issued: "2025-12 印发、2026-01-01 实施"
+
+labels:
+  # 三个口径标签刻意不同，各自服务的场景不一样，勿合并
+  current: "2026 现行"
+  quota: "2026 现行（政策参数非实时，以下单结算页为准）"
+  policy: "2026 现行（实施期 2026-01-01 至 2026-12-31）"
+
+# 档位 = 一套规则参数。品类只声明自己属于哪个档位。
+# rate / cap / price_gate / energy_required 是机器值；带 _label 的是对外展示措辞。
+tiers:
+  家电:
+    label: "家电（以旧换新类）"
+    display_name: "家电"
+    rate: 0.15
+    cap: 1500.0
+    price_gate: null
+    energy_required: true
+    rate_label: "15%"
+    cap_label: "1500 元"
+    energy_label: "1 级能效/水效"
+    gate_label: "无"
+    quota_label: "每人每类 1 件"
+    category_label: "家电以旧换新"
+    source: "发改环资〔2025〕1745号"
+    display_order: ["冰箱", "洗衣机", "电视", "空调", "热水器", "电脑"]
+  数码:
+    label: "数码（数码智能产品类）"
+    display_name: "数码"
+    rate: 0.15
+    cap: 500.0
+    price_gate: 6000.0
+    energy_required: false
+    rate_label: "15%"
+    cap_label: "500 元"
+    energy_label: "无"
+    gate_label: "≤6000 元"
+    quota_label: "每人每类 1 件"
+    category_label: "数码智能产品类"
+    source: "商办流通函〔2025〕469号"
+    display_order: ["手机", "平板", "手表", "眼镜"]
+
+# 品类 -> 档位。未写的展示字段继承所属档位。
+# display 只影响 supported_text 那句人话；缺省用品类名本身。
+categories:
+  电脑:
+    tier: 家电
+    category_label: "家电以旧换新（6 类之一）"
+    gate_label: "无（电脑等家电无 6000 元上限）"
+    source: "发改环资〔2025〕1745号 / 商办流通函〔2025〕469号"
+  空调:
+    tier: 家电
+    category_label: "家电以旧换新（6 类之一）"
+  冰箱:
+    tier: 家电
+  洗衣机:
+    tier: 家电
+  电视:
+    tier: 家电
+  热水器:
+    tier: 家电
+    category_label: "家电以旧换新（6 类之一）"
+  手机:
+    tier: 数码
+    category_label: "数码智能产品（4 类之一）"
+    energy_label: "无（数码类）"
+    gate_label: "结算价 ≤6000 元（扣优惠后按结算价）"
+  平板:
+    tier: 数码
+  手表:
+    tier: 数码
+    display: "智能手表手环"
+  眼镜:
+    tier: 数码
+    display: "智能眼镜"
+
+# 「支持哪些品类」那句人话的拼装方式（由品类表生成，避免手写句子漂移）
+supported_text:
+  prefix: "2026 国补"
+  tier_tpl: "{tier} {n} 类：{items}"
+  tier_join: "；"
+  item_join: "/"
+
+# 2025 旧口径：只作对照，不得当 2026 用
+previous_year:
+  家电品类数: "12 类"
+  家电能效: "1 级 20% / 2 级 15%"
+  家电单件上限: "2000 元"
+  数码品类: "手机/平板/智能手表手环（3 类）"
+
+# 话术模板。{...} 由工具侧填写。
+notes:
+  price_basis: "结算价 = 扣完平台券 / 会员 / 店铺优惠后的成交价，不是标价"
+  unknown_category_tpl: "未知品类：{category}（支持 {supported}；电视柜/空调扇/手机壳等非国补品类不算）"
+  need_energy_reason: "家电需 1 级能效/水效，未提供能效等级，无法确认是否符合 2026 国补条件"
+  bad_energy_tpl: "家电需 1 级能效/水效，当前能效为 {energy_level}，不符合 2026 国补条件（仅认 1级/一级 等白名单写法）"
+  over_gate_tpl: "数码类单件结算价 ≤6000 元，当前 {price} 超门槛，不参与 2026 国补；{hint}"
+  over_gate_hint: "部分省市有 >6000 高端机地方补贴（如 10%、上限 1000，山东/江苏等，安徽未见官方文件），需按所在省细则/结算页核实，不得断言『完全无补贴』"
+  region_basis_tpl: "按全国通用口径估算（{region}）；省细则可能不同，以下单结算页为准"
+  region_basis_none: "未指定省份：按全国通用口径估算，省细则可能不同，以下单结算页为准"
+  region_none: "未指定"
+  quota_assumption: "假定本年度该品类补贴额度尚未使用（每人每类限 1 件）；若用户可能已用额度，需先确认再计算"
+  eligibility_note: "结算价按扣完平台券/会员/店铺优惠后的成交价传入；省份资格另行确认（eligibility_check）。"
+  policy_hint: "该品类不在内置表，可能不属于 2026 国补范围或尚未收录；请检索官方源（gov.cn / 省商务厅）核实后再回答，禁止凭记忆编造参数。"
+  policy_note: "返回 2026 现行口径，非实时检索；应标注「以官方/省级官方文件为准」。政策时效至 expires_at（{expires_at}），超过该日期须检索最新官方文件，不得沿用本快照。若 region 为省份，可以该省商务厅细则为准；以下单结算页显示为准。"
