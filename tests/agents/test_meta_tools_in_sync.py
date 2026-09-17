@@ -33,7 +33,6 @@ META_TOOL_FILES = (
     "tool_describe.py",
     "tool_search.py",
     "tool_search_code.py",
-    "skill_manage.py",
 )
 
 
