@@ -172,17 +172,53 @@ PR #867(fork `Twin-Ghosts`)的代码再往前改出来的, 生产是那个 PR �
 
 目标机上有三份, 各挂给一个容器:
 
-| 目录 | 容器 | 状态(2026-09-14 实测) |
+| 目录 | 容器 | 状态 |
 | --- | --- | --- |
-| `workspace/` | `psi-agent-gateway` | 与 `origin/main` 基本齐平: 同 205 / 落后 32 / 领先 3 / 缺失 1 / 独有 0（脚本真机实测，基准 `ef3cad55`） |
-| `workspace-luolin/` | `psi-agent-luolin` | **8-07 的旧快照**, 缺 73 个文件 |
-| `workspace-chengxx/` | `psi-agent-chengxx` | **8-07 的旧快照**, 缺 71 个文件 |
+| `workspace/` | `psi-agent-gateway` | 与 `origin/main` 基本齐平: 同 205 / 落后 32 / 领先 3 / 缺失 1 / 独有 0（2026-09-14 脚本真机实测，基准 `ef3cad55`） |
+| `workspace-luolin/` | `psi-agent-luolin` | `tools/` 子树 241 个 `.py`(9-16 铺平 174→247, 清残留 247→241) |
+| `workspace-chengxx/` | `psi-agent-chengxx` | `tools/` 子树 245 个 `.py`(9-16 铺平 180→251, 清残留 251→245); 多出的 4 个是 `tools/platforms/` |
+
+计数口径要说清楚: 上面是 `find <workspace>/tools -name '*.py'` 的**子树**数。整份 workspace
+连 `skills/` 一起数是 307 / 327, 而 `tools/` **顶层** `ls *.py` 是 207 / 207 —— 顶层数正是工具
+索引真正扫的那批(`glob("*.py")` 不递归), 三个口径差得很远, 混用会得出「铺平没生效」之类的
+错误结论。
 
 ⚠️ **不要对两份私有 workspace 做「补依赖闭包」式的增量投放。** 9-12 实测: 为补一条断链投了
 13 个文件, 其中新版 `_feishu_impl.py` 需要新增的 `_feishu/bitable.py`, 而两台机器上是 8-07 的
 旧版, 40+ 文件立刻 `cannot import name 'get_bitable_record_impl'`, 工具数从 198 掉到 87。
 已完整回滚。闭包的边界是整棵依赖树, 不是看得见的那几条报错 —— 所以这两份只能整份铺平, 不能
 增量。
+
+### 铺平是增量的, 所以旧版文件会留下
+
+9-16 的整份铺平只**补缺失**, 不覆盖已存在的同名文件。所以铺平之后两份私有 workspace 看上去
+齐平了(工具数 198→239), 但历史残留一个都没被清掉 —— 「文件数对上了」和「文件内容对上了」是
+两件事, 前者不蕴含后者。
+
+补完之后必须再跑一次审计, 按上面那张四类表处置。9-16 清掉的残留(两份各 6 个 `.py`):
+
+| 残留 | 为什么留下 | 处置 |
+| --- | --- | --- |
+| `feishu_calendar.py` / `feishu_elearning.py` / `feishu_permission.py` | git 里已删的工具(`0dbf3234` #635 / `17785289` #612), 铺平不删文件 | 删 |
+| `browser_cdp.py` / `_browser_cdp_impl.py` | 位置错了, 仓库里在 `agents/desktop/tools/` | blob 在库里 → 删 |
+| `_private_space.py` | 8 个调用方还是旧版, 引用它 | ⚠️ **先换 8 个调用方, 再删它** |
+
+那 8 个调用方是 `bash.py` `describe_image.py` `search_content.py` `powershell.py`
+`_runtime_paths.py` `_content_layers.py` `feishu_drive.py` `write_excel.py`。顺序反了就是 8 个
+即时 `ImportError`。
+
+**残留里可能混着只活在生产的重构。** `workspace-chengxx/tools/platforms/`(4 文件 13504 字节)
+把 `computer_use.py` 从 250 行 mac-only 单体拆成了后端分派, git 里一处都没有。这一类要**收编**
+而不是删 —— 不动它等于下次投放冲掉。已收编为 `agents/{desktop,feishu}/tools/_platforms/`,
+下划线是内核契约不是命名风格(见该包 docstring)。
+
+生产上 `workspace-chengxx/tools/platforms/` **仍在原地, 本次没动**: chengxx 的
+`computer_use.py` 就是那个分派器, 删掉目录它立刻挂。收编的意义是让这份代码进仓库, 下次投放
+不再冲掉它; 生产端换成 `_platforms/` 是随投放走的后续动作, 不在本次范围。
+
+判「生产独有」用 `git hash-object --no-filters` + `git cat-file -e`, 不要用 mtime。`--no-filters`
+是必须的: 仓库检出带 CRLF 时 `core.autocrlf=true` 会静默把输入归一化, 原始与归一化两条量法
+算出同一个 SHA, 刚报「不在库里」的文件会翻成「在」。
 
 ### 投放的硬规则
 
@@ -228,9 +264,17 @@ CRLF, 仍报「同」, 归一化没有产生假阳性。
 
 ### 已知没验到的
 
-- 两份私有 workspace 的整份铺平**没做**。
+- 两份私有 workspace 的整份铺平 9-16 已做(174→247 / 180→251), 残留已清(→241 / →245)。
 - 三个「领先」文件的归属未定: `_card_dsl.py` / `_rookie_sop_card.py`(9-12 17:44, 源头是未合并的
   PR #867) / `tencent_meeting.py`(9-14 14:19)。
+- **收编进来的 `_platforms/` 在 Linux 上会抛异常**, 而它替换掉的 mac-only 单体是返回字符串的。
+  两份私有 workspace 挂的容器都是 Linux, 所以那条分支就是它们的常态路径。异常被
+  `agent.py` 的 `except Exception` 兜住(工具返回一行 `Error executing tool ...`, 不会崩会话),
+  但这是降级不是设计。
+- `_platforms/base.py` 里 `_preflight()` 跑在 `REFUSALS` 检查之前: 没装 cua-driver 的机器上,
+  一个本该 `[Refused]` 的动作会先报 `[Error] cua-driver CLI not found`。本次未改。
+- `_platforms/win.py` 的 `REFUSALS` 键是 `press_key`, 而对外动作名是 `key` —— 看着对不上,
+  没验。
 - **`tencent_meeting.py` 那份要尽快收编**: 它加的 `_skill_script()`(改从 `PSI_CONTENT_ROOTS`
   逐层找技能脚本)在 git 里一处都搜不到, 只活在生产上 —— 下次镜像发布或批量投放就会把它冲掉,
   而它正是分层挪走 `<workspace>/skills` 之后的必要适配。但同一份改动里 PR #859 加的
