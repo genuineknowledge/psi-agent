@@ -1,18 +1,25 @@
-# ruff: noqa: RUF001, RUF002, RUF003
-"""国补品类共享常量与匹配（policy_query / subsidy_calc 共用，杜绝分叉）。
+"""国补品类别名表 —— 把用户说法归一成资料卡认得的品类名。
 
-v2（2026-09-01，枚举化改造）：
-- 品类归一化交给模型：调用工具前须把用户说法映射到 ENUM 十个枚举之一（见 SKILL.md 约束 8）；
-- 工具侧只做确定性兜底：白名单别名收尾匹配（笔记本/游戏本→电脑 等高频别名，防模型漏映射）
-  + 未知返回 None（由工具返回 suggest_search）；
-- 删除组合词穷举（PARTS_WORDS）：电视柜/空调扇/手机壳 等由「模型映射不出枚举→不调工具」兜底，
-  工具收尾匹配天然不命中（它们不以品类词结尾）。
+职责刻意只剩「自然语言 → 品类名」这一件:
+
+- **品类清单不在这里**, 在资料卡 ``fact-cards/guobu-2026.yaml`` 的 ``categories``
+  (单一数据源)。本模块只补别名; 卡里有、别名表没登记的品类按名字本身命中。
+- **档位归属(家电/数码)也不在这里**, 在资料卡的 ``tier``, 由
+  ``_fact_cards.params_of()`` 合并后交给调用方。
+
+本模块的键必须与资料卡 ``categories`` 的键一致 —— 由
+``tests/agents/desktop/test_guobu_fact_card.py`` 钉死, 少一个、多一个都失败。
+
+版本:
+- v2(2026-09-01, 枚举化改造): 品类归一化交给模型, 工具侧只做确定性兜底;
+- v1.3: 删组合词穷举(PARTS_WORDS) —— 电视柜/空调扇/手机壳由「模型映射不出枚举
+  → 不调工具」兜底, 工具侧的收尾匹配天然不命中(它们不以品类词**结尾**);
+- v1.4: 清单与档位移交资料卡, 本模块只留别名。
 """
 
-# 国补品类枚举（工具只认这些值；模型调用前须映射到此）
-ENUM = ("电脑", "手机", "平板", "手表", "眼镜", "空调", "冰箱", "洗衣机", "电视", "热水器")
+from collections.abc import Iterable
 
-# 品类 → 别名白名单（归一品类名；完全相等或以别名结尾命中）
+# 品类 → 别名白名单(归一品类名; 完全相等或以别名结尾命中)
 ALIASES = {
     "电脑": ["电脑", "笔记本", "笔记本电脑", "台式机", "一体机", "游戏本", "台式电脑"],
     "手机": ["手机", "智能手机"],
@@ -27,28 +34,23 @@ ALIASES = {
 }
 
 
-def match_category(subject: str):
-    """返回归一品类名；无法确定返回 None。"""
-    s = (subject or "").strip()
-    if not s:
+def match_category(subject: str, categories: Iterable[str]) -> str | None:
+    """返回归一品类名; 无法确定返回 ``None``。
+
+    *categories* 是资料卡登记的品类名集合(``_fact_cards.category_names()``)。
+    对每个品类, 命中词 = 品类名本身 + ``ALIASES`` 里的别名; **取最长命中**,
+    这样「平板电脑」落到平板而不是电脑。
+
+    只做确定性兜底, 不做语义猜测: 电视柜 / 空调扇 / 手机壳这类组合词不以品类词
+    结尾, 天然不命中, 由「模型映射不出枚举 → 不调工具」在上一层拦住。
+    """
+    text = (subject or "").strip()
+    if not text:
         return None
-    best, best_len = None, -1
-    for cat, aliases in ALIASES.items():
-        for a in aliases:
-            if (s == a or s.endswith(a)) and len(a) > best_len:
-                best, best_len = cat, len(a)
+    best: str | None = None
+    best_len = -1
+    for cat in categories:
+        for alias in (cat, *ALIASES.get(cat, ())):
+            if (text == alias or text.endswith(alias)) and len(alias) > best_len:
+                best, best_len = cat, len(alias)
     return best
-
-
-def is_home(kind: str) -> bool:
-    """家电类（15%/1500/1级能效）。"""
-    return kind in ("电脑", "空调", "冰箱", "洗衣机", "电视", "热水器")
-
-
-def is_digital(kind: str) -> bool:
-    """数码类（15%/500/≤6000）。"""
-    return kind in ("手机", "平板", "手表", "眼镜")
-
-
-def supported_text() -> str:
-    return "2026 国补家电 6 类：冰箱/洗衣机/电视/空调/热水器/电脑；数码 4 类：手机/平板/智能手表手环/智能眼镜"

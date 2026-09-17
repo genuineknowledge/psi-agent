@@ -1,168 +1,70 @@
-# ruff: noqa: RUF001, RUF002, RUF003
-"""policy_query v1.3：政策参数查询（结构化政策参数 + 口径标签 + 文号/来源 + 2025 对照 + 时效）
+"""policy_query v1.4: 政策参数查询(结构化政策参数 + 口径标签 + 文号/来源 + 2025 对照 + 时效)。
 
-定位：解决 B1（2025 口径 vs 2026）、T01（来源 URL）、T24（文件内容混淆）等
-- 返回 2026 现行政策参数（结构化），含 guobu 事实卡/来源、文号与日期；
-- 口径标签：明确「2026 现行」，并给 2025 旧口径对照；
-- v1.1：补全 2026 国补品类（家电 6 类 + 数码 4 类）；未知品类返回 suggest_search；
-- v1.2：配件词排除；
-- v1.3（2026-08-26，review #1/#5）：品类匹配改共享 _guobu_categories（白名单+收尾匹配，
-  电视柜/空调扇/平板电脑 不再误判）；返回带 fact_card_version / verified_at / expires_at，
-  是否过期由模型/提示词判断（超过 expires_at 须检索最新官方）；
-- 确定性程序：不联网、不实时检索，回答必须标注「政策口径以官方文件/结算页为准」。
+定位: 解决 B1(2025 口径 vs 2026)、T01(来源 URL)、T24(文件内容混淆)等
+- 返回 2026 现行政策参数(结构化), 含来源、文号与日期;
+- 口径标签: 明确「2026 现行」, 并给 2025 旧口径对照;
+- v1.1: 补全 2026 国补品类(家电 6 类 + 数码 4 类); 未知品类返回 suggest_search;
+- v1.2: 配件词排除;
+- v1.3(2026-08-26, review #1/#5): 品类匹配改共享 _guobu_categories(白名单+收尾匹配,
+  电视柜/空调扇/平板电脑 不再误判); 返回带 fact_card_version / verified_at / expires_at,
+  是否过期由模型/提示词判断(超过 expires_at 须检索最新官方);
+- v1.4(本次): **政策参数全部移出代码**, 改从资料卡 ``fact-cards/guobu-2026.yaml`` 读
+  (``_fact_cards.load_card``)。本文件不再持有任何比例 / 上限 / 门槛 / 品类清单的字面量,
+  与 ``subsidy_calc`` 读同一张卡 —— 消掉「两处各写一份, 改一处必改另一处」(交接文档 §7 坑 1)。
+- 确定性程序: 不联网、不实时检索, 回答必须标注「政策口径以官方文件/结算页为准」。
 """
 
 import json
 
-from _guobu_categories import match_category, supported_text
+from _fact_cards import category_names, load_card, params_of, supported_text
+from _guobu_categories import match_category
 
-# 2026 政策参数来源：发改环资〔2025〕1745号 / 商办流通函〔2025〕469号 / 各省商务厅细则
-_POLICY_2026 = {
-    "电脑": {
-        "品类": "家电以旧换新（6 类之一）",
-        "补贴比例": "15%",
-        "单件上限": "1500 元",
-        "能效要求": "1 级能效/水效",
-        "价格门槛": "无（电脑等家电无 6000 元上限）",
-        "件数": "每人每类 1 件",
-        "来源": "发改环资〔2025〕1745号 / 商办流通函〔2025〕469号",
-    },
-    "手机": {
-        "品类": "数码智能产品（4 类之一）",
-        "补贴比例": "15%",
-        "单件上限": "500 元",
-        "能效要求": "无（数码类）",
-        "价格门槛": "结算价 ≤6000 元（扣优惠后按结算价）",
-        "件数": "每人每类 1 件",
-        "来源": "商办流通函〔2025〕469号",
-    },
-    "平板": {
-        "品类": "数码智能产品类",
-        "补贴比例": "15%",
-        "单件上限": "500 元",
-        "能效要求": "无",
-        "价格门槛": "≤6000 元",
-        "件数": "每人每类 1 件",
-        "来源": "商办流通函〔2025〕469号",
-    },
-    "手表": {
-        "品类": "数码智能产品类",
-        "补贴比例": "15%",
-        "单件上限": "500 元",
-        "能效要求": "无",
-        "价格门槛": "≤6000 元",
-        "件数": "每人每类 1 件",
-        "来源": "商办流通函〔2025〕469号",
-    },
-    "眼镜": {
-        "品类": "数码智能产品类",
-        "补贴比例": "15%",
-        "单件上限": "500 元",
-        "能效要求": "无",
-        "价格门槛": "≤6000 元",
-        "件数": "每人每类 1 件",
-        "来源": "商办流通函〔2025〕469号",
-    },
-    "冰箱": {
-        "品类": "家电以旧换新",
-        "补贴比例": "15%",
-        "单件上限": "1500 元",
-        "能效要求": "1 级能效/水效",
-        "价格门槛": "无",
-        "件数": "每人每类 1 件",
-        "来源": "发改环资〔2025〕1745号",
-    },
-    "洗衣机": {
-        "品类": "家电以旧换新",
-        "补贴比例": "15%",
-        "单件上限": "1500 元",
-        "能效要求": "1 级能效/水效",
-        "价格门槛": "无",
-        "件数": "每人每类 1 件",
-        "来源": "发改环资〔2025〕1745号",
-    },
-    "电视": {
-        "品类": "家电以旧换新",
-        "补贴比例": "15%",
-        "单件上限": "1500 元",
-        "能效要求": "1 级能效/水效",
-        "价格门槛": "无",
-        "件数": "每人每类 1 件",
-        "来源": "发改环资〔2025〕1745号",
-    },
-    "空调": {
-        "品类": "家电以旧换新（6 类之一）",
-        "补贴比例": "15%",
-        "单件上限": "1500 元",
-        "能效要求": "1 级能效/水效",
-        "价格门槛": "无",
-        "件数": "每人每类 1 件",
-        "来源": "发改环资〔2025〕1745号",
-    },
-    "热水器": {
-        "品类": "家电以旧换新（6 类之一）",
-        "补贴比例": "15%",
-        "单件上限": "1500 元",
-        "能效要求": "1 级能效/水效",
-        "价格门槛": "无",
-        "件数": "每人每类 1 件",
-        "来源": "发改环资〔2025〕1745号",
-    },
-}
-_OLD_2025 = {
-    "家电品类数": "12 类",
-    "家电能效": "1 级 20% / 2 级 15%",
-    "家电单件上限": "2000 元",
-    "数码品类": "手机/平板/智能手表手环（3 类）",
-}
-_FACT_CARD = {
-    "fact_card_version": "guobu-v1.0",
-    "verified_at": "2026-08-18",
-    "expires_at": "2026-12-31",
-}
+# 资料卡名(``<agent>/fact-cards/<name>.yaml``)。改政策改那张卡, 不改本文件。
+_CARD = "guobu-2026"
 
 
 async def policy_query(subject: str = "", region: str = "", return_json: bool = True) -> str:
-    """查询 2026 政策参数（结构化 + 口径标签 + 2025 对照 + 时效）；subject=品类，region=省份（当前为占位）"""
-    key = match_category(subject)
+    """查询 2026 政策参数(结构化 + 口径标签 + 2025 对照 + 时效); subject=品类, region=省份(当前为占位)。"""
+    card = await load_card(_CARD)
+    notes = card["notes"]
+    labels = card["labels"]
+    supported = supported_text(card)
+    key = match_category(subject, category_names(card))
     if not key:
         return json.dumps(
             {
                 "ok": False,
-                "reason": (f"未知品类：{subject}（支持 {supported_text()}；电视柜/空调扇/手机壳等非国补品类不算）"),
-                "quota_label": "2026 现行",
+                "reason": str(notes["unknown_category_tpl"]).format(category=subject, supported=supported),
+                "quota_label": labels["current"],
                 "suggest_search": True,
-                "hint": "该品类不在内置表，可能不属于 2026 国补范围或尚未收录；"
-                "请检索官方源（gov.cn / 省商务厅）核实后再回答，禁止凭记忆编造参数。",
-                **_FACT_CARD,
+                "hint": notes["policy_hint"],
+                "fact_card_version": card["version"],
+                "verified_at": card["verified_at"],
+                "expires_at": card["expires_at"],
             },
             ensure_ascii=False,
         )
 
-    pol = _POLICY_2026[key]
+    pol = params_of(card, key)
     result = {
         "ok": True,
-        "query": {"subject": subject, "region": region or "未指定"},
+        "query": {"subject": subject, "region": region or notes["region_none"]},
         "policy": {
-            "年份": "2026",
-            "口径标签": "2026 现行（实施期 2026-01-01 至 2026-12-31）",
-            "品类": pol["品类"],
-            "补贴比例": pol["补贴比例"],
-            "单件上限": pol["单件上限"],
-            "能效要求": pol["能效要求"],
-            "价格门槛": pol["价格门槛"],
-            "件数": pol["件数"],
-            "来源": pol["来源"],
-            "印发/实施": "2025-12 印发、2026-01-01 实施",
-            "2025旧口径": _OLD_2025,
+            "年份": card["year"],
+            "口径标签": labels["policy"],
+            "品类": pol["category_label"],
+            "补贴比例": pol["rate_label"],
+            "单件上限": pol["cap_label"],
+            "能效要求": pol["energy_label"],
+            "价格门槛": pol["gate_label"],
+            "件数": pol["quota_label"],
+            "来源": pol["source"],
+            "印发/实施": card["issued"],
+            "2025旧口径": card["previous_year"],
         },
-        "fact_card_version": _FACT_CARD["fact_card_version"],
-        "verified_at": _FACT_CARD["verified_at"],
-        "expires_at": _FACT_CARD["expires_at"],
-        "note": (
-            "返回 2026 现行口径，非实时检索；应标注「以官方/省级官方文件为准」。"
-            "政策时效至 expires_at（2026-12-31），超过该日期须检索最新官方文件，不得沿用本快照。"
-            "若 region 为省份，可以该省商务厅细则为准；以下单结算页显示为准。"
-        ),
+        "fact_card_version": card["version"],
+        "verified_at": card["verified_at"],
+        "expires_at": card["expires_at"],
+        "note": str(notes["policy_note"]).format(expires_at=card["expires_at"]),
     }
     return json.dumps(result, ensure_ascii=False) if return_json else str(result)
