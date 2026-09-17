@@ -22,14 +22,14 @@ watcher 会互相抢码, 抢输的那个白等到超时。上限 ``_WATCH_MAX_SE
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import contextvars
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from loguru import logger
+
+from psi_agent.session.task_registry import TaskRegistry
 
 # 与 Gateway 取件箱 (``psi_agent.gateway._oauth_manager._TTL_SECONDS``) 对齐: 码在那边
 # 只留 600 秒, 之后再等也取不到东西。
@@ -73,15 +73,18 @@ class WatchState:
         }
 
 
-_watchers: dict[str, WatchState] = {}
-
-# 当前执行流正跑在哪个 watcher 的 task 里 (空串 = 不在任何 watcher 里)。
+# 在跑的 (以及跑完还留着结果的) watcher 都在这张表里, 自指取消的护栏由它自带。
 #
-# 存在的理由是一条**自指**路径: 收码成功后的续跑回合就跑在 watcher 自己的 task 里, 而那一轮
-# 完全可以再发起一次授权 (scope 不够/换能力集), 那条路会 ``forget`` 同一个 user_key ——
-# 于是「取消自己」。``asyncio.current_task()`` 判不出来: 工具在 anyio task group 里跑, 当前
-# 任务是**子任务**而不是 watcher 那个 task。ContextVar 随子任务继承, 所以它判得出来。
-_CURRENT_WATCHER: contextvars.ContextVar[str] = contextvars.ContextVar("psi_feishu_current_watcher", default="")
+# 护栏要防的是一条**自指**路径: 收码成功后的续跑回合就跑在 watcher 自己的 task 里, 而那一轮
+# 完全可以再发起一次授权 (scope 不够/换能力集), 那条路会 ``forget`` 同一个 user_key —— 于是
+# 「取消自己」, 外层 anyio task group 退出时无限重试交付取消, 事件循环 100% 忙转 (2026-09-16
+# 生产上锁死一个用户 3 小时)。判据、为什么 ``current_task()`` 判不出来、以及为什么不能在这里
+# 再写一遍, 全在 :mod:`psi_agent.session.task_registry`。
+#
+# ``retain_finished_payload=True``: 这里的载荷 ``WatchState`` **就是结果** —— 后续回合靠
+# ``status()`` 答「上次授权成没成」(见 ``_feishu/auth.py`` 里 STATUS_GRANTED 那几支), 所以
+# 任务跑完记录不能自动摘掉, 由新一轮授权的 ``forget`` 来清。
+_watchers: TaskRegistry[WatchState] = TaskRegistry("feishu-auth-watch", retain_finished_payload=True)
 
 
 def clamp_timeout(timeout_seconds: float) -> float:
@@ -105,20 +108,10 @@ def forget(user_key: str) -> asyncio.Task[None] | None:
     (以及它持有的资源被释放) 要等事件循环再调度它。需要资源确实腾出来的场景请用
     :func:`forget_and_wait`。
 
-    **绝不取消自己所在的那个 watcher** (见 :data:`_CURRENT_WATCHER`): 记录照样丢 (新一轮
-    授权不能读到旧结果), 但不动那个 task。
+    **绝不取消自己所在的那个 watcher**: 记录照样丢 (新一轮授权不能读到旧结果), 但不动那个
+    task —— 这一支由 :class:`~psi_agent.session.task_registry.TaskRegistry` 自己判, 见上面注释。
     """
-    state = _watchers.pop(user_key, None)
-    if state is None or state.task is None or state.task.done():
-        return None
-    if _CURRENT_WATCHER.get() == user_key:
-        # 自指: 当前执行流就在这个 watcher 的 task (或它派生的子任务) 里。取消它会把
-        # 「取消已提出、却被 suppress 吞掉」的任务留在活着的状态, 外层 anyio task group
-        # 退出时便无限重试交付取消 —— 实测事件循环 100% 忙转且回合永不结束。
-        logger.info(f"Not cancelling the watcher we are running inside for {user_key!r}; dropped the record only")
-        return None
-    state.task.cancel()
-    return state.task
+    return _watchers.forget(user_key)
 
 
 async def forget_and_wait(user_key: str, *, seconds: float = 2.0) -> None:
@@ -126,19 +119,16 @@ async def forget_and_wait(user_key: str, *, seconds: float = 2.0) -> None:
 
     loopback 模式下这是硬要求: watcher 占着回环端口, 而 ``plan_receiver`` 用「端口空不空」
     判断还能不能自动收码。没等它关掉就去重新规划通道, 免复制的授权会被静默降级成手工贴码。
+
+    刻意**不** ``suppress(asyncio.CancelledError)`` (原实现有): 那个 suppress 把「本任务的取消
+    已提出」从调用栈里抹掉, 是活锁的必要条件。本任务真被取消时异常必须继续向外传播。
     """
-    task = forget(user_key)
-    if task is None:
-        return
-    with contextlib.suppress(TimeoutError, asyncio.CancelledError):
-        async with asyncio.timeout(seconds):
-            await task
+    await _watchers.forget_and_wait(user_key, seconds=seconds)
 
 
 def reset_all() -> None:
     """测试用: 清空全部 watcher。"""
-    for key in list(_watchers):
-        forget(key)
+    _watchers.reset_all()
 
 
 async def _run(
@@ -151,10 +141,10 @@ async def _run(
     这里刻意把所有异常都吞掉并记进 ``state``: 后台任务没有调用方接它的错, 抛出去只会变成
     事件循环里一条 "Task exception was never retrieved", 用户那边则永远等不到回话。
 
-    开头立 :data:`_CURRENT_WATCHER`: 这一整棵执行流 (含 ``notify`` 里的续跑回合和它跑的工具)
-    由此可被 ``forget`` 认出是「自己」, 免得取消自己 —— 详见那里的注释。
+    「这一整棵执行流 (含 ``notify`` 里的续跑回合和它跑的工具) 算作自己」是由外面那层
+    ``TaskRegistry.run_registered`` 立的 ContextVar 标出来的 —— 标必须在**任务体内**立,
+    在建任务前立会把发起方那条执行流一起标上, 于是发起方后续撤这个 key 也被当成自指。
     """
-    _CURRENT_WATCHER.set(state.user_key)
     try:
         result = await collect(state.user_key, state.timeout_seconds)
     except asyncio.CancelledError:
@@ -205,8 +195,13 @@ def start(
         started_at=time.monotonic(),
         timeout_seconds=clamp_timeout(timeout_seconds),
     )
-    _watchers[user_key] = state
-    # 必须留强引用 (state.task): 只被局部变量持有的任务会被 GC 掉, 事件循环随后把它当
-    # 「任务被销毁但仍在 pending」处理, 码就再也没人取了。
-    state.task = loop.create_task(_run(state, collect, notify))
+    # 任务体包在 ``run_registered`` 里: 它在任务体第一行立起「当前执行流属于这个 key」的标记,
+    # 自指取消的护栏靠这个标记才判得出来。
+    #
+    # ``create_task`` 只是排程 (到下一个 await 点才真跑), 所以先建任务再 ``register`` 是安全的;
+    # 反过来 ``register`` 需要 task 对象, 只能是这个顺序。两处都必须留强引用 (表里 + state.task):
+    # 只被局部变量持有的任务会被 GC 掉, 事件循环随后把它当「任务被销毁但仍在 pending」处理,
+    # 码就再也没人取了。
+    state.task = loop.create_task(_watchers.run_registered(user_key, _run(state, collect, notify)))
+    _watchers.register(user_key, state.task, payload=state)
     return state, True

@@ -53,10 +53,18 @@ class TaskRegistry[T]:
 
     ``name`` 只用于区分同进程里的多张表与写日志; 它进 ContextVar 的值, 所以两张表登记了
     同一个 ``key`` 也不会互相认成自己。
+
+    ``retain_finished_payload`` 分的是载荷的两种用法。默认那种载荷只是个句柄, 任务跑完就没
+    意义了, 所以任务体结束时连记录一起摘掉, 免得表里堆已死的 key。另一种载荷本身**就是结果**
+    (飞书授权那份的 ``WatchState`` 记着 granted/timeout 与回话内容, 后续回合要靠它答「上次授权
+    到底成没成」), 摘掉记录等于把结果丢了 —— 调用方于是只能自己另存一份, 那就又变成两处状态。
+    置 True 时任务体结束不摘记录: 表里留着那条已完成的记录, 直到有人 ``forget`` 它。
+    留下的记录不挡取消路径 —— ``forget`` 见到已 ``done()`` 的 task 只摘不取消。
     """
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, *, retain_finished_payload: bool = False) -> None:
         self._name = name
+        self._retain_finished_payload = retain_finished_payload
         self._entries: dict[str, _Entry[T]] = {}
 
     # ── 登记与查询 ────────────────────────────────────────────────────────────
@@ -92,14 +100,17 @@ class TaskRegistry[T]:
 
         结束时只摘「还是自己那条」记录: 期间可能已有人 ``forget`` 过并重新 ``register`` 了一个
         新任务, 无条件 ``pop`` 会把新的那个从表里抹掉, 表现成「明明在跑却查不到」。
+
+        ``retain_finished_payload`` 的表不在这里摘: 那种载荷是结果, 见类文档。
         """
         _CURRENT_TASK_KEY.set(self._scoped(key))
         try:
             await coro
         finally:
-            entry = self._entries.get(key)
-            if entry is not None and entry.task is asyncio.current_task():
-                del self._entries[key]
+            if not self._retain_finished_payload:
+                entry = self._entries.get(key)
+                if entry is not None and entry.task is asyncio.current_task():
+                    del self._entries[key]
 
     # ── 取消 ──────────────────────────────────────────────────────────────────
 
