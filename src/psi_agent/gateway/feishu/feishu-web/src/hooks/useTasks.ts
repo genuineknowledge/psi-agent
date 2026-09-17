@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  getMonthlyStats,
   getSessionTodos,
   listSummaries,
   listTodoSegments,
+  type MonthlyStats,
   type SessionTodo,
   type SessionInfo,
   type TodoSegmentSummary,
@@ -11,7 +13,7 @@ import {
 import type { Task } from "../types";
 import { pendingDeliveriesFor, subscribePendingDeliveries } from "../services/pendingDeliveries";
 import { sortTasksByPin } from "../services/pinnedTasks";
-import { buildTask, countMonthlyRuns, countTasks, filterTasks } from "../services/taskModel";
+import { buildTask, countTasks, filterTasks } from "../services/taskModel";
 
 /**
  * 任务总览的数据。每个会话要单独打 ``/todos`` 与 ``/todo-segments``, 所以并发拉取后
@@ -98,6 +100,30 @@ export function useTasks(
     setSegments((prev) => ({ ...prev, [sessionId]: segs }));
   }, []);
 
+  /**
+   * 本月执行: 由后端**一次**算好(``GET /feishu/stats/monthly``), 不再对每个会话各打一次
+   * ``/todo-segments`` 自己数 —— 那条老路只看得见 todo 段, 于是「直接回答、不写清单」的会话
+   * 会被算成没干活, 而列表里它们的状态早就显示「已完成」了。
+   *
+   * 声明在轮询 effect **之前**: 那个 effect 每 2.5 秒也要刷这一格(本回合要是这个会话本月第一次
+   * 干活, 数字该当场 +1), 而 ``const`` 提升不了。
+   */
+  const [monthlyStats, setMonthlyStats] = useState<MonthlyStats | null>(null);
+  const refreshMonthly = useCallback(async () => {
+    try {
+      // 传**浏览器本地月**: 「月」是用户日历上的月, 服务端时区未必与用户一致。
+      const now = new Date();
+      const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      setMonthlyStats(await getMonthlyStats(month));
+    } catch {
+      // 拿不到就保持上一次的数字 —— 显示 0 会被读成「本月什么都没跑」。
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshMonthly();
+  }, [refreshMonthly]);
+
   /*
    * 回合进行中: 每 2.5 秒重拉当前会话的 todo 与子任务, 并**立刻**拉一次。
    *
@@ -108,9 +134,14 @@ export function useTasks(
   useEffect(() => {
     if (!sendingSessionId) return;
     void refreshOne(sendingSessionId);
-    const timer = window.setInterval(() => void refreshOne(sendingSessionId), 2500);
+    // 「本月执行」跟着一起刷: 本回合要是这个会话本月第一次干活, 数字该当场 +1(一次请求, 便宜)。
+    void refreshMonthly();
+    const timer = window.setInterval(() => {
+      void refreshOne(sendingSessionId);
+      void refreshMonthly();
+    }, 2500);
     return () => window.clearInterval(timer);
-  }, [sendingSessionId, refreshOne]);
+  }, [sendingSessionId, refreshOne, refreshMonthly]);
 
   useEffect(() => {
     void listSummaries()
@@ -183,14 +214,15 @@ export function useTasks(
 
   const filtered = useMemo(() => filterTasks(tasks, filter, search), [tasks, filter, search]);
   const counts = useMemo(() => countTasks(tasks), [tasks]);
-  /** 本月执行: 统计口径见 taskModel.countMonthlyRuns(按会话去重, 取 todo 段时间戳)。 */
-  const monthlyRuns = useMemo(() => countMonthlyRuns(segments), [segments]);
+  const monthlyRuns = monthlyStats?.count ?? 0;
 
   return {
     tasks,
     filtered,
     counts,
     monthlyRuns,
+    /** 两个桶, 给提示用: 有清单的 / 只回了话的。 */
+    monthlyStats,
     filter,
     setFilter,
     search,
@@ -200,5 +232,6 @@ export function useTasks(
     refresh,
     /** 回合进行中由轮询写入; 回合结束后 App 仍调 ``refresh`` 兜一次全量。 */
     refreshOne,
+    refreshMonthly,
   };
 }

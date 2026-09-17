@@ -7,7 +7,7 @@ export interface TasksViewProps {
   tasks: Task[];
   filtered: Task[];
   counts: Record<string, number>;
-  /** 本月执行过的会话数 —— 口径见 services/taskModel.ts 的 countMonthlyRuns。 */
+  /** 本月执行过的会话数 —— 由后端 `GET /feishu/stats/monthly` 一次算好, 前端只透传。 */
   monthlyRuns: number;
   selected?: Task;
   filter: string;
