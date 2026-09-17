@@ -319,7 +319,7 @@ export default function HaiTunAgentWorkspace({
   }, []);
 
   /**
-   * Newest / last-touched task rises to the front of ``tasks`` (ChatGPT-style MRU).
+   * Bump on new dialogue only (DeepSeek-style MRU) — not on sidebar click.
    * Keeps the focused card on the same Session when the array shifts.
    */
   const bumpTaskToTop = useCallback((taskId: string) => {
@@ -769,17 +769,9 @@ export default function HaiTunAgentWorkspace({
     if (card && card.id !== "overview") void ensureHistory(card.id);
   }, [cards, chatExpanded, collapseChat, currentIndex, ensureHistory]);
 
-  /** Sidebar / search: jump into split focus with the same expand morph as the dialogue strip. */
+  /** Sidebar / search: switch Session only — do not reorder (MRU is sendMessage / create). */
   const selectTask = (task: Task) => {
-    let index = -1;
-    setTasks((current) => {
-      const ordered = bringTaskToFront(current, task.id);
-      index = ordered.findIndex((item) => item.id === task.id);
-      return ordered;
-    });
-    if (index < 0) {
-      index = tasks.findIndex((item) => item.id === task.id);
-    }
+    const index = tasks.findIndex((item) => item.id === task.id);
     if (index < 0) return;
     const next = cardIndexForTask(index);
     const fromNonWorkspace = mainView !== "workspace";
