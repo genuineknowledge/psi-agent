@@ -55,7 +55,16 @@ _RECORD_VERSION = 1
 # 超过这个天数只做提示, 不改变状态(尊重「一次授权覆盖后续」)。
 _STALE_AFTER_DAYS = 7
 
-_ACTIONS = ("list", "status", "report", "confirm", "forget")
+_ACTIONS = ("list", "status", "report", "confirm", "blocked", "forget")
+
+# 平台要求人工验证/限流时的**规范话术**。刻意做成常量而不是让每处各写一遍:
+# 这条消息要同时说清三件事 —— 发生了什么、为什么我停下、你可以怎么办(含降级出口)。
+RATE_LIMIT_MESSAGE = (
+    "这个平台要求人工验证了(可能是访问过于频繁, 也可能是它识别到了自动访问)。"
+    "为了不让你的账号有风险, 我没有继续尝试, 也不会自动重试。你可以: "
+    "① 在弹出的浏览器里手动完成验证, 然后回复「继续」, 我再接着读; "
+    "② 或者直接发我一张券页/结算页的截图, 我用截图继续, 不再走浏览器。"
+)
 
 # 整个注册表的缓存: 全部平台文件的 (路径, mtime_ns, size) -> 解析结果
 _registry_cache: tuple[tuple[tuple[str, int, int], ...], dict[str, dict[str, Any]]] | None = None
@@ -235,10 +244,10 @@ async def saving_login(
     url: str = "",
     return_json: bool = True,
 ) -> str:
-    """省钱场景的平台授权: 查登录态 / 报告浏览器当前地址 / 确认已登录 / 列出 / 撤销。
+    """省钱场景的平台授权: 查登录态 / 报告浏览器当前地址 / 确认已登录 / 报告被平台拦 / 列出 / 撤销。
 
     platform: 平台, 可给 key(jd) 或名称(京东); action=list 时留空表示"列出全部"。
-    action: list / status / report / confirm / forget。
+    action: list / status / report / confirm / blocked / forget。
     url: 仅 action=report 用 —— 浏览器**当前地址栏**的地址(不是你要打开的地址)。
 
     action 语义:
@@ -246,10 +255,16 @@ async def saving_login(
     - status  -> 查某平台状态。返回 gate 地址供你打开登录; 状态只来自记录, **不探测**
     - report  -> 你把浏览器当前 URL 报进来, 按平台定义判定并写入记录
     - confirm -> 拿不到 URL 时, 由用户明确确认已登录 -> 写入记录
+    - blocked -> **你在浏览器里看到平台要求验证码 / 人机校验 / 访问过于频繁时调用**。
+                 返回一段规范话术(含"改发截图"的降级出口)并要求你停下 —— 不要自动重试,
+                 也不要换个入口再试。用户手动过了验证后照常继续即可。
     - forget  -> 撤销授权(删记录), 之后会重新询问
 
     判定是保守的: 落到登录域 -> logged_out; 到达 gate 页本身 -> logged_in;
     其它一律 unknown(判不准就说判不准)。记录不自动失效, 但返回 checked_at / stale。
+
+    **风控的检测靠你**(你看得见页面), 工具不做页面特征猜测 —— 猜错会让 agent 在不必停的
+    时候停下。工具负责的是规范响应: 每次说的话一样, 且必然带上降级出口。
     """
     action_key = (action or "status").strip().lower()
     if action_key not in _ACTIONS:
@@ -357,27 +372,61 @@ async def saving_login(
         }
         return json.dumps(payload, ensure_ascii=False) if return_json else str(payload)
 
+    if action_key == "blocked":
+        # 检测**交给正在看着页面的模型**(它看得见验证码/限流页), 工具不做特征猜测 ——
+        # 猜 per-platform 的页面特征会误报, 而误报的代价是"让 agent 在不必停的时候停下"。
+        # 工具负责的是**规范响应**: 每次说的都一样, 带降级出口, 且明确不自动重试。
+        entry = {"status": "blocked", "source": "model-observed", "checked_at": _now_iso()}
+        stored[key] = entry
+        record["version"] = _RECORD_VERSION
+        await _write_record(path, record)
+        logger.info(f"Saving platform reported blocked: {key}")
+        payload = {
+            "ok": True,
+            "action": "blocked",
+            "platform": {"key": key, "name": definition.get("name") or key},
+            "status": "blocked",
+            "checked_at": entry["checked_at"],
+            "message": RATE_LIMIT_MESSAGE,
+            "note": (
+                "**停下, 不要自动重试, 不要换个入口再试。** 把 message 原样告诉用户, 然后等他的选择。"
+                "用户手动过了验证或改用截图之后, 正常流程会覆盖这条记录 —— 它不是锁。"
+            ),
+        }
+        return json.dumps(payload, ensure_ascii=False) if return_json else str(payload)
+
     # -- status: 只读记录, 不探测(尊重「一次授权覆盖后续」) --------------------
     checked_at = entry.get("checked_at")
     age = _age_days(checked_at)
     stale = bool(age is not None and age > _STALE_AFTER_DAYS)
+    status = entry.get("status") or "unknown"
+    if status == "blocked":
+        # 上一条记录是"被平台拦了": 明说不要重试, 并把规范话术再给一次 —— 这是跨调用
+        # 仍然有效的那半分, 免得下一轮有人换个入口又试一遍。
+        note = (
+            "上次访问这个平台时它要求人工验证。**不要自动重试, 也不要换个入口再试。** "
+            "请把 rate_limit_message 告诉用户并等他的选择; 用户处理完后正常流程会覆盖这条记录。"
+        )
+    elif stale:
+        note = "记录较旧, 建议重新核实(打开 gate 地址后把地址栏的地址用 report 报回来)。"
+    else:
+        note = (
+            "状态来自记录, 未重新探测。要读账户页就打开 gate 地址; 若发现要登录, "
+            "说明记录已过时, 请让用户登录后用 report/confirm 更新。"
+        )
     payload = {
         "ok": True,
         "action": "status",
         "platform": {"key": key, "name": definition.get("name") or key},
-        "status": entry.get("status") or "unknown",
+        "status": status,
         "source": entry.get("source"),
         "checked_at": checked_at,
         "age_days": age,
         "stale": stale,
+        "rate_limit_message": RATE_LIMIT_MESSAGE if status == "blocked" else "",
         "gate": definition.get("gate") or definition.get("home") or "",
         "login_hosts": list(definition.get("login_hosts") or []),
         "platform_verified_at": definition.get("verified_at"),
-        "note": (
-            "记录较旧, 建议重新核实(打开 gate 地址后把地址栏的地址用 report 报回来)。"
-            if stale
-            else "状态来自记录, 未重新探测。要读账户页就打开 gate 地址; 若发现要登录, "
-            "说明记录已过时, 请让用户登录后用 report/confirm 更新。"
-        ),
+        "note": note,
     }
     return json.dumps(payload, ensure_ascii=False) if return_json else str(payload)

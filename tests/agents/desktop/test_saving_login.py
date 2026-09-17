@@ -209,6 +209,65 @@ async def test_list_shows_every_platform_so_the_user_can_see_and_revoke() -> Non
 
 
 # --------------------------------------------------------------------------- #
+# 风控: 检测靠模型, 规范响应靠工具
+# --------------------------------------------------------------------------- #
+
+
+async def test_blocked_records_the_state_and_returns_the_canonical_message() -> None:
+    """模型看到验证码页时调 blocked -> 拿到一段固定话术, 并要求它停下。"""
+    payload = await _call(platform="jd", action="blocked")
+    assert payload["status"] == "blocked"
+    assert payload["message"]
+    assert "不要自动重试" in payload["note"]
+
+
+async def test_blocked_message_offers_both_ways_out() -> None:
+    """话术必须同时给出两条出口: 手动过验证、以及**降级到截图**。"""
+    message = (await _call(platform="jd", action="blocked"))["message"]
+    assert "继续" in message  # ① 手动过验证后回复继续
+    assert "截图" in message  # ② 降级到截图
+    assert "不会自动重试" in message
+
+
+async def test_blocked_survives_into_status_so_the_next_call_does_not_retry() -> None:
+    """跨调用仍然有效的那一半: 下一轮 status 看到 blocked, 就知道别再试。"""
+    await _call(platform="jd", action="blocked")
+
+    payload = await _call(platform="jd", action="status")
+    assert payload["status"] == "blocked"
+    assert payload["rate_limit_message"]  # 话术再给一次
+    assert "不要自动重试" in payload["note"]
+    assert "换个入口" in payload["note"]
+
+
+async def test_blocked_is_not_a_lock() -> None:
+    """**刻意不做成锁**: 用户手动过了验证, 正常流程就该覆盖它, 不该再要一次确认。"""
+    await _call(platform="jd", action="blocked")
+
+    await _call(platform="jd", action="report", url="https://order.jd.com/center/list.action")
+    assert (await _call(platform="jd", action="status"))["status"] == "logged_in"
+
+    await _call(platform="jd", action="blocked")
+    await _call(platform="jd", action="confirm")
+    assert (await _call(platform="jd", action="status"))["status"] == "logged_in"
+
+
+async def test_blocked_shows_up_in_the_list() -> None:
+    await _call(platform="jd", action="blocked")
+    rows = {row["key"]: row for row in (await _call(action="list"))["platforms"]}
+    assert rows["jd"]["status"] == "blocked"
+    assert rows["taobao"]["status"] == "unknown"
+
+
+async def test_only_a_blocked_record_repeats_the_message() -> None:
+    """`rate_limit_message` 只在 blocked 时出现 —— 否则每轮都塞一段无关话术。"""
+    await _call(platform="jd", action="confirm")
+    payload = await _call(platform="jd", action="status")
+    assert payload["status"] == "logged_in"
+    assert payload["rate_limit_message"] == ""
+
+
+# --------------------------------------------------------------------------- #
 # 容错与错误码
 # --------------------------------------------------------------------------- #
 
