@@ -1,23 +1,43 @@
-# ruff: noqa: RUF001, RUF002
-"""subsidy_calc v1.3：确定性补贴计算（精确计算，模型不手算）。
+"""subsidy_calc v1.4: 确定性补贴计算(精确计算, 模型不手算)。
 
-输入：结算价（扣平台优惠后的成交价）/ 品类 / 能效等级（家电类必传）/ region（可选）
-输出：资格 / 补贴金额 / 到手价 / 公式 / 口径标签 / 额度假设
+输入: 结算价(扣平台优惠后的成交价) / 品类 / 能效等级(家电类必传) / region(可选)
+输出: 资格 / 补贴金额 / 到手价 / 公式 / 口径标签 / 额度假设
 
-参数：2026 国补口径（事实卡），可按省细则微调：
-- 数码类（手机/平板/智能手表手环/智能眼镜）：15%，单件上限 500 元，结算价 ≤6000 元
-- 家电类（电脑/笔记本/台式机/一体机/游戏本/空调/冰箱/洗衣机/电视/热水器）：
-  15%，单件上限 1500 元，需 1 级能效/水效（能效必传，白名单精确匹配）
-- v1.1：品类与 policy_query 对齐；v1.2：能效必传 + >6000 地方补贴提示；
-- v1.3（2026-08-26，review #1/#2/#3/#4）：品类匹配改共享 _guobu_categories（电视柜/空调扇
-  不误判）；能效白名单精确匹配（「不是1级」「1.5匹」不放行）；region 可选并返回口径声明；
-  返回额度假设 assumption。
+参数: v1.4 起**全部来自资料卡** ``fact-cards/guobu-2026.yaml``(与 ``policy_query``
+同一张卡) —— 本文件不再持有任何比例 / 上限 / 门槛的字面量。档位不再是 if/elif 的
+家电/数码分支, 而是卡里的三个字段:
+
+- ``rate`` / ``cap``: 比例与单件上限;
+- ``price_gate``: 结算价门槛, ``null`` 表示不设门槛;
+- ``energy_required``: 是否要求 1 级能效/水效。
+
+这样加档位只改卡, 不加代码分支(对齐《省钱决策 Workspace 方案》§4「不要为每个场景
+各写一个计算器」)。
+
+版本:
+- v1.1: 品类与 policy_query 对齐; v1.2: 能效必传 + 超门槛地方补贴提示;
+- v1.3(2026-08-26, review #1/#2/#3/#4): 品类匹配改共享 _guobu_categories(电视柜/空调扇
+  不误判); 能效白名单精确匹配(「不是1级」「1.5匹」不放行); region 可选并返回口径声明;
+  返回额度假设 assumption;
+- v1.4(本次): 参数移出代码改读资料卡(交接文档 §7 坑 1「两处各写一份」)。
 """
 
+# RUF001: 下面两处是**数据**, 不是散文 —— 白名单要逐字匹配用户/页面上的全角写法
+# (「一级(能效)」), 归一化要剥掉用户打的全角「:」。改成半角就匹配不上了。
+# ruff: noqa: RUF001
+
 import json
+from typing import Any
 
-from _guobu_categories import is_digital, is_home, match_category, supported_text
+from _fact_cards import category_names, load_card, params_of, supported_text
+from _guobu_categories import match_category
 
+# 资料卡名(``<agent>/fact-cards/<name>.yaml``)。改政策改那张卡, 不改本文件。
+_CARD = "guobu-2026"
+
+# 能效白名单: 把用户/页面上的写法归一后**精确**匹配。
+# 刻意留在代码里而不是资料卡 —— 它是输入归一化(「一级」「国标一级」是同一个意思的
+# 不同说法), 不是政策参数; 政策参数只有「要求 1 级」这一个事实(档位 energy_required)。
 _ENERGY_LEVEL_1 = {
     "1",
     "1级",
@@ -51,102 +71,89 @@ async def subsidy_calc(
     region: str = "",
     return_json: bool = True,
 ) -> str:
-    """确定性计算补贴与到手价。price=结算价（扣优惠后）；category=品类；region=省份（可选）。"""
+    """确定性计算补贴与到手价。price=结算价(扣优惠后); category=品类; region=省份(可选)。"""
+    card = await load_card(_CARD)
+    notes = card["notes"]
+    labels = card["labels"]
     cat = (category or "").strip()
     price = float(price)
-    kind = match_category(cat)
+    kind = match_category(cat, category_names(card))
 
     if kind is None:
         return json.dumps(
             {
                 "ok": False,
-                "reason": (f"未知品类：{cat}（支持 {supported_text()}；电视柜/空调扇/手机壳等非国补品类不算）"),
+                "reason": str(notes["unknown_category_tpl"]).format(category=cat, supported=supported_text(card)),
                 "suggest_search": True,
                 "subsidy": 0,
                 "final_price": round(price, 2),
-                "quota_label": "2026 现行",
+                "quota_label": labels["current"],
             },
             ensure_ascii=False,
         )
 
-    if is_home(kind):
-        pct, cap, gate = 0.15, 1500.0, None
-        if not energy_level:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "reason": "家电需 1 级能效/水效，未提供能效等级，无法确认是否符合 2026 国补条件",
-                    "need_energy_level": True,
-                    "subsidy": 0,
-                    "final_price": round(price, 2),
-                    "quota_label": "2026 现行",
-                },
-                ensure_ascii=False,
-            )
-        if _norm_energy(energy_level) not in _ENERGY_LEVEL_1:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "reason": (
-                        f"家电需 1 级能效/水效，当前能效为 {energy_level}，不符合 2026 国补条件"
-                        f"（仅认 1级/一级 等白名单写法）"
-                    ),
-                    "subsidy": 0,
-                    "final_price": round(price, 2),
-                    "quota_label": "2026 现行",
-                },
-                ensure_ascii=False,
-            )
-        kind_label = "家电（以旧换新类）"
-    elif is_digital(kind):
-        pct, cap, gate = 0.15, 500.0, 6000.0
-        if price > gate:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "reason": (
-                        f"数码类单件结算价 ≤6000 元，当前 {round(price, 2)} 超门槛，不参与 2026 国补；"
-                        "部分省市有 >6000 高端机地方补贴（如 10%、上限 1000，山东/江苏等，安徽未见官方文件），"
-                        "需按所在省细则/结算页核实，不得断言『完全无补贴』"
-                    ),
-                    "subsidy": 0,
-                    "final_price": round(price, 2),
-                    "quota_label": "2026 现行",
-                },
-                ensure_ascii=False,
-            )
-        kind_label = "数码（数码智能产品类）"
-    else:
+    # 品类已登记 -> params_of 必然给全参数; 卡里档位写错会抛, 那是配置问题不是输入问题。
+    pol: dict[str, Any] = params_of(card, kind)
+    pct = float(pol["rate"])
+    cap = float(pol["cap"])
+    gate = pol["price_gate"]
+    needs_energy = bool(pol["energy_required"])
+
+    if needs_energy and not energy_level:
         return json.dumps(
             {
                 "ok": False,
-                "reason": f"未知品类：{cat}",
-                "suggest_search": True,
+                "reason": notes["need_energy_reason"],
+                "need_energy_level": True,
                 "subsidy": 0,
                 "final_price": round(price, 2),
-                "quota_label": "2026 现行",
+                "quota_label": labels["current"],
+            },
+            ensure_ascii=False,
+        )
+    if needs_energy and _norm_energy(energy_level) not in _ENERGY_LEVEL_1:
+        return json.dumps(
+            {
+                "ok": False,
+                "reason": str(notes["bad_energy_tpl"]).format(energy_level=energy_level),
+                "subsidy": 0,
+                "final_price": round(price, 2),
+                "quota_label": labels["current"],
+            },
+            ensure_ascii=False,
+        )
+    if gate is not None and price > float(gate):
+        return json.dumps(
+            {
+                "ok": False,
+                "reason": str(notes["over_gate_tpl"]).format(price=round(price, 2), hint=notes["over_gate_hint"]),
+                "subsidy": 0,
+                "final_price": round(price, 2),
+                "quota_label": labels["current"],
             },
             ensure_ascii=False,
         )
 
     subsidy = min(price * pct, cap)
     final_price = price - subsidy
+    rate_label = pol["rate_label"]
     result = {
         "ok": True,
-        "category": kind_label,
+        "category": pol["tier_label"],
         "kind": kind,
         "结算价": round(price, 2),
-        "补贴比例": "15%",
+        "补贴比例": rate_label,
         "单件上限": cap,
         "补贴": round(subsidy, 2),
         "到手价": round(final_price, 2),
-        "公式": f"补贴 = min(结算价 × 15%, 上限 {cap}) = min({round(price, 2)} × 0.15, {cap}) = {round(subsidy, 2)}",
-        "region": region or "未指定",
-        "region_basis": (f"按全国通用口径估算（{region}）；省细则可能不同，以下单结算页为准")
-        if region
-        else "未指定省份：按全国通用口径估算，省细则可能不同，以下单结算页为准",
-        "assumption": "假定本年度该品类补贴额度尚未使用（每人每类限 1 件）；若用户可能已用额度，需先确认再计算",
-        "口径标签": "2026 现行（政策参数非实时，以下单结算页为准）",
-        "note": "结算价按扣完平台券/会员/店铺优惠后的成交价传入；省份资格另行确认（eligibility_check）。",
+        "公式": (
+            f"补贴 = min(结算价 × {rate_label}, 上限 {cap}) = "
+            f"min({round(price, 2)} × {pct}, {cap}) = {round(subsidy, 2)}"
+        ),
+        "region": region or notes["region_none"],
+        "region_basis": str(notes["region_basis_tpl"]).format(region=region) if region else notes["region_basis_none"],
+        "assumption": notes["quota_assumption"],
+        "口径标签": labels["quota"],
+        "note": notes["eligibility_note"],
     }
     return json.dumps(result, ensure_ascii=False) if return_json else str(result)
