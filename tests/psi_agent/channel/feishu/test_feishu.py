@@ -968,6 +968,33 @@ async def test_resolve_shared_appdata_swallows_transport_error() -> None:
 
 
 @pytest.mark.anyio
+async def test_route_call_is_signed_with_the_shared_secret() -> None:
+    """**以「这次请求签过名」为主语**的一条用例 —— 签名是 ``_route`` 唯一的准入手段。
+
+    为什么单列: 签名检查原先只作为附加断言挂在「缓存命中」「按群分键」两条用例末尾, 于是
+    ``_route`` 哪天把签名重构掉时, 变红的是那两条**缓存**用例, 排查者会先怀疑缓存。变异复核
+    时实测到这一点 (去掉签名头后, 其余 7 条同样驱动 ``_route`` 的用例全绿)。
+
+    断言分三层, 缺一层都能被绕过: 头在 → 签名**按 Gateway 的算法复算得过** → 换一份 secret
+    就验不过 (否则「签名」与 app_secret 无关, Gateway 那道 401 是纸糊的)。
+    """
+    http = _FakeHttp([_FakeResp(201, {"channel_socket": "/tmp/feishu-ou_1.sock"})])
+    provider = client._GatewayRouteProvider("http://127.0.0.1:9000/", cast("Any", http), secret=TEST_APP_SECRET)
+
+    await provider.ensure("ou_1")
+
+    assert len(http.post_calls) == 1
+    call = http.post_calls[0]
+    headers = call["headers"]
+    assert TIMESTAMP_HEADER in headers and SIGNATURE_HEADER in headers, headers
+    # 签的必须**就是发出去的那些字节** —— 头齐全但签错 body 是这次复核里实测能骗过「只查头」的形态。
+    assert call["data"] == json.dumps(
+        {"open_id": "ou_1", "chat_id": "", "chat_type": ""}, separators=(",", ":")
+    ).encode("utf-8")
+    _assert_route_call_is_signed(call)
+
+
+@pytest.mark.anyio
 async def test_gateway_route_provider_caches_socket() -> None:
     http = _FakeHttp([_FakeResp(201, {"channel_socket": "/tmp/feishu-ou_1.sock"})])
     provider = client._GatewayRouteProvider("http://127.0.0.1:9000/", cast("Any", http), secret=TEST_APP_SECRET)
