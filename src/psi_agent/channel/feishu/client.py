@@ -31,6 +31,7 @@ from psi_agent import _private_space
 from psi_agent._appdata import resolve_appdata_root
 from psi_agent._card_markers import CARD_ACTION_TAG, SILENT_REPLY
 from psi_agent._feishu_routing import is_group_chat, route_key
+from psi_agent._service_auth import sign as sign_service_request
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._errors import ChannelError
 from psi_agent.channel._file_bytes import OutboundFileError, fetch_file_bytes
@@ -158,11 +159,18 @@ class _GatewayRouteProvider:
     ``open_id`` 缓存。并发安全: 快路径 dict 读 + 慢路径 ``anyio.Lock`` double-checked, 同一键的
     并发消息串行到一次路由。路由失败向上抛(由调用方回退共享 socket), 且**不写缓存**, 下条消息
     会重试 Gateway。
+
+    ``secret`` 是飞书应用的 ``app_secret`` —— 与 Gateway 共享, 用来给每次路由签名。**这不是
+    可选的装饰**: 没有签名的 ``POST /feishu/route`` 在 Gateway 侧一律 401 (见
+    ``psi_agent._service_auth``)。两个进程取的是同一份 ``.env``, 所以正常情况下不必额外配置;
+    401 只可能来自「两边 secret 不一致」或「Gateway 没配凭证」, 那时下面会打一条指名道姓的
+    ERROR, 而不是让整条链路静默退化成共享会话。
     """
 
-    def __init__(self, base_url: str, http: aiohttp.ClientSession) -> None:
+    def __init__(self, base_url: str, http: aiohttp.ClientSession, secret: str = "") -> None:
         self._base = base_url.rstrip("/")
         self._http = http
+        self._secret = secret
         self._sockets: dict[str, str] = {}  # 路由键 -> channel_socket
         self._external: dict[str, bool] = {}  # 路由键 -> Session 是否在别的容器里
         self._lock = anyio.Lock()
@@ -205,16 +213,37 @@ class _GatewayRouteProvider:
 
         ``external`` 缺失即视作 ``False`` —— 老版 Gateway 不返回该字段, 那时也没有跨容器
         会话, 沿用「channel 自己下载」的老行为正确。
+
+        body 自己序列化而不是用 ``json=``: 签名覆盖**发出去的那些字节**, 让 aiohttp 再序列化
+        一遍就等于签一份、发另一份 —— 今天两者的输出恰好相同, 明天 aiohttp 改了分隔符就是
+        一条只在高版本上出现的 401。
         """
+        raw = json.dumps(
+            {"open_id": open_id, "chat_id": chat_id, "chat_type": chat_type},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            **sign_service_request(self._secret, method="POST", path="/feishu/route", body=raw),
+        }
         async with self._http.post(
             f"{self._base}/feishu/route",
-            json={"open_id": open_id, "chat_id": chat_id, "chat_type": chat_type},
+            data=raw,
+            headers=headers,
             timeout=_GATEWAY_TIMEOUT,
         ) as resp:
             if resp.status == 201:
                 data = await resp.json()
                 return str(data["channel_socket"]), bool(data.get("external", False))
             body = await resp.text()
+            if resp.status == 401:
+                # 401 只有一个成因: 签名没通过。把「谁跟谁不一致」说清楚 —— 否则表现是一个
+                # 泛泛的路由失败 + 全体退回共享会话, 而那是隐私事故级的降级。
+                logger.error(
+                    "Gateway rejected POST /feishu/route with 401 (signature). The channel signs "
+                    "with PSI_FEISHU_APP_SECRET/--app-secret; the Gateway verifies with the secret "
+                    "it was given. Make sure both processes get the SAME app credentials."
+                )
             raise RuntimeError(f"Gateway POST /feishu/route failed (status={resp.status}): {body}")
 
 
@@ -1366,7 +1395,7 @@ async def run_feishu(
         provider: _GatewayRouteProvider | None = None
         if gateway_url:
             http = await stack.enter_async_context(aiohttp.ClientSession())
-            provider = _GatewayRouteProvider(gateway_url, http)
+            provider = _GatewayRouteProvider(gateway_url, http, secret=app_secret)
             if not appdata.strip():
                 # Only when nothing was passed explicitly: an operator-supplied --appdata
                 # still wins, and this must run before the card-action handler closes over

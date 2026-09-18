@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 from collections.abc import AsyncGenerator
 from datetime import datetime
@@ -10,6 +11,7 @@ from typing import Any
 import anyio
 from loguru import logger
 
+from psi_agent._appdata import appdata_uploads_path
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._types import FileChunk, InputChunk, ReasoningChunk, TextChunk
 
@@ -19,6 +21,9 @@ class ChatManager:
         self,
         channel_socket: str,
         body: dict[str, Any],
+        *,
+        session_id: str = "",
+        appdata_root: str = "",
     ) -> AsyncGenerator[dict[str, Any]]:
         """Send chat chunks to a Session and yield SSE-ready dicts.
 
@@ -31,6 +36,10 @@ class ChatManager:
                 - ``{"type": "blob", "name": "...", "data": "<base64>"}``
                   — an inline binary (decoded and persisted to
                   ``~/Downloads/.psi/<date>/``)
+            session_id: Session these chunks belong to. Used **only** to append inbound
+                files to that session's upload ledger; empty simply means "do not
+                record", which is the honest behaviour for callers that have no session.
+            appdata_root: AppData root for the ledger (see :func:`_record_upload`).
 
         Yields:
             Dicts suitable for SSE output:
@@ -64,6 +73,7 @@ class ChatManager:
                         logger.warning(f"Skipping invalid base64 blob: {e!r}")
                         continue
                     path = await self._save_upload(c.get("name", "file.bin"), data)
+                    await self._record_upload(session_id, appdata_root, path)
                     chunks.append(FileChunk(path=path))
                 case _:
                     raise ValueError(f"Unknown chunk type: {t!r}")
@@ -99,6 +109,29 @@ class ChatManager:
         date = datetime.now().strftime("%Y-%m-%d")
         base = os.path.join(str(Path.home()), "Downloads", ".psi", date)
         return os.path.join(base, os.path.basename(name))
+
+    async def _record_upload(self, session_id: str, appdata_root: str, path: str) -> None:
+        """Append *path* to this session's inbound-file ledger.
+
+        ``GET /feishu/sessions/{id}/files`` trusts that ledger when deciding whether a
+        path is "a deliverable of this session", so it must be written **here** — by the
+        side that just put the bytes on disk. Deriving the same list from the history
+        text instead (``[RECV:…]`` markers) makes the whitelist user-controlled: typing
+        a marker that names any file on the server would be enough to download it.
+
+        Best-effort on purpose. The file is already on disk and the chat must not fail
+        because one bookkeeping line could not be written; the cost is that this one
+        upload is not re-downloadable, which the WARNING makes visible.
+        """
+        if not session_id or not appdata_root:
+            return
+        target = appdata_uploads_path(appdata_root, session_id)
+        try:
+            await target.parent.mkdir(parents=True, exist_ok=True)
+            async with await target.open("a", encoding="utf-8") as handle:
+                await handle.write(json.dumps({"path": path}, ensure_ascii=False) + "\n")
+        except OSError as e:
+            logger.warning(f"Failed to record upload {path!r} for session {session_id!r}: {e!r}")
 
     async def _file_blob(self, path: str) -> dict[str, str]:
         try:

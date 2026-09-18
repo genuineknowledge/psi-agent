@@ -22,6 +22,7 @@ from psi_agent.runtime._router_manager import RouterManager
 from psi_agent.runtime._session_manager import SessionManager
 from psi_agent.runtime._title_manager import TitleManager
 from tests.integration.conftest import MockAIServer
+from tests.psi_agent.gateway._route_signing import TEST_APP_SECRET, signed_get, signed_json_post
 
 
 def _chunk(
@@ -265,6 +266,7 @@ async def test_gateway_feishu_route(tmp_path: str) -> None:
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
     app = register_feishu_routes(
         await create_core_app(aim, sm, TitleManager()),
+        feishu_app_secret=TEST_APP_SECRET,
         feishu_workspace_root=str(tmp_path),
     )
     base_url, runner = await _start_app_on_free_port(app)
@@ -291,12 +293,15 @@ async def test_gateway_feishu_route(tmp_path: str) -> None:
             async with session.post(f"{base_url}/ui/attention") as resp:
                 assert resp.status == 404
 
-            # 无 feishu_ai_id 且请求也不带 ai_id → 400。
-            async with session.post(f"{base_url}/feishu/route", json={"open_id": "ou_alice"}) as resp:
+            # 无 feishu_ai_id 且请求也不带 ai_id → 400。**照签**: 判据在 body 之前, 不签的话
+            # 这条先拿到 401, 断言就不再是它想说的那件事 (body 校验被签名挡在前面)。
+            raw, headers = signed_json_post("/feishu/route", {"open_id": "ou_alice"})
+            async with session.post(f"{base_url}/feishu/route", data=raw, headers=headers) as resp:
                 assert resp.status == 400
 
             # 带 ai_id → 幂等 spawn, 返回 channel_socket + session_id。
-            async with session.post(f"{base_url}/feishu/route", json={"open_id": "ou_alice", "ai_id": "ai1"}) as resp:
+            raw, headers = signed_json_post("/feishu/route", {"open_id": "ou_alice", "ai_id": "ai1"})
+            async with session.post(f"{base_url}/feishu/route", data=raw, headers=headers) as resp:
                 assert resp.status == 201
                 data = await resp.json()
                 assert data["open_id"] == "ou_alice"
@@ -305,17 +310,19 @@ async def test_gateway_feishu_route(tmp_path: str) -> None:
                 socket1 = data["channel_socket"]
 
             # 二次幂等: 同 socket。
-            async with session.post(f"{base_url}/feishu/route", json={"open_id": "ou_alice", "ai_id": "ai1"}) as resp:
+            raw, headers = signed_json_post("/feishu/route", {"open_id": "ou_alice", "ai_id": "ai1"})
+            async with session.post(f"{base_url}/feishu/route", data=raw, headers=headers) as resp:
                 assert resp.status == 201
                 assert (await resp.json())["channel_socket"] == socket1
 
-            async with session.get(f"{base_url}/feishu/routes") as resp:
+            async with session.get(f"{base_url}/feishu/routes", headers=signed_get("/feishu/routes")) as resp:
                 assert resp.status == 200
                 routes = await resp.json()
                 assert routes == [{"open_id": "ou_alice", "chat_id": "", "session_id": "feishu-ou_alice"}]
 
-            # 缺 open_id 且无群信息 → 400。
-            async with session.post(f"{base_url}/feishu/route", json={"ai_id": "ai1"}) as resp:
+            # 缺 open_id 且无群信息 → 400 (同为「签名过了、body 不合法」)。
+            raw, headers = signed_json_post("/feishu/route", {"ai_id": "ai1"})
+            async with session.post(f"{base_url}/feishu/route", data=raw, headers=headers) as resp:
                 assert resp.status == 400
 
             # 只建了一个 session。
@@ -340,6 +347,7 @@ async def test_gateway_feishu_route_group_chat(tmp_path: str) -> None:
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
     app = register_feishu_routes(
         await create_core_app(aim, sm, TitleManager()),
+        feishu_app_secret=TEST_APP_SECRET,
         feishu_workspace_root=str(tmp_path),
     )
     base_url, runner = await _start_app_on_free_port(app)
@@ -360,7 +368,8 @@ async def test_gateway_feishu_route_group_chat(tmp_path: str) -> None:
                 assert resp.status == 201
 
             body = {"open_id": "ou_alice", "chat_id": "oc_team", "chat_type": "group", "ai_id": "ai1"}
-            async with session.post(f"{base_url}/feishu/route", json=body) as resp:
+            raw, headers = signed_json_post("/feishu/route", body)
+            async with session.post(f"{base_url}/feishu/route", data=raw, headers=headers) as resp:
                 assert resp.status == 201
                 data = await resp.json()
                 assert data["session_id"] == "feishu-chat-oc_team"
@@ -369,7 +378,8 @@ async def test_gateway_feishu_route_group_chat(tmp_path: str) -> None:
 
             # 同群另一个人 → 同一 session。
             body_bob = {"open_id": "ou_bob", "chat_id": "oc_team", "chat_type": "group", "ai_id": "ai1"}
-            async with session.post(f"{base_url}/feishu/route", json=body_bob) as resp:
+            raw, headers = signed_json_post("/feishu/route", body_bob)
+            async with session.post(f"{base_url}/feishu/route", data=raw, headers=headers) as resp:
                 assert resp.status == 201
                 data = await resp.json()
                 assert data["channel_socket"] == group_socket
@@ -377,7 +387,8 @@ async def test_gateway_feishu_route_group_chat(tmp_path: str) -> None:
 
             # 同一个人的私聊 → 另一个 session。
             body_dm = {"open_id": "ou_alice", "chat_id": "oc_dm", "chat_type": "p2p", "ai_id": "ai1"}
-            async with session.post(f"{base_url}/feishu/route", json=body_dm) as resp:
+            raw, headers = signed_json_post("/feishu/route", body_dm)
+            async with session.post(f"{base_url}/feishu/route", data=raw, headers=headers) as resp:
                 assert resp.status == 201
                 assert (await resp.json())["session_id"] == "feishu-ou_alice"
 
@@ -385,7 +396,7 @@ async def test_gateway_feishu_route_group_chat(tmp_path: str) -> None:
             async with session.get(f"{base_url}/sessions") as resp:
                 assert len(await resp.json()) == 2
 
-            async with session.get(f"{base_url}/feishu/routes") as resp:
+            async with session.get(f"{base_url}/feishu/routes", headers=signed_get("/feishu/routes")) as resp:
                 routes = {(r["open_id"], r["chat_id"], r["session_id"]) for r in await resp.json()}
                 assert routes == {
                     ("", "oc_team", "feishu-chat-oc_team"),
@@ -415,6 +426,7 @@ async def test_gateway_feishu_route_reports_external(tmp_path: str, monkeypatch:
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
     app = register_feishu_routes(
         await create_core_app(aim, sm, TitleManager()),
+        feishu_app_secret=TEST_APP_SECRET,
         feishu_workspace_root=str(tmp_path),
     )
     base_url, runner = await _start_app_on_free_port(app)
@@ -435,7 +447,8 @@ async def test_gateway_feishu_route_reports_external(tmp_path: str, monkeypatch:
                 assert resp.status == 201
 
             body = {"open_id": "ou_secret", "ai_id": "ai1"}
-            async with session.post(f"{base_url}/feishu/route", json=body) as resp:
+            raw, headers = signed_json_post("/feishu/route", body)
+            async with session.post(f"{base_url}/feishu/route", data=raw, headers=headers) as resp:
                 assert resp.status == 201
                 data = await resp.json()
                 assert data["external"] is True
@@ -445,7 +458,7 @@ async def test_gateway_feishu_route_reports_external(tmp_path: str, monkeypatch:
             # 外部键不落本地: 既不 spawn session, 也不进本地路由表。
             async with session.get(f"{base_url}/sessions") as resp:
                 assert await resp.json() == []
-            async with session.get(f"{base_url}/feishu/routes") as resp:
+            async with session.get(f"{base_url}/feishu/routes", headers=signed_get("/feishu/routes")) as resp:
                 assert await resp.json() == []
 
     finally:
@@ -741,9 +754,12 @@ async def test_desktop_only_app_has_no_feishu_surface() -> None:
     try:
         timeout = ClientTimeout(total=10)
         async with ClientSession(timeout=timeout) as session:
-            async with session.post(f"{base}/feishu/route", json={"open_id": "ou_alice"}) as resp:
+            # 桌面端容器里这两条**根本没注册**, 404 来自路由表而不是鉴权; 仍按 channel 的
+            # 规矩签 —— 本用例要断的是「没有这条路由」, 别让「没签名」混进来当一个成因。
+            raw, headers = signed_json_post("/feishu/route", {"open_id": "ou_alice"})
+            async with session.post(f"{base}/feishu/route", data=raw, headers=headers) as resp:
                 assert resp.status == 404
-            async with session.get(f"{base}/feishu/routes") as resp:
+            async with session.get(f"{base}/feishu/routes", headers=signed_get("/feishu/routes")) as resp:
                 assert resp.status == 404
 
             # spec 报的是本进程真注册了的那批 path。

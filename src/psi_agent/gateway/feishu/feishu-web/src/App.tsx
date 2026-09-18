@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PanelLeftClose } from "lucide-react";
-import { generateTitle, getSessionHistory, revealWorkspacePath } from "./api";
+import { generateTitle, getSessionHistory } from "./api";
 import { ArtifactDrawer } from "./components/artifact-drawer";
 import { ChatTopbar } from "./components/chat-topbar";
 import { ChatView } from "./components/chat-view";
@@ -464,9 +464,6 @@ function AuthedApp({ userName }: { userName: string }) {
   }, []);
 
   const handleOpenFile = useCallback((name: string) => setPreviewFile(name), []);
-  const handleReveal = useCallback((path: string) => {
-    void revealWorkspacePath(path).catch(() => undefined);
-  }, []);
   const saveArtifact = useCallback(() => {
     if (!artifactTaskId) return;
     clearPendingDeliveries(artifactTaskId);
@@ -626,7 +623,6 @@ function AuthedApp({ userName }: { userName: string }) {
                 if (user?.role === "user") void turn.send(sessions.currentId, user.text);
               }}
               onOpenFile={handleOpenFile}
-              onRevealFile={handleReveal}
               filePathOf={turn.filePathOf}
               executionSteps={
                 currentTask?.hasTodoTrack

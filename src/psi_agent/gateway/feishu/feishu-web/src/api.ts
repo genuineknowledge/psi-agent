@@ -352,7 +352,3 @@ function blobToBase64(blob: Blob): Promise<string> {
     reader.readAsDataURL(blob);
   });
 }
-
-export async function revealWorkspacePath(path: string): Promise<{ path: string }> {
-  return requestJson<{ path: string }>("/workspace/reveal", jsonPost({ path }));
-}

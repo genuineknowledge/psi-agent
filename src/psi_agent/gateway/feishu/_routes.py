@@ -19,6 +19,7 @@ A7: 与 ``desktop/_routes.py`` 同一个原因搬过来 —— 装配函数留�
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 from dataclasses import asdict
 from pathlib import Path
@@ -29,7 +30,9 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
-from psi_agent._appdata import appdata_history_path, resolve_appdata_root
+from psi_agent import _private_space
+from psi_agent._appdata import appdata_history_path, appdata_uploads_path, resolve_appdata_root
+from psi_agent._service_auth import verify as verify_service_request
 from psi_agent.gateway.feishu._auth import (
     AuthError,
     FeishuAuth,
@@ -59,6 +62,39 @@ from psi_agent.runtime._title_manager import TitleManager
 from psi_agent.runtime._todo_manager import TodoManager
 
 
+async def _require_service(request: web.Request) -> None:
+    """判断「这是不是 channel 进程发的」, 不是就抛 ``PermissionError`` (handler 映射成 401)。
+
+    ``/feishu/route`` 一族是**进程间**接口 (channel → gateway): 调用方没有、也不该有一份
+    用户登录态, 所以判据不是 cookie 而是共享密钥的 HMAC, 见
+    :mod:`psi_agent._service_auth` 模块头。
+
+    **默认拒绝**: ``app_secret`` 没配 (空串) 也算验不过 —— 空密钥下 HMAC 退化成人人可算的
+    常量, 「这个部署没配好凭证」必须表现成 401, 不能表现成放行。
+
+    读体在这里发生 (``request.read()`` 会缓存, 后面 ``request.json()`` 照旧能读), 因为
+    签名覆盖 body 摘要: 只看 path 的话, spawn 哪个 open_id 就能被中途改写。
+    """
+    auth: FeishuAuth = request.app["feishu_auth"]
+    body = await request.read()
+    if verify_service_request(
+        auth.app_secret,
+        method=request.method,
+        path=request.path_qs,
+        body=body,
+        headers=request.headers,
+    ):
+        return
+    # 不记签名本身 (等同凭据): 记路径与两种「像没签」的形态, 够定位「channel 没带上」还是
+    # 「两边 secret 不一致」。
+    logger.warning(
+        f"[feishu] 服务间路由拒绝: 签名无效 path={request.path_qs} "
+        f"has_signature={bool(request.headers.get('X-PSI-Service-Signature'))} "
+        f"has_timestamp={bool(request.headers.get('X-PSI-Service-Timestamp'))}"
+    )
+    raise PermissionError("not authorized")
+
+
 async def _feishu_route(request: web.Request) -> web.Response:
     """幂等地把一次飞书会话路由到其 Session, 首次见到时按需 spawn。
 
@@ -67,7 +103,15 @@ async def _feishu_route(request: web.Request) -> web.Response:
     group/topic 且 ``chat_id`` 非空) 整群共用一个 Session, 其余按 ``open_id`` 一人一个。channel
     拿回 ``channel_socket`` 连接即得对应会话; ``external`` 为真表示该 Session 跑在**别的容器**里,
     channel 据此不再下载附件到本机 (那边看不见), 改为透传 file_key。
+
+    **只服务 channel 进程**: 未带有效签名一律 401 (见 :func:`_require_service`)。它按需
+    spawn 会话、并回内部管道路径, 是这套接口里权限最高的两条之一 —— 在它没有鉴权的那些
+    日子里, 任何能打到 gateway 端口的东西都能凭一句 ``{"open_id": …}`` 建出会话。
     """
+    try:
+        await _require_service(request)
+    except PermissionError as e:
+        return _error(str(e), status=401)
     fm: FeishuManager = request.app["fm"]
     schedm: SchedulerManager = request.app["schedm"]
     try:
@@ -119,6 +163,17 @@ async def _feishu_route(request: web.Request) -> web.Response:
 
 
 async def _list_feishu_routes(request: web.Request) -> web.Response:
+    """``GET /feishu/routes`` —— 全部「飞书会话 → Session」映射, 供观测。
+
+    **与 ``POST /feishu/route`` 同一道判据** (见 :func:`_require_service`): 它回的是**所有人**
+    的路由表 —— 谁在用这个部署、各自的 session id 与 open_id/chat_id。读侧比写侧轻, 但泄漏的
+    是同一份东西, 所以不放行匿名读。channel 一次都不打这条 (它只用 POST), 于是它天然是
+    「运维/排查」接口, 不该对浏览器可达。
+    """
+    try:
+        await _require_service(request)
+    except PermissionError as e:
+        return _error(str(e), status=401)
     fm: FeishuManager = request.app["fm"]
     return _json([asdict(r) for r in fm.list_routes()])
 
@@ -529,17 +584,55 @@ def _resolve_deliverable(raw: str) -> Path | None:
     return resolved if resolved.is_file() else None
 
 
+async def _recorded_uploads(appdata: str, session_id: str) -> set[str]:
+    """``{appdata}/uploads/{sid}.jsonl`` 里登记过的入向文件 (规范化路径)。
+
+    读不到 / 坏行一律跳过: 白名单的失败方向必须是「少放行」, 不能是抛错 —— 让一条坏行把
+    整条下载路由变成 500, 等于把「登记簿坏了」升级成「这个会话的交付物全下不动」。
+    """
+    if not appdata:
+        return set()
+    try:
+        text = await appdata_uploads_path(appdata, session_id).read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    out: set[str] = set()
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            logger.warning(f"[feishu] 上传登记簿有坏行, 已跳过 session={session_id!r}")
+            continue
+        path = row.get("path") if isinstance(row, dict) else None
+        if isinstance(path, str) and path.strip():
+            out.add(_norm_path(path))
+    return out
+
+
 async def _session_deliverable_paths(request: web.Request, session_id: str, workspace: str) -> set[str]:
-    """该会话历史上**声明过的交付物**绝对路径集合(规范化后)。
+    """该会话**服务端登记过的**交付物绝对路径集合(规范化后)。
 
-    来源是 history 行的三处: ``sends``(``[SEND:]`` 解析出的绝对路径, agent 交付的)、
-    ``recvs``(``[RECV:]``, 用户自己传上来的)与 ``files[].path``(对象形态, 骨架的 desktop
-    投影会给, ToB 的 ``hm.get()`` 目前不给 —— 留着是为了哪天形状变了不必再改这里)。
+    两个来源, 都是**服务端自己写下的记录**:
 
-    输入附件也算: 用户自己传上来的文件, 用户当然有权再下回去。
+    * ``sends`` / ``files[].path`` —— history 行里 agent 交付的文件(宝箱那一侧);
+    * ``{appdata}/uploads/{sid}.jsonl`` —— 本会话的**入向**文件, 由
+      ``ChatManager._save_upload`` 在落盘那一刻追加(见 ``_appdata.appdata_uploads_path``)。
 
-    **``recvs`` 不是可选项**: ``hm.get()`` 返回的行里根本没有 ``files`` 这个键(见
-    ``runtime/_history_manager.py``), 只读 ``files`` 会让「用户上传的附件」全都下不动。
+    **刻意不读 history 的 ``recvs``**(原先的第三个来源): 它是从**用户正文**里正则捞出来的
+    ``[RECV:…]``, 于是白名单有了一个用户可控的输入 —— 往消息里打一句
+    ``[RECV:C:\\Windows\\win.ini]``, 那条路径就进了白名单, 而下载那条路由的**唯一**闸门就是
+    这份集合。用户能自己往里加路径的白名单不叫白名单。入向文件改由服务端登记之后, 判据变成
+    「这个文件确实是本会话收下的」, 与正文里写了什么无关。
+
+    代价说清楚: 修复前就已存在的会话, 其历史里那些 ``[RECV:]`` 不再进白名单 —— 那些附件
+    (若还在磁盘上) 要重新上传一次才能从宝箱下载。**这是有意的**: 无法区分「channel 编码的
+    上传」与「用户手打的标记」, 而后者正是要堵的口子。
+
+    ``sends`` 侧保持原样(不另加「必须落在 workspace 下」的判定): agent 本来就拿得到文件系统
+    (它的 ``read``/``bash`` 是任意路径), 由它声明交付的文件不构成新的越权面; 而 workspace
+    之外的合法交付物(写到别的目录)会被这条判定误伤。真正可控的输入只有用户正文那一处。
     """
     hm: HistoryManager = request.app["hm"]
     appdata = str(request.app.get("appdata") or "")
@@ -549,10 +642,8 @@ async def _session_deliverable_paths(request: web.Request, session_id: str, work
         # ``row`` 是 dict[str, object], 所以每层都显式判类型 —— ``row.get(k) or []`` 那样的
         # 写法 ty 会报 not-iterable(object 未必可迭代), 而它是对的: 历史行的形状由
         # ``_history_manager`` 决定, 这里不该假定。
-        for key in ("sends", "recvs"):
-            entries = row.get(key)
-            if not isinstance(entries, list):
-                continue
+        entries = row.get("sends")
+        if isinstance(entries, list):
             for entry in entries:
                 if isinstance(entry, str) and entry.strip():
                     out.add(_norm_path(entry))
@@ -564,7 +655,7 @@ async def _session_deliverable_paths(request: web.Request, session_id: str, work
                 path = entry.get("path")
                 if isinstance(path, str) and path.strip():
                     out.add(_norm_path(path))
-    return out
+    return out | await _recorded_uploads(appdata, session_id)
 
 
 async def _web_todos(request: web.Request) -> web.Response:
@@ -616,18 +707,23 @@ async def _web_download_file(request: web.Request) -> web.StreamResponse:
     """``GET /feishu/sessions/{id}/files?path=`` —— 下载该会话的交付物(宝箱用)。
 
     ``path`` 由前端从历史恢复, 是绝对路径。边界是**``_session_deliverable_paths`` 那份
-    白名单**: 只允许下载"这条会话自己声明发出来过的文件"。
+    白名单**: 只允许下载"这条会话自己收下 / 交付过的文件"。那份集合的两个来源都是服务端
+    写下的记录 —— 用户正文说了不算, 理由见该函数。
+
+    这里另有一道**私密区**判定(``_private_space.blocks_send``): channel 那条出向路径早就
+    拒绝把别人的私密文件发进飞书, 网页宝箱走的是另一条路, 不判的话「channel 不发」就只是
+    一半的守卫。判据与那道一字不差(同一个函数), 依据是请求身份, 本端点知道是谁在问。
 
     **刻意不额外要求"落在 workspace 下"**: 会话共享 workspace, 而交付物完全可能落在
-    workspace 之外(agent 写到别的目录、用户上传的附件被 channel 下到 ``~/Downloads/.psi/``),
-    加这条会挡住正当下载; 而白名单已经把它限定在"本会话声明过的文件"上, 归属校验又把它
-    限定在"本人的会话"上 —— 越权面消失了, 所以不必再叠一层会误伤的判定。
+    workspace 之外(agent 写到别的目录、用户上传的附件被下到 ``~/Downloads/.psi/``), 加这条
+    会挡住正当下载; 而白名单已经把它限定在"本会话登记过/交付过的文件"上, 归属校验又把它
+    限定在"本人的会话"上, 所以不必再叠一层会误伤的判定。
 
     刻意**不复用** desktop 面的 ``/workspace/file``: 那条只在挂载 desktop 时存在
     (云端 ``launch-gateway.sh`` 只挂 ``--gateway feishu``), 而且它无鉴权、按任意路径读。
     """
     try:
-        _identity, session_id, workspace = _authorize_session(request)
+        identity, session_id, workspace = _authorize_session(request)
     except _AccessDeniedError as e:
         return _error(e.message, status=e.status)
     raw = (request.query.get("path") or "").strip()
@@ -638,6 +734,9 @@ async def _web_download_file(request: web.Request) -> web.StreamResponse:
     if resolved is None:
         return _error("file not found", status=404)
     if _norm_path(resolved) not in allowed:
+        return _error("not a deliverable of this session", status=403)
+    if _private_space.blocks_send(resolved, identity.open_id):
+        logger.warning(f"[feishu] 交付物下载拒绝: 私密区 session={session_id!r} open_id={identity.open_id}")
         return _error("not a deliverable of this session", status=403)
     return _download_response(resolved)
 
@@ -784,6 +883,11 @@ async def _web_monthly_stats(request: web.Request) -> web.Response:
       组织共享会话那边不进列表, 这里也不进, 否则两个数字的"人口"不一致)。
     * 参数: ``month`` 缺省 = 服务端当前自然月; 形状不对是 400 而不是回 0 —— 回 0 会把
       「参数写错了」伪装成「本月什么都没跑」。
+
+    响应除 ``count`` / ``checklist`` / ``reply`` 外还带 ``sessions`` (人口 = 本人可见会话数) 与
+    ``unlisted`` (有本月活动、却不在人口里、且能确认属于本人的会话数)。后两项是为了让
+    「用户自己数 ``todos/`` 与这一格不一致」有处可查 —— 差异来自人口是会话注册表而不是磁盘
+    数据文件, 详见 ``_stats`` 模块头。
     """
     try:
         identity = _require_identity(request)
@@ -806,6 +910,8 @@ async def _web_monthly_stats(request: web.Request) -> web.Response:
         todom=todom,
         start=start,
         end=end,
+        fm=fm,
+        open_id=identity.open_id,
     )
     return _json({"month": month, **stats})
 

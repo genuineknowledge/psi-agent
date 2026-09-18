@@ -15,7 +15,6 @@ export function ChatThread({
   onFeedback,
   onRegenerate,
   onOpenFile,
-  onRevealFile,
 }: {
   messages: ChatMessage[];
   typing: boolean;
@@ -24,7 +23,6 @@ export function ChatThread({
   onFeedback: (index: number, kind: "up" | "down") => void;
   onRegenerate: (index: number) => void;
   onOpenFile: (name: string) => void;
-  onRevealFile: (path: string) => void;
 }) {
   const endRef = useRef<HTMLDivElement | null>(null);
 
@@ -53,7 +51,6 @@ export function ChatThread({
           onRegenerate={() => onRegenerate(i)}
           onOpenFile={onOpenFile}
           filePathOf={filePathOf}
-          onRevealFile={onRevealFile}
         />
       ))}
       <div ref={endRef} />

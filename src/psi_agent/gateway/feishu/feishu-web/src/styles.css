@@ -2833,29 +2833,6 @@ button {
   max-width: 100%;
 }
 
-.focus-chat-file-reveal {
-  width: 28px;
-  height: 28px;
-  flex: none;
-  display: grid;
-  place-items: center;
-  color: #5d738a;
-  background: #f3f7fb;
-  border: 1px solid rgba(11, 47, 91, 0.12);
-  border-radius: 9px;
-  cursor: pointer;
-}
-
-.focus-chat-file-reveal:hover {
-  color: #3370ff;
-  border-color: rgba(51, 112, 255, 0.35);
-}
-
-.focus-chat-file-reveal:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
 .focus-history-empty {
   padding: 10px 12px;
   color: var(--fs-muted);
@@ -3393,13 +3370,6 @@ button {
 .preview-text-btn:hover {
   color: #3370ff;
   background: #eef4fa;
-}
-
-.preview-reveal-error {
-  padding: 8px 16px;
-  color: #b42318;
-  background: #fef3f2;
-  font-size: 12px;
 }
 
 .preview-drawer-body {

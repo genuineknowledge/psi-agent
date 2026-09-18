@@ -37,6 +37,7 @@ from psi_agent.runtime._ai_manager import AIManager
 from psi_agent.runtime._session_manager import SessionManager
 from psi_agent.runtime._title_manager import TitleManager
 from tests.integration.test_gateway import _start_app_on_free_port
+from tests.psi_agent.gateway._route_signing import TEST_APP_SECRET, signed_json_post
 
 #: 这一族里全部 GET 路由的形状 —— 参数化跑「未登录 / 不存在」两组边界。
 _SESSION_GET_SUFFIXES = ("todos", "todo-segments", "export")
@@ -53,6 +54,7 @@ async def _make_app(tg, tmp_path: str):
     app = register_feishu_routes(
         await create_core_app(aim, sm, TitleManager(), appdata=os.path.join(tmp_path, "appdata")),
         feishu_ai_id="ai1",
+        feishu_app_secret=TEST_APP_SECRET,
         feishu_workspace_root=os.path.join(tmp_path, "ws"),
     )
     return aim, sm, app
@@ -336,8 +338,10 @@ async def test_delete_route_has_a_hard_gate_on_the_im_shared_session(tmp_path: s
             async with http.post(f"{base_url}/feishu/sessions", json={"backend_id": "ai1"}, cookies=ck_b) as resp:
                 b_sid = (await resp.json())["id"]
             created.append(b_sid)
-            # 机器人那条私聊会话 —— 与网页自建的那条是**不同** id。
-            async with http.post(f"{base_url}/feishu/route", json={"open_id": "ou_alice", "ai_id": "ai1"}) as resp:
+            # 机器人那条私聊会话 —— 与网页自建的那条是**不同** id。这条打的是进程间接口,
+            # 得像 channel 那样签 (app_secret 的 HMAC), 否则先撞上 401。
+            raw, headers = signed_json_post("/feishu/route", {"open_id": "ou_alice", "ai_id": "ai1"})
+            async with http.post(f"{base_url}/feishu/route", data=raw, headers=headers) as resp:
                 assert resp.status == 201
                 im_sid = (await resp.json())["session_id"]
             created.append(im_sid)

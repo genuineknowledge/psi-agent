@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, Copy, FolderOpen, RefreshCw, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ChevronRight, Copy, RefreshCw, ThumbsDown, ThumbsUp } from "lucide-react";
 import { FAILED_REASON_LABEL } from "../services/messageTurn";
 import { thinkingHeaderWithDuration } from "../services/messageTiming";
 import { stripTransferMarkers } from "../services/sendMarkers";
@@ -17,7 +17,6 @@ export function ChatMessageItem({
   onRegenerate,
   onOpenFile,
   filePathOf,
-  onRevealFile,
 }: {
   msg: ChatMessage;
   last: boolean;
@@ -27,7 +26,6 @@ export function ChatMessageItem({
   onRegenerate: () => void;
   onOpenFile: (name: string) => void;
   filePathOf: (name: string) => string | undefined;
-  onRevealFile: (path: string) => void;
 }) {
   const role = msg.role === "user" ? "user" : "agent";
   const [toolsOpen, setToolsOpen] = useState(true);
@@ -107,11 +105,6 @@ export function ChatMessageItem({
                   <button type="button" className="focus-chat-file-chip" disabled={!canPreview} title={canPreview ? `预览 ${f}` : f} onClick={() => onOpenFile(f)}>
                     <span>{f}</span>{canPreview ? <em>预览</em> : null}
                   </button>
-                  {p ? (
-                    <button type="button" className="focus-chat-file-reveal" title="在文件夹中显示" aria-label={`在文件夹中显示 ${f}`} onClick={() => onRevealFile(p)}>
-                      <FolderOpen size={14} />
-                    </button>
-                  ) : null}
                 </div>
               );
             })}

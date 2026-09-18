@@ -76,6 +76,7 @@ src/
     ├── _workspace_paths.py     # 工作区/能力包路径机制（桌面路径、mkdir、tools+skills 探测）；不认识品牌名，缺省名由调用方传入
     ├── protocol.py             # 跨组件 SSE 协议归属（线格式类型 + finish_reason 常量 + 辅助帧/终止帧规则）
     ├── _feishu_routing.py      # 飞书群聊/私聊判定与路由键（Gateway↔Channel 共享）
+    ├── _service_auth.py        # 服务间鉴权：channel→Gateway 的 HMAC 签名（app_secret 当密钥；Gateway↔Channel 共享）
     ├── _send_markers.py        # [SEND:] 解码：正则 + 空路径过滤（Channel↔Session 共享）
     ├── _run.py                 # YAML 配置批量启动（psi-agent run config.yml）
     ├── _logging.py              # loguru 配置，verbose→DEBUG

@@ -247,7 +247,12 @@ async def test_feishu_internal_routes_stay_blocked(monkeypatch: pytest.MonkeyPat
     `test_core_routes_stay_blocked` 抓不到这两条: 它列的都是 `/sessions` 一族, 而这两条
     以 `/feishu/` 开头。会需要单列一条, 是因为白名单里 `/feishu/*` 已经放行了一堆前端接口
     (`/feishu/jsapi/config` 是最新一条), 下一个人照着补时很容易把「都是 /feishu/ 开头」
-    当成放行理由 —— 而 routes 无鉴权且能 spawn Session, 浏览器一次都不打。
+    当成放行理由 —— 而这两条是 channel 进程内部用的, 浏览器一次都不打。
+
+    **两层判据, 不是二选一**: gateway 侧现在也要服务间签名 (`psi_agent/_service_auth` 的
+    HMAC, 见 `tests/psi_agent/gateway/test_feishu_route_auth.py`), 但反代这一层问的是另一个
+    问题 —— 「浏览器是否真的打它」。少任何一层都会在另一种拓扑下失效: 本地直连 gateway 时
+    没有反代, 云上则还有别的容器与同机进程能打到 gateway 端口。
 
     顺带钉住 `jsapi/config` 放行 + `routes` 挡住**同时**成立: 只断言后者的话, 有人为了
     让这条绿而把整族撤回白名单也不会响。

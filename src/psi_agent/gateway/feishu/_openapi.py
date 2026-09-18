@@ -54,7 +54,10 @@ FEISHU_PATHS: dict[str, Any] = {
     },
     "/feishu/route": {
         "post": {
-            "summary": "Route a Feishu chat to its Session (per-chat for groups, per-user for DMs)",
+            "summary": (
+                "Route a Feishu chat to its Session (per-chat for groups, per-user for DMs). "
+                "Channel-process only: requires the HMAC service signature of psi_agent._service_auth"
+            ),
             "operationId": "feishuRoute",
             "requestBody": {
                 "required": True,
@@ -66,6 +69,7 @@ FEISHU_PATHS: dict[str, Any] = {
                     "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FeishuRoute"}}},
                 },
                 "400": {"$ref": "#/components/responses/Error"},
+                "401": {"$ref": "#/components/responses/Error"},
                 "404": {"$ref": "#/components/responses/Error"},
                 "500": {"$ref": "#/components/responses/Error"},
             },
@@ -73,7 +77,7 @@ FEISHU_PATHS: dict[str, Any] = {
     },
     "/feishu/routes": {
         "get": {
-            "summary": "List all Feishu chat -> Session routes",
+            "summary": "List all Feishu chat -> Session routes (channel-process only, signed like /feishu/route)",
             "operationId": "listFeishuRoutes",
             "responses": {
                 "200": {
@@ -87,6 +91,7 @@ FEISHU_PATHS: dict[str, Any] = {
                         }
                     },
                 },
+                "401": {"$ref": "#/components/responses/Error"},
             },
         },
     },
