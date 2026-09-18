@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 
 from psi_agent._service_auth import sign
 
@@ -20,11 +21,15 @@ TEST_APP_SECRET = "test-app-secret-7f3a"
 
 def signed_json_post(
     path: str,
-    payload: dict[str, object],
+    payload: Mapping[str, object],
     *,
     secret: str = TEST_APP_SECRET,
 ) -> tuple[bytes, dict[str, str]]:
-    """``(body, headers)`` —— 直接喂给 ``session.post(url, data=body, headers=headers)``。"""
+    """``(body, headers)`` —— 直接喂给 ``session.post(url, data=body, headers=headers)``。
+
+    收 ``Mapping`` 而不是 ``dict[str, object]``: dict 在值类型上**不变**, 而用例里的 payload
+    字面量推出来是 ``dict[str, str]`` —— 声明成前者会让每个调用点都报 invalid-argument-type。
+    """
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     return raw, {
         "Content-Type": "application/json; charset=utf-8",
