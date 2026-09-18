@@ -12,6 +12,25 @@ and the ticket globally per Gateway process and only refreshes them near expiry.
 
 ``app_secret`` never leaves this module: the HTTP route returns the signed
 parameters, not the ticket or credentials.
+
+**刻意为之 (2026-09-18 由部署方确认): 不校验来源 host, 也不做来源白名单。**
+``config_for_url`` 只为**前端交来的那个 url** 签名, 只校验它是绝对 http(s) 地址 —— 于是
+``GET /feishu/jsapi/config?url=https://任意域名/x`` 也会拿到一份为该 URL 算出的签名。
+
+理由与边界, 写给将来想"顺手加个白名单"的人:
+
+* **飞书 JSAPI 的签名对象就是页面 URL 本身**。前端传的是 ``location.href``, 而同一个部署
+  完全可能经多个地址被打开(公网域名 / 内网域名 / 带端口 / 飞书客户端内嵌浏览器), 一份
+  硬编码的 host 白名单会在**合法**场景下把免登打断, 而它挡不住真正的攻击者 —— 签名只在
+  **那个 URL** 的页面上有效, 攻击者拿自己的域名来要签名, 得到的签名也只对自己的页面有效;
+* **这一层不下发任何凭据**: 响应里没有 jsapi_ticket, 没有 ``app_secret``, 只有 appId
+  (本来就是公开值)、时间戳、随机串与签名 —— 见下面的 :meth:`FeishuJsapiSigner.config_for_url`;
+* 因此这条路由与 ``/feishu/route`` 一族**不是一类**: 后者能 spawn 会话、能回内部管道路径,
+  所以那边加了服务间签名(见 ``psi_agent._service_auth``); 这条只做一次纯计算。
+
+要收紧的话, 该收紧的地方是**频控与来源**, 而那是反代 (``deploy/haitun/oauth-proxy.py``)
+或产品层的决定, 不是这个函数的判据 —— 这个函数只认识 URL, 不认识"谁在问"。
+行为由 ``tests/psi_agent/gateway/test_feishu_jsapi.py`` 钉住, 别当缺陷"修"掉。
 """
 
 from __future__ import annotations

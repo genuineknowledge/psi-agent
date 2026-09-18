@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from psi_agent.gateway.feishu import _jsapi
@@ -35,6 +37,31 @@ async def test_invalid_url_is_rejected() -> None:
     signer = FeishuJsapiSigner(app_id="cli_x", app_secret="s")
     with pytest.raises(JsapiError):
         await signer.config_for_url("javascript:alert(1)")
+
+
+@pytest.mark.anyio
+async def test_any_host_is_signed_on_purpose(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**刻意为之, 别加 host 白名单**: 只为前端交来的那个 URL 签名, 不判来源 host。
+
+    前端传的是 ``location.href``, 同一个部署可能经公网域名 / 内网域名 / 带端口 / 飞书客户端
+    内嵌浏览器等多种地址被打开 —— 硬编码白名单会在**合法**场景下打断免登, 却挡不住攻击者
+    (签名只在那一个 URL 的页面上有效)。理由全文见 ``_jsapi`` 模块 docstring。
+
+    这条用例同时钉住**安全性质**: 该接口不下发任何凭据 —— 拿任意域名来要签名, 拿回去的
+    也只有 appId(公开值)/时间戳/随机串/签名, 没有 jsapi_ticket, 没有 app_secret。
+    """
+    fake = _FakeHttp()
+    monkeypatch.setattr(_jsapi, "ClientSession", lambda *a, **kw: fake)
+    signer = FeishuJsapiSigner(app_id="cli_x", app_secret="top-secret")
+
+    cfg = await signer.config_for_url("https://evil.example.com/phish.html")
+
+    assert cfg["url"] == "https://evil.example.com/phish.html"
+    assert cfg["signature"] == signature_for("ticket-1", cfg["nonceStr"], cfg["timestamp"], cfg["url"])
+    # 没有凭据跟着出去: 返回体里只有那四个字段。
+    assert set(cfg) == {"appId", "timestamp", "nonceStr", "signature", "url"}
+    assert "ticket" not in json.dumps(cfg)
+    assert "top-secret" not in json.dumps(cfg)
 
 
 @pytest.mark.anyio
