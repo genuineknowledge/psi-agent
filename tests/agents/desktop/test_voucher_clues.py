@@ -1,0 +1,317 @@
+"""`voucher_clues` 的回归判据 —— 地方消费券的线索层。
+
+三层判据, 按重要性排:
+
+1. **只给线索, 不给结论**。返回的是「有哪些页面」, 不是「有什么券」。所以本工具
+   **不提取面额/门槛** —— 从标题反推 "满500减50" 是最容易编出来的地方。
+2. **日期是承重的**。实测: 合肥专题页最新一条是 2026-04-24, 而当时已是 2026-09。
+   不带日期地返回 48 条, 模型会把 2024 年的电影券当成现行的。所以每条都带
+   `date` / `age_days` / `freshness`, 且**没日期的排最后**(而不是当最新)。
+3. **抓不到就说抓不到**。命中拼图风控 -> `blocked` 并要求停下; 取不到 -> `source_unreachable`;
+   城市不在表里 -> `unknown_city`(**不猜拼音** —— 猜出来的代码 404, 而 404 与"这个城市
+   没有券"在返回体里长得一样)。
+
+不变式(与 `saving_read` 同源): **凡是 `ok=false` 的返回都不带 `clues` 字段。**
+少一个字段只是少一个信息; 多一个空列表就是一条会被当真的假事实。
+
+测试全程不联网: `_fetch` 被换成喂固定页面的替身。
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import date, timedelta
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import pytest
+import yaml
+
+# 运行期靠同级 conftest 把 tools 目录挂上 sys.path(裸名导入); ty 不认那个插入,
+# 只能按包路径解析。与 test_saving_login.py 同套写法。
+if TYPE_CHECKING:
+    from agents.desktop.tools import _voucher_sources
+    from agents.desktop.tools import voucher_clues as _voucher_clues
+else:
+    import _voucher_sources
+    import voucher_clues as _voucher_clues
+
+WORKSPACE_ROOT = Path(__file__).resolve().parents[3] / "agents" / "desktop"
+SOURCES_FILE = WORKSPACE_ROOT / "sources" / "voucher-sources.yaml"
+
+TODAY = date(2026, 9, 18)
+
+
+def _page(*rows: str) -> str:
+    """拼一个像专题页的 HTML: 每条是一段带日期的链接文字。"""
+    links = "".join(f'<a href="http://m.hf.bendibao.com/live/{i}.shtm">{row}</a>' for i, row in enumerate(rows))
+    return f"<html><body><div class='list'>{links}</div></body></html>"
+
+
+def _iso(days_ago: int) -> str:
+    return (TODAY - timedelta(days=days_ago)).isoformat()
+
+
+async def _call(**kwargs: Any) -> dict[str, Any]:
+    return json.loads(await _voucher_clues.voucher_clues(**kwargs))
+
+
+@pytest.fixture
+def page(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """把 `_fetch` 换成喂固定页面 —— 测试不联网。"""
+
+    def _install(html: str | None) -> None:
+        async def _fake(url: str, total_seconds: float = 25.0) -> str | None:
+            return html
+
+        monkeypatch.setattr(_voucher_clues, "_fetch", _fake)
+
+    return _install
+
+
+# --------------------------------------------------------------------------- #
+# 1. 时效: 日期是承重的
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("age", "expected"),
+    [
+        (0, "current"),
+        (30, "current"),
+        (31, "recent"),
+        (180, "recent"),
+        (181, "stale"),
+        (900, "stale"),
+        (None, "undated"),
+    ],
+)
+def test_freshness_buckets(age: int | None, expected: str) -> None:
+    assert _voucher_clues._freshness(age) == expected
+
+
+def test_undated_is_its_own_bucket_not_the_newest() -> None:
+    """没日期 **不等于** 新 —— 这是本文件最容易被写错的一条。"""
+    assert _voucher_clues._freshness(None) == "undated"
+    assert _voucher_clues._freshness(None) != "current"
+
+
+def test_clues_are_sorted_newest_first_and_undated_last() -> None:
+    html = _page(
+        f"合肥餐饮消费券 {_iso(200)}",
+        f"合肥汽车消费券 {_iso(3)}",
+        "合肥百货消费券",  # 没日期
+    )
+    clues = _voucher_clues._parse_clues(html, TODAY)
+    assert [c["date"] for c in clues[:2]] == [_iso(3), _iso(200)]
+    assert clues[-1]["date"] is None
+    assert clues[-1]["freshness"] == "undated"
+
+
+def test_publish_time_is_stripped_from_the_title() -> None:
+    """专题页条目是「标题 + 日期 + 时间」, 时间不该拖进模型上下文。"""
+    clues = _voucher_clues._parse_clues(_page(f"2026合肥瑶海区五一餐饮消费券领券方式 {_iso(5)} 10:29"), TODAY)
+    assert clues[0]["title"] == "2026合肥瑶海区五一餐饮消费券领券方式"
+    assert "10:29" not in clues[0]["title"]
+
+
+# --------------------------------------------------------------------------- #
+# 2. 解析: 只认"链接文字里有消费券"的条目
+# --------------------------------------------------------------------------- #
+
+
+def test_non_coupon_links_are_ignored() -> None:
+    html = _page("合肥本地宝首页", f"合肥餐饮消费券 {_iso(5)}", "联系我们")
+    clues = _voucher_clues._parse_clues(html, TODAY)
+    assert [c["title"] for c in clues] == ["合肥餐饮消费券"]
+
+
+def test_duplicate_titles_are_collapsed() -> None:
+    """同一条券常有「领券方式」「使用方式」两篇, 但完全同名的要去重。"""
+    html = _page(f"合肥餐饮消费券 {_iso(5)}", f"合肥餐饮消费券 {_iso(6)}")
+    clues = _voucher_clues._parse_clues(html, TODAY)
+    assert len(clues) == 1
+
+
+def test_category_counts_come_from_titles() -> None:
+    html = _page("合肥汽车消费券", "合肥餐饮消费券", "合肥餐饮消费券第二期", "合肥百货消费券")
+    clues = _voucher_clues._parse_clues(html, TODAY)
+    assert _voucher_clues._categories_seen(clues) == {"餐饮": 2, "汽车": 1, "百货": 1}
+
+
+# --------------------------------------------------------------------------- #
+# 3. 风控: 命中就停
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("marker", ["请完成拼图验证以继续访问", "请完成验证", "安全检查中", "人机验证"])
+def test_verification_pages_are_detected(marker: str) -> None:
+    assert _voucher_clues._is_blocked(f"<html><body>{marker}</body></html>")
+
+
+def test_a_normal_page_is_not_mistaken_for_a_challenge() -> None:
+    assert not _voucher_clues._is_blocked(_page("合肥餐饮消费券 2026-04-24"))
+
+
+# --------------------------------------------------------------------------- #
+# 4. 端到端(离线)
+# --------------------------------------------------------------------------- #
+
+
+async def test_happy_path_returns_clues_with_freshness(page: Any) -> None:
+    # 用桶内安全的余量(5 / 100 天), 而不是卡在 30 / 180 边界上 —— 端到端这条走的是真实时钟,
+    # 卡边界会因为跑测试的日期不同而随机红。
+    page(_page(f"合肥汽车消费券 {_iso(5)}", f"合肥餐饮消费券 {_iso(100)}"))
+
+    data = await _call(city="合肥")
+    assert data["ok"] is True
+    assert data["query"] == {"city": "合肥", "city_code": "hf", "category": ""}
+    assert data["source"]["tier"] == "aggregator"
+    assert data["totals"]["parsed"] == 2
+    assert data["totals"]["by_freshness"] == {"current": 1, "recent": 1, "stale": 0, "undated": 0}
+    assert data["categories_seen"] == {"汽车": 1, "餐饮": 1}
+
+
+async def test_category_is_a_keyword_filter_and_reports_what_it_dropped(page: Any) -> None:
+    """过滤是关键词匹配, 不是语义判断 —— 所以要同时报 matched 与 parsed。"""
+    page(_page(f"合肥汽车消费券 {_iso(5)}", f"合肥餐饮消费券 {_iso(5)}"))
+
+    data = await _call(city="合肥", category="汽车")
+    assert data["totals"]["parsed"] == 2
+    assert data["totals"]["matched"] == 1
+    assert [c["title"] for c in data["clues"]] == ["合肥汽车消费券"]
+
+
+async def test_max_results_caps_the_list_but_not_the_counts(page: Any) -> None:
+    page(_page(*[f"合肥餐饮消费券第{i}期 {_iso(5)}" for i in range(10)]))
+
+    data = await _call(city="合肥", max_results=3)
+    assert len(data["clues"]) == 3
+    assert data["totals"]["parsed"] == 10
+
+
+async def test_the_note_sends_judgement_to_the_ontology(page: Any) -> None:
+    """本工具只给线索; 越权推断最容易发生在刚拿到列表的那一刻。"""
+    page(_page(f"合肥汽车消费券 {_iso(5)}"))
+
+    note = (await _call(city="合肥"))["note"]
+    assert "线索" in note
+    assert "本体" in note
+    assert "不要在这里算" in note
+
+
+#: 每一种"拿不到线索"的情形。它们都必须**只报原因, 不报线索**。
+FAILURE_CASES = [
+    ("blocked", "<html>请完成拼图验证以继续访问</html>", "blocked"),
+    ("unreachable", None, "source_unreachable"),
+]
+
+
+@pytest.mark.parametrize(("name", "html", "reason"), FAILURE_CASES, ids=[c[0] for c in FAILURE_CASES])
+async def test_no_failure_ever_reports_clues(page: Any, name: str, html: str | None, reason: str) -> None:
+    """**不变式**: `ok=false` 一律不带 `clues` —— 空的线索列表会被当成"这个城市没有券"。"""
+    page(html)
+
+    data = await _call(city="合肥")
+    assert data["ok"] is False, name
+    assert data["reason"] == reason, name
+    assert "clues" not in data, name
+    assert "totals" not in data, name
+
+
+async def test_a_challenge_page_stops_and_does_not_retry(page: Any) -> None:
+    page("<html>请完成拼图验证以继续访问</html>")
+
+    data = await _call(city="合肥")
+    assert data["reason"] == "blocked"
+    assert "不要自动重试" in data["note"]
+    assert data["message"]  # 给用户看的规范话术
+    assert "截图" in data["message"]
+
+
+async def test_an_unreachable_source_is_not_reported_as_no_vouchers(page: Any) -> None:
+    page(None)
+
+    data = await _call(city="合肥")
+    assert data["reason"] == "source_unreachable"
+    assert "不是「这个城市没有券」" in data["note"]
+
+
+async def test_an_unknown_city_says_so_and_never_guesses_a_code() -> None:
+    data = await _call(city="霍尔果斯")
+    assert data["reason"] == "unknown_city"
+    assert "不要自己猜城市代码" in data["note"]
+    assert data["registered_cities"] > 100
+    assert "clues" not in data
+
+
+async def test_a_province_name_is_not_a_city() -> None:
+    """表是按城市组织的 —— 省份名要如实报"没有", 而不是随便挑一个城市。"""
+    data = await _call(city="安徽")
+    assert data["reason"] == "unknown_city"
+
+
+async def test_return_json_false_gives_plain_text(page: Any) -> None:
+    page(_page(f"合肥汽车消费券 {_iso(5)}"))
+
+    text = await _voucher_clues.voucher_clues(city="合肥", return_json=False)
+    assert "clues" in text
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(text)
+
+
+# --------------------------------------------------------------------------- #
+# 5. 出厂数据: 券源注册表
+# --------------------------------------------------------------------------- #
+
+
+def _sources_data() -> dict[str, Any]:
+    return yaml.safe_load(SOURCES_FILE.read_text(encoding="utf-8"))
+
+
+def test_the_registry_says_where_its_data_came_from() -> None:
+    """城市表是**生成物**。数据从哪来、什么时候来的必须与值一起走, 否则判断不了它多新。"""
+    data = _sources_data()
+    assert data["derived_from"].startswith("https://")
+    assert data["derived_at"]
+    assert data["verified_at"]
+
+
+def test_the_city_table_is_derived_and_large_enough_to_be_useful() -> None:
+    codes = _sources_data()["aggregators"]["bendibao"]["city_codes"]
+    assert len(codes) > 300
+    for city in ("合肥", "北京", "上海", "杭州", "武汉"):
+        assert city in codes
+
+
+def test_verified_cities_are_actually_in_the_table() -> None:
+    """README 式的自洽检查: 声称"实测能抓"的城市, 必须在表里存在。"""
+    data = _sources_data()
+    codes = data["aggregators"]["bendibao"]["city_codes"]
+    verified = data["verified_working"]
+    assert verified, "至少要有实测过的城市"
+    assert set(verified) <= set(codes)
+
+
+def test_city_code_lookup_normalizes_the_suffix() -> None:
+    entry = _sources_data()["aggregators"]["bendibao"]
+    assert _voucher_sources.city_code(entry, "合肥") == "hf"
+    assert _voucher_sources.city_code(entry, "合肥市") == "hf"
+
+
+def test_city_code_lookup_never_guesses() -> None:
+    """猜拼音的代价: 猜出来的代码会 404, 而 404 与"这个城市没有券"长得一样。"""
+    entry = _sources_data()["aggregators"]["bendibao"]
+    assert _voucher_sources.city_code(entry, "霍尔果斯") is None
+    assert _voucher_sources.city_code(entry, "hefei") is None
+
+
+def test_topic_url_pattern_comes_from_data_not_code() -> None:
+    entry = _sources_data()["aggregators"]["bendibao"]
+    assert _voucher_sources.topic_url(entry, "hf") == "https://m.hf.bendibao.com/news/zhuantixiaofeiquan/"
+
+
+def test_a_malformed_source_definition_fails_loudly() -> None:
+    """缺字段要报错, 不要在代码里兜默认值 —— 那等于第二份配置。"""
+    with pytest.raises(ValueError, match="缺少"):
+        _voucher_sources.aggregator({"aggregators": {"x": {"name": "X"}}}, "x")
