@@ -29,6 +29,7 @@
 import json
 from typing import Any
 
+import _offer_engine
 from _fact_cards import category_names, load_card, params_of, supported_text
 from _guobu_categories import match_category
 
@@ -134,8 +135,21 @@ async def subsidy_calc(
             ensure_ascii=False,
         )
 
-    subsidy = min(price * pct, cap)
-    final_price = price - subsidy
+    # 算术**只此一处**: 交给通用引擎(《省钱场景交接》§4「只做一个引擎, 各场景只是填规则」)。
+    # 这里不再写 min(结算价 x 比例, 上限) —— 那就是"又一个场景专用计算器"。
+    # 本工具从"计算器"退成**适配器**: 把资料卡的参数填成规则, 再把引擎的结论翻回自己的输出形状。
+    engine_result = _offer_engine.compute(
+        {"结算价": price},
+        [{"id": f"{_CARD}:{kind}", "类型": "比例补贴", "比例": pct, "封顶": cap}],
+    )
+    if not engine_result.get("ok") or not engine_result.get("可用"):
+        # 走到这里说明规则形状或订单有问题(不是政策不合格 —— 政策闸门上面已经判过了)。
+        return json.dumps(
+            {"ok": False, "reason": "通用引擎没能给出结果", "detail": engine_result},
+            ensure_ascii=False,
+        )
+    subsidy = engine_result["最优"]["共减"]
+    final_price = engine_result["最优"]["到手价"]
     rate_label = pol["rate_label"]
     result = {
         "ok": True,
