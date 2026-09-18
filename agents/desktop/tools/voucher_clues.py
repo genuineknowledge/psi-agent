@@ -42,6 +42,9 @@ from typing import Any
 
 import _voucher_sources as _sources
 import aiohttp
+
+# 通用搜索工具(serper MCP)。**复用**它, 不自己抓搜索引擎 HTML —— 理由见 _search_clues。
+import search as web_search
 from loguru import logger
 
 _USER_AGENT = (
@@ -49,6 +52,7 @@ _USER_AGENT = (
 )
 
 _SOURCE_KEY = "bendibao"
+_OFFICIAL_KEY = "mofcom_promotion"
 
 # 时效分层。券是**短周期**的东西: 30 天外基本已经发完了。
 _CURRENT_DAYS = 30
@@ -198,6 +202,151 @@ def _categories_seen(clues: list[dict[str, Any]]) -> dict[str, int]:
     return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
 
 
+# --------------------------------------------------------------------------- #
+# 路 1: 实时检索(主路径)
+# --------------------------------------------------------------------------- #
+#
+# 为什么这是**主路径**: 实测同样的时刻, 西安/广州/天津三城在"城市聚合站"那条路上
+# 全部取不到(风控 / 连不上), 而检索**各拿到 10 条** —— 而且直接找到了那三城的
+# 本地宝页面。也就是说检索既不需要城市代码表, 也不吃专题页的风控。
+# 易变的地方政策本来就该现查, 而不是靠一张预先建的源表。
+
+
+def _collect_links(node: Any, out: list[dict[str, Any]]) -> None:
+    """从搜索结果里**结构无关地**挑出条目: 递归找同时带 ``link`` 与 ``title`` 的对象。
+
+    刻意不写死 ``data["organic"]`` —— serper 有十几个纵向(网页/新闻/购物/学术...),
+    各自的包裹键不同, 写死一个就会在换纵向时静默返回空。认"形状"比认"键名"稳。
+    """
+    if isinstance(node, dict):
+        link, title = node.get("link"), node.get("title")
+        if isinstance(link, str) and link.startswith("http") and isinstance(title, str) and len(title) > 6:
+            out.append({"title": title, "url": link, "date": node.get("date")})
+        for value in node.values():
+            _collect_links(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            _collect_links(value, out)
+
+
+def _date_hint(raw: Any, today: date) -> tuple[str | None, int | None]:
+    """搜索结果可能带 ``date``, 但格式不固定。能认出 ``YYYY-MM-DD`` 才用它 —— 认不出就留空。"""
+    if not isinstance(raw, str):
+        return None, None
+    m = _DATE_RE.search(raw)
+    if not m:
+        return None, None
+    published = m.group(0)
+    try:
+        return published, (today - date.fromisoformat(published)).days
+    except ValueError:
+        return None, None
+
+
+async def _search_clues(city: str, category: str, templates: list[str]) -> tuple[list[dict[str, Any]], str]:
+    """实时检索某市的消费券线索 —— **复用通用搜索工具**, 不自己抓搜索引擎 HTML。
+
+    为什么不自己抓: ``search.py``(通用搜索工具)的模块说明里写着 —— 搜不了的 agent 会退化成
+    "scraping search-engine HTML, which returns plausible-looking garbage rather than an
+    honest error"。本工具最初正是这么干的, 那是重复实现, 也正是它警告的那条路。
+
+    通用搜索不可用时, 返回空 + **如实的原因** —— 不退化去抓 HTML 充数。
+    """
+    fn = getattr(web_search, "serper_google_search", None)
+    if fn is None:
+        return [], "通用搜索工具未注册(serper MCP 不可用)"
+
+    today = date.today()
+    found: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for template in templates:
+        query = str(template).format(city=city, category=category).strip()
+        if not query:
+            continue
+        try:
+            raw = await fn(q=query, num="10")
+        except Exception as exc:
+            return [], f"通用搜索调用失败: {type(exc).__name__}: {exc}"
+        text = str(raw)
+        if text.startswith("Error: ") or "API_KEY is empty" in text:
+            return [], f"通用搜索不可用: {text.strip()[:140]}"
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return [], "通用搜索返回的不是 JSON, 无法解析"
+
+        rows: list[dict[str, Any]] = []
+        _collect_links(data, rows)
+        for row in rows:
+            if row["url"] in seen:
+                continue
+            seen.add(row["url"])
+            published, age = _date_hint(row.get("date"), today)
+            found.append(
+                {
+                    "title": row["title"][:120],
+                    "url": row["url"][:300],
+                    "published": published,
+                    "age_days": age,
+                    "clue_freshness": _freshness(age),
+                    "via": "search",
+                }
+            )
+        if found:
+            break
+    return found, ("" if found else "检索没有返回可用条目")
+
+
+# --------------------------------------------------------------------------- #
+# 路 2: 官方列表(权威层)
+# --------------------------------------------------------------------------- #
+
+_OFFICIAL_LINK_RE = re.compile(r'href="([^"]*/news/123/[^"]*)"[^>]*>(.*?)</a>', re.S | re.I)
+
+
+async def _official_clues(entry: dict[str, Any], city: str, pages: int, today: date) -> list[dict[str, Any]]:
+    """抓官方列表的前 N 页, 按城市名过滤。
+
+    官方列表是**全国**的, 所以"过滤后 0 条"是常态而不是异常 —— 调用方要看得出
+    "这一路查过了, 只是这个城市本期没有", 而不是以为没查。
+    """
+    pattern = str(entry.get("list_url") or "")
+    if "{n}" not in pattern:
+        return []
+    wanted = _sources.normalize_city(city)
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for n in range(1, max(1, pages) + 1):
+        page = await _fetch(pattern.replace("{n}", str(n)))
+        if page is None:
+            break
+        for m in _OFFICIAL_LINK_RE.finditer(page):
+            href, inner = m.group(1), _strip_tags(m.group(2))
+            if wanted not in inner or len(inner) < 6 or href in seen:
+                continue
+            seen.add(href)
+            date_match = _DATE_RE.search(inner)
+            published = date_match.group(0) if date_match else None
+            title = _TIME_RE.sub("", _DATE_RE.sub("", inner)).strip(" -|·")
+            age: int | None = None
+            if published:
+                try:
+                    age = (today - date.fromisoformat(published)).days
+                except ValueError:
+                    published, age = None, None
+            out.append(
+                {
+                    "title": title[:120],
+                    "url": (str(entry.get("host_url") or "") + href if href.startswith("/") else href)[:300],
+                    "published": published,
+                    "age_days": age,
+                    "clue_freshness": _freshness(age),
+                    "via": "official",
+                }
+            )
+    return out
+
+
 async def voucher_clues(
     city: str,
     category: str = "",
@@ -219,10 +368,16 @@ async def voucher_clues(
       所以打开原文后 `valid_from` / `valid_to` 是**必读项**; 读不到就说 `[Cannot Confirm]`,
       不许拿文章日期替它填。
 
-    `ok=false` 时**不带** `clues` 字段, 按 reason 处理:
-    - `blocked`         -> 券源要人工验证。**停下, 把 message 原样告诉用户, 不重试。**
-    - `unknown_city`    -> 表里没这个城市。**不要猜拼音**: 换用户所在地的市级名称, 或走检索。
-    - `source_unreachable` -> 取不到。可自己用 web_search / web_fetch / 浏览器去找, 但**别编**。
+    **三条路一起走, 每一路的成败都报在 `paths` 里**:
+    - `paths.search`     -> 通用搜索工具(serper)。**任意城市都能走**, 但结果多无日期;
+    - `paths.official`   -> 官方列表(全国性)。过滤到本城市后 0 条是**常态**, 不是异常;
+    - `paths.aggregator` -> 城市聚合站。要城市代码表, 且会撞拼图风控。
+
+    一路失败**不影响**另两路。只有三路全空才 `ok=false`(`reason=no_clues_found`),
+    那时要**逐路看 `paths` 各自发生了什么**, 不要据此断言"这个城市没有券"。
+    聚合站撞风控时它那一格会带 `blocked: true` 与 `message`(给用户看的规范话术):
+    **停下告知用户, 不重试、不换城市代码硬试。**
+    城市不在代码表里只影响聚合站那一路 —— 检索路不受此限, 别把两件事混成一件事。
 
     拿到线索之后: 打开链接读原文, 才能知道面额/门槛/品类/有效期; 这些属性必须带来源与日期,
     交给 `saving_facts` 组装。**「能不能用」「能减多少」是本体的事, 不要在这里算。**
@@ -232,79 +387,132 @@ async def voucher_clues(
     except (OSError, ValueError) as exc:
         return _fail("sources_unavailable", detail=str(exc))
 
-    try:
-        entry = _sources.aggregator(sources, _SOURCE_KEY)
-    except (KeyError, ValueError) as exc:
-        return _fail("sources_malformed", detail=str(exc))
-
     registered = _sources.known_city_count(sources, _SOURCE_KEY)
-    code = _sources.city_code(entry, city)
-    if not code:
+    today = date.today()
+    keyword = (category or "").strip()
+    paths: dict[str, Any] = {}
+    collected: list[dict[str, Any]] = []
+
+    # 路 1: 实时检索 —— **主路径**。任何城市都能走, 不依赖城市代码表, 也不吃专题页风控。
+    search_cfg = sources.get("search") if isinstance(sources.get("search"), dict) else {}
+    templates = [str(x) for x in (search_cfg.get("query_templates") or [])]
+    if templates:
+        search_clues, search_why = await _search_clues(city, keyword, templates)
+    else:
+        search_clues, search_why = [], "注册表里没配检索模板"
+    paths["search"] = {
+        "ok": bool(search_clues),
+        "count": len(search_clues),
+        "note": search_why or "来自通用搜索工具(serper); 搜索结果多带日期, 但日期是**文章**的发布日期",
+    }
+    collected.extend(search_clues)
+
+    # 路 2: 官方列表 —— 权威层。它是**全国**列表, 过滤到本城市后 0 条是常态, 不是异常。
+    try:
+        official_entry: dict[str, Any] | None = _sources.official(sources, _OFFICIAL_KEY)
+    except KeyError, ValueError:
+        official_entry = None
+    if official_entry is None:
+        paths["official"] = {"ok": False, "count": 0, "note": "注册表里没有官方入口定义"}
+    else:
+        official_clues = await _official_clues(official_entry, city, int(official_entry.get("pages") or 2), today)
+        paths["official"] = {
+            "ok": bool(official_clues),
+            "count": len(official_clues),
+            "source": official_entry.get("name"),
+            "note": (
+                "来自官方列表" if official_clues else "官方列表查过了, 但本期没有这个城市的条目(该列表是全国性的)"
+            ),
+        }
+        collected.extend(official_clues)
+
+    # 路 3: 城市聚合站 —— 结构化层(有券的档位), 但要城市代码表, 且会撞拼图风控。
+    code: str | None = None
+    aggregator_entry: dict[str, Any] | None = None
+    try:
+        aggregator_entry = _sources.aggregator(sources, _SOURCE_KEY)
+    except KeyError, ValueError:
+        paths["aggregator"] = {"ok": False, "count": 0, "note": "注册表里没有可用的聚合站定义"}
+    if aggregator_entry is not None:
+        code = _sources.city_code(aggregator_entry, city)
+        if not code:
+            paths["aggregator"] = {
+                "ok": False,
+                "count": 0,
+                "note": f"按城市组织的聚合站表里没有 {city!r}(**不要猜城市代码**); 检索路不受此限",
+            }
+        else:
+            url = _sources.topic_url(aggregator_entry, code)
+            page = await _fetch(url)
+            if page is None:
+                paths["aggregator"] = {"ok": False, "count": 0, "url": url, "note": "取不到(超时 / 非 200)"}
+            elif _is_blocked(page):
+                logger.info(f"Voucher source {url} returned a human-verification page")
+                paths["aggregator"] = {
+                    "ok": False,
+                    "count": 0,
+                    "url": url,
+                    "blocked": True,
+                    "message": _BLOCKED_MESSAGE,
+                    "note": "该站要求人工验证; **不要重试、不要换城市代码硬试** —— 另两路不受影响",
+                }
+            else:
+                aggregator_clues = _parse_clues(page, today)
+                for clue in aggregator_clues:
+                    clue["via"] = "aggregator"
+                paths["aggregator"] = {"ok": bool(aggregator_clues), "count": len(aggregator_clues), "url": url}
+                collected.extend(aggregator_clues)
+
+    # 合并去重(按 URL), 新的在前、**没日期的排最后**(而不是当最新)
+    seen_urls: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    for clue in collected:
+        if clue["url"] in seen_urls:
+            continue
+        seen_urls.add(clue["url"])
+        merged.append(clue)
+    merged.sort(key=lambda c: (c["age_days"] is None, c["age_days"] if c["age_days"] is not None else 0))
+
+    matched = [c for c in merged if keyword in c["title"]] if keyword else list(merged)
+
+    if not merged:
         return _fail(
-            "unknown_city",
-            query={"city": city},
+            "no_clues_found",
+            query={"city": city, "category": keyword},
+            paths=paths,
             registered_cities=registered,
             note=(
-                f"券源是按**城市**组织的, 表里没有 {city!r}。请改用用户所在地的**市级**名称"
-                "(如 合肥 / 北京), 省份名不在表里。"
-                "**不要自己猜城市代码** —— 猜错会 404, 而 404 与「这个城市没有券」在返回体里长得一样。"
-                "要加城市: 往 sources/voucher-sources.yaml 的 city_codes 加一条(加城市 = 加数据)。"
+                "三条路都查过, 都没拿到这个城市的券线索。这是「此刻这三条路都取不到」, "
+                "**不是「这个城市没有券」** —— 看 paths 里每一路各自发生了什么, 不要据此下结论。"
             ),
         )
-
-    url = _sources.topic_url(entry, code)
-    page = await _fetch(url)
-    if page is None:
-        return _fail(
-            "source_unreachable",
-            query={"city": city, "city_code": code},
-            source={"key": _SOURCE_KEY, "name": entry.get("name"), "url": url},
-            note=(
-                "券源取不到(超时 / 非 200 / 网络问题)。这不是「这个城市没有券」。"
-                "可以用 web_search 或浏览器自己找, 或稍后再试一次; **但查不到就要说查不到, 不要编券**。"
-            ),
-        )
-
-    if _is_blocked(page):
-        logger.info(f"Voucher source {url} returned a human-verification page")
-        return _fail(
-            "blocked",
-            query={"city": city, "city_code": code},
-            source={"key": _SOURCE_KEY, "name": entry.get("name"), "url": url},
-            message=_BLOCKED_MESSAGE,
-            note="**停下, 不要自动重试, 不要换城市代码硬试。** 把 message 原样告诉用户, 等他的选择。",
-        )
-
-    today = date.today()
-    all_clues = _parse_clues(page, today)
-    keyword = (category or "").strip()
-    matched = [c for c in all_clues if keyword in c["title"]] if keyword else list(all_clues)
 
     by_freshness: dict[str, int] = {"current": 0, "recent": 0, "stale": 0, "undated": 0}
+    by_via: dict[str, int] = {}
     for clue in matched:
         by_freshness[clue["clue_freshness"]] = by_freshness.get(clue["clue_freshness"], 0) + 1
+        by_via[clue["via"]] = by_via.get(clue["via"], 0) + 1
 
     verified = [str(c) for c in (sources.get("verified_working") or [])]
-    payload = {
+    payload: dict[str, Any] = {
         "ok": True,
-        "query": {"city": city, "city_code": code, "category": keyword},
-        "source": {
-            "key": _SOURCE_KEY,
-            "name": entry.get("name"),
-            "tier": entry.get("tier"),
-            "url": url,
-            "fetched_at": _now_iso(),
-            "derived_at": sources.get("derived_at"),
-        },
+        "query": {"city": city, "category": keyword, "city_code": code},
+        "paths": paths,
         "registered_cities": registered,
         "city_verified_working": city in verified,
-        "totals": {"parsed": len(all_clues), "matched": len(matched), "by_clue_freshness": by_freshness},
+        "totals": {
+            "parsed": len(merged),
+            "matched": len(matched),
+            "by_clue_freshness": by_freshness,
+            "by_via": by_via,
+        },
         "categories_seen": _categories_seen(matched),
         "clues": matched[: max(0, int(max_results))],
         "note": (
             "这些是**线索**, 不是结论: 面额 / 门槛 / 适用范围 / 有效期都要打开链接读原文才知道。"
             "`published` / `clue_freshness` 说的是**这篇文章多新, 不是券的有效期** —— "
             "实测有一篇 147 天前的文章(recent), 里面的券发放窗口只有 12 天、单张有效期只有 2 天, 早就过期了。"
+            "**检索来的线索没有日期(`undated`)**: 那不代表它新, 只代表时效还不知道, 必须打开原文看。"
             "所以打开原文后, **发放窗口与有效期(valid_from / valid_to)是必读项**: "
             "读不到就标 [Cannot Confirm], **不许因为文章还新就说「能领」**。"
             "把这些页面交给模型提取券属性(带来源与日期), 再用 `saving_facts` 组装成事实契约。"

@@ -165,8 +165,9 @@ async def test_happy_path_returns_clues_with_freshness(page: Any) -> None:
 
     data = await _call(city="合肥")
     assert data["ok"] is True
-    assert data["query"] == {"city": "合肥", "city_code": "hf", "category": ""}
-    assert data["source"]["tier"] == "aggregator"
+    assert data["query"]["city"] == "合肥"
+    assert data["query"]["city_code"] == "hf"
+    assert data["paths"]["aggregator"]["ok"] is True
     assert data["totals"]["parsed"] == 2
     assert data["totals"]["by_clue_freshness"] == {"current": 1, "recent": 1, "stale": 0, "undated": 0}
     assert data["categories_seen"] == {"汽车": 1, "餐饮": 1}
@@ -200,55 +201,86 @@ async def test_the_note_sends_judgement_to_the_ontology(page: Any) -> None:
     assert "不要在这里算" in note
 
 
-#: 每一种"拿不到线索"的情形。它们都必须**只报原因, 不报线索**。
+#: 每一种"三路都拿不到"的情形。它们都必须**只报原因, 不报线索**。
 FAILURE_CASES = [
-    ("blocked", "<html>请完成拼图验证以继续访问</html>", "blocked"),
-    ("unreachable", None, "source_unreachable"),
+    ("blocked", "<html>请完成拼图验证以继续访问</html>"),
+    ("unreachable", None),
 ]
 
 
-@pytest.mark.parametrize(("name", "html", "reason"), FAILURE_CASES, ids=[c[0] for c in FAILURE_CASES])
-async def test_no_failure_ever_reports_clues(page: Any, name: str, html: str | None, reason: str) -> None:
+@pytest.mark.parametrize(("name", "html"), FAILURE_CASES, ids=[c[0] for c in FAILURE_CASES])
+async def test_no_failure_ever_reports_clues(page: Any, name: str, html: str | None) -> None:
     """**不变式**: `ok=false` 一律不带 `clues` —— 空的线索列表会被当成"这个城市没有券"。"""
     page(html)
 
     data = await _call(city="合肥")
     assert data["ok"] is False, name
-    assert data["reason"] == reason, name
+    assert data["reason"] == "no_clues_found", name
     assert "clues" not in data, name
     assert "totals" not in data, name
+    # 三路各自发生了什么要能看见 —— 否则"都取不到"会被读成"没有券"
+    assert {"search", "official", "aggregator"} <= set(data["paths"]), data["paths"]
+    assert "不是" in data["note"]
 
 
-async def test_a_challenge_page_stops_and_does_not_retry(page: Any) -> None:
+async def test_a_challenge_page_does_not_kill_the_other_paths(page: Any) -> None:
+    """聚合站撞风控**不再让整个调用失败** —— 另两路不受影响, 风控如实标在它自己那一格里。"""
     page("<html>请完成拼图验证以继续访问</html>")
 
     data = await _call(city="合肥")
-    assert data["reason"] == "blocked"
-    assert "不要自动重试" in data["note"]
-    assert data["message"]  # 给用户看的规范话术
-    assert "截图" in data["message"]
+    agg = data["paths"]["aggregator"]
+    assert agg["blocked"] is True
+    assert "不要重试" in agg["note"]
+    assert "截图" in agg["message"]  # 给用户看的规范话术
 
 
 async def test_an_unreachable_source_is_not_reported_as_no_vouchers(page: Any) -> None:
     page(None)
 
     data = await _call(city="合肥")
-    assert data["reason"] == "source_unreachable"
+    assert data["reason"] == "no_clues_found"
     assert "不是「这个城市没有券」" in data["note"]
+    assert data["paths"]["aggregator"]["ok"] is False
 
 
-async def test_an_unknown_city_says_so_and_never_guesses_a_code() -> None:
+async def test_an_unknown_city_says_so_and_never_guesses_a_code(page: Any) -> None:
+    """城市不在表里时,**只影响聚合站那一路** —— 检索路不受城市代码表限制, 不能跟着一起死。"""
+    page(None)
     data = await _call(city="霍尔果斯")
-    assert data["reason"] == "unknown_city"
-    assert "不要自己猜城市代码" in data["note"]
+    assert data["paths"]["aggregator"]["ok"] is False
+    assert "不要猜城市代码" in data["paths"]["aggregator"]["note"]
     assert data["registered_cities"] > 100
     assert "clues" not in data
 
 
-async def test_a_province_name_is_not_a_city() -> None:
-    """表是按城市组织的 —— 省份名要如实报"没有", 而不是随便挑一个城市。"""
+async def test_a_province_name_is_not_a_city(page: Any) -> None:
+    """表是按城市组织的 —— 省份名要如实报"聚合站没有", 而不是随便挑一个城市。"""
+    page(None)
     data = await _call(city="安徽")
-    assert data["reason"] == "unknown_city"
+    assert data["paths"]["aggregator"]["ok"] is False
+
+
+async def test_the_search_path_reports_honestly_when_the_generic_tool_is_unavailable(page: Any) -> None:
+    """本机没配 SERPER_API_KEY: 检索路必须**如实说"用不了"**, 而不是退化去抓搜索引擎 HTML。
+
+    这正是通用搜索工具(search.py)模块说明里点名的那条退化路径 ——
+    "scraping search-engine HTML, which returns plausible-looking garbage"。
+    """
+    page(None)
+    data = await _call(city="合肥")
+    search = data["paths"]["search"]
+    assert search["ok"] is False
+    assert search["note"], "检索路失败也必须留下原因"
+    assert "不可用" in search["note"]
+
+
+async def test_the_three_paths_are_reported_even_on_success(page: Any) -> None:
+    """成功时也要报三路状态 —— 只看 clues 分不清"哪条路给的"。"""
+    page(_page(f"合肥汽车消费券 {_iso(5)}"))
+    data = await _call(city="合肥")
+    assert set(data["paths"]) == {"search", "official", "aggregator"}
+    assert data["paths"]["aggregator"]["ok"] is True
+    assert data["totals"]["by_via"]["aggregator"] == 1
 
 
 async def test_return_json_false_gives_plain_text(page: Any) -> None:

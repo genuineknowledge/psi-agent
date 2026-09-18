@@ -33,6 +33,18 @@ verified_working:
 #
 # 逐条**实测**（HTTP 抓取 + 看正文），不是照记忆写清单。核于 2026-09-18。
 # **失败的候选也记在 rejected 里** —— 免得后来的人把同一条死路再走一遍。
+# 实时检索（**主路径**）。模板里的 {city} / {category} 由工具填 —— 改模板 = 改数据, 不改代码。
+search:
+  tier: search
+  query_templates:
+    - "{city} 消费券"
+    - "{city} {category} 消费券"
+  notes: >-
+    检索是主路径, 不是兜底。实测同一时刻, **西安 / 广州 / 天津**三城在聚合站那条路上
+    全部取不到（风控 / 连不上）, 而检索**各拿到 10 条**, 并且直接找到了这三城的本地宝页面
+    —— 检索既不需要那张 368 城的代码表, 也不吃专题页的拼图风控。
+    代价是**搜索结果不带发布日期**, 所以这条路的线索一律 undated: 时效必须打开原文看。
+
 official:
   mofcom_promotion:
     name: 商务部 · 全国电子商务公共服务网 · 促消费资讯
@@ -43,6 +55,7 @@ official:
     detail_url: "https://dzswgf.mofcom.gov.cn/ecps/sale/detail/{id}"
     page_size: 20
     order: 日期倒序
+    pages: 2                # 默认翻几页(2 页 ≈ 40 条 ≈ 1 个月); 每页约 11KB
     verified_at: "2026-09-18"
     evidence:
       - "page1 抓到 20 条真实条目, 日期 2026-09-04 ~ 2026-09-18（抓取当天）"

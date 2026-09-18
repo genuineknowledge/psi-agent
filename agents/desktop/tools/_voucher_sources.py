@@ -88,6 +88,20 @@ def aggregator(sources: dict[str, Any], key: str) -> dict[str, Any]:
     return entry
 
 
+def official(sources: dict[str, Any], key: str) -> dict[str, Any]:
+    """取一个官方入口定义。缺字段直接报错, 不兜默认值(理由同 :func:`aggregator`)。"""
+    group = sources.get("official")
+    if not isinstance(group, dict):
+        raise ValueError("券源注册表缺少 official")
+    entry = group.get(key)
+    if not isinstance(entry, dict):
+        raise KeyError(key)
+    missing = [f for f in ("name", "tier", "list_url") if not entry.get(f)]
+    if missing:
+        raise ValueError(f"券源注册表 official.{key} 缺少: {missing}")
+    return entry
+
+
 def topic_url(entry: dict[str, Any], code: str) -> str:
     """按城市代码拼出专题页地址(模式来自数据文件, 不写在代码里)。"""
     pattern = str(entry["topic_url"])
