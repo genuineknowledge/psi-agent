@@ -6,8 +6,9 @@
 本文的事实基础：2026-08-20 新加坡节点 `8.222.255.23` 的现网状态，与该次搬迁九条验收
 （A1–A9）的实测结论。文中每条命令都在现网实跑过，输出为真实粘贴。
 
-> **本文档的边界**：全文只覆盖 haitun（ToB）栈 —— `gateway` / `luolin` / `oauth-proxy`
-> 三容器 + fusion-memory。**不涉及 ToC**（`psi-cloud`、`psi-litellm`、`account.` vhost）。
+> **本文档的边界**：全文只覆盖 haitun（ToB）栈 —— `gateway` / `luolin` / `chengxx` /
+> `oauth-proxy` 四容器 + fusion-memory。**不涉及 ToC**（`psi-cloud`、`psi-litellm`、
+> `account.` vhost）。
 > 两者同机但完全隔离，改本栈不应触碰 ToC 的任何配置。
 
 ---
@@ -82,7 +83,7 @@ v2.11.4 h1:XKxkMTgNSizEvKG6QHue6cAsFOteU2qA61w2tKkCWi0=
 需预装：`docker`（含 compose 插件）、`caddy`、`rsync`、`git`。
 `python3`（宿主 3.12.3）只有 fusion-memory 的 venv 用到，psi-agent 自己跑在容器里。
 
-> **userns-remap**：`docker-compose.yml` 里三个服务都带 `userns_mode: "host"`。
+> **userns-remap**：`docker-compose.yml` 里四个服务都带 `userns_mode: "host"`。
 > 这是为源端（214）开了 `userns-remap` 的 daemon 准备的 —— 不开该特性的机器上此项无副作用，保留即可。
 
 ### 1.3 外部凭据
@@ -247,7 +248,7 @@ deploy/haitun/build-image.sh full <commit>
 ```text
 /srv/haitun/
 ├── psi-agent/
-│   ├── docker-compose.yml      三服务编排（不在 git，见 0 节）
+│   ├── docker-compose.yml      四服务编排（不在 git，见 0 节）
 │   │                           ⚠️ Dockerfile 已挪进仓库 deploy/haitun/，此处不再有
 │   ├── launch-gateway.sh       gateway 容器入口：双进程
 │   ├── oauth-proxy.py          白名单反代
@@ -256,7 +257,9 @@ deploy/haitun/build-image.sh full <commit>
 │   ├── workspace/              主 workspace，bind mount 进 gateway
 │   │   ├── .env                0600
 │   │   └── .psi/appdata/       histories / state / todos / auth.enc.json
-│   └── workspace-luolin/       罗霖专用，独立 workspace
+│   ├── workspace-luolin/       罗霖专用，独立 workspace
+│   │   └── .env                0600
+│   └── workspace-chengxx/      成xx 专用，独立 workspace
 │       └── .env                0600
 ├── fusion-memory/
 │   └── deploy/docker-compose.postgres.yml
@@ -678,7 +681,7 @@ gateway 冷启要装 channel_events / 触发器 / 工具表，云端实测 20–
 
 **`tools/` 不在镜像里，三份 workspace 各有一份独立副本，靠人手投放且无闸门 —— 漏投一份，
 改动就只在那个用户身上静默失效。** 三份是 `workspace/`、`workspace-luolin/`、
-`workspace-chengxx/`（第三份 3.1 的目录树尚未列出，实际存在，挂给 `private-chengxx`）。
+`workspace-chengxx/`（三份都在 3.1 的目录树里，各自挂给 3.2 的一个服务）。
 
 以 2026-09-16 那次 watcher 自取消修复为例：`tools/_feishu_auth_watch.py` 少投一份，那台
 私有容器的用户照样会被锁死，而容器状态、工具数、日志全都正常 —— 没有任何一条会变红。
@@ -918,7 +921,7 @@ docker exec psi-agent-gateway python3 -c \
 
 | 文件 | 作用 |
 |---|---|
-| `docker-compose.yml` | 三服务编排 |
+| `docker-compose.yml` | 四服务编排 |
 | `launch-gateway.sh` | gateway 双进程入口。内含 `AI_ID` 与 `FALLBACK_SOCK` 常量 |
 | `oauth-proxy.py` | 白名单反代 |
 | `config.yml` | agent 配置 |
