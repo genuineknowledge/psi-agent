@@ -335,3 +335,42 @@ async def test_the_note_forbids_inferring_validity_from_the_article_date(page: A
     assert "published" in clue and "clue_freshness" in clue
     assert "date" not in clue, "字段名不能叫 date —— 会被读成「券的日期」"
     assert "freshness" not in clue, "字段名不能叫 freshness —— 会被读成「券的时效」"
+
+
+# --------------------------------------------------------------------------- #
+# 6. 官方入口: 核过的清单, 不是照记忆写的
+# --------------------------------------------------------------------------- #
+
+
+def test_the_registry_records_a_verified_official_entry() -> None:
+    """§4「来源清单优先于数据」—— 官方入口要能长期维护, 就得连同**证据**一起存。
+
+    只存一个 URL 不存证据, 下一个人没法判断它还算不算数, 只能重新核一遍 ——
+    那这张清单就白维护了。
+    """
+    official = _sources_data().get("official")
+    assert official, "注册表里没有 official 段"
+    entry = official["mofcom_promotion"]
+    assert entry["tier"] == "official"
+    assert "{n}" in entry["list_url"], "分页占位符丢了就没法翻页"
+    assert entry["verified_at"]
+    assert len(entry["evidence"]) >= 3, "至少要记下几条实测证据"
+    assert entry["coverage"], "必须写明覆盖范围 —— 官方源也不保证每个城市都有"
+
+
+def test_failed_candidates_are_recorded_so_nobody_reprobes_them() -> None:
+    """死路也要记 —— 否则后来的人会把同一条路再走一遍。"""
+    rejected = _sources_data().get("rejected")
+    assert rejected, "至少该记下探过但不行的候选"
+    for item in rejected:
+        assert item["url"].startswith("https://")
+        assert item["why"], f"{item['url']} 没说为什么不行"
+        assert item["verified_at"]
+
+
+def test_both_source_tiers_are_declared_apart() -> None:
+    """官方源与聚合站性质不同(一个权威但未必覆盖你要的城市, 一个按城市更细但有滞后),
+    各自标 tier —— 报告时才分得开, 也才不会把聚合站的话当成官方口径。"""
+    data = _sources_data()
+    tiers = {data["official"]["mofcom_promotion"]["tier"]} | {v["tier"] for v in data["aggregators"].values()}
+    assert tiers == {"official", "aggregator"}

@@ -4,6 +4,11 @@
 # 它只提供**线索**（标题 + 日期 + 链接），不提供结论 —— 券的属性由模型从页面提取，
 # 再由 saving_facts 校验成事实契约。
 #
+# 两类源, 性质不同, **报告时必须分开说**：
+#   - `official`   国家级 / 政府站 —— 权威、更新到当天, 但不保证覆盖到你要的那个城市;
+#   - `aggregator` 第三方聚合站 —— 按城市更细, 但有滞后、有风控。
+# 两者互补, 不是替代关系（实测对比见各自 notes）。
+#
 # 与本仓其他数据文件一样，这是**生成物**：
 #   city_codes 由 https://www.bendibao.com/ 的城市索引**推导**得到，不是手编的。
 #   索引页长什么样、什么时候抓的，见 derived_from / derived_at。
@@ -21,6 +26,59 @@ verified_working:
   - 北京
   - 上海
   - 杭州
+
+# --------------------------------------------------------------------------- #
+# 官方入口（§4「来源清单优先于数据」：各城市/平台的官方查询入口才是长期有效的）
+# --------------------------------------------------------------------------- #
+#
+# 逐条**实测**（HTTP 抓取 + 看正文），不是照记忆写清单。核于 2026-09-18。
+# **失败的候选也记在 rejected 里** —— 免得后来的人把同一条死路再走一遍。
+official:
+  mofcom_promotion:
+    name: 商务部 · 全国电子商务公共服务网 · 促消费资讯
+    tier: official
+    host: "dzswgf.mofcom.gov.cn"
+    list_url: "https://dzswgf.mofcom.gov.cn/saleinfo/page{n}.html"
+    column_url: "https://dzswgf.mofcom.gov.cn/ecps/sale/index"
+    detail_url: "https://dzswgf.mofcom.gov.cn/ecps/sale/detail/{id}"
+    page_size: 20
+    order: 日期倒序
+    verified_at: "2026-09-18"
+    evidence:
+      - "page1 抓到 20 条真实条目, 日期 2026-09-04 ~ 2026-09-18（抓取当天）"
+      - "page60 仍有 20 条（2024-06）—— 约 1200 条 / 约 2 年, 分页可回溯"
+      - "条目形如「黑龙江发放超1.5亿元消费券激活双节市场 2026-09-17」, 正文链接 /news/123/YYYY/M/<id>.html"
+      - "详情页带**结构化字段**：活动名称 / 所在地区 / 主办单位 / 活动时间"
+      - "详情页实测（青岛「2026礼惠金秋」新车消费补贴）：新能源购车价 4% 最高 1.2 万, 燃油 3% 最高 1 万, 先到先得, **不与本市汽车以旧换新叠加**"
+    gives: 活动线索 + 部分规则原文 + 地区 / 主办单位
+    coverage: 全国**跨城市**；但不保证每个城市都有（实测合肥本期 0 条, 安徽 2 条）
+    notes: >-
+      权威、更新到当天, 而且是**跨城市**的 —— 目前唯一一个国家级官方入口。
+      但它讲的是「活动」而不是「领券入口」, 所以拿到条目仍要打开原文确认
+      （领取渠道各城市不同, 常见的是本地 App / 云闪付 / 银行 App）。
+
+# 核过但**不可用**的候选。记下来, 免得重复探。
+rejected:
+  - target: 安徽省商务厅 · 各地政府消费券公告专题
+    url: "https://commerce.ah.gov.cn/ztzl/2024gdzfxfqgg/"
+    verified_at: "2026-09-17"
+    why: "页面真实可抓, 但栏目名是「**2024**各地政府消费券公告」—— 过期栏目; 正文「家电」0 次、「满」0 次, 只有栏目壳"
+  - target: 安徽省商务厅首页
+    url: "https://commerce.ah.gov.cn/"
+    verified_at: "2026-09-18"
+    why: "首页「消费券」命中 0 次, 没有可用的消费券栏目入口"
+  - target: 合肥市政府门户
+    url: "https://www.hefei.gov.cn/"
+    verified_at: "2026-09-18"
+    why: "抓取失败（连接层）, 未能取证"
+  - target: 中国银联 / 云闪付优惠
+    url: "https://youhui.95516.com/"
+    verified_at: "2026-09-18"
+    why: "抓取失败; 政府消费券专区在 App 内, 没有可用的网页入口"
+  - target: 商务部 · 线上促消费列表接口
+    url: "https://dzswgf.mofcom.gov.cn/ecps/sale/list"
+    verified_at: "2026-09-18"
+    why: "抓取失败（疑似 POST-only）; 用 saleinfo/pageN.html 即可"
 
 aggregators:
   bendibao:
