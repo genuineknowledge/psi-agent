@@ -43,6 +43,39 @@ def test_to_chunk_tolerates_stream_without_tool_name():
     assert ChannelCore._to_chunk("text", "hi") == TextChunk("hi")
 
 
+def test_buffer_key_round_trips_tool_args_containing_the_closing_bracket_pair():
+    """``tool_args`` 与名字同路穿过 key, 且参数里含 ``)]`` 也逐字节还原。
+
+    ``)]`` 是特意挑的: 消费方 (飞书 live 过程块) 曾经用 ``\\[Tool Call: name\\((.*?)\\)\\]``
+    从文本里抠参数, 非贪婪匹配在参数内部第一个 ``)]`` 上收尾, 实测
+    ``{"command": "echo )]"}`` 只剩 ``{"command": "echo``。走字段就不该再有截断,
+    这条判据钉的就是这一点。
+    """
+    args = '{"command": "echo )]"}'
+    key = ChannelCore._buffer_key("tool_call", "bash", args)
+    chunk = ChannelCore._to_chunk(key, f"[Tool Call: bash({args})]")
+    assert isinstance(chunk, ReasoningChunk)
+    assert chunk.kind == "tool_call"
+    assert chunk.tool_name == "bash"
+    assert chunk.tool_args == args
+
+
+def test_buffer_key_separates_same_tool_with_different_args():
+    """同一个工具、不同参数也要分桶 —— 合并后单条只带一份参数, 另一次的就丢了。"""
+    a = ChannelCore._buffer_key("tool_call", "bash", '{"command": "ls"}')
+    b = ChannelCore._buffer_key("tool_call", "bash", '{"command": "pwd"}')
+    assert a != b
+
+
+def test_to_chunk_tolerates_stream_with_name_but_no_args():
+    """只带名字不带参数的流 (如 ``tool_result``) 照旧还原, ``tool_args`` 为 None。"""
+    chunk = ChannelCore._to_chunk(ChannelCore._buffer_key("tool_result", "bash"), "[Tool Result: ok]")
+    assert isinstance(chunk, ReasoningChunk)
+    assert chunk.kind == "tool_result"
+    assert chunk.tool_name == "bash"
+    assert chunk.tool_args is None
+
+
 @pytest.mark.anyio
 async def test_channel_core_connect_unix(tmp_path):
     """Core can connect to a Unix socket server."""

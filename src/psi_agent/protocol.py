@@ -74,6 +74,15 @@ class DeltaMessage:
     reading an older Session sees no key at all instead of a null it would have
     to special-case.
     """
+    tool_args: str | None = None
+    """JSON-dumped arguments accompanying a ``tool_call`` ``reasoning``.
+
+    Same reasoning as ``tool_name``, one step further: the name alone lets a UI
+    label the call, the arguments let it show *what* was asked. Kept as the
+    already-dumped string rather than a dict because every consumer either
+    displays it verbatim or forwards it, and because it has to survive as one
+    segment of a ``StreamBuffer`` key (see ``ChannelCore._buffer_key``).
+    """
     tool_calls: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -88,6 +97,8 @@ class DeltaMessage:
             d["kind"] = self.kind
         if self.tool_name is not None:
             d["tool_name"] = self.tool_name
+        if self.tool_args is not None:
+            d["tool_args"] = self.tool_args
         if self.tool_calls is not None:
             d["tool_calls"] = self.tool_calls
         return d

@@ -103,6 +103,7 @@ class ChannelAdapter:
             reasoning=chunk.reasoning,
             kind=chunk.kind,
             tool_name=chunk.tool_name,
+            tool_args=chunk.tool_args,
         )
         cc = ChatCompletionChunk(choices=[StreamChoice(index=0, delta=delta)])
         return cc.to_sse().encode()

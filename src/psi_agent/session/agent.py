@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
 from contextlib import aclosing, asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -122,6 +123,68 @@ _CURRENT_TOOL_AI_SOCKET: ContextVar[str | None] = ContextVar(
 )
 
 _HISTORY_PROVENANCE_KEY = "_psi_history_provenance"
+
+
+TOOL_BATCH_LIVELOCK_SECONDS = 30.0
+"""How long the tool batch may sit in ``__aexit__`` before it is called a livelock.
+
+A module constant rather than an env var **on purpose**: this is a "the process is
+broken" threshold, not a tuning knob.  Nothing in production wants it changed, and
+an external field would be one more thing to get wrong on a machine where
+``workspace/tools/`` is already hand-deployed with no gate.
+
+30s is well past any legitimate tool batch: individual tools that take longer than
+this are the ones being hunted with ``elapsed_ms`` on the result line, and they
+still let the task group *exit*.  The livelock does not.
+"""
+
+_LIVELOCK_POLL_SECONDS = 0.25
+"""How often the watchdog re-reads the cancel counters.
+
+The busy-spin re-schedules itself through ``loop.call_soon``, so ordinary timer
+callbacks and other tasks **do** still run (measured: a 0.5s repeating timer kept
+firing on schedule throughout).  That is what makes an in-process watchdog
+possible at all — the loop is saturated, not wedged.
+"""
+
+_LIVELOCK_CANCEL_CHURN = 100
+"""Cancel-delivery retries within one poll that mean "self-cancel", not "slow".
+
+``asyncio.Task.cancelling()`` counts how many times cancellation was delivered.
+Measured in the 2026-09-16 shape: the stuck tool task climbs ~30,000 per second
+(10,812 in a single 0.2s sample), because anyio retries delivery on every loop
+iteration and the target never reaches ``cancelled``.  A tool that is merely slow
+— even one blocked in ``sleep(3600)`` inside the same task group — sits at exactly
+0 for as long as you care to watch.
+
+The gap is four orders of magnitude, so the constant is nowhere near a close call;
+it only has to be above "a handful of legitimate cancel attempts".
+"""
+
+
+def _livelock_suspects(
+    tasks: dict[int, asyncio.Task[None]],
+    baseline: dict[int, int],
+) -> dict[int, int]:
+    """Which in-flight tool tasks are absorbing cancellations instead of dying.
+
+    Returns ``index -> churn`` for tasks whose ``cancelling()`` counter advanced by
+    more than :data:`_LIVELOCK_CANCEL_CHURN` since ``baseline``.
+
+    Read-only by construction: the whole point is that the probe adds no new
+    cancellation path.  Nothing here calls ``cancel()``, and the cycle could not
+    be broken even if it did — cancelling the child that awaits the stuck task was
+    measured and changes nothing, because the child is parked on a task that can
+    never complete.
+    """
+    suspects: dict[int, int] = {}
+    for idx, task in tasks.items():
+        if task.done():
+            continue
+        churn = task.cancelling() - baseline.get(idx, 0)
+        if churn > _LIVELOCK_CANCEL_CHURN:
+            suspects[idx] = churn
+    return suspects
 
 
 RECENT_TURNS_MARKER = "\n[Recent turns]\n"
@@ -979,19 +1042,42 @@ class SessionAgent:
                                             args = {}
 
                                         logger.info(f"Executing tool: {func_name!r}({args!r})")
+                                        args_json = json.dumps(args, ensure_ascii=False)
                                         yield AgentChunk(
-                                            reasoning=(
-                                                f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"
-                                            ),
+                                            reasoning=(f"[Tool Call: {func_name}({args_json})]"),
                                             kind=REASONING_KIND_TOOL_CALL,
                                             tool_name=func_name,
+                                            tool_args=args_json,
                                         )
                                         tool_args.append((i, tc, func_name, args, argument_error))
 
                                     # execute all tools concurrently
                                     results: list[str] = [""] * len(ordered_calls)
 
-                                    async def _execute_one(idx: int, fn: str, a: dict[str, Any], r: list[str]) -> None:
+                                    # 在飞的工具任务, 供活锁探测读取取消计数 (见
+                                    # ``_await_tool_batch``)。只有探测读它, 且只读不写。
+                                    in_flight_tasks: dict[int, asyncio.Task[None]] = {}
+
+                                    async def _execute_one(
+                                        idx: int,
+                                        fn: str,
+                                        a: dict[str, Any],
+                                        r: list[str],
+                                        flight: dict[int, asyncio.Task[None]],
+                                    ) -> None:
+                                        if (me := asyncio.current_task()) is not None:
+                                            flight[idx] = me
+                                        try:
+                                            await _execute_one_inner(idx, fn, a, r)
+                                        finally:
+                                            # 正常结束就摘掉自己: 探测只该看还在飞的。
+                                            # 活锁的那个任务永远走不到这里 —— 那正是它
+                                            # 留在表里被探测抓到的原因。
+                                            flight.pop(idx, None)
+
+                                    async def _execute_one_inner(
+                                        idx: int, fn: str, a: dict[str, Any], r: list[str]
+                                    ) -> None:
                                         # 只读/演练会话的工具闸门 (见 session/tool_guard.py)。
                                         # 作用点在**执行处**, 不是提示词: 评测用例里有一类是
                                         # "要求它拒绝"的诱导题 (见 PR #955), 而模型偶尔真会照做 ——
@@ -1049,19 +1135,36 @@ class SessionAgent:
                                     # so inventing feishu_* / wrong kwargs trips
                                     # the turn-level gate (see tool_convergence).
                                     executed: list[tuple[int, str, dict[str, Any]]] = []
-                                    async with anyio.create_task_group() as tg:
-                                        for i, _tc, func_name, args, argument_error in tool_args:
-                                            if (refusal := convergence.refusal_for(func_name, args)) is not None:
-                                                # Stated, not silent: the notice is
-                                                # the tool result the model reads.
-                                                results[i] = refusal
-                                            elif not func_name:
-                                                results[i] = "Error: empty tool call name"
-                                            elif argument_error is not None:
-                                                results[i] = argument_error
-                                            else:
-                                                executed.append((i, func_name, args))
-                                                tg.start_soon(_execute_one, i, func_name, args, results)
+
+                                    # 一层薄封装, 只为把 task group 交给
+                                    # ``_await_tool_batch`` 去等 —— 循环变量全部显式
+                                    # 传参 (与 ``_execute_one`` 同一约定), 免得闭包捕获
+                                    # 到下一轮的值。
+                                    async def _run_tool_batch(
+                                        calls: list[tuple[int, dict[str, Any], str, dict[str, Any], str | None]],
+                                        r: list[str],
+                                        done: list[tuple[int, str, dict[str, Any]]],
+                                        flight: dict[int, asyncio.Task[None]],
+                                    ) -> None:
+                                        async with anyio.create_task_group() as tg:
+                                            for i, _tc, func_name, args, argument_error in calls:
+                                                if (refusal := convergence.refusal_for(func_name, args)) is not None:
+                                                    # Stated, not silent: the notice is
+                                                    # the tool result the model reads.
+                                                    r[i] = refusal
+                                                elif not func_name:
+                                                    r[i] = "Error: empty tool call name"
+                                                elif argument_error is not None:
+                                                    r[i] = argument_error
+                                                else:
+                                                    done.append((i, func_name, args))
+                                                    tg.start_soon(_execute_one, i, func_name, args, r, flight)
+
+                                    await self._await_tool_batch(
+                                        _run_tool_batch(tool_args, results, executed, in_flight_tasks),
+                                        executed,
+                                        in_flight_tasks,
+                                    )
 
                                     for i, _tc, func_name, args, _argument_error in tool_args:
                                         convergence.record(func_name, args, results[i])
@@ -1222,6 +1325,100 @@ class SessionAgent:
                     # elision range at its own index, and the symptom is a budget
                     # that quietly stops being enforceable rather than an error.
                     self._request_assembler.end_turn()
+
+    async def _await_tool_batch(
+        self,
+        batch: Coroutine[Any, Any, None],
+        executed: list[tuple[int, str, dict[str, Any]]],
+        in_flight: dict[int, asyncio.Task[None]],
+    ) -> None:
+        """Run the tool batch, but do not wait forever for its task group to exit.
+
+        **What this guards.** When a tool cancels the very execution flow it is
+        running in and something swallows the ``CancelledError``, the task ends up
+        "cancellation requested but still alive".  anyio's task group ``__aexit__``
+        then retries delivery through ``loop.call_soon`` forever: the event loop
+        burns 100% CPU, the task group never exits, and — because this all happens
+        under ``turn_lock`` — every later message from that user queues silently.
+        On 2026-09-16 one Feishu session sat like that for about three hours.
+
+        **Why a wrapper and not a fix in place.** The cycle cannot be broken from
+        inside.  Cancelling the batch does not help (that *is* what is being
+        retried), and cancelling the child that awaits the stuck task was measured
+        to change nothing, because it is parked on a task that can never complete.
+        So the only honest thing to do is stop waiting: report it, and let the turn
+        end with a stated error instead of a silent hang.
+
+        **Slow is not stuck.** Passing the threshold on its own only earns a
+        WARNING — a legitimately long tool keeps its turn.  What ends the turn is
+        the threshold *plus* cancel-delivery churn, which is what separates "the
+        loop is spinning on this" from "this is taking a while".
+
+        **Why this can work at all.** The spin re-schedules itself via
+        ``call_soon``, so it saturates the loop without wedging it — measured, a
+        repeating 0.5s timer kept firing on schedule throughout.  Ordinary timers
+        and other sessions still get their turn, which is exactly what lets this
+        watchdog fire.
+
+        The probe adds **no new cancellation path**: it only reads counters and
+        logs.  The abandoned task keeps spinning after this returns — one busy loop
+        is a cost this cannot undo, but it is strictly better than also holding
+        ``turn_lock`` and being invisible.
+        """
+        task = asyncio.ensure_future(batch)
+        deadline = anyio.current_time() + TOOL_BATCH_LIVELOCK_SECONDS
+        # Counters read *before* the wait: a turn's earlier rounds may have left a
+        # non-zero ``cancelling()`` behind, and churn is the signal, not the level.
+        baseline = {idx: t.cancelling() for idx, t in in_flight.items()}
+        slow_reported = False
+
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=_LIVELOCK_POLL_SECONDS)
+            if done:
+                # Normal path — including a real exception out of the batch, which
+                # must propagate exactly as it did before this wrapper existed.
+                await task
+                return
+            if anyio.current_time() < deadline:
+                continue
+
+            suspects = _livelock_suspects(in_flight, baseline)
+            names = {idx: fn for idx, fn, _args in executed}
+            waited = f"{TOOL_BATCH_LIVELOCK_SECONDS:g}"
+            if not suspects:
+                # **Over the threshold is not enough.**  A tool that legitimately
+                # takes longer than this — a big fetch, a slow upstream — must not
+                # have its turn taken away; the livelock is identified by the churn,
+                # and without churn this is just a slow batch.  Say so once, at
+                # WARNING, and keep waiting exactly as before this wrapper existed.
+                if not slow_reported:
+                    slow_reported = True
+                    slow = sorted(names.get(idx, f"#{idx}") for idx in in_flight)
+                    logger.warning(
+                        f"Tool batch in session {self._conversation.session_id!r} still running after "
+                        f"{waited}s; no cancel-delivery churn, so this is a slow tool rather than a "
+                        f"livelock — still waiting. Tools in flight={slow}"
+                    )
+                continue
+
+            stuck = sorted(names.get(idx, f"#{idx}") for idx in suspects)
+            churn = max(suspects.values())
+            logger.error(
+                f"Tool task group livelock in session {self._conversation.session_id!r}: "
+                f"did not exit within {waited}s; stuck tools={stuck}; "
+                f"suspected self-cancel (a tool cancelled the flow it runs in and swallowed the "
+                f"CancelledError); cancel-delivery retries={churn} in {_LIVELOCK_POLL_SECONDS}s. "
+                f"The turn is being abandoned so the session lock is released; the abandoned task "
+                f"keeps spinning and cannot be stopped from here, so this process needs a restart "
+                f"to reclaim that CPU."
+            )
+            # Detach and end the turn with a stated error.  ``asyncio.wait`` above
+            # never cancelled ``task``, and nothing here does either.
+            raise AgentError(
+                f"Tool execution stalled: the tool batch did not finish within {waited}s "
+                f"(stuck tools: {', '.join(stuck)}). This turn was abandoned; "
+                f"see the livelock log line for session {self._conversation.session_id!r}."
+            )
 
     async def _abandon_incomplete_turn(self, turn_start: int) -> None:
         """Drop an early-committed turn that never reached a terminal result.

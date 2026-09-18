@@ -2236,7 +2236,7 @@ def test_cancel_after_written_is_rejected_and_other_writer_is_unauthorized(monke
 _RENAMED_FACT_SUMMARY = "事件描述（时间  客观事实描述）"
 
 
-def _ledger_fields(*, renamed: bool, extra: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+def _ledger_fields(*, renamed: bool, extra: tuple[str, ...] = (), extra_type: int = 18) -> list[dict[str, Any]]:
     # ``ConfiguredTableClient.preflight`` reads the live field listing, whose
     # entries carry ``name``/``type``/``field_id`` (see the fake used by
     # ``test_official_write_target_preflight_uses_public_ledger_view_without_extra_config``).
@@ -2254,7 +2254,13 @@ def _ledger_fields(*, renamed: bool, extra: tuple[str, ...] = ()) -> list[dict[s
         {"field_id": "f_reporter", "name": "填写人", "type": 11},
         {"field_id": "f_note", "name": "备注", "type": 1},
     ]
-    fields.extend({"field_id": f"f_extra_{index}", "name": name, "type": 18} for index, name in enumerate(extra))
+    # ``extra_type`` defaults to 18 (关联) — a **read-only** column, which is what
+    # the real ledger keeps sprouting. Pass a writable type (1/3/5/11) to exercise
+    # the "undeclared column we could have written to" case instead; the preflight
+    # treats the two differently on purpose (see ``_WRITABLE_FIELD_TYPES``).
+    fields.extend(
+        {"field_id": f"f_extra_{index}", "name": name, "type": extra_type} for index, name in enumerate(extra)
+    )
     return fields
 
 
@@ -2296,13 +2302,64 @@ def test_write_preflight_resolves_renamed_column_through_declared_alias(monkeypa
     assert "父记录" not in encoded
 
 
-def test_write_preflight_fails_closed_on_undeclared_extra_column(monkeypatch) -> None:
+def test_write_preflight_fails_closed_on_undeclared_writable_column(monkeypatch) -> None:
+    """一个**可写**的多余列仍然让预检失败 —— 我们不知道该往里放什么。
+
+    刻意用文本 (type 1): 只读列走的是另一条路 (下一条判据), 拿只读列当反例会让这
+    条判据在收窄之后指向错误的结论。
+    """
     runtime = importlib.import_module("_positive_negative_list.runtime")
     config = _write_config(runtime, aliases={"fact_summary": [_RENAMED_FACT_SUMMARY]})
-    result, _ = _preflight_existing(monkeypatch, runtime, _ledger_fields(renamed=True, extra=("父记录",)), config)
+    result, _ = _preflight_existing(
+        monkeypatch, runtime, _ledger_fields(renamed=True, extra=("自定义备注",), extra_type=1), config
+    )
 
     assert result.ok is False
-    assert any(error.startswith("unexpected_fields:") and "父记录" in error for error in result.errors)
+    assert any(error.startswith("unexpected_fields:") and "自定义备注" in error for error in result.errors)
+
+
+def test_write_preflight_ignores_undeclared_read_only_columns(monkeypatch) -> None:
+    """只读列 (关联/公式/查找引用/附件/自动编号) 不许让写入预检失败。
+
+    生产实测的症结: 台账**只是多长了一列**关联或公式, 整条确认写入就开始被预检拦
+    下。那种列无论我们发什么都收不进值, 它在不在场与「我们这次写得对不对」无关。
+
+    四种类型各来一遍, 而不是只测一种: 收窄若被写成「排除 18」这类黑名单, 单类型
+    的判据照旧全绿, 而飞书每加一种新类型就又会把预检打回去。
+    """
+    runtime = importlib.import_module("_positive_negative_list.runtime")
+    for read_only_type, label in ((18, "关联"), (20, "公式"), (19, "查找引用"), (17, "附件")):
+        config = _write_config(runtime, aliases={"fact_summary": [_RENAMED_FACT_SUMMARY]})
+        result, _ = _preflight_existing(
+            monkeypatch,
+            runtime,
+            _ledger_fields(renamed=True, extra=(f"只读_{label}",), extra_type=read_only_type),
+            config,
+        )
+
+        assert result.ok is True, f"只读列 (type {read_only_type} {label}) 让写入预检失败了: {result.errors}"
+        assert not any(error.startswith("unexpected_fields:") for error in result.errors), (
+            f"type {read_only_type} ({label}) 被当成了多余的可写列: {result.errors}"
+        )
+
+
+def test_write_preflight_still_flags_a_writable_column_beside_a_read_only_one(monkeypatch) -> None:
+    """只读列在场**不许**顺带把同一批里的可写多余列也放过去。
+
+    收窄若写成「有只读列就整段跳过检查」, 上面两条各自都绿 —— 而那意味着一张多长
+    了一列关联的台账从此再也检不出真正的可写多余列。这条把两种列放进同一次预检。
+    """
+    runtime = importlib.import_module("_positive_negative_list.runtime")
+    config = _write_config(runtime, aliases={"fact_summary": [_RENAMED_FACT_SUMMARY]})
+    fields = _ledger_fields(renamed=True, extra=("只读_关联",), extra_type=18)
+    fields.append({"field_id": "f_extra_writable", "name": "自定义备注", "type": 1})
+    result, _ = _preflight_existing(monkeypatch, runtime, fields, config)
+
+    assert result.ok is False
+    unexpected = [error for error in result.errors if error.startswith("unexpected_fields:")]
+    assert unexpected, f"可写多余列被只读列一起放过了: {result.errors}"
+    assert "自定义备注" in unexpected[0]
+    assert "只读_关联" not in unexpected[0], f"只读列还是被算进去了: {unexpected[0]}"
 
 
 def test_write_preflight_fails_closed_when_no_label_matches_the_table(monkeypatch) -> None:
