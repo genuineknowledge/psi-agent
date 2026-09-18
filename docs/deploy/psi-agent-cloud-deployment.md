@@ -674,6 +674,58 @@ gateway 冷启要装 channel_events / 触发器 / 工具表，云端实测 20–
 
 从别处探测时可覆盖基址：`HEALTH_BASE=http://x.x.x.x:8090 ./restart-stack.sh`。
 
+### 6.3 改 `workspace/tools/` 后：三份一致性核验
+
+**`tools/` 不在镜像里，三份 workspace 各有一份独立副本，靠人手投放且无闸门 —— 漏投一份，
+改动就只在那个用户身上静默失效。** 三份是 `workspace/`、`workspace-luolin/`、
+`workspace-chengxx/`（第三份 3.1 的目录树尚未列出，实际存在，挂给 `private-chengxx`）。
+
+以 2026-09-16 那次 watcher 自取消修复为例：`tools/_feishu_auth_watch.py` 少投一份，那台
+私有容器的用户照样会被锁死，而容器状态、工具数、日志全都正常 —— 没有任何一条会变红。
+
+四类差异（同 / 落后 / 领先 / 缺失）的审计脚本见 `deploy/haitun/README.md`；本节只写投放
+那一刻的三条判据。
+
+**① 比 md5 前先 LF 归一**
+
+```bash
+for W in workspace workspace-luolin workspace-chengxx; do
+  T=/srv/haitun/psi-agent/$W/tools/_feishu_auth_watch.py
+  printf '%-20s %s\n' "$W" "$(tr -d '\r' < "$T" | md5sum | cut -d' ' -f1)"
+done
+```
+
+三份归一后的 md5 必须彼此相同，且等于仓库那份归一后的值。**仓库检出在 Windows 上是
+CRLF，裸比 md5 必然不一致，会误判成内容漂移。**
+
+**② 用 `cat > $T` 投放，不要 `cp`**
+
+私有 workspace 两份是 uid/gid `1000` 且文件用 CRLF，gateway 那份是 `0/0` 且用 LF。
+`cp` 会改掉属主，`cat >` 只改内容。投放后逐份 `stat` 记下来：
+
+```bash
+stat -c '%n uid=%u gid=%g mode=%a' \
+  /srv/haitun/psi-agent/*/tools/_feishu_auth_watch.py
+```
+
+**③ 重启走 `restart-stack.sh`，存活判据必须是真打一次请求**
+
+```bash
+cd /srv/haitun/psi-agent && ./restart-stack.sh gateway
+```
+
+**不能用 `docker restart`** —— oauth-proxy 借 gateway 的 netns（3.3），单独重启会让 8090
+挂在死 netns 上；这条实测让公网静默 502 了 29 小时。
+
+重启后三条判据（前两条是这次活锁修复专有的，第三条对任何动过 gateway 的操作都适用）：
+
+- 主线程 CPU 从 ~500 ticks/5s 掉到个位数；
+- py-spy 里 `_deliver_cancellation` 帧数为 0；
+- **8090 真打一次请求拿到非 502。**
+
+> `LISTEN` 和 `Up` 都是假阴性 —— netns 死了 8090 照样显示 `LISTEN`，容器照样显示 `Up`。
+> 判「活着」只能靠一次真实请求，这也是 6.2 ⑧ 那个自检轮询存在的原因。
+
 ---
 
 ## 7. 数据迁移与回滚

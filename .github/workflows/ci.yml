@@ -24,17 +24,23 @@ jobs:
       # 重新生成, 下一次 dmg 的图标就是旧的。与 gen_legal_html.py 同一套模式。
       - run: uv run python scripts/gen_haitun_icon_png.py --check
 
-  # 工具文件加载顺序是**跨文件系统**的判据: `tool_registry` 排序 `glob("*.py")` 正是为了消掉
-  # 文件系统顺序差异(59 个工具文件曾因加载顺序全部加载失败)。这条修法此前只在 Windows/NTFS 上
-  # 量过, ext4 上从未复量 —— 本地开发机再怎么绿都覆盖不到, 只有 ubuntu runner 能。
+  # 两类**环境无关的结构判据**, 合在一个 job 里跑。
   #
-  # 单独一个 job 而不是塞进 lint: lint 是 publish 的门(`needs: lint`), 把测试挂进去会让发版
-  # 连带依赖测试, 而 lint 现在五步全是静态检查、语义单一。单独 job 还能并行跑, 红的时候标题
-  # 直接说明是加载顺序而不是"lint 挂了"。
+  # 其一, 工具文件加载顺序是**跨文件系统**的判据: `tool_registry` 排序 `glob("*.py")` 正是为了
+  # 消掉文件系统顺序差异(59 个工具文件曾因加载顺序全部加载失败)。这条修法此前只在 Windows/NTFS
+  # 上量过, ext4 上从未复量 —— 本地开发机再怎么绿都覆盖不到, 只有 ubuntu runner 能。
   #
-  # 范围只有这两个文件 (126 条判据, 约 11s): session 子树全量在本地要 5 分半, 且当前在
-  # Windows 上有 13 条 asyncio 环境失败 —— 把全量搬上 CI 会把「看住加载顺序」变成「修全量红」。
-  tool-load-order:
+  # 其二, `suppress(CancelledError)` 是 2026-09-16 那次 3 小时会话锁死的**必要条件**: 它把
+  # 「取消已提出」从调用栈里抹掉, 外层 anyio task group 于是无限重试交付取消、事件循环 100%
+  # 忙转、零日志。那道闸门是纯 `ast` 全库扫描, 不跑任何业务代码, 所以放这里而不是 lint:
+  # lint 是 publish 的门(`needs: lint`), 挂测试进去会让发版连带依赖测试。
+  #
+  # 单独一个 job 而不是塞进 lint, 也是为了红的时候标题直接说明是哪类结构判据挂了, 而不是
+  # "lint 挂了"。单独 job 还能并行跑。
+  #
+  # 范围卡死在这三个文件 (140 条判据, 约 25s): session 子树全量在本地要 5 分半, 且当前在
+  # Windows 上有 13 条 asyncio 环境失败 —— 把全量搬上 CI 会把「看住这几条」变成「修全量红」。
+  structural-gates:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -49,11 +55,12 @@ jobs:
         run: uv run python scripts/check_tool_glob_order.py
       # -o testpaths= 是必须的: 命令行路径参数在 testpaths 存在时会被静默忽略, 且它必须
       # 写在路径**之前**。--no-cov: 这里判的是加载顺序, 覆盖率插桩只会拖慢。
-      - name: Tool load order + A1 layer isolation criteria
+      - name: Tool load order + A1 layer isolation + no suppress(CancelledError)
         run: >
           uv run pytest -o testpaths= --no-cov -q
           tests/psi_agent/session/test_tool_registry.py
           tests/psi_agent/session/test_layer_isolation_a1_probe.py
+          tests/psi_agent/session/test_no_suppress_cancelled_error.py
 
   # ToB 前端脚手架的可构建性。单独一个 job 而不是塞进 publish: publish 只在打 tag 时
   # 跑, 那样脚手架坏掉要到发版才发现 —— 方案 3.6 要的是「不会悄悄坏掉」。
