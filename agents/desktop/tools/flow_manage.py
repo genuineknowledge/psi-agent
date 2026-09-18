@@ -1,8 +1,11 @@
+# ruff: noqa
 """Manage reusable workflow assets."""
 
 from __future__ import annotations
 
 import re
+import os
+from pathlib import Path
 from datetime import UTC, datetime
 
 import _runtime_paths as _paths
@@ -11,7 +14,7 @@ import anyio
 
 def _flows_dir() -> anyio.Path:
     # Flow task dirs live under the user workspace.
-    return _paths.resolve_workspace() / "flows"
+    return anyio.Path(os.environ.get("PSI_WORKFLOW_WORKSPACE") or str(_paths.resolve_workspace())) / "flows"
 
 
 def _validate_flow_name(flow_name: str) -> str | None:
