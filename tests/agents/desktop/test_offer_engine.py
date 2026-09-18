@@ -23,11 +23,9 @@ import pytest
 if TYPE_CHECKING:
     from agents.desktop.tools import _offer_engine
     from agents.desktop.tools import saving_calc as _saving_calc
-    from agents.desktop.tools import subsidy_calc as _subsidy_calc
 else:
     import _offer_engine
     import saving_calc as _saving_calc
-    import subsidy_calc as _subsidy_calc
 
 
 async def _calc(**kwargs: Any) -> dict[str, Any]:
@@ -56,55 +54,33 @@ def _rules(*rules: dict[str, Any]) -> str:
 # 1. 通用性的证明: 与已上线的 subsidy_calc 逐例对齐
 # --------------------------------------------------------------------------- #
 
-#: (结算价, 品类, 能效) —— 覆盖家电/数码两档, 以及门槛边界两侧。
-_GUOBU_CASES = [
-    (3000, "空调", "一级"),
-    (12000, "空调", "一级"),
-    (299.5, "冰箱", "一级"),
-    (5000, "手机", "一级"),
-    (6000, "平板", "一级"),
-    (7000, "手机", "一级"),
-    (1500, "笔记本", "一级"),
-]
+# 国补的数值**不再在这里跟 subsidy_calc 对比** —— 它已经改成调本引擎了, 那样比等于自己
+# 跟自己比。真正的钉子挪到了 `test_subsidy_calc_golden.py`: 那份 golden 是在**改成引擎之前**
+# 冻下来的输出, 改完必须一字不差。这里只留一条"引擎侧"的检查: 卡片参数适配出来的规则,
+# 算得出与国补口径一致的数。
 
 
-@pytest.mark.parametrize(("price", "category", "energy"), _GUOBU_CASES)
-async def test_engine_reproduces_subsidy_calc(price: float, category: str, energy: str) -> None:
-    """**本文件最重要的一条**: 引擎必须复现已上线工具的每一个数。
-
-    国补只是喂给引擎的一份规则(比例补贴 + 价格上界 + 能效前提), 所以两边必须逐例相等
-    —— 相等才说明"一个引擎各场景填规则"不是口号。
-    """
-    official = json.loads(
-        await _subsidy_calc.subsidy_calc(price=price, category=category, energy_level=energy, region="安徽")
-    )
-    mine = await _calc(order_json=_order(结算价=price, 品类=category, 能效等级=energy), card="guobu-2026")
-
-    assert bool(official["ok"]) is bool(mine["可用"]), f"{category} {price}: 结论不一致 {official} / {mine}"
-    if not official["ok"]:
-        # 口径不同: subsidy_calc 用 ok 表达整体结论, 而引擎**刻意不整体失败** ——
-        # 它把这条规则判为不可用并说清原因(见下一个用例)。
-        assert mine["不可用"], "被挡了却没给原因"
-        assert mine["最优"]["共减"] == 0
-        return
-    assert abs(float(official["补贴"]) - float(mine["最优"]["共减"])) < 0.005, (
-        f"{category} {price}: 补贴不一致 {official['补贴']} vs {mine['最优']['共减']}"
-    )
-    assert abs(float(official["到手价"]) - float(mine["最优"]["到手价"])) < 0.005, (
-        f"{category} {price}: 到手价不一致 {official['到手价']} vs {mine['最优']['到手价']}"
-    )
+async def test_the_card_params_drive_the_engine_to_the_same_numbers() -> None:
+    """`saving_calc(card=...)` 走的是与 `subsidy_calc` 同一条路: 卡里的比例/上限 -> 引擎。"""
+    for price, category, energy, expected in (
+        (3000.0, "空调", "一级", 450.0),
+        (12000.0, "空调", "一级", 1500.0),
+        (5000.0, "手机", "一级", 500.0),
+        (100.0, "洗衣机", "一级", 15.0),
+    ):
+        mine = await _calc(order_json=_order(结算价=price, 品类=category, 能效等级=energy), card="guobu-2026")
+        assert mine["ok"] is True
+        assert mine["最优"]["共减"] == expected, (category, price)
 
 
-@pytest.mark.parametrize(("price", "category", "energy"), _GUOBU_CASES)
+@pytest.mark.parametrize(
+    ("price", "category", "energy"),
+    [(6001.0, "手机", "一级"), (1500.0, "笔记本", "2级")],
+)
 async def test_a_rejected_case_still_returns_a_structured_conclusion(price: float, category: str, energy: str) -> None:
     """被挡时不能整体失败 —— 要给出「不可用 + 原因」, 否则模型只能自己编一句解释。"""
-    official = json.loads(await _subsidy_calc.subsidy_calc(price=price, category=category, energy_level=energy))
     mine = await _calc(order_json=_order(结算价=price, 品类=category, 能效等级=energy), card="guobu-2026")
-
     assert mine["ok"] is True, "引擎应当永远给得出结构化结论"
-    if official["ok"]:
-        assert not mine["不可用"]
-        return
     assert mine["不可用"] and mine["不可用"][0]["原因"]
     assert mine["最优"]["共减"] == 0
 
