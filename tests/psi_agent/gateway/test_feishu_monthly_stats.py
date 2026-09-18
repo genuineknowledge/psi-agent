@@ -29,12 +29,12 @@ from psi_agent.gateway.feishu._stats import (
     current_month,
     has_reply_in_window,
     in_window,
+    iter_rows_backwards,
     month_bounds,
     monthly_run_stats,
     parse_created_at,
     session_ran_in_month,
     stats_tz,
-    tail_rows,
 )
 
 _SEPT = month_bounds("2026-09", tz=CN_TZ)
@@ -91,25 +91,63 @@ def test_created_at_parses_both_spellings_and_refuses_the_unknown() -> None:
 
 
 @pytest.mark.anyio
-async def test_tail_rows_drops_the_truncated_first_line(tmp_path: Path) -> None:
-    """尾部读要丢掉半行: 把它当成「这行没时间戳」就会漏掉本月跑过的会话。"""
+async def test_iter_rows_backwards_reads_lines_newest_first(tmp_path: Path) -> None:
+    """从尾部按**行**回读: 新的在前, 半行拼得回来, 坏行跳过。"""
     path = tmp_path / "history.jsonl"
     rows = [{"role": "user", "content": f"第 {i} 行", "created_at": "2026-09-16T00:00:00Z"} for i in range(200)]
     path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
 
-    whole = await tail_rows(anyio.Path(path))
-    windowed = await tail_rows(anyio.Path(path), limit_bytes=200)
+    got = [row async for row in iter_rows_backwards(anyio.Path(path))]
 
-    assert len(whole) == 200, "窗口比文件大时应当全读"
-    # **「只读尾部」本身要有判据**: 少了这一条, 「读文件头」也能让下面那条通过(头里当然也有行,
-    # 而最后一行是整读才有的 —— 于是判据看着绿、其实什么都没测)。变异复核时实测踩过。
-    assert len(windowed) < len(whole), (
-        f"窗口 200 字节却拿回 {len(windowed)} 行(共 {len(whole)} 行)—— 说明整读了一遍, "
-        "没有按窗口截断。history 实测最大 6.6 MB, 整读就是这一格的成本来源。"
+    assert [row["content"] for row in got] == [f"第 {i} 行" for i in reversed(range(200))]
+
+
+@pytest.mark.anyio
+async def test_a_row_bigger_than_the_old_tail_window_cannot_hide_the_month(tmp_path: Path) -> None:
+    """**被修掉的那个错数**: 单行比尾部窗口还大时, 本月跑过的会话曾被判成「没跑过」。
+
+    旧实现读尾部 ``TAIL_BYTES`` (64 KiB) 再在窗口里找问答行 —— 而**单行可以比窗口大** (实测该
+    目录 23 个 history 里 21 个存在 >64 KiB 的单行, 最大 system 行 288,631 字节), 一行就把窗口
+    吃光。下面第一段断言是**控制实验**: 那条问答行确实落在旧窗口之外, 否则这条用例什么都没测。
+    """
+    path = tmp_path / "h.jsonl"
+    big = "x" * (200 * 1024)
+    path.write_text(
+        json.dumps({"role": "user", "created_at": "2026-09-02T00:00:00Z"})
+        + "\n"
+        + json.dumps({"role": "system", "content": big})
+        + "\n",
+        encoding="utf-8",
     )
-    assert windowed, "窗口小于文件时应读到尾部若干行"
-    assert all(row["content"].startswith("第 ") for row in windowed), "半行没有被丢掉"
-    assert windowed[-1]["content"] == "第 199 行", "尾部读必须包含**最后一行**"
+
+    old_window = path.read_bytes()[-64 * 1024 :]
+    assert b'"role": "user"' not in old_window, "构造失败: 旧窗口本来就能看见问答行, 这条用例没测到东西"
+
+    assert await has_reply_in_window(anyio.Path(path), start=_SEPT[0], end=_SEPT[1]) is True
+
+
+@pytest.mark.anyio
+async def test_a_later_month_row_does_not_veto_an_earlier_month(tmp_path: Path) -> None:
+    """查**往月**时, 末尾那些更晚的行要跳过而不是一票否决 —— 「只看最后一条」在这里是错的。
+
+    ``?month=`` 允许查任意一月, 所以判据只能是「窗口内有没有」: 从尾部往前, 第一条早于窗口结束
+    时刻的问答行才定论。
+    """
+    path = tmp_path / "h.jsonl"
+    path.write_text(
+        json.dumps({"role": "user", "created_at": "2026-08-02T00:00:00Z"})
+        + "\n"
+        + json.dumps({"role": "assistant", "created_at": "2026-09-03T00:00:00Z"})
+        + "\n",
+        encoding="utf-8",
+    )
+    august = month_bounds("2026-08", tz=CN_TZ)
+
+    assert await has_reply_in_window(anyio.Path(path), start=august[0], end=august[1]) is True, (
+        "8 月确实跑过 (8/2 那条问答), 末尾 9 月那条不该把它否掉"
+    )
+    assert await has_reply_in_window(anyio.Path(path), start=_SEPT[0], end=_SEPT[1]) is True
+    assert await has_reply_in_window(anyio.Path(path), start=_OCT_START, end=month_bounds("2026-10")[1]) is False
 
 
 @pytest.mark.anyio
@@ -165,7 +203,6 @@ async def test_session_bucket_prefers_checklist_then_falls_back_to_history(tmp_p
     assert await bucket("s-old", [{"id": "a", "created_at": "2026-08-05T00:00:00+00:00"}]) is None, (
         "段是上个月的、history 也是上个月的 → 不该算进本月"
     )
-    # 段是上个月, 但 history 有本月的问答 → 落到 reply 桶(s-checklist 的 history 是 9 月的)。
     assert await bucket("s-checklist", [{"id": "a", "created_at": "2026-08-05T00:00:00+00:00"}]) == "reply"
     assert await bucket("s-reply", []) == "reply"
     assert await bucket("s-old", []) is None
@@ -208,8 +245,99 @@ async def test_monthly_run_stats_dedupes_and_counts_both_buckets(tmp_path: Path)
         end=_SEPT[1],
     )
 
-    assert stats == {"count": 2, "checklist": 1, "reply": 1}, stats
+    assert stats == {"count": 2, "checklist": 1, "reply": 1, "sessions": 4, "unlisted": 0}, stats
     assert stats["count"] == stats["checklist"] + stats["reply"], "两个桶必须恰好拼出总数"
+    assert stats["sessions"] == 4, "人口 = 传进来的会话数, 与 /feishu/sessions 同一份"
+
+
+@pytest.mark.anyio
+async def test_segment_counts_for_every_month_its_timestamps_touch(tmp_path: Path) -> None:
+    """段的 ``created_at`` **与** ``updated_at`` 任一落在窗口内都算 —— 两个桶的语义必须一致。
+
+    只判 ``updated_at or created_at`` 的后果是: 一段 8 月开、9 月还在改, 查 8 月时会被漏掉
+    (段明明 8 月就开过), 而它与 ``reply`` 桶的数要相加成一个数 —— 语义不对齐, 和数就没法解释。
+    """
+    appdata = tmp_path / "appdata"
+    (appdata / "histories").mkdir(parents=True)
+    august = month_bounds("2026-08", tz=CN_TZ)
+    opened_aug_updated_sep = [
+        {"id": "a", "created_at": "2026-08-05T00:00:00+00:00", "updated_at": "2026-09-20T00:00:00+00:00"}
+    ]
+
+    async def bucket(session_id: str, segments: list[dict[str, Any]], window: tuple[datetime, datetime]) -> str | None:
+        return await session_ran_in_month(
+            session_id=session_id,
+            workspace=str(tmp_path / "ws"),
+            appdata_root=str(appdata),
+            segments=segments,
+            start=window[0],
+            end=window[1],
+        )
+
+    assert await bucket("s1", opened_aug_updated_sep, august) == "checklist", "8 月开过 → 8 月跑过"
+    assert await bucket("s1", opened_aug_updated_sep, _SEPT) == "checklist", "9 月改过 → 9 月也跑过"
+    assert await bucket("s1", opened_aug_updated_sep, month_bounds("2026-10", tz=CN_TZ)) is None, (
+        "10 月既没开过也没改过 → 不该算进 10 月"
+    )
+
+
+@pytest.mark.anyio
+async def test_unlisted_sessions_are_reported_not_silently_dropped(tmp_path: Path) -> None:
+    """磁盘上有本月活动、却不在会话注册表里 → **报出来**, 不让「两个数字对不上」无处可查。
+
+    人口只能来自注册表 (归属判定只有它答得出), 于是注册表里没有的会话会被排除 —— 用户自己数
+    ``todos/`` 与页面上那一格因此可能不一致。差异本身进响应 (``unlisted``), 而不是被静默吞掉。
+    """
+    appdata = tmp_path / "appdata"
+    (appdata / "histories").mkdir(parents=True)
+    own_sid = "feishu-ou_alice"
+    (appdata / "histories" / f"{own_sid}.jsonl").write_text(
+        json.dumps({"role": "user", "created_at": "2026-09-03T00:00:00Z"}) + "\n", encoding="utf-8"
+    )
+
+    class FakeFm:
+        def session_id_for(self, key: str) -> str:
+            return f"feishu-{key}" if key else ""
+
+        def workspace_for(self, key: str) -> str:
+            return str(tmp_path / "ws" / key)
+
+    class EmptyTodos:
+        async def list_segments(self, session_id: str, *, appdata: str = "") -> list[dict[str, Any]]:
+            return []
+
+    orphan = await monthly_run_stats(
+        sessions=[],
+        appdata_root=str(appdata),
+        todom=EmptyTodos(),
+        start=_SEPT[0],
+        end=_SEPT[1],
+        fm=FakeFm(),
+        open_id="ou_alice",
+    )
+    assert orphan == {"count": 0, "checklist": 0, "reply": 0, "sessions": 0, "unlisted": 1}, orphan
+
+    listed = await monthly_run_stats(
+        sessions=[(own_sid, str(tmp_path / "ws" / "ou_alice"))],
+        appdata_root=str(appdata),
+        todom=EmptyTodos(),
+        start=_SEPT[0],
+        end=_SEPT[1],
+        fm=FakeFm(),
+        open_id="ou_alice",
+    )
+    assert listed == {"count": 1, "checklist": 0, "reply": 1, "sessions": 1, "unlisted": 0}, listed
+    # 别人 (uuid 网页会话) 的活动无从归属 → 宁可少报, 不把别人的算给这个人。
+    stranger = await monthly_run_stats(
+        sessions=[],
+        appdata_root=str(appdata),
+        todom=EmptyTodos(),
+        start=_SEPT[0],
+        end=_SEPT[1],
+        fm=FakeFm(),
+        open_id="ou_bob",
+    )
+    assert stranger["unlisted"] == 0, stranger
 
 
 @pytest.mark.anyio
@@ -231,7 +359,7 @@ async def test_a_broken_session_store_does_not_zero_the_whole_metric(tmp_path: P
         end=_SEPT[1],
     )
 
-    assert stats == {"count": 0, "checklist": 0, "reply": 0}
+    assert stats == {"count": 0, "checklist": 0, "reply": 0, "sessions": 1, "unlisted": 0}
 
 
 def test_august_boundary_sample_is_where_utc_would_have_been_wrong() -> None:

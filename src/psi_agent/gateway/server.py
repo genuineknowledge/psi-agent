@@ -705,7 +705,12 @@ async def _serve_chat_sse(request: web.Request, session_id: str) -> web.StreamRe
         # the upstream ChatManager generator — see `_write_chat_sse_with_keepalive`.
         await _write_chat_sse_with_keepalive(
             resp,
-            cm.handle(channel_socket, body),
+            cm.handle(
+                channel_socket,
+                body,
+                session_id=session_id,
+                appdata_root=str(request.app.get("appdata") or ""),
+            ),
             session_id=session_id,
         )
     except Exception as e:

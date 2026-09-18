@@ -13,6 +13,7 @@ from psi_agent.runtime._ai_manager import AIManager
 from psi_agent.runtime._session_manager import SessionManager
 from psi_agent.runtime._title_manager import TitleManager
 from tests.integration.test_gateway import _start_app_on_free_port
+from tests.psi_agent.gateway._route_signing import TEST_APP_SECRET, signed_json_post
 
 
 async def _rows(http: ClientSession, base_url: str, cookies: dict[str, str]) -> list[dict[str, object]]:
@@ -41,6 +42,7 @@ async def test_feishu_web_sessions_are_isolated_per_identity(tmp_path: str) -> N
             appdata=os.path.join(str(tmp_path), "appdata"),
         ),
         feishu_ai_id="ai1",
+        feishu_app_secret=TEST_APP_SECRET,
         feishu_workspace_root=os.path.join(str(tmp_path), "ws"),
     )
     auth: FeishuAuth = app["feishu_auth"]
@@ -87,17 +89,18 @@ async def test_feishu_web_sessions_are_isolated_per_identity(tmp_path: str) -> N
             assert len(set(created)) == 3
             assert len(workspaces) == 1  # 决定一: 共享 workspace
 
-            # 机器人那条私聊 session (IM 侧建的) 走 /feishu/route。
-            async with http.post(f"{base_url}/feishu/route", json={"open_id": "ou_alice", "ai_id": "ai1"}) as resp:
+            # 机器人那条私聊 session (IM 侧建的) 走 /feishu/route —— 这条是**进程间**接口,
+            # 由 channel 带着 app_secret 的签名打, 用例照同一份规矩签。
+            raw, headers = signed_json_post("/feishu/route", {"open_id": "ou_alice", "ai_id": "ai1"})
+            async with http.post(f"{base_url}/feishu/route", data=raw, headers=headers) as resp:
                 assert resp.status == 201
                 bot_sid = (await resp.json())["session_id"]
             created.append(bot_sid)
 
             # 群聊 session 也建一个 —— 它必须**不出现**在私聊列表里。
-            async with http.post(
-                f"{base_url}/feishu/route",
-                json={"open_id": "ou_alice", "chat_id": "oc_room", "chat_type": "group", "ai_id": "ai1"},
-            ) as resp:
+            payload = {"open_id": "ou_alice", "chat_id": "oc_room", "chat_type": "group", "ai_id": "ai1"}
+            raw, headers = signed_json_post("/feishu/route", payload)
+            async with http.post(f"{base_url}/feishu/route", data=raw, headers=headers) as resp:
                 assert resp.status == 201
                 group_sid = (await resp.json())["session_id"]
             created.append(group_sid)

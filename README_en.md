@@ -327,8 +327,8 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | GET | `/sessions` | List all Sessions |
 | POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream) |
 | GET | `/sessions/{session_id}/history` | Get conversation history |
-| POST | `/feishu/route` | Idempotently route a Feishu chat to a Session: group chats by chat_id (whole chat shares one), DMs by open_id (one per user); spawn on first use |
-| GET | `/feishu/routes` | List Feishu chat → Session routes |
+| POST | `/feishu/route` | Idempotently route a Feishu chat to a Session: group chats by chat_id (whole chat shares one), DMs by open_id (one per user); spawn on first use. Channel-process only: requires the service signature, 401 without it |
+| GET | `/feishu/routes` | List Feishu chat → Session routes (channel-process only, same signature check) |
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |

@@ -315,8 +315,8 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | GET | `/sessions` | 列出所有 Session |
 | POST | `/sessions/{session_id}/chat` | Web UI 对话（SSE 流式） |
 | GET | `/sessions/{session_id}/history` | 获取会话历史 |
-| POST | `/feishu/route` | 幂等路由飞书会话到 Session：群聊按 chat_id（整群共用），私聊按 open_id（一人一个），首次按需 spawn |
-| GET | `/feishu/routes` | 列出飞书会话 → Session 路由 |
+| POST | `/feishu/route` | 幂等路由飞书会话到 Session：群聊按 chat_id（整群共用），私聊按 open_id（一人一个），首次按需 spawn。**channel 进程专用**：要带服务间签名，未签名 401 |
+| GET | `/feishu/routes` | 列出飞书会话 → Session 路由（channel 进程专用，同一道签名判据） |
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |

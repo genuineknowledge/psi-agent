@@ -30,7 +30,6 @@ export function ChatView({
   onFeedback,
   onRegenerate,
   onOpenFile,
-  onRevealFile,
   filePathOf,
   executionSteps,
   queued,
@@ -54,7 +53,6 @@ export function ChatView({
   onFeedback: (index: number, kind: "up" | "down") => void;
   onRegenerate: (index: number) => void;
   onOpenFile: (name: string) => void;
-  onRevealFile: (path: string) => void;
   filePathOf: (name: string) => string | undefined;
   executionSteps?: ExecutionStep[];
   /** 已排队待发的那条(本回合结束后自动发出); 没有则不显示排队芯片。 */
@@ -115,7 +113,6 @@ export function ChatView({
             onFeedback={onFeedback}
             onRegenerate={onRegenerate}
             onOpenFile={onOpenFile}
-            onRevealFile={onRevealFile}
           />
         )}
       </div>

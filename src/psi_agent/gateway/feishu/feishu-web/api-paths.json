@@ -106,11 +106,6 @@
       "method": "POST",
       "path": "/feishu/titles/generate",
       "source": "src/api.ts"
-    },
-    {
-      "method": "POST",
-      "path": "/workspace/reveal",
-      "source": "src/api.ts"
     }
   ]
 }

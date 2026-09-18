@@ -210,12 +210,13 @@ def _normalize(path: str) -> str:
 
 
 async def _both_surfaces_app(tg: anyio.abc.TaskGroup) -> web.Application:
-    """**两面全挂** —— 与生产一致。
+    """**两面全挂** —— 比生产多挂一面, 取的是超集。
 
-    `--gateway feishu` 单挂时 `/workspace/*` 不注册(那两条 handler 住在
-    `desktop/_routes.py`), 而生产的 `launch-gateway.sh` 两面都挂。测单挂会把一个
-    「本地拓扑与云上不同」错报成「前端打了不存在的路由」。这个差异由
-    `test_workspace_paths_need_the_desktop_surface` 单独记着。
+    生产的 `launch-gateway.sh` 只挂 `--gateway feishu`, 这里把 desktop 那面也一起挂上。
+    判据只该对**前端确实在打的路径**说话: 多挂一面的路由不会让它变红, 少挂一面的才会。
+    此前多挂这一面是冲着清单里那条 `/workspace/reveal` 去的 —— 它随 ToB 的「在文件夹中
+    显示」一起删了, 于是这一面现在是空转; 留着是因为代价只是多注册几条路由, 而哪天 ToB
+    前端又要打 desktop 面的路径, 单挂的 app 会把它错报成「前端打了不存在的路由」。
     """
     aim = AIManager(_prefix="api-paths-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="api-paths-test", _tg=tg)
@@ -243,32 +244,6 @@ async def test_every_manifest_path_is_a_registered_route() -> None:
     assert unmatched == [], (
         f"前端会打这些路径, 但两面全挂的 app 里没有对应路由: {_fmt(unmatched)}。\n"
         "这是「前端打了不存在的后端路由」, 本地就会 404, 不用等上云。"
-    )
-
-
-@pytest.mark.anyio
-async def test_workspace_paths_need_the_desktop_surface() -> None:
-    """记住一条真实的本地/云上差异: `/workspace/*` 归 desktop 那面。
-
-    `--gateway feishu` 单挂(本地开发文档里的起法)时这两条**路由不存在**, 而 ToB 前端
-    的交付物抽屉在打它们。生产两面全挂所以能通 —— 于是「本地单挂能重现的 404」和
-    「云上白名单缺条的 404」长得一样, 排查时容易认错。这条把归属钉死: 归属变了(比如把
-    handler 搬进骨架或 feishu 包)就该更新文档里那张差异表。
-    """
-    manifest_workspace = {e.path for e in _M.load_manifest() if e.path.startswith("/workspace/")}
-    assert manifest_workspace, "前端不再打 /workspace/* 了? 那就把这条用例与文档里那行一起删掉"
-
-    async with anyio.create_task_group() as tg:
-        aim = AIManager(_prefix="api-paths-feishu-only", _tg=tg)
-        sm = SessionManager(_aim=aim, _prefix="api-paths-feishu-only", _tg=tg)
-        feishu_only = register_feishu_routes(await create_core_app(aim, sm, TitleManager()))
-        paths = {_normalize(p) for _, p in _canonical_routes(feishu_only)}
-        tg.cancel_scope.cancel()
-
-    absent = sorted(p for p in manifest_workspace if _normalize(p) not in paths)
-    assert absent == sorted(manifest_workspace), (
-        "`--gateway feishu` 单挂时 /workspace/* 竟然有了 —— 归属变了。"
-        "更新 feishu-web/AGENTS.md 里那张本地/云上差异表, 别让文档留着过期的坑。"
     )
 
 

@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { FileText, FolderOpen, X } from "lucide-react";
-import { revealWorkspacePath } from "../api";
+import { FileText, X } from "lucide-react";
 import { isBlobPreviewable } from "../services/filePreview";
 import { ArtifactFileBody } from "./artifact-file-body";
 
@@ -55,17 +54,6 @@ export function ArtifactDrawer({
                 onClick={onSave}
               >
                 保存到成果库
-              </button>
-            )}
-            {activePath && (
-              <button
-                type="button"
-                className="preview-icon-btn"
-                title="在文件夹中显示"
-                aria-label="在文件夹中显示"
-                onClick={() => void revealWorkspacePath(activePath).catch(() => undefined)}
-              >
-                <FolderOpen size={16} />
               </button>
             )}
             <button type="button" className="preview-icon-btn" title="关闭" aria-label="关闭" onClick={onClose}>

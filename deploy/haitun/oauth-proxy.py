@@ -45,8 +45,11 @@ from aiohttp import web
 #   * /sessions /titles /workspace/* /chat/completions —— 无鉴权, 见模块 docstring。
 #     它们同在 api-paths.json 里(前端确实在打), 但那是**直连本地 gateway** 时的用法;
 #     公网这一跳不放行, 由 tests/deploy/test_oauth_proxy.py 双向钉住。
-#   * /feishu/route /feishu/routes —— channel 进程内部调用, 无鉴权且能 spawn Session,
-#     浏览器一次都不打。**「同是 /feishu/ 开头」不是放行理由**: 这一族里既有前端接口
+#   * /feishu/route /feishu/routes —— channel 进程内部调用, 浏览器一次都不打。两条都
+#     **要服务间签名**(app_secret 上的 HMAC, 见 psi_agent/_service_auth.py)且能 spawn /
+#     列出所有人的会话, 但仍然不放行: 反代这一层判的是「浏览器是否真的打它」, 与
+#     gateway 自己那道签名判据是两层, 不是二选一 —— 少任何一层都会在另一种拓扑下失效。
+#     **「同是 /feishu/ 开头」不是放行理由**: 这一族里既有前端接口
 #     (如下面的 jsapi/config)也有内部端点, 判据是「浏览器是否真的打它 + 打通了能做什么」,
 #     由 tests/deploy/test_oauth_proxy.py::test_feishu_internal_routes_stay_blocked 钉住。
 ALLOWED_PATHS = frozenset(

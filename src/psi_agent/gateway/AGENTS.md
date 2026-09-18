@@ -459,6 +459,16 @@ Gateway：``list_segments`` / ``get_segment`` 只读；``set_segment_label`` 允
 
 **未定义（已知留白）**：群 Session 的 workspace 只有一份，而 `user_access_token`（UAT）按发送者 `open_id` 存。群里多人时「以谁的身份写文档」由 workspace 侧工具按每条消息的 `sender_open_id` 决定（见 `agents/feishu/TOOLS.md`），Gateway 不做约定。
 
+### 服务间接口的鉴权（`/feishu/route` 一族）
+
+`POST /feishu/route` 与 `GET /feishu/routes` 是**进程间**接口（channel → Gateway），不是浏览器接口：它们按需 spawn 会话、回内部管道路径、列出**所有人**的路由表。因此 cookie 身份那套判据（`_require_identity` / `_authorize_session`）在这里**用不上也不合适**——调用方是 channel 进程，它没有也不该有用户登录态。
+
+判据是两边本来就共享的飞书 `app_secret` 上的 HMAC，实现与理由见 `psi_agent/_service_auth.py` 模块头：channel 用 `sign()` 产出 `X-PSI-Service-Signature` / `X-PSI-Service-Timestamp` 两条头，Gateway 用 `_require_service()` 校验（签名覆盖 `timestamp + METHOD + path_qs + sha256(body)`）。**不新开环境变量**：`PSI_FEISHU_APP_SECRET`（或 `--app-secret`）本来就要给两个进程都配上，channel 少它压根起不来。**`app_secret` 为空即拒绝**——空密钥下 HMAC 退化成人人可算的常量,「没配好」必须表现成 401 而不是放行。
+
+云上还有一层反代白名单挡着（`deploy/haitun/oauth-proxy.py` 刻意不含这两条），但那是**部署形态**的缓解：判据必须在 handler 里，否则任何能打到 gateway 端口的东西（同容器的其它进程、开发机上任何本地进程）都能凭空建会话并拿到内部管道路径。
+
+用例见 `tests/psi_agent/gateway/test_feishu_route_auth.py`（未签 / 签错 / 时间戳过期 / body 被改 / **有效登录 cookie** 五种调用方全 401，且断言**拒绝发生在 spawn 之前**；正确签名照旧 201/200）与 `tests/psi_agent/test_service_auth.py`（签名模块本身）。
+
 ## OAuthRelay
 
 OAuth 回调中继（`feishu/_oauth_manager.py`，路由与 handler 在 `feishu/_routes.py`）：让**授权码自己回到发起方**，免用户从地址栏手工复制 code。
@@ -546,8 +556,8 @@ OAuth 回调中继（`feishu/_oauth_manager.py`，路由与 handler 在 `feishu/
 | GET | `/sessions/{session_id}/todo-segments` | 子任务分段列表（``todos/{id}.segments.json``，新→旧）；``merge=false`` 开新段；返回 ``[{id,label,closed_at,summary,…}]`` |
 | GET | `/sessions/{session_id}/todo-segments/{segment_id}` | 单段含 ``todos[]``（历史 checklist 回放） |
 | POST | `/sessions/{session_id}/todo-segments/{segment_id}` | P1：改段标题 ``{label}``（spa-v2 可用回合 summary 覆盖） |
-| POST | `/feishu/route` | 幂等路由一次飞书会话到其 Session（首次按需 spawn）`{open_id, chat_id?, chat_type?, ai_id?, workspace?}` → 201 `{open_id, chat_id, session_id, channel_socket}`。`chat_type` 为 `group`/`topic` 且 `chat_id` 非空 → 按 `chat_id` 整群共用一个 Session；否则按 `open_id` 一人一个。缺路由键（私聊无 open_id）/ 无 ai_id → 400 |
-| GET | `/feishu/routes` | 列出所有飞书会话 → Session 路由 `[{open_id, chat_id, session_id}]`（群聊记录只有 `chat_id`，私聊只有 `open_id`） |
+| POST | `/feishu/route` | 幂等路由一次飞书会话到其 Session（首次按需 spawn）`{open_id, chat_id?, chat_type?, ai_id?, workspace?}` → 201 `{open_id, chat_id, session_id, channel_socket}`。`chat_type` 为 `group`/`topic` 且 `chat_id` 非空 → 按 `chat_id` 整群共用一个 Session；否则按 `open_id` 一人一个。缺路由键（私聊无 open_id）/ 无 ai_id → 400。**只服务 channel 进程**：要带 `psi_agent._service_auth` 的 HMAC 签名（两边共有的 `app_secret` 当密钥），未签 / 签错 / 时间戳过期一律 **401**，见下「服务间接口的鉴权」 |
+| GET | `/feishu/routes` | 列出所有飞书会话 → Session 路由 `[{open_id, chat_id, session_id}]`（群聊记录只有 `chat_id`，私聊只有 `open_id`）。**与 POST 同一道签名判据**：它回的是**所有人**的路由表，读侧轻但泄漏同一个东西，故不放行匿名读 |
 | POST | `/feishu/sessions/{session_id}/chat` | **带鉴权的聊天流（SSE）** —— 网页应用打的就是这条，请求/响应格式与骨架 `POST /sessions/{session_id}/chat` 逐字节相同。为什么要有它：骨架那条**一行身份校验都没有**（容器内回环服务本机是它的合理用途），而它是能**驱动 agent 执行工具**的那条（跑 bash、读公司表格、往飞书发消息），上公网等于任何知道一个 session id 的人都能让公司 agent 干活。三段判定与 `/feishu/sessions/{id}/history` **同一套 `owns_session`**：未登录 401、会话不存在 404、别人的/群聊的 403（403 而非 404 是与 history 对齐，真·不存在已占了 404）。**实现不复制**：handler 只做判定，正文转骨架抽出的 `_serve_chat_sse`——两份 handler 体必有一份先过时，而过时的那份是能执行工具的路径。判据 `tests/integration/test_feishu_web_chat_auth.py`（含把归属校验打成恒真的变异复核）|
 | GET | `/oauth/callback` | OAuth 重定向落地点：收下 `?code=&state=` 交给 `OAuthRelay` 暂存，回一张「授权成功」页；缺 state → 400。用户因此**不必**手工复制 code |
 | GET | `/oauth/code` | 发起方（workspace 工具，通常在另一进程）按 `?state=` 取件，命中返回 `{state, code}` 并作废（一次性）；回调带错误则 `{state, error}`；未到达 → 404 |
@@ -620,6 +630,19 @@ data: [DONE]
 - 输入：`TextChunk(text)`、blob（base64 解码后由 `_save_upload()` 落至 `~/Downloads/.psi/<date>/`，持久保留，转为 `FileChunk`）；multipart 文件上传通过 blob 通道走相同路径
 - **落盘到用户真实家目录是刻意的**（交付物要持久保留、用户能在文件管理器里找到），**因此凡碰 `_save_upload` / blob 入站的测试都必须先重定向家目录**，否则会往开发者真实的 `~/Downloads/.psi/` 里堆测试垃圾。`_downloads_path` 走 `Path.home()`，而它在 Windows 上读 `USERPROFILE`、在 POSIX 上才读 `HOME`——`monkeypatch.setenv("HOME", ...)` 在 Windows 上**完全不生效**。正确做法是 patch 函数本身：`monkeypatch.setattr(Path, "home", lambda: tmp_path)`，见 `tests/psi_agent/gateway/test_chat_manager.py` 的 `fake_home` fixture 与 `tests/integration/test_gateway.py::test_gateway_blob_send`
 - 输出：`TextChunk` → `{"type":"text"}`；`ReasoningChunk` → `{"type":"reasoning","text":…}`（有 `chunk.kind` 则附带）；`FileChunk` → 读盘 base64 → `{"type":"blob","name","data","path"}`
+
+**入向文件的登记簿（`{appdata}/uploads/{session_id}.jsonl`）**：`_save_upload()` 落盘之后由 `ChatManager._record_upload()` 追加一行 `{"path": …}`（按会话分文件、只追加、失败只记 WARNING）。它是下载路由白名单的**入向那一半**，见下。
+
+**交付物下载的白名单（`_session_deliverable_paths`）**：`GET /feishu/sessions/{id}/files?path=` 是这一族里唯一会读磁盘的入口，它的闸门是「本会话收下 / 交付过的文件」集合，来源**只有服务端自己写下的记录**：
+
+| 来源 | 谁写的 |
+|------|--------|
+| history 行的 `sends`（含 `files[].path`） | agent 在回复里声明的交付物 |
+| `{appdata}/uploads/{sid}.jsonl` | `_save_upload()` 落盘那一刻（用户上传的附件） |
+
+**刻意不读 history 的 `recvs`**：它是从**用户正文**里正则捞出来的 `[RECV:…]`，于是白名单有了一个用户可控的输入——往消息里打一句 `[RECV:C:\Windows\win.ini]`，那条路径就进了白名单，而这条路由的唯一闸门就是它。用户能自己往里加路径的白名单不叫白名单。代价是**修复前**已存在会话里那些 `[RECV:]` 不再进白名单（附件还在磁盘上，要重新上传才能从宝箱下载）——这是有意的：无法区分「channel 编码的上传」与「用户手打的标记」，而后者正是要堵的口子。`sends` 侧保持原样：agent 本来就拿得到文件系统（它的 `read`/`bash` 是任意路径），由它声明交付的文件不构成新的越权面，而「必须落在 workspace 下」会误伤写到别处的合法交付物。
+
+这条路由另判一道**私密区**（`_private_space.blocks_send`，与 channel 出向那道是同一个函数）：channel 早就拒绝把别人的 `.private/<open_id>/` 文件发进飞书，网页宝箱走另一条路，不判的话那道守卫只是一半。用例见 `tests/psi_agent/gateway/test_feishu_deliverable_paths.py`。
 
 ## Web Console (SPA)
 

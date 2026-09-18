@@ -13,6 +13,7 @@ from lark_channel.channel.normalize.mentions import extract_mentions
 from loguru import logger
 
 from psi_agent._card_markers import SILENT_REPLY
+from psi_agent._service_auth import SIGNATURE_HEADER, TIMESTAMP_HEADER, verify
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._file_bytes import OutboundFileError
 from psi_agent.channel._types import FileChunk, ReasoningChunk, TextChunk
@@ -38,6 +39,7 @@ from psi_agent.channel.feishu.client import (
     _SeenEvents,
     run_feishu,
 )
+from tests.psi_agent.gateway._route_signing import TEST_APP_SECRET
 
 
 def _resolver(core: ChannelCore):
@@ -881,15 +883,20 @@ class _FakeResp:
 
 
 class _FakeHttp:
-    """记录 POST 调用次数, 按序返回预置响应。"""
+    """记录 POST 调用次数, 按序返回预置响应。
+
+    channel 现在**自己序列化 body 再签名** (``data=`` + 两条签名头), 不再用 ``json=`` ——
+    ``json`` 这一栏因此记的是**解出来的**对象: 断言仍比对「发出去的到底是什么」, 而
+    ``data`` / ``headers`` 两份原文留着让用例按 Gateway 的判据复算签名。
+    """
 
     def __init__(self, responses: list[_FakeResp]) -> None:
         self._responses = responses
         self.post_calls: list[dict] = []
         self.get_calls: list[dict] = []
 
-    def post(self, url: str, json: dict, timeout: object) -> _FakeResp:
-        self.post_calls.append({"url": url, "json": json})
+    def post(self, url: str, data: bytes, headers: dict[str, str], timeout: object) -> _FakeResp:
+        self.post_calls.append({"url": url, "json": json.loads(data), "data": data, "headers": headers})
         return self._responses.pop(0)
 
     def get(self, url: str, timeout: object) -> _FakeResp:
@@ -897,6 +904,33 @@ class _FakeHttp:
         if not self._responses:
             raise AssertionError(f"unexpected GET {url}")
         return self._responses.pop(0)
+
+
+def _assert_route_call_is_signed(call: dict) -> None:
+    """一次路由请求必须带签名头, 且签名要能用**同一个** secret 验过。
+
+    只断「头存在」不够: 头名拼错、时间戳与签名用的不是同一份、或者签的根本不是发出去的
+    那些字节, 三种都能让头在而 Gateway 仍回 401 —— 这里按 Gateway 的判据 (见
+    ``psi_agent._service_auth.verify``) 对同一份 body 复算一遍。
+    """
+    headers = call["headers"]
+    assert headers[TIMESTAMP_HEADER]
+    assert headers[SIGNATURE_HEADER]
+    assert verify(
+        TEST_APP_SECRET,
+        method="POST",
+        path="/feishu/route",
+        body=call["data"],
+        headers=headers,
+    ), call
+    # 换个 secret 必须验不过 —— 否则「签名」与 app_secret 无关, Gateway 那道 401 就是纸糊的。
+    assert not verify(
+        f"{TEST_APP_SECRET}-not-the-secret",
+        method="POST",
+        path="/feishu/route",
+        body=call["data"],
+        headers=headers,
+    ), call
 
 
 @pytest.mark.anyio
@@ -934,9 +968,36 @@ async def test_resolve_shared_appdata_swallows_transport_error() -> None:
 
 
 @pytest.mark.anyio
+async def test_route_call_is_signed_with_the_shared_secret() -> None:
+    """**以「这次请求签过名」为主语**的一条用例 —— 签名是 ``_route`` 唯一的准入手段。
+
+    为什么单列: 签名检查原先只作为附加断言挂在「缓存命中」「按群分键」两条用例末尾, 于是
+    ``_route`` 哪天把签名重构掉时, 变红的是那两条**缓存**用例, 排查者会先怀疑缓存。变异复核
+    时实测到这一点 (去掉签名头后, 其余 7 条同样驱动 ``_route`` 的用例全绿)。
+
+    断言分三层, 缺一层都能被绕过: 头在 → 签名**按 Gateway 的算法复算得过** → 换一份 secret
+    就验不过 (否则「签名」与 app_secret 无关, Gateway 那道 401 是纸糊的)。
+    """
+    http = _FakeHttp([_FakeResp(201, {"channel_socket": "/tmp/feishu-ou_1.sock"})])
+    provider = client._GatewayRouteProvider("http://127.0.0.1:9000/", cast("Any", http), secret=TEST_APP_SECRET)
+
+    await provider.ensure("ou_1")
+
+    assert len(http.post_calls) == 1
+    call = http.post_calls[0]
+    headers = call["headers"]
+    assert TIMESTAMP_HEADER in headers and SIGNATURE_HEADER in headers, headers
+    # 签的必须**就是发出去的那些字节** —— 头齐全但签错 body 是这次复核里实测能骗过「只查头」的形态。
+    assert call["data"] == json.dumps(
+        {"open_id": "ou_1", "chat_id": "", "chat_type": ""}, separators=(",", ":")
+    ).encode("utf-8")
+    _assert_route_call_is_signed(call)
+
+
+@pytest.mark.anyio
 async def test_gateway_route_provider_caches_socket() -> None:
     http = _FakeHttp([_FakeResp(201, {"channel_socket": "/tmp/feishu-ou_1.sock"})])
-    provider = client._GatewayRouteProvider("http://127.0.0.1:9000/", cast("Any", http))
+    provider = client._GatewayRouteProvider("http://127.0.0.1:9000/", cast("Any", http), secret=TEST_APP_SECRET)
 
     socket1 = await provider.ensure("ou_1")
     assert socket1 == "/tmp/feishu-ou_1.sock"
@@ -946,6 +1007,8 @@ async def test_gateway_route_provider_caches_socket() -> None:
     assert len(http.post_calls) == 1
     assert http.post_calls[0]["url"] == "http://127.0.0.1:9000/feishu/route"
     assert http.post_calls[0]["json"] == {"open_id": "ou_1", "chat_id": "", "chat_type": ""}
+    # 这一条请求必须**签得出来**: 签名覆盖的就是上面那份 body 的字节。
+    _assert_route_call_is_signed(http.post_calls[0])
 
 
 @pytest.mark.anyio
@@ -956,7 +1019,7 @@ async def test_gateway_route_provider_raises_on_failure_and_does_not_cache() -> 
             _FakeResp(201, {"channel_socket": "/tmp/ok.sock"}),
         ]
     )
-    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http))
+    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http), secret=TEST_APP_SECRET)
 
     with pytest.raises(RuntimeError, match="feishu/route failed"):
         await provider.ensure("ou_1")
@@ -982,7 +1045,7 @@ def _capture_info() -> tuple[list[str], int]:
 async def test_route_decision_is_logged_at_info_once_per_key() -> None:
     """V1: 路由结果在 INFO 可见, 且每个路由键只记一条 (缓存命中不再刷)。"""
     http = _FakeHttp([_FakeResp(201, {"channel_socket": "/tmp/feishu-ou_1.sock"})])
-    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http))
+    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http), secret=TEST_APP_SECRET)
 
     messages, sink_id = _capture_info()
     try:
@@ -1006,7 +1069,7 @@ async def test_group_and_direct_routes_are_logged_separately() -> None:
             _FakeResp(201, {"channel_socket": "/tmp/group.sock"}),
         ]
     )
-    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http))
+    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http), secret=TEST_APP_SECRET)
 
     messages, sink_id = _capture_info()
     try:
@@ -1360,7 +1423,7 @@ async def test_comment_resolves_core_per_operator(monkeypatch, tmp_path):
 async def test_gateway_route_provider_keys_group_by_chat_id() -> None:
     """群聊按 chat_id 缓存/请求; 同群不同发送者只打 Gateway 一次。"""
     http = _FakeHttp([_FakeResp(201, {"channel_socket": "/tmp/feishu-chat.sock"})])
-    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http))
+    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http), secret=TEST_APP_SECRET)
 
     s1 = await provider.ensure("ou_1", chat_id="oc_group", chat_type="group")
     s2 = await provider.ensure("ou_2", chat_id="oc_group", chat_type="group")
@@ -1372,6 +1435,8 @@ async def test_gateway_route_provider_keys_group_by_chat_id() -> None:
         "chat_id": "oc_group",
         "chat_type": "group",
     }
+    # 群聊那条同样签了 —— 路由键归并成一次请求, 签名不因归并而少一次。
+    _assert_route_call_is_signed(http.post_calls[0])
 
 
 @pytest.mark.anyio
@@ -1383,7 +1448,7 @@ async def test_gateway_route_provider_p2p_and_group_do_not_share_cache() -> None
             _FakeResp(201, {"channel_socket": "/tmp/group.sock"}),
         ]
     )
-    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http))
+    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http), secret=TEST_APP_SECRET)
 
     dm = await provider.ensure("ou_1", chat_id="oc_dm", chat_type="p2p")
     grp = await provider.ensure("ou_1", chat_id="oc_group", chat_type="group")
@@ -1402,7 +1467,7 @@ async def test_gateway_route_provider_group_cache_is_per_chat() -> None:
             _FakeResp(201, {"channel_socket": "/tmp/b.sock"}),
         ]
     )
-    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http))
+    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http), secret=TEST_APP_SECRET)
 
     a = await provider.ensure("ou_1", chat_id="oc_a", chat_type="group")
     b = await provider.ensure("ou_1", chat_id="oc_b", chat_type="group")
@@ -1420,7 +1485,7 @@ async def test_gateway_route_provider_caches_external_flag() -> None:
             _FakeResp(201, {"channel_socket": "/tmp/local.sock", "external": False}),
         ]
     )
-    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http))
+    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http), secret=TEST_APP_SECRET)
 
     # 路由之前一律视作本地 —— 不知道就别声称在外面。
     assert provider.is_external("ou_secret") is False
@@ -1436,7 +1501,7 @@ async def test_gateway_route_provider_caches_external_flag() -> None:
 async def test_gateway_route_provider_external_defaults_false_on_old_gateway() -> None:
     """老 gateway 的响应没有 ``external`` 字段 → 当本地处理 (维持升级前行为)。"""
     http = _FakeHttp([_FakeResp(201, {"channel_socket": "/tmp/ou_1.sock"})])
-    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http))
+    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http), secret=TEST_APP_SECRET)
 
     await provider.ensure("ou_1")
 

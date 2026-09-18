@@ -141,8 +141,8 @@ AI 落进 `$DEV_APPDATA/state/latest.json` 后就**持久**了 —— 之后每�
 
 ### 云上不再打裸路由了(2026-09-16 收口)
 
-前端现在**只打 `/feishu/` 前缀下的路由**(`api-paths.json` 里除两条 `desktop` 面的
-`/workspace/*` 之外全是 `/feishu/`)。骨架的裸路由一条都不再走 —— 它们在云上既过不了白名单
+前端现在**只打 `/feishu/` 前缀下的路由**(`api-paths.json` 里 21 条全是 `/feishu/`, 一条
+`/workspace/*` 都没有)。骨架的裸路由一条都不再走 —— 它们在云上既过不了白名单
 (静默 404), 又一行鉴权都没有:
 
 | 前端原来在打 | 云上表现 | 现在的对等物 |
@@ -161,9 +161,12 @@ AI 落进 `$DEV_APPDATA/state/latest.json` 后就**持久**了 —— 之后每�
 费用**的路由, 归属校验必须发生在生成之前。它同时是白名单里新加的一条**精确路径**(`titles` 那
 条是精确匹配, 不给它加前缀 —— 加了会把将来任何标题路由一并放出去)。
 
-`/workspace/file` 仍是唯一的例外: 它是 desktop 面的路由(交付物抽屉里的**预览**在用), 云上
-`launch-gateway.sh` 只挂 `--gateway feishu`, 那条既不注册也不在白名单里。下载与预览要用带鉴权
-那条(`/feishu/sessions/{id}/files?path=`)得把 session id 传到抽屉里 —— 那是另一轮的事。
+前端**一条 `/workspace/*` 都不打**了(清单里零条): 交付物预览与下载走带鉴权的
+`/feishu/sessions/{id}/files?path=`(session id 由 `ArtifactDrawer` / `DeliveryPreviewModal`
+往下传), 而「在文件夹中显示」(`POST /workspace/reveal`)已从 ToB 前端删掉 —— 云上
+`launch-gateway.sh` 只挂 `--gateway feishu`、反代白名单里也没有 `/workspace/*`, 而且即便
+打通了, 在**服务器容器**里「在文件夹中显示」对用户也没有意义。那个功能只留在 desktop 前端
+(`desktop/spa-v2/`), 它跑在用户自己机器上。
 
 ## 常用命令
 
@@ -270,7 +273,7 @@ gateway 容器。本地是浏览器 → vite dev server(proxy) → gateway, **�
 | 路径可达性 | 直连 gateway, 前端打什么都通 | 过白名单反代, `ALLOWED_PATHS` 少一条即 404 | **不能**。本地永远碰不到, 只能靠清单核对(见下) |
 | 身份 | `PSI_FEISHU_DEV_OPEN_ID` 旁路, 后端直接发 sid | 真免登: JSAPI `code` → `user_access_token` → `open_id` | **不能**。本机没有 JSAPI, 整条换取链一次没跑 |
 | 静态资源 | `npm run dev`, vite 服务源码 + HMR | gateway `add_static` 服务 `dist/` | 能验 dev 一侧; `dist/` 一侧要 `npm run build` 后开 `:8765/feishu-web/index.html` |
-| 挂了哪几面 | 文档里的起法是 `--gateway feishu` **单挂** | `launch-gateway.sh` **两面全挂** | 能验, 但**默认起法与云上不同**, 见下面那条 |
+| 挂了哪几面 | 文档里的起法是 `--gateway feishu` **单挂** | `launch-gateway.sh` 同样**单挂 `--gateway feishu`** | 前端只打 `/feishu/*`, 挂几面都不影响它; desktop 面那几条路由见下面那条 |
 | 跨身份隔离 | 造不出第二个身份(旁路只认一个环境变量) | 真实多用户 | **不能**, 靠 `test_feishu_identity.py` + 云上真机 |
 
 ### 会话级只读一族走 `/feishu/sessions/{id}/…`, 不打骨架的裸路由
@@ -299,29 +302,33 @@ gateway 容器。本地是浏览器 → vite dev server(proxy) → gateway, **�
 「宝箱」(挑交付物下载)与「导出对话历史」(挑会话下 jsonl)两个入口 —— 它们**不是同一件事**,
 所以是两个按钮。
 
-### `/workspace/*` 归 desktop 那面 —— 单挂时本地就 404
+### `/workspace/*` 归 desktop 那面 —— ToB 前端一条都不打
 
-`GET /workspace/file` 与 `POST /workspace/reveal`(交付物抽屉在打)的 handler 住在
+`GET /workspace/file` 与 `POST /workspace/reveal` 的 handler 住在
 `gateway/desktop/_routes.py`, **不在** `feishu/_routes.py` 里。于是:
 
-- `--gateway feishu` 单挂(上面「本地开发怎么起」里的起法): 这两条**路由不存在**, 实测
-  `404 text/plain`。
-- `--gateway desktop feishu` 两面全挂(**生产就是这样**): 实测 `400`(缺 `path` 参数),
-  路由在。
+- `--gateway feishu` 单挂(上面「本地开发怎么起」里的起法, **生产也是这么挂的**): 这两条
+  **路由不存在**, 实测 `404 text/plain`。
+- `--gateway desktop feishu` 两面全挂: 实测 `400`(缺 `path` 参数), 路由在。
 
-危险在于这两种 404 长得不一样但都是 404: 一个是本地少挂一面, 一个是云上白名单缺条, 排查
-时容易认错。想让本地拓扑贴近生产就两面都写:
+ToB 前端**一条 `/workspace/*` 都不打**, 所以这个归属差异如今只影响 desktop 前端。危险在于
+这两种 404 长得不一样但都是 404: 一个是少挂一面, 一个是云上白名单缺条, 排查时容易认错。
+想同时调两面就都写上:
 
 ```bash
 psi-agent gateway --gateway desktop feishu --listen http://127.0.0.1:8765
 ```
 
-归属由 `test_workspace_paths_need_the_desktop_surface` 钉住 —— 哪天 handler 搬了家,
-那条会红, 提醒回来改这张表。
+「在文件夹中显示」是**唯一**曾经在这里打过 `/workspace/reveal` 的功能, 已从 ToB 前端删除:
+云上 `launch-gateway.sh` 只挂 `--gateway feishu`、`oauth-proxy.py` 的白名单里也没有
+`/workspace/*`, 而且即便打通了, 在**服务器容器**里打开文件管理器对用户也没有意义 —— 那个
+功能留在 desktop 前端(`desktop/spa-v2/`), 它跑在用户自己机器上。删掉之后清单里再也没有需要
+这条归属判据的路径, 「前端不再打 `/workspace/*`」改由 `api-paths.json` 本身与
+`test_feishu_web_api_paths.py` 的双向绑扎钉住(清单里没有, 而前端一旦再打就会红)。
 
 ## 路径清单: 挡「本地全通、云上全 404」
 
-前端会打的后端路径有一份**从源码提取**的清单: `api-paths.json`(22 条), 生成与消费都走
+前端会打的后端路径有一份**从源码提取**的清单: `api-paths.json`(21 条), 生成与消费都走
 `scripts/feishu_web_paths.py`。
 
 **不人手维护**是关键: 前端加一个端点没人会想起来更新清单, 而漂移的表现恰好就是云上 404。
@@ -472,7 +479,12 @@ AI 由部署者用 `--feishu-ai-id` 定死、身份由飞书免登给定、works
   抽屉显示 1 份)。
 - **四个统计口径**都是真算出来的: 进行中 / 待处理 / 新交付物 / **本月执行**(本自然月跑过
   todo 的会话数, 按会话去重 —— 口径写在 `taskModel.countMonthlyRuns`)。此前那一格写死
-  `"128"`, 而「导出」是个没有 `onClick` 的死按钮。
+  `"128"`, 而「导出」是个没有 `onClick` 的死按钮。**「本月执行」的取数在服务端**
+  (`GET /feishu/stats/monthly`, 口径与取数见 `gateway/feishu/_stats.py` 模块头): 它的人口是
+  **会话注册表**里本人可见的会话, 而磁盘上(`todos/` / `histories/`)可能有注册表里没有、却
+  确实跑过的会话 —— 响应另带 `sessions`(人口) 与 `unlisted`(这类会话里能确认属于本人的数量),
+  就是给「用户自己数 `todos/` 与这一格对不上」留的可查之处。**前端目前还没把这两个字段显示
+  出来**(只在接口里可查), 见 `_stats` 模块头「人口 (分母) 与会话注册表」。
 - **宝箱 = 全部交付物**, 入口是**页头那颗图标**(`TreasureVisual`, 与对话顶栏、与 ToC 的
   `TreasureButton` 同一个图标), 只给图标不写文字, 名字挂在 `title`/`aria-label` 的
   「所有交付物」上。详情面板里**不再重复**一个「打开宝箱」按钮 —— 同一件事在一屏出现两次只会

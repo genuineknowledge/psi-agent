@@ -74,6 +74,23 @@ def appdata_history_path(appdata_root: str, session_id: str) -> anyio.Path:
     return anyio.Path(appdata_root) / "histories" / f"{session_id}.jsonl"
 
 
+def appdata_uploads_path(appdata_root: str, session_id: str) -> anyio.Path:
+    """AppData path: ``{appdata}/uploads/{session_id}.jsonl``.
+
+    Ledger of **inbound** files the server itself wrote for this session (one JSON
+    object per line, ``{"path": ...}``). ``ChatManager._save_upload`` appends to it at
+    the moment the bytes land on disk; ``GET /feishu/sessions/{id}/files`` treats it as
+    part of the deliverable whitelist.
+
+    It exists because the whitelist must not be derivable from anything the user can
+    write: the previous source was ``[RECV:…]`` markers regex-scraped out of the user's
+    own message text, so a user could name any file on the server and the download
+    route would serve it. A ledger written by the side that did the write is the only
+    version of this list that cannot be forged from the chat box.
+    """
+    return anyio.Path(appdata_root) / "uploads" / f"{session_id}.jsonl"
+
+
 async def resolve_history_read_path(
     *,
     appdata_root: str,
