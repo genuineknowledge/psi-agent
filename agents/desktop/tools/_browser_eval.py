@@ -62,7 +62,9 @@ async def evaluate(function: str) -> str:
         raise BrowserEvalError("evaluate() 需要一段非空 JS")
 
     try:
-        config = await anyio.to_thread.run_sync(_config)
+        # 与 _mcp.py 同一处 anyio 类型怪癖: ty 把 to_thread 的 worker 解析成
+        # BrokenWorkerInterpreter, 于是看不到 run_sync。运行期没有问题。
+        config = await anyio.to_thread.run_sync(_config)  # ty: ignore
     except BaseException as exc:  # 含 MCP/anyio 的 teardown 组, 见 _mcp._is_fatal
         if _mcp._is_fatal(exc):
             raise
