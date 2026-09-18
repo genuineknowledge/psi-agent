@@ -1,3 +1,7 @@
+# ruff: noqa: RUF001, RUF003, E501
+# 三个都因为同一个理由: 本文件是**生成物**, 内容是冻结的真实输出。
+# 全角标点与 × 是数据(改了就不是 golden); 每行 600 多字符的那几条也是数据,
+# 拆行会动到值本身 —— 而这份文件唯一的作用就是「一个字符都不许变」。
 """`subsidy_calc` 的 golden —— 冻结重构前的输出。
 
 这个工具是**已上线、有 golden 数据集**的(实测基线 0.806), 但它自己没有单测。
@@ -9,7 +13,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 
