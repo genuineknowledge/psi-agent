@@ -6,7 +6,7 @@
    **不提取面额/门槛** —— 从标题反推 "满500减50" 是最容易编出来的地方。
 2. **日期是承重的**。实测: 合肥专题页最新一条是 2026-04-24, 而当时已是 2026-09。
    不带日期地返回 48 条, 模型会把 2024 年的电影券当成现行的。所以每条都带
-   `date` / `age_days` / `freshness`, 且**没日期的排最后**(而不是当最新)。
+   `published` / `age_days` / `clue_freshness`, 且**没日期的排最后**(而不是当最新)。
 3. **抓不到就说抓不到**。命中拼图风控 -> `blocked` 并要求停下; 取不到 -> `source_unreachable`;
    城市不在表里 -> `unknown_city`(**不猜拼音** —— 猜出来的代码 404, 而 404 与"这个城市
    没有券"在返回体里长得一样)。
@@ -103,9 +103,9 @@ def test_clues_are_sorted_newest_first_and_undated_last() -> None:
         "合肥百货消费券",  # 没日期
     )
     clues = _voucher_clues._parse_clues(html, TODAY)
-    assert [c["date"] for c in clues[:2]] == [_iso(3), _iso(200)]
-    assert clues[-1]["date"] is None
-    assert clues[-1]["freshness"] == "undated"
+    assert [c["published"] for c in clues[:2]] == [_iso(3), _iso(200)]
+    assert clues[-1]["published"] is None
+    assert clues[-1]["clue_freshness"] == "undated"
 
 
 def test_publish_time_is_stripped_from_the_title() -> None:
@@ -168,7 +168,7 @@ async def test_happy_path_returns_clues_with_freshness(page: Any) -> None:
     assert data["query"] == {"city": "合肥", "city_code": "hf", "category": ""}
     assert data["source"]["tier"] == "aggregator"
     assert data["totals"]["parsed"] == 2
-    assert data["totals"]["by_freshness"] == {"current": 1, "recent": 1, "stale": 0, "undated": 0}
+    assert data["totals"]["by_clue_freshness"] == {"current": 1, "recent": 1, "stale": 0, "undated": 0}
     assert data["categories_seen"] == {"汽车": 1, "餐饮": 1}
 
 
@@ -315,3 +315,23 @@ def test_a_malformed_source_definition_fails_loudly() -> None:
     """缺字段要报错, 不要在代码里兜默认值 —— 那等于第二份配置。"""
     with pytest.raises(ValueError, match="缺少"):
         _voucher_sources.aggregator({"aggregators": {"x": {"name": "X"}}}, "x")
+
+
+async def test_the_note_forbids_inferring_validity_from_the_article_date(page: Any) -> None:
+    """踩过的坑: 文章是 `recent`(147 天前), 里面的券却只有 2 天有效期, 早就过期了。
+
+    所以字段名写成 `published` / `clue_freshness`(线索的时效), 且 note 必须把
+    "发放窗口要从原文读" 说死 —— 否则模型会拿文章日期当券的有效期。
+    """
+    page(_page(f"合肥汽车消费券 {_iso(5)}"))
+
+    data = await _call(city="合肥")
+    note = data["note"]
+    assert "不是券的有效期" in note
+    assert "valid_from" in note and "valid_to" in note
+    assert "不许因为文章还新就说「能领」" in note
+
+    clue = data["clues"][0]
+    assert "published" in clue and "clue_freshness" in clue
+    assert "date" not in clue, "字段名不能叫 date —— 会被读成「券的日期」"
+    assert "freshness" not in clue, "字段名不能叫 freshness —— 会被读成「券的时效」"

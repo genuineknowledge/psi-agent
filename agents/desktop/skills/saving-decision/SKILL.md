@@ -72,9 +72,13 @@ sourcing discipline is stricter, not looser.
 
 - **Clues come from `voucher_clues`; facts come from the page.** Get the candidate pages, then open them and
   read amount / threshold / scope / validity. Cite the page, not the search result.
-- **Date decides whether a clue is still worth chasing.** Every clue carries `freshness`: `current` (<=30d) /
-  `recent` (<=180d) / `stale` / `undated`. `stale` vouchers have usually finished issuing, and `undated` is
-  **not** "new". Lead with what is `current`; if nothing is, say so plainly.
+- **A clue's date is the ARTICLE's date, not the voucher's validity.** Every clue carries `published` and
+  `clue_freshness`: `current` (article <=30d) / `recent` (<=180d) / `stale` / `undated`. `stale` vouchers have
+  usually finished issuing, and `undated` is **not** "new". Lead with what is `current`; if nothing is, say so
+  plainly. Measured: a `recent` article (147 days old) described a voucher whose issuance window was 12 days
+  and whose per-voucher validity was **2 days** - long expired. So once the page is open, `valid_from` /
+  `valid_to` are **must-read**; if you cannot get them, say `[Cannot Confirm]` - never infer a voucher's
+  validity from the article's date, and never carry it into `saving_facts` as if you had read it.
 - **Ask for the city, not the province.** The national-subsidy flow needs the province; the local-voucher
   flow needs the **municipal-level city**. A province name is not a city.
 - **When `voucher_clues` returns `blocked`** (the source wants human verification), STOP: relay its `message`
@@ -82,6 +86,11 @@ sourcing discipline is stricter, not looser.
   their city; never guess a city code (a guessed code 404s, and a 404 looks exactly like "no vouchers here").
 - **"No local voucher for this city" is a normal answer, not a failure.** Say it and point at what does
   still apply (e.g., the national subsidy, if the item qualifies) - never invent a voucher to fill the gap.
+- **A page title can conflate two different programs.** Measured: a page titled "安徽国补2025家电..." actually
+  described the **province-level** "焕新" subsidy (8 categories / 10% / cap 1000) - a different program from
+  the national one - and it had been **suspended since 2025-12-01**. Trusting that title gets the rate, the
+  cap, the category count AND the validity wrong at once. Decide which program a page describes from its
+  **body and its issuing authority**, never from its title; when the body and the title disagree, the body wins.
 - **State the three states explicitly** per constraint 9: 能领 / 能用 / 已失效.
 
 ## Saving Scenario Checklist (only within saving tasks; ignore in non-saving tasks)

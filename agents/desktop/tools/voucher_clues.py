@@ -173,9 +173,12 @@ def _parse_clues(html: str, today: date) -> list[dict[str, Any]]:
         clues.append(
             {
                 "title": title[:120],
-                "date": published,
+                # `published` 是**文章发布日**, 不是券的有效期 —— 字段名刻意写全, 免得被读成
+                # "这张券的日期"。实测有一篇 published 是 147 天前, 里面的券却只有 2 天有效期。
+                "published": published,
                 "age_days": age,
-                "freshness": _freshness(age),
+                # 同理: 这是**线索**的时效, 只说明"这篇文章多新", 不说明"券还能不能用"。
+                "clue_freshness": _freshness(age),
                 "url": href[:300],
             }
         )
@@ -209,8 +212,12 @@ async def voucher_clues(
     max_results: 最多返回多少条(默认 20, 已按时间倒序)。
     return_json: 默认返回 JSON 文本。
 
-    返回里的 `freshness` 三档要看:
-    - `current`(30 天内) / `recent`(180 天内) / `stale`(更早) / `undated`(**没有日期, 不等于新**)。
+    `clue_freshness` 是**线索的**时效, 不是券的 —— 字段名刻意写全, 免得被读成"券的时效":
+    - `current`(文章 30 天内) / `recent`(180 天内) / `stale`(更早) / `undated`(**没日期, 不等于新**)。
+    - `published` 是**文章发布日**。实测有一篇 `published` 是 147 天前的文章, 里面的券发放窗口
+      只有 12 天、单张有效期只有 2 天 —— 早就过期了。**「文章还新」推不出「券还能领」**,
+      所以打开原文后 `valid_from` / `valid_to` 是**必读项**; 读不到就说 `[Cannot Confirm]`,
+      不许拿文章日期替它填。
 
     `ok=false` 时**不带** `clues` 字段, 按 reason 处理:
     - `blocked`         -> 券源要人工验证。**停下, 把 message 原样告诉用户, 不重试。**
@@ -275,7 +282,7 @@ async def voucher_clues(
 
     by_freshness: dict[str, int] = {"current": 0, "recent": 0, "stale": 0, "undated": 0}
     for clue in matched:
-        by_freshness[clue["freshness"]] = by_freshness.get(clue["freshness"], 0) + 1
+        by_freshness[clue["clue_freshness"]] = by_freshness.get(clue["clue_freshness"], 0) + 1
 
     verified = [str(c) for c in (sources.get("verified_working") or [])]
     payload = {
@@ -291,12 +298,15 @@ async def voucher_clues(
         },
         "registered_cities": registered,
         "city_verified_working": city in verified,
-        "totals": {"parsed": len(all_clues), "matched": len(matched), "by_freshness": by_freshness},
+        "totals": {"parsed": len(all_clues), "matched": len(matched), "by_clue_freshness": by_freshness},
         "categories_seen": _categories_seen(matched),
         "clues": matched[: max(0, int(max_results))],
         "note": (
             "这些是**线索**, 不是结论: 面额 / 门槛 / 适用范围 / 有效期都要打开链接读原文才知道。"
-            "先看 `date` 与 `freshness` —— `stale` 的很可能早就发完了, `undated` 也不能当新。"
+            "`published` / `clue_freshness` 说的是**这篇文章多新, 不是券的有效期** —— "
+            "实测有一篇 147 天前的文章(recent), 里面的券发放窗口只有 12 天、单张有效期只有 2 天, 早就过期了。"
+            "所以打开原文后, **发放窗口与有效期(valid_from / valid_to)是必读项**: "
+            "读不到就标 [Cannot Confirm], **不许因为文章还新就说「能领」**。"
             "把这些页面交给模型提取券属性(带来源与日期), 再用 `saving_facts` 组装成事实契约。"
             "「能不能用」「能减多少」由本体判定, **不要在这里算**。"
         ),

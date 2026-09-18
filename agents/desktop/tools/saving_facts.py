@@ -17,6 +17,21 @@
 
 本工具**不认识任何政策参数**: 比例、上限、门槛值、品类枚举全部由调用方给出(将来
 由资料卡/本体提供), 这里只检查它们"形状对不对"。
+
+## 券的形状住在工具说明里
+
+**字段清单与示例在下面 ``saving_facts`` 的 docstring 里** —— 那是模型实际读到的工具说明,
+不在这里再抄一份(抄两份必然漂移)。这一节只记两条踩过的坑:
+
+- **``id`` 不是装饰。** 契约里券按 id 引用(``entities[c1] = {"concept": "消费券"}``), 没有它
+  就无法把"券面额"与"持有券"挂到同一张券上。实测跑端到端时草稿漏了它, 直接被
+  ``E_COUPON_ID_MISSING`` 挡在门外 —— 所以它必须写在**工具说明**里, 不能只活在校验代码里。
+- **已过期不是形状错误。** ``valid_to`` 早于 ``as_of`` 只进 ``warnings``; 过期与否是**时效
+  判断**, 由本体决定怎么用, 这里不拦。会报错的只有起止顺序(``E_DATE_ORDER``)与格式。
+
+``valid_from`` / ``valid_to`` 同时是**必读项**: 实测有一篇 ``recent``(147 天前)的文章, 里面的
+券发放窗口只有 12 天、单张有效期只有 2 天 —— 早就过期了。**「文章还新」推不出「券还没过期」**,
+读不到这两个日期时应当留空并说明, 不要拿文章日期替它填。
 """
 
 from __future__ import annotations
@@ -142,8 +157,16 @@ async def saving_facts(draft_json: str, return_json: bool = True) -> str:
     返回契约 payload(contract/as_of/scope/entities/facts/missing/assumptions/warnings)。
     校验不通过时返回 {"ok": false, "errors": [...]}, 不产出半成品 payload。
 
-    要点: `held` 留 null 表示"不知道", 进 missing[]; 写 false 则必须给 source。
-    `price_basis` 必填且只能是 标价 / 结算价。
+    每张券的字段(缺一个都会被稳定错误码挡下):
+    - `id` **必填且唯一** —— 契约里券按 id 引用, 没它就无法把"券面额"与"持有券"挂到同一张券上。
+    - `type` **必填**(满减券 / 折扣券 / ...)。
+    - `held` 留 null 表示"不知道", 进 missing[]; 写 false 则必须给 source。
+    - 可选: `face` / `threshold` / `applies_to` / `channel` / `valid_from` / `valid_to`。
+
+    另外两条:
+    - `price_basis` 必填且只能是 标价 / 结算价。
+    - `valid_from` / `valid_to` 是**必读项**(读不到就别填, 不要拿线索的发布日期替它填);
+      已过期**不报错**, 只进 warnings —— 过期与否由本体判断。
     """
     try:
         draft = json.loads(draft_json)
