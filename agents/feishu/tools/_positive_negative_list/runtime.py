@@ -60,6 +60,19 @@ _TYPE_NAMES = {
     "超链接": 15,
 }
 
+# The Feishu bitable field types this pipeline can actually *write* — exactly the
+# ones ``_preflight_existing_columns`` requires for its six semantics (文本 1,
+# 单选 3, 日期 5, 人员 11).
+#
+# **Deliberately a whitelist, not a blacklist of read-only types.** Feishu keeps
+# adding field types (关联 18/21, 公式 20, 查找引用 19, 附件 17, 自动编号 1005,
+# 创建时间 1001 …); enumerating the read-only ones means every new type Feishu
+# ships is silently treated as writable and fails the preflight again — the exact
+# failure mode this narrowing exists to remove. A whitelist degrades the other
+# way: an unlisted type is ignored, which is what a column we cannot write to
+# deserves.
+_WRITABLE_FIELD_TYPES = frozenset({1, 3, 5, 11})
+
 _REQUIRED_LEDGER_FIELDS = (
     "case_id",
     "source_key",
@@ -458,7 +471,19 @@ class ConfiguredTableClient(FeishuLedgerClient):
         allowed_names = set(required_names.values()) | {"记录ID"} | set(ignored)
         for aliases_for_semantic in aliases.values():
             allowed_names.update(aliases_for_semantic)
-        unexpected = sorted(name for name in fields_by_name if name not in allowed_names)
+        # Only *writable* columns can be an "unexpected field" worth failing on.
+        # A read-only column (关联/公式/查找引用/附件/自动编号 …) cannot receive a
+        # value no matter what we send, so its mere presence in the ledger says
+        # nothing about whether our write is well-formed — yet it used to fail the
+        # whole preflight, which is how a ledger that merely *gained* a formula
+        # column started refusing every confirmed write. The check keeps its
+        # point for the columns it can actually be about: a writable column the
+        # deployment never declared still means "we don't know what to put here".
+        unexpected = sorted(
+            name
+            for name, field in fields_by_name.items()
+            if name not in allowed_names and field.get("type") in _WRITABLE_FIELD_TYPES
+        )
         if unexpected:
             errors.append("unexpected_fields:" + ",".join(unexpected))
         view_purposes = self._config.get("view_purposes", {})

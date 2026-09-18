@@ -96,19 +96,41 @@ def _core_yielding(*chunks: Any) -> ChannelCore:
 
 
 def _tool_call(name: str, args_text: str = "{}") -> ReasoningChunk:
-    """构造与生产同形的 tool_call chunk —— 文本里带完整参数, 正如流上那样。"""
-    return ReasoningChunk(text=f"[Tool Call: {name}({args_text})]", kind="tool_call", tool_name=name)
+    """构造与生产同形的 tool_call chunk。
+
+    文本里带完整参数 (正如流上那样) **且**同样的参数也放进 ``tool_args`` —— 生产的
+    ``ChannelCore._to_chunk`` 两处都填 (见 ``channel/_core.py``)。只填一处会让判据测
+    的是一个流上不存在的形状。
+    """
+    return ReasoningChunk(
+        text=f"[Tool Call: {name}({args_text})]",
+        kind="tool_call",
+        tool_name=name,
+        tool_args=args_text,
+    )
 
 
 def _tool_result(name: str, result: str = "ok") -> ReasoningChunk:
     return ReasoningChunk(text=f"[Tool Result: {result}]", kind="tool_result", tool_name=name)
 
 
+@pytest.fixture
+def live_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """显式关掉 live —— 下面那批判据锁的是 ``_tool_status`` 那条路。
+
+    ``PSI_FEISHU_LIVE_FEEDBACK`` 的默认值从关翻成开之后, **不设环境变量就是 live**,
+    这批用例会静默改测另一条路径: 实测 7 条当场转红 (中文别名、``GENERIC_TOOL_LABEL``
+    兜底、状态行被正文抹掉这些概念在 live 里根本不存在)。所以关必须写成显式的,
+    而不是依赖"默认恰好是关的" —— 后者就是这次翻默认值时炸掉的那个假设。
+    """
+    monkeypatch.setenv(_live_feedback.ENV_FLAG, "0")
+
+
 # -- 判据 1: 状态行出现 --------------------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_tool_call_renders_chinese_alias_on_the_card():
+async def test_tool_call_renders_chinese_alias_on_the_card(live_off: None):
     """收到 tool_call 后, 卡片上要出现该工具的中文别名。"""
     rec = _CardRecorder()
     channel, _ = _recording_channel(rec)
@@ -123,7 +145,7 @@ async def test_tool_call_renders_chinese_alias_on_the_card():
 
 
 @pytest.mark.anyio
-async def test_status_line_never_leaks_tool_arguments():
+async def test_status_line_never_leaks_tool_arguments(live_off: None):
     """带私密路径的参数一个字都不能上卡片。
 
     ``reasoning`` 文本里就带着完整 ``json.dumps(args)``, 直接贴上去是最省事也最
@@ -150,7 +172,7 @@ async def test_status_line_never_leaks_tool_arguments():
 
 
 @pytest.mark.anyio
-async def test_unmapped_tool_uses_generic_label_without_its_name():
+async def test_unmapped_tool_uses_generic_label_without_its_name(live_off: None):
     rec = _CardRecorder()
     channel, _ = _recording_channel(rec)
     core = _core_yielding(_tool_call("internal_payroll_probe"))
@@ -166,7 +188,7 @@ async def test_unmapped_tool_uses_generic_label_without_its_name():
 
 
 @pytest.mark.anyio
-async def test_body_text_erases_the_status_line():
+async def test_body_text_erases_the_status_line(live_off: None):
     """正文一出字, 状态行就得消失, 只留正文。"""
     rec = _CardRecorder()
     channel, _ = _recording_channel(rec)
@@ -191,7 +213,7 @@ async def test_body_text_erases_the_status_line():
 
 
 @pytest.mark.anyio
-async def test_mixing_append_and_set_content_neither_swallows_nor_duplicates():
+async def test_mixing_append_and_set_content_neither_swallows_nor_duplicates(live_off: None):
     """``merge_streaming_text`` 会按「prev 的后缀 == chunk 的前缀」去重。
 
     实测 ``merge('abc','cdef') == 'abcdef'`` —— 它真的会吃字。所以状态行在
@@ -222,7 +244,7 @@ async def test_mixing_append_and_set_content_neither_swallows_nor_duplicates():
 
 
 @pytest.mark.anyio
-async def test_body_erases_a_status_line_that_is_still_showing():
+async def test_body_erases_a_status_line_that_is_still_showing(live_off: None):
     """正文到达时状态行**还挂着**的那条路径 —— 工具没回结果就出正文。
 
     与上一条分开是必须的: 上一条的序列里 ``tool_result`` 已经先把状态行抹掉了,
@@ -248,7 +270,7 @@ async def test_body_erases_a_status_line_that_is_still_showing():
 
 
 @pytest.mark.anyio
-async def test_status_line_returning_mid_body_keeps_body_intact():
+async def test_status_line_returning_mid_body_keeps_body_intact(live_off: None):
     """多轮: 正文出了一段后又调工具, 状态行回来时不能动已发出的正文。"""
     rec = _CardRecorder()
     channel, _ = _recording_channel(rec)
@@ -269,7 +291,7 @@ async def test_status_line_returning_mid_body_keeps_body_intact():
 
 
 @pytest.mark.anyio
-async def test_silent_turn_sends_nothing_at_all():
+async def test_silent_turn_sends_nothing_at_all(live_off: None):
     """静默回合(NO_REPLY)结束后, 卡片上不该有任何内容。"""
     rec = _CardRecorder()
     channel, _ = _recording_channel(rec)
@@ -288,7 +310,7 @@ async def test_silent_turn_sends_nothing_at_all():
 
 
 @pytest.mark.anyio
-async def test_silent_turn_creates_no_card():
+async def test_silent_turn_creates_no_card(live_off: None):
     """静默回合不许建卡 —— 这是独立于「不发内容」的第二条回归路径。
 
     ``_ensure_started`` 在首次 append/set_content 时建卡。状态行本身就是「要写字」,
@@ -310,7 +332,7 @@ async def test_silent_turn_creates_no_card():
 
 
 @pytest.mark.anyio
-async def test_suppressed_turn_with_real_reply_still_delivers_it():
+async def test_suppressed_turn_with_real_reply_still_delivers_it(live_off: None):
     """抑制开着但回复不是 NO_REPLY 时, 正文照旧送达 —— 抑制机器不能被状态行带坏。"""
     rec = _CardRecorder()
     channel, _ = _recording_channel(rec)
@@ -328,7 +350,7 @@ async def test_suppressed_turn_with_real_reply_still_delivers_it():
 
 
 @pytest.mark.anyio
-async def test_tool_result_still_rearms_the_silent_check():
+async def test_tool_result_still_rearms_the_silent_check(live_off: None):
     """``tool_result`` 作为「上一次卡片动作办完了」的时钟信号必须还在。
 
     抑制机器靠它把 ``checking_silent_reply`` 重新打开; 渲染逻辑征用或打乱这个
@@ -355,7 +377,7 @@ async def test_tool_result_still_rearms_the_silent_check():
 
 
 @pytest.mark.anyio
-async def test_status_line_updates_scale_with_tools_not_characters():
+async def test_status_line_updates_scale_with_tools_not_characters(live_off: None):
     """``set_content`` 会强制立刻发一次 HTTP, 所以它只能在工具边界调。
 
     断言它的次数与工具调用同阶, 而不是与正文字符数同阶: 4 次工具边界 + 1 次
@@ -379,7 +401,7 @@ async def test_status_line_updates_scale_with_tools_not_characters():
 
 
 @pytest.mark.anyio
-async def test_concurrent_tool_calls_report_a_count():
+async def test_concurrent_tool_calls_report_a_count(live_off: None):
     """并发时状态行报个数, 不铺开列名 —— 走到飞书渲染这一层确认。"""
     rec = _CardRecorder()
     channel, _ = _recording_channel(rec)
@@ -420,6 +442,43 @@ def _core_with_delays(*items: Any) -> ChannelCore:
 @pytest.fixture
 def live_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(_live_feedback.ENV_FLAG, "1")
+
+
+# -- 判据: 开关默认值本身 ------------------------------------------------------
+
+
+def test_live_is_on_when_the_flag_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """不设环境变量就是**开** —— 拍板过的默认值, 别悄悄翻回去。
+
+    判据落在 ``live_feedback_enabled`` 而不是某条渲染路径上: 默认值是一个独立的
+    产品决定, 上面那批渲染判据都显式设了 ``0``/``1``, 谁也不会因为默认值被翻回
+    关而转红。
+    """
+    monkeypatch.delenv(_live_feedback.ENV_FLAG, raising=False)
+    assert _live_feedback.live_feedback_enabled() is True
+
+
+def test_live_is_off_only_on_an_explicit_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """关的判据是显式的 ``0``, 不是「非 1」。
+
+    ``true``/``yes`` 这类拼法的意思明显是要开, 按「非 1」判会把它们静默关掉 ——
+    那正是默认值翻过来之后最容易悄悄退化回去的写法。
+    """
+    monkeypatch.setenv(_live_feedback.ENV_FLAG, "0")
+    assert _live_feedback.live_feedback_enabled() is False
+    monkeypatch.setenv(_live_feedback.ENV_FLAG, " 0 ")
+    assert _live_feedback.live_feedback_enabled() is False, "带空白的 0 也该关"
+    for truthy in ("1", "true", "yes", ""):
+        monkeypatch.setenv(_live_feedback.ENV_FLAG, truthy)
+        assert _live_feedback.live_feedback_enabled() is True, f"{truthy!r} 不该关掉 live"
+
+
+def test_live_flag_is_read_every_call_not_snapshot_at_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    """每回合现读 —— import 时快照会让所有用例读到同一个值 (见函数 docstring)。"""
+    monkeypatch.setenv(_live_feedback.ENV_FLAG, "0")
+    assert _live_feedback.live_feedback_enabled() is False
+    monkeypatch.setenv(_live_feedback.ENV_FLAG, "1")
+    assert _live_feedback.live_feedback_enabled() is True, "同一进程内改了环境变量却没生效"
 
 
 @pytest.mark.anyio
@@ -527,3 +586,41 @@ async def test_live_final_render_drops_the_process_block_and_keeps_only_the_answ
     assert "查一下再回答。" in rec.everything, "过程压根没出现过, 这条判据没吃劲"
     assert rec.final == "结论是这样。", f"终态不是纯正文: {rec.final!r}"
     assert "🔧" not in rec.final
+
+
+# -- 判据: 参数字面含 ")]" 也完整显示 -------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_live_shows_full_args_when_they_contain_the_closing_bracket_pair(
+    live_on: None, monkeypatch: pytest.MonkeyPatch
+):
+    """参数里**字面**含 ``)]`` 时仍完整显示 —— 结构化字段替掉正则的全部理由。
+
+    旧实现从 ``chunk.text`` 里正则抠 ``[Tool Call: name(args)]``, 非贪婪匹配在参数
+    内部第一个 ``)]`` 上就收尾: 实测这条参数只显示到 ``{"command": "echo``, 后面
+    连引号都没闭合。现在名字与参数走 ``tool_name`` / ``tool_args`` 两个字段, 文本
+    长什么样都不再参与解析。
+
+    ``echo )]`` 是最小复现: shell 里反引号/括号是家常, 而 ``)]`` 恰好是那条正则的
+    收尾符。
+    """
+    monkeypatch.setattr(_live_feedback, "CARD_DELAY_SECONDS", 0.01)
+    rec = _CardRecorder()
+    channel, _ = _recording_channel(rec)
+    args_text = '{"command": "echo )]"}'
+    core = _core_with_delays(
+        (_tool_call("bash", args_text), 0.05),
+        (_tool_result("bash", ")]"), 0),
+    )
+
+    await client._stream_reply(
+        channel, core, "oc_1", [], reply_to=None, suppress_silent_reply=True, sender_open_id="ou_1"
+    )
+
+    shown = rec.everything
+    assert "bash" in shown, "工具名没上卡片, 这条判据没吃劲"
+    # 整条参数逐字符都在 —— 断在 "echo" 后面正是旧正则的截断点, 所以这里比的是
+    # **完整串**而不是某个子串在不在。
+    assert args_text in shown, f"参数被截断了 (旧正则的盲区): {shown!r}"
+    assert '{"command": "echo\n' not in shown, "参数在 echo 后被截断"

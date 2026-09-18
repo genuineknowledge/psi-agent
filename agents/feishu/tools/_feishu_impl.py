@@ -46,7 +46,7 @@ from lark_channel.core.enum import (  # noqa: F401  (re-exported: callers reach 
     HttpMethod,
 )
 from lark_channel.core.model import BaseRequest  # noqa: F401  (re-exported: callers reach it as _f.<name>)
-from loguru import logger  # noqa: F401  (re-exported: callers reach it as _f.<name>)
+from loguru import logger  # also re-exported: callers reach it as _f.<name>
 
 from psi_agent.channel.feishu._card_store import (
     save_card_snapshot,  # noqa: F401  (re-exported: callers reach it as _f.<name>)
@@ -406,17 +406,39 @@ async def _invoke_write(request: Any, key: str, identity: str, capabilities: lis
         # Explicitly the bot's: never reach for the user's token, even if cached.
         return await _send_as_tenant(request)
 
+    # The ledger is a *cache* of what this user granted; the token is the ground
+    # truth. So a ledger gap must not veto the call — it only changes what we say
+    # if the call turns out to be impossible.
+    #
+    # **This used to be an early return, and that made it a self-lock.** The
+    # ledger's own repair path (``_record_observed_capabilities``) hangs off a
+    # *successful* user-token call inside ``_send_as_user`` — i.e. downstream of
+    # here. Returning ``need_auth`` on a ledger gap therefore guaranteed the
+    # success that would have repaired the ledger could never happen, so the gap
+    # was permanent and the user was asked to authorize again after every single
+    # authorization. Production had 21 keys in ``uat.json`` against 9 in
+    # ``granted_scopes.json``: 12 users with live credentials (17 unexpired
+    # refresh_tokens) whom the ledger did not know. Refresh lives at the same
+    # downstream point, so those live tokens were unreachable too.
+    #
+    # Reading the grant back off the token is not an option: Feishu's token
+    # response does not echo ``scope`` (all 21 production entries have an empty
+    # ``scopes``), which is why the ledger exists at all and equally why a missing
+    # entry cannot be reconstructed without spending one real call.
     missing = missing_capabilities(key, needed)
-    if missing:
-        return _error(
-            f"{_AUTH_PROMPT}\n本次需要新的权限: {', '.join(missing)}.",
-            need_auth=True,
-            need_capabilities=missing,
-        )
     user_res = await _send_as_user(request, key)
     if user_res is None:
-        # No usable token at all: the user chose to own this, so ask them to
-        # authorize rather than producing it under the bot's name behind their back.
+        # No usable token at all — nothing to prove the grant with. The user chose
+        # to own this, so ask them to authorize rather than producing it under the
+        # bot's name behind their back. Name the capabilities the ledger knows are
+        # missing when it has an opinion, so the consent page asks for those rather
+        # than a blanket set.
+        if missing:
+            return _error(
+                f"{_AUTH_PROMPT}\n本次需要新的权限: {', '.join(missing)}.",
+                need_auth=True,
+                need_capabilities=missing,
+            )
         return _error(_AUTH_PROMPT, need_auth=True, need_capabilities=needed)
     if user_res.get("need_auth"):
         # 99991679-class revocation: the user's authorization died on the Feishu
@@ -425,6 +447,19 @@ async def _invoke_write(request: Any, key: str, identity: str, capabilities: lis
         return user_res
     if not _is_permission_error(user_res):
         return user_res
+    if missing:
+        # Denied *and* the ledger says this user never granted these capabilities:
+        # the two facts agree, so it really is a missing grant and re-authorizing is
+        # the fix. Ask, rather than dropping into the bot fallback below — the user
+        # chose to own this result, and a scope they never granted is not a fact
+        # about the target document. This branch is what the removed early return
+        # used to cover; the difference is that we now know the token was actually
+        # refused, instead of assuming it would be.
+        return _error(
+            f"{_AUTH_PROMPT}\n本次需要新的权限: {', '.join(missing)}.",
+            need_auth=True,
+            need_capabilities=missing,
+        )
     # The user authorized the app, but Feishu refuses their identity on THIS resource
     # (e.g. 1770032 on a block they may not edit) — a fact about the target, not about
     # ownership. The bot can often do it, and finishing the write is what the user
@@ -696,9 +731,25 @@ def missing_capabilities(user_key: str, needed: list[str]) -> list[str]:
 
 
 def _write_json_map(path: str, data: dict[str, Any]) -> None:
-    """Persist a ``{user_key: value}`` map; a failed write must not break the caller."""
-    with contextlib.suppress(OSError), open(path, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False, indent=2)
+    """Persist a ``{user_key: value}`` map; a failed write must not break the caller.
+
+    Not breaking the caller is deliberate (these maps are caches; losing one means
+    the user gets asked again, whereas raising would abort a write they asked for) —
+    but it must not be **silent**. A swallowed failure on the capability ledger
+    produces "token present, ledger absent", which is the exact skew that made the
+    capability gate a self-lock; with no log line, the only symptom is a user being
+    asked to authorize over and over, which is how it went unnoticed up to 12 users.
+    """
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+    except OSError as exc:
+        logger.error(
+            "{} 落盘失败 ({}: {}) —— 该记录落后于 token, 相关用户可能被反复要求授权。",
+            path,
+            type(exc).__name__,
+            exc,
+        )
 
 
 def _drop_granted_capabilities(user_key: str) -> bool:

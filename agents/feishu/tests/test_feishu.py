@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import importlib
 import inspect
 import io
@@ -12,6 +13,9 @@ from urllib.parse import parse_qs, urlparse
 
 import anyio
 import pytest
+from loguru import logger
+
+from psi_agent.session.task_registry import TaskRegistry
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_DIR = WORKSPACE_ROOT / "tools"
@@ -1930,9 +1934,12 @@ async def test_resumed_turn_can_request_auth_again_without_killing_itself(
 
     续跑的回合完全可能再要一次授权 (上次的 scope 不够, 或换个能力集), 那条路会先
     ``forget_and_wait`` 同一个 user_key —— 而这个 user_key 的 task 正是**在跑它自己的**那个,
-    于是等于「自己取消自己」。今天这是安全的, 但**不是设计出来的**: 取消在 ``forget_and_wait``
-    自己的 ``await task`` 处交付, 被那里的 ``suppress(CancelledError)`` 吞掉 (已实测), 回合照常
-    跑完。本用例把这个结论钉住 —— 谁要收窄那处 suppress, 先在这里红一次。
+    于是等于「自己取消自己」。现在这条路是安全的, 且是**设计出来的**: ``TaskRegistry`` 认出自指,
+    只摘记录不取消, 所以回合照常跑完。
+
+    写这条用例时的实现靠的是另一回事: 取消照旧提出, 只是在 ``forget_and_wait`` 的
+    ``await task`` 处被 ``suppress(CancelledError)`` 吞掉 —— 而那个 suppress 正是活锁的必要条件
+    (它把「取消已提出」从调用栈里抹掉)。suppress 已经去掉, 现在护栏是「不取消自己」本身。
     """
     _granted_pending(tmp_path, monkeypatch)
     monkeypatch.setattr(_impl, "send_message_impl", _record_dm(dms := []))
@@ -1956,6 +1963,119 @@ async def test_resumed_turn_can_request_auth_again_without_killing_itself(
 
     # 关键断言: 回合是**跑完**的, 不是被自己掐断在中间。
     assert progress == ["turn-start", "turn-finished"]
+    assert dms == []
+
+
+@pytest.mark.asyncio
+async def test_reauthorizing_inside_a_tool_task_group_does_not_livelock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """上一条用例的**真实形状**: 再次授权发生在工具的 anyio task group 里, 不是裸在回合里。
+
+    生产实测过的卡死 (2026-09-16, ou_d9545bb4): 续跑那一轮跑在 watcher 自己的 asyncio task
+    里, 回合调 ``feishu_auth_request`` → ``auth_start_impl`` → ``forget_and_wait`` 取消**当前
+    任务自己**; ``CancelledError`` 在 ``forget_and_wait`` 的 ``suppress`` 处被吞掉, 任务于是
+    「吸收了一次取消却继续跑」。而这次工具调用外面套着 ``SessionAgent`` 执行工具用的
+    ``anyio.create_task_group`` (``session/agent.py``): 它的 ``__aexit__`` 会不停
+    ``call_soon(_deliver_cancellation)`` 重试, 目标任务永远不进入 cancelled ——
+    事件循环 100% 忙转, ``turn_lock`` 永不释放, 该用户此后所有消息静默排队 (表现就是
+    「机器人卡死无响应」, 且不会自行恢复)。
+
+    上一条用例照不出来: 它直接 ``await forget_and_wait``, 少了那层 task group ——
+    而活锁**只在**取消交付撞上 task group 退出等待时出现。故这里补上那一层。
+    """
+    _granted_pending(tmp_path, monkeypatch)
+    monkeypatch.setattr(_impl, "send_message_impl", _record_dm(dms := []))
+    progress: list[str] = []
+
+    async def _resume_that_reauthorizes(session_id: str, content: str, **kwargs: Any) -> bool:
+        progress.append("turn-start")
+        # 工具在 task group 里并发执行 —— 这是 SessionAgent 跑工具的真实形状。
+        async with anyio.create_task_group() as tg:
+
+            async def _auth_request_tool() -> None:
+                await _watch.forget_and_wait(_impl._norm_user_key("ou_a"))
+
+            tg.start_soon(_auth_request_tool)
+        progress.append("turn-finished")
+        return True
+
+    monkeypatch.setattr(_auth.live_agent, "resume_session_turn", _resume_that_reauthorizes)
+    monkeypatch.setattr(_auth, "get_session_id", lambda: "feishu-ou_a")
+
+    await _impl.auth_collect_impl("ou_a")
+    state = _watch.status("ou_a")
+    assert state is not None and state.task is not None
+    # ``fail_after`` 就是判据本身: 活锁下这个 await 永不返回 (实测忙转不退出)。
+    with anyio.fail_after(5):
+        await asyncio.shield(state.task)
+
+    assert progress == ["turn-start", "turn-finished"]
+    assert dms == []
+
+
+def test_the_self_reference_guard_lives_only_in_the_shared_primitive() -> None:
+    """收编的判据: 本模块不能再自带一份自指判断。
+
+    热修那版在这里立了个模块级 ``_CURRENT_WATCHER`` ContextVar。收编到 ``TaskRegistry`` 后它必须
+    消失, 而不是与内核那份并存: 并存时本地那份会兜底, 于是谁把内核的守卫改坏了, 上面两条活锁
+    判据照样全绿 —— 判据看着在守, 实际守的是另一套。
+    """
+    assert isinstance(_watch._watchers, TaskRegistry)
+    local_guards = [name for name, value in vars(_watch).items() if isinstance(value, contextvars.ContextVar)]
+    assert local_guards == [], f"自指判断又回到了模块本地: {local_guards}"
+
+
+@pytest.mark.asyncio
+async def test_a_watcher_can_still_cancel_another_users_watcher(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """反例边: 守卫只豁免「自己」, 不能退化成「永不取消」。
+
+    没有这一条, 把守卫写成无条件 ``return None`` 也能让活锁那两条全绿 —— 代价是旧 watcher 永远
+    不撤, 它守着的过期结果会被下一轮当成本次的, 且 loopback 下一直占着回环端口。
+    """
+    _granted_pending(tmp_path, monkeypatch)
+    monkeypatch.setattr(_impl, "send_message_impl", _record_dm(dms := []))
+    other_key = _impl._norm_user_key("ou_b")
+    cancelled: list[bool] = []
+    # loguru 不走 stdlib logging 的 handler 链, ``caplog`` 收不到它的输出 —— 日志断言会假绿。
+    lines: list[tuple[str, str]] = []
+    sink_id = logger.add(lambda msg: lines.append((msg.record["level"].name, msg.record["message"])), level="INFO")
+
+    running = asyncio.Event()
+
+    async def _park(watched_key: str, window_seconds: float) -> dict[str, Any]:
+        running.set()
+        await asyncio.sleep(60)
+        return {}
+
+    async def _resume_that_reauthorizes(session_id: str, content: str, **kwargs: Any) -> bool:
+        # 另一个用户的 watcher: 同一张表, 但不是当前执行流所在的那个, 必须真的被取消。
+        _watch.start(other_key, _park)
+        other_task = _watch.status(other_key).task
+        # 等它真的进到任务体: 还没开跑就取消的话, 取消走的是「任务从未启动」那条捷径,
+        # 测不到守卫要判的那一支 (也会留下一个没人 await 的协程)。
+        with anyio.fail_after(5):
+            await running.wait()
+        await _watch.forget_and_wait(other_key)
+        cancelled.append(other_task.cancelled())
+        # 自己这个 key 仍然只摘记录不取消 —— 顺带钉住那条 INFO 是内核那份在记。
+        await _watch.forget_and_wait(_impl._norm_user_key("ou_a"))
+        return True
+
+    monkeypatch.setattr(_auth.live_agent, "resume_session_turn", _resume_that_reauthorizes)
+    monkeypatch.setattr(_auth, "get_session_id", lambda: "feishu-ou_a")
+
+    try:
+        await _impl.auth_collect_impl("ou_a")
+        state = _watch.status("ou_a")
+        with anyio.fail_after(5):
+            await asyncio.shield(state.task)
+    finally:
+        logger.remove(sink_id)
+
+    assert cancelled == [True], "跨 key 的取消被守卫误伤了"
+    assert _watch.status(other_key) is None
+    assert [msg for level, msg in lines if level == "INFO" and "TaskRegistry(feishu-auth-watch)" in msg], lines
     assert dms == []
 
 

@@ -18,13 +18,15 @@
 别名表要人手维护, 漏一个就退化成 ``GENERIC_TOOL_LABEL`` 那句没有信息量的
 「正在调用工具」—— 实测本次最贵的 ``python_run`` (单回合 143 秒) 恰好在表外。
 **这与非 live 路径「一个字都不能来自 reasoning 文本」的纪律相反, 是刻意的**:
-非 live 那条路 (``_tool_status``) 逐字节未变, 判据也还在锁它。live 是 opt-in 的
-``PSI_FEISHU_LIVE_FEEDBACK=1``, 开它就等于接受「过程细节给用户看」。
+非 live 那条路 (``_tool_status``) 逐字节未变, 判据也还在锁它。live **默认开**
+(``PSI_FEISHU_LIVE_FEEDBACK=0`` 才关), 即默认接受「过程细节给用户看」。
 
-**参数解析有盲区 (已知留白)。** 工具名/参数是从 chunk 文本里正则抠出来的,
-参数**字面**含 ``)]`` 时会提前收尾、显示不全 (实测 ``{"command": "echo )]"}``
-只显示到 ``{"command": "echo``)。只影响显示不影响执行。根治要 session 侧把 args
-作为结构化字段传出来, 不在本层。
+**参数从结构化字段来, 不从文本抠。** 工具名与参数走 ``ReasoningChunk.tool_name``
+/ ``tool_args`` (session 侧 ``AgentChunk`` 同名字段, 经 ``\\x1f`` 编码进
+``StreamBuffer`` 的 key —— 见 ``channel/_core.py:_buffer_key``)。曾经这里有一条
+``[Tool Call: name(args)]`` 的正则, 它在参数**字面**含 ``)]`` 时提前收尾、显示不全
+(实测 ``{"command": "echo )]"}`` 只显示到 ``{"command": "echo``)。那条正则已删,
+**不要为了"兜底"把它加回来**: 两条路并存意味着盲区还在, 只是多了一层遮掩。
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ import re
 from dataclasses import dataclass
 
 ENV_FLAG = "PSI_FEISHU_LIVE_FEEDBACK"
-"""总开关。生产由 ``launch-gateway.sh`` 导出; 缺省即完全走原路径。"""
+"""总开关, **默认开**。显式设成 ``0`` 才退回原路径 (见 ``live_feedback_enabled``)。"""
 
 ARG_CAP = 300
 """单个工具参数的显示上限。"""
@@ -66,26 +68,23 @@ CARD_DELAY_SECONDS = 3.0
 「静默回合不抹掉过程块」是同一条规则 (抹了点按钮就变空卡)。
 """
 
-_CALL_RE = re.compile(r"\[Tool Call: ([A-Za-z0-9_.-]+)\((.*?)\)\]", re.DOTALL)
 _RESULT_RE = re.compile(r"\[Tool Result: (.*?)\]\s*$", re.DOTALL)
 
 
 def live_feedback_enabled() -> bool:
-    """``PSI_FEISHU_LIVE_FEEDBACK=1`` 才开。
+    """默认**开**; 只有 ``PSI_FEISHU_LIVE_FEEDBACK=0`` 才关。
+
+    默认值从关翻成开是拍过板的: live 已在生产跑了一段 (启动脚本导出 ``=1``), 而
+    「工具跑几十秒时卡片一动不动」是默认路径下最常见的抱怨。让默认路径就是好的
+    那条, 而不是靠每处部署记得导出一个环境变量 —— 漏导出一次就是用户看着不动的卡。
+
+    关的判据是**显式的 ``0``**, 不是「非 1」: 后者会让任何拼错的值 (``true``、
+    ``yes``) 静默关掉 live, 而写这些值的人意思明显是要开。
 
     每回合现读而不是 import 时读一次: 生产靠改启动脚本 + 重启切换, 但用例要能
     ``monkeypatch.setenv`` 逐条切, import 时快照会让它们全部读到同一个值。
     """
-    return os.environ.get(ENV_FLAG) == "1"
-
-
-def parse_tool_calls(text: str) -> list[tuple[str, str]]:
-    """从 chunk 文本里抠出所有 ``[Tool Call: name(args)]``。
-
-    ``findall`` 而非 ``search``: ``StreamBuffer`` 会把并发的同名调用并进一条
-    chunk, 只取第一条就少显示几个工具。
-    """
-    return _CALL_RE.findall(text or "")
+    return (os.environ.get(ENV_FLAG) or "").strip() != "0"
 
 
 def parse_tool_result(text: str) -> str | None:

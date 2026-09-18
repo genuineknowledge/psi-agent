@@ -70,8 +70,16 @@ def _write_json_map(path: str, data: dict[str, Any]) -> None:
         json.dump(data, fh, ensure_ascii=False, indent=2)
 
 
-def _record_granted_capabilities(user_key: str, capabilities: list[str]) -> None:
-    """Add ``capabilities`` to what ``user_key`` has authorized (union, never shrink)."""
+def _record_granted_capabilities(user_key: str, capabilities: list[str]) -> bool:
+    """Add ``capabilities`` to what ``user_key`` has authorized (union, never shrink).
+
+    Returns whether the ledger actually reached disk. **The failure used to be
+    swallowed** (``contextlib.suppress(OSError)`` with no trace), and a swallowed
+    failure here produces exactly the "token present, ledger absent" state that
+    made the capability gate a self-lock — silently, with nothing in the logs to
+    say the ledger is now behind. Callers that just wrote a token must act on a
+    False (see ``auth_complete_impl``); everyone else at least gets a log line.
+    """
     path = _core._granted_scopes_path()
     data = _core._read_json_map(path)
     key = _core._norm_user_key(user_key)
@@ -79,8 +87,18 @@ def _record_granted_capabilities(user_key: str, capabilities: list[str]) -> None
     existing = stored if isinstance(stored, list) else []
     merged = {c for c in [*existing, *capabilities] if c in _core._SCOPE_CATALOG}
     data[key] = [c for c in _core.scope_catalog_keys() if c in merged]
-    with contextlib.suppress(OSError):
+    try:
         _write_json_map(path, data)
+    except OSError as exc:
+        logger.error(
+            "granted_scopes 落盘失败 ({}: {}), 路径 {} —— 该用户的能力账本落后于 token, "
+            "会被反复要求授权; 需人工核对该文件。",
+            type(exc).__name__,
+            exc,
+            path,
+        )
+        return False
+    return True
 
 
 def set_identity(user_key: str, identity: str) -> str:
@@ -936,11 +954,28 @@ async def auth_complete_impl(code: str, user_key: str = "") -> dict[str, Any]:
     uat = _core._uat_from_token_response(payload)
     if not uat.access_token:
         return _core._error("Token exchange returned no access_token.")
-    await _core._get_token_store().set(_core._norm_user_key(user_key), uat)
     # Which capabilities this grant covers was decided in auth_start_impl and parked
     # in the pending-auth file; read it back before unlinking so the union survives.
     granted = await _pending_capabilities(user_key)
-    _record_granted_capabilities(user_key, granted)
+    # **Ledger first, token second — the order is the fix.** These two writes are two
+    # files and cannot be made one atomic operation (the token half belongs to the
+    # SDK's ``FileTokenStore``, which persists only its own seven fields and would
+    # drop anything we tucked alongside them on the next refresh). What we *can* do
+    # is choose which way a half-completed authorization fails. Ledger-then-token
+    # can only ever leave "ledger knows a capability the user has no token for",
+    # which costs one wasted call that then reports need_auth truthfully.
+    # Token-then-ledger leaves "token present, ledger absent" — the state that made
+    # the capability gate a self-lock and left 12 production users re-authorizing
+    # forever. So the ledger write goes first and a failure aborts before the token
+    # is stored: asking the user to click authorize again is recoverable, whereas
+    # the inverse skew was not self-healing at all.
+    if not _record_granted_capabilities(user_key, granted):
+        return _core._error(
+            "授权已换到 token, 但本地能力账本写入失败, 为避免你之后被反复要求授权, "
+            "本次授权未生效 —— 请重试一次; 若反复失败请联系管理员检查 "
+            f"{_core._granted_scopes_path()} 的写权限。"
+        )
+    await _core._get_token_store().set(_core._norm_user_key(user_key), uat)
     with contextlib.suppress(OSError):
         await anyio.Path(_core._pending_auth_path(user_key)).unlink()
     return {

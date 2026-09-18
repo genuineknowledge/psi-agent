@@ -219,12 +219,21 @@ class AgentChunk:
     readable half of what ``reasoning`` says in prose: the text carries the
     arguments (and so is unsafe to show a user and brittle to parse), while a UI
     that wants to say "reading a doc" needs only the name.
+
+    ``tool_args`` carries those arguments as their own field, for ``tool_call``
+    only. It is the JSON dump already interpolated into ``reasoning`` — same
+    bytes, but reachable without parsing prose. A consumer that dug them back
+    out of ``[Tool Call: name({...})]`` could not: the pattern ends at the first
+    ``)]``, and an argument containing those two characters literally (measured:
+    ``{"command": "echo )]"}``) truncated mid-value. Sending the field removes
+    the parse instead of hardening it.
     """
 
     content: str | None = None
     reasoning: str | None = None
     kind: str | None = None
     tool_name: str | None = None
+    tool_args: str | None = None
 
 
 @dataclass
