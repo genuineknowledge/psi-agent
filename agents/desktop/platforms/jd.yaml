@@ -21,3 +21,34 @@ login_hosts:
   - passport.jd.com
 
 notes: "订单页需登录；未登录会跳 passport.jd.com。"
+
+# 可读页面：agent 导航到 url 之后，用 `saving_read(target=...)` 把这一页读成事实。
+#
+# `markers` 是关键而不是装饰 —— 券包为空时这些容器**仍然在**（容器在、券不在 = 券包为空），
+# 而容器本身找不到，说明页面结构变了，必须降级成 unknown，绝不能当成「没有券」。
+# 两种情况在计数上完全一样，区分它们只能靠 markers。
+reads:
+  coupons:
+    title: "已领券清单（券包）"
+    url: "https://quan.jd.com/user_quan.action"
+    host: "quan.jd.com"
+    path_prefix: "/user_quan.action"
+    verified_at: "2026-09-17"
+
+    # 页面必须具备的容器。缺任何一个 -> page_shape_changed（未知），而不是「空券包」。
+    markers: [".mod-coupon", ".coupon-items"]
+
+    # 单张券的根节点。
+    item: ".coupon-item"
+
+    # 字段名 -> 选择器。字段名就是交给本体的事实契约，改这里等于改契约。
+    fields:
+      unit: {sel: ".c-price em", note: "¥ 表示满减，折 表示折扣"}
+      amount: {sel: ".c-price strong", note: "满减金额，或折扣数（如 9.5）"}
+      kind: {sel: ".c-price .type", note: "券类型，如 东券"}
+      threshold: {sel: ".c-limit", note: "门槛，如 满49可用；折扣券还会带 最多减￥100"}
+      stackable: {sel: ".c-limit em.superpose-site", note: "可叠加标记"}
+      validity: {sel: ".c-time", note: "有效期，如 2026.09.16-2026.09.19"}
+      restrictions: {sel: ".c-range .range-item", many: true, kv: ["label", ".txt"], note: "限品类/限平台/券编号等键值对"}
+      use_url: {sel: ".op-btns a[href]", attr: "href", note: "去使用链接"}
+      expired: {sel: ".overdue-site", presence: true, note: "是否带「已过期」浮层"}
