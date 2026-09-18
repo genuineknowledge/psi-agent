@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import textwrap
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -541,6 +542,16 @@ async def test_fire_tool_calls_registry_directly() -> None:
     assert called["text"] == "hi"
     assert called["ai_socket"] == "ai://scheduler"
     assert any(c.reasoning and "Tool Call" in c.reasoning for c in chunks)
+
+    # 定时工具触发也要带结构化 ``tool_name`` / ``tool_args``。以前只填 ``kind``, 靠
+    # 消费方从 reasoning 文本里正则抠; 那条正则已删, 这里不填就是让卡片上显示成一个
+    # 没有名字的 "?" —— 而这条路恰恰是用户看不见自己触发的那种。
+    calls = [c for c in chunks if c.kind == "tool_call"]
+    assert [c.tool_name for c in calls] == ["feishu_message_send"]
+    assert [c.tool_args for c in calls] == [
+        json.dumps({"receive_id": "oc_1", "text": "hi", "receive_id_type": "chat_id"}, ensure_ascii=False)
+    ]
+    assert [c.tool_name for c in chunks if c.kind == "tool_result"] == ["feishu_message_send"]
 
 
 @pytest.mark.anyio

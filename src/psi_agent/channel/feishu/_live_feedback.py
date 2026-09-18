@@ -21,10 +21,12 @@
 非 live 那条路 (``_tool_status``) 逐字节未变, 判据也还在锁它。live 是 opt-in 的
 ``PSI_FEISHU_LIVE_FEEDBACK=1``, 开它就等于接受「过程细节给用户看」。
 
-**参数解析有盲区 (已知留白)。** 工具名/参数是从 chunk 文本里正则抠出来的,
-参数**字面**含 ``)]`` 时会提前收尾、显示不全 (实测 ``{"command": "echo )]"}``
-只显示到 ``{"command": "echo``)。只影响显示不影响执行。根治要 session 侧把 args
-作为结构化字段传出来, 不在本层。
+**参数从结构化字段来, 不从文本抠。** 工具名与参数走 ``ReasoningChunk.tool_name``
+/ ``tool_args`` (session 侧 ``AgentChunk`` 同名字段, 经 ``\\x1f`` 编码进
+``StreamBuffer`` 的 key —— 见 ``channel/_core.py:_buffer_key``)。曾经这里有一条
+``[Tool Call: name(args)]`` 的正则, 它在参数**字面**含 ``)]`` 时提前收尾、显示不全
+(实测 ``{"command": "echo )]"}`` 只显示到 ``{"command": "echo``)。那条正则已删,
+**不要为了"兜底"把它加回来**: 两条路并存意味着盲区还在, 只是多了一层遮掩。
 """
 
 from __future__ import annotations
@@ -66,7 +68,6 @@ CARD_DELAY_SECONDS = 3.0
 「静默回合不抹掉过程块」是同一条规则 (抹了点按钮就变空卡)。
 """
 
-_CALL_RE = re.compile(r"\[Tool Call: ([A-Za-z0-9_.-]+)\((.*?)\)\]", re.DOTALL)
 _RESULT_RE = re.compile(r"\[Tool Result: (.*?)\]\s*$", re.DOTALL)
 
 
@@ -77,15 +78,6 @@ def live_feedback_enabled() -> bool:
     ``monkeypatch.setenv`` 逐条切, import 时快照会让它们全部读到同一个值。
     """
     return os.environ.get(ENV_FLAG) == "1"
-
-
-def parse_tool_calls(text: str) -> list[tuple[str, str]]:
-    """从 chunk 文本里抠出所有 ``[Tool Call: name(args)]``。
-
-    ``findall`` 而非 ``search``: ``StreamBuffer`` 会把并发的同名调用并进一条
-    chunk, 只取第一条就少显示几个工具。
-    """
-    return _CALL_RE.findall(text or "")
 
 
 def parse_tool_result(text: str) -> str | None:

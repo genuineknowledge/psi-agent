@@ -96,8 +96,18 @@ def _core_yielding(*chunks: Any) -> ChannelCore:
 
 
 def _tool_call(name: str, args_text: str = "{}") -> ReasoningChunk:
-    """构造与生产同形的 tool_call chunk —— 文本里带完整参数, 正如流上那样。"""
-    return ReasoningChunk(text=f"[Tool Call: {name}({args_text})]", kind="tool_call", tool_name=name)
+    """构造与生产同形的 tool_call chunk。
+
+    文本里带完整参数 (正如流上那样) **且**同样的参数也放进 ``tool_args`` —— 生产的
+    ``ChannelCore._to_chunk`` 两处都填 (见 ``channel/_core.py``)。只填一处会让判据测
+    的是一个流上不存在的形状。
+    """
+    return ReasoningChunk(
+        text=f"[Tool Call: {name}({args_text})]",
+        kind="tool_call",
+        tool_name=name,
+        tool_args=args_text,
+    )
 
 
 def _tool_result(name: str, result: str = "ok") -> ReasoningChunk:
@@ -527,3 +537,41 @@ async def test_live_final_render_drops_the_process_block_and_keeps_only_the_answ
     assert "查一下再回答。" in rec.everything, "过程压根没出现过, 这条判据没吃劲"
     assert rec.final == "结论是这样。", f"终态不是纯正文: {rec.final!r}"
     assert "🔧" not in rec.final
+
+
+# -- 判据: 参数字面含 ")]" 也完整显示 -------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_live_shows_full_args_when_they_contain_the_closing_bracket_pair(
+    live_on: None, monkeypatch: pytest.MonkeyPatch
+):
+    """参数里**字面**含 ``)]`` 时仍完整显示 —— 结构化字段替掉正则的全部理由。
+
+    旧实现从 ``chunk.text`` 里正则抠 ``[Tool Call: name(args)]``, 非贪婪匹配在参数
+    内部第一个 ``)]`` 上就收尾: 实测这条参数只显示到 ``{"command": "echo``, 后面
+    连引号都没闭合。现在名字与参数走 ``tool_name`` / ``tool_args`` 两个字段, 文本
+    长什么样都不再参与解析。
+
+    ``echo )]`` 是最小复现: shell 里反引号/括号是家常, 而 ``)]`` 恰好是那条正则的
+    收尾符。
+    """
+    monkeypatch.setattr(_live_feedback, "CARD_DELAY_SECONDS", 0.01)
+    rec = _CardRecorder()
+    channel, _ = _recording_channel(rec)
+    args_text = '{"command": "echo )]"}'
+    core = _core_with_delays(
+        (_tool_call("bash", args_text), 0.05),
+        (_tool_result("bash", ")]"), 0),
+    )
+
+    await client._stream_reply(
+        channel, core, "oc_1", [], reply_to=None, suppress_silent_reply=True, sender_open_id="ou_1"
+    )
+
+    shown = rec.everything
+    assert "bash" in shown, "工具名没上卡片, 这条判据没吃劲"
+    # 整条参数逐字符都在 —— 断在 "echo" 后面正是旧正则的截断点, 所以这里比的是
+    # **完整串**而不是某个子串在不在。
+    assert args_text in shown, f"参数被截断了 (旧正则的盲区): {shown!r}"
+    assert '{"command": "echo\n' not in shown, "参数在 echo 后被截断"

@@ -509,16 +509,24 @@ class ScheduleRegistry:
                     result = f"Error executing tool {tool_name!r}: {e}"
                     logger.error(f"Schedule {schedule.name!r} tool error: {e!r}")
 
+            # ``tool_name`` / ``tool_args`` 与 ``reasoning`` 文本同源。以前只填 kind,
+            # 靠消费方从文本里正则抠名字和参数; 那条正则已经删掉 (见
+            # ``channel/feishu/_live_feedback.py`` 的模块 docstring), 所以这里不填就是
+            # 让定时工具触发在卡片上退化成一个没有名字的 ``?``。
+            args_json = json.dumps(args, ensure_ascii=False)
             chunks.append(
                 AgentChunk(
-                    reasoning=f"[Tool Call: {tool_name}({json.dumps(args, ensure_ascii=False)})]",
+                    reasoning=f"[Tool Call: {tool_name}({args_json})]",
                     kind=REASONING_KIND_TOOL_CALL,
+                    tool_name=tool_name,
+                    tool_args=args_json,
                 )
             )
             chunks.append(
                 AgentChunk(
                     reasoning=f"[Tool Result: {result[:1000]}]",
                     kind=REASONING_KIND_TOOL_RESULT,
+                    tool_name=tool_name,
                 )
             )
             if schedule.visibility == "display":

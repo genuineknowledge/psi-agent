@@ -979,12 +979,12 @@ class SessionAgent:
                                             args = {}
 
                                         logger.info(f"Executing tool: {func_name!r}({args!r})")
+                                        args_json = json.dumps(args, ensure_ascii=False)
                                         yield AgentChunk(
-                                            reasoning=(
-                                                f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"
-                                            ),
+                                            reasoning=(f"[Tool Call: {func_name}({args_json})]"),
                                             kind=REASONING_KIND_TOOL_CALL,
                                             tool_name=func_name,
+                                            tool_args=args_json,
                                         )
                                         tool_args.append((i, tc, func_name, args, argument_error))
 
