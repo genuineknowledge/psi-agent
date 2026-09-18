@@ -16,7 +16,7 @@ from psi_agent._card_markers import SILENT_REPLY
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._file_bytes import OutboundFileError
 from psi_agent.channel._types import FileChunk, ReasoningChunk, TextChunk
-from psi_agent.channel.feishu import ChannelFeishu, client
+from psi_agent.channel.feishu import ChannelFeishu, _live_feedback, client
 from psi_agent.channel.feishu._card_action import (
     _card_has_action_value,
     _consumed_card_content,
@@ -1629,8 +1629,20 @@ def _driving_channel() -> MagicMock:
     return channel
 
 
+@pytest.fixture
+def live_off(monkeypatch):
+    """显式关掉 live —— 下面几条判据断言的是 ``stream.append`` 收到了什么。
+
+    ``PSI_FEISHU_LIVE_FEEDBACK`` 默认翻成开之后, live 路径**放弃 ``append``**、改走
+    ``set_content`` 整块重写 (见 ``_live_feedback`` 模块 docstring), 于是 ``appended``
+    恒为空、这些断言全部转红 —— 实测本文件 5 条。它们锁的是非 live 那条路的净化与
+    抑制规则, 那条路逐字节未变, 所以关掉 live 才是它们本来的语义。
+    """
+    monkeypatch.setenv(_live_feedback.ENV_FLAG, "0")
+
+
 @pytest.mark.anyio
-async def test_stream_reply_never_shows_internal_markers(monkeypatch, tmp_path):
+async def test_stream_reply_never_shows_internal_markers(live_off, monkeypatch, tmp_path):
     """出站净化: 模型照抄的省略句柄 / SEND / RECV 标记不得出现在飞书回复里。
 
     真实事故(2026-09-10): 回复末尾挂出 ``[已省略1334字符, 句柄 assistant#425952]``
@@ -1856,7 +1868,7 @@ async def test_send_file_local_path_unaffected_by_fetch_failure(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_stream_reply_reports_outbound_file_failure_to_user(monkeypatch, tmp_path):
+async def test_stream_reply_reports_outbound_file_failure_to_user(live_off, monkeypatch, tmp_path):
     """附件发不出去要**告诉用户**, 且不中断整条回复。
 
     静默正是本 bug 的症状, 所以失败必须可见; 但就地告知而非抛出 —— 一个附件失败不该
@@ -1992,7 +2004,7 @@ async def test_normal_chat_swallows_no_reply_split_across_chunks(monkeypatch, tm
 
 
 @pytest.mark.anyio
-async def test_normal_chat_still_delivers_real_reply(monkeypatch, tmp_path):
+async def test_normal_chat_still_delivers_real_reply(live_off, monkeypatch, tmp_path):
     """反向判据: 正常回复必须照旧完整送达, 抑制不许把普通对话一起吞了。
 
     没有这条, 「把所有文本都当 NO_REPLY 吞掉」也能让上面两条变绿。
@@ -2009,7 +2021,7 @@ async def test_normal_chat_still_delivers_real_reply(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
-async def test_normal_chat_no_reply_after_tool_result_is_swallowed(monkeypatch, tmp_path):
+async def test_normal_chat_no_reply_after_tool_result_is_swallowed(live_off, monkeypatch, tmp_path):
     """普通对话里「先答一段 → 调工具 → 再答 NO_REPLY」: 前段照发, 后段吞掉。
 
     ``tool_result`` 是「这次动作办完、下一段重新开始攒」的时钟信号。它若仍被某个
@@ -2033,7 +2045,7 @@ async def test_normal_chat_no_reply_after_tool_result_is_swallowed(monkeypatch, 
 
 
 @pytest.mark.anyio
-async def test_card_action_tool_result_clock_still_resets(monkeypatch, tmp_path):
+async def test_card_action_tool_result_clock_still_resets(live_off, monkeypatch, tmp_path):
     """卡片回调这一侧不许被打乱: ``tool_result`` 仍然重新开始攒。
 
     直接调 ``_stream_reply(suppress_silent_reply=True)`` —— 卡片回调走的就是这个入口
