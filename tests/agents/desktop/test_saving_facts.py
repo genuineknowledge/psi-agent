@@ -301,3 +301,37 @@ async def test_as_of_defaults_to_now_when_the_draft_omits_it() -> None:
     _assert_contract_invariants(payload)
     assert payload["as_of"][:2] == "20"  # ISO 8601 且带年
     assert "T" in payload["as_of"]
+
+
+# --------------------------------------------------------------------------- #
+# 工具说明就是契约: 模型读的是 docstring, 不是校验代码
+# --------------------------------------------------------------------------- #
+
+
+def test_the_docstring_documents_every_coupon_field() -> None:
+    """券字段加了一个却忘了写进 docstring, 每个调用点就会再踩一次。
+
+    这条不是形式主义。实测跑端到端时, 草稿就是照着 docstring 写的, 结果漏了 `id`,
+    被 `E_COUPON_ID_MISSING` 挡在门外 —— 而那个要求当时只存在于校验代码里,
+    docstring 一个字都没提。
+    """
+    doc = _saving_facts.saving_facts.__doc__ or ""
+
+    for name in ("id", "type", "held"):
+        assert name in doc, f"docstring 没提到必填字段 {name}"
+
+    for field, _operator in _saving_facts._COUPON_ATTRS:
+        assert field in doc, f"docstring 没提到券字段 {field}(_COUPON_ATTRS 里有)"
+
+
+def test_the_docstring_says_expiry_is_a_warning_not_an_error() -> None:
+    """过期是**时效判断**, 不是形状错误。
+
+    这条不写清, 调用方会以为"过期"会被拦下来、于是自己先拦一道 —— 而按契约它应当
+    原样进 payload, 由本体决定怎么用。``valid_from`` / ``valid_to`` 同时是**必读项**:
+    实测有一篇 recent(147 天前)的文章, 里面的券只有 2 天有效期。
+    """
+    doc = _saving_facts.saving_facts.__doc__ or ""
+    assert "warnings" in doc
+    assert "valid_from" in doc and "valid_to" in doc
+    assert "必读项" in doc
