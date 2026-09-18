@@ -50,6 +50,16 @@ _EMOJI_FAILED = "CrossMark"
 # 静默漂移——改名后 session 直调静默失效、或 token 直出对话。
 _SILENT_REPLY_TOKEN = SILENT_REPLY
 
+#: 模型把整条正文写成了内部占位符时发给用户的话。
+#:
+#: **不提「句柄」「省略」「marker」任何一个内部词**: 用户不知道这些是什么, 而
+#: 上一轮他们看到的是一片空白 —— 需要的是「我这边出问题了, 你再说一次」这个
+#: 可操作的信息, 不是一个内部机制的名字。
+#:
+#: 刻意不重试 (方案 (b)): 生产那一轮 ``prompt_tokens`` 已 249858, 重试是把最贵
+#: 的回合再跑一遍, 且那轮已跑过工具 —— 重跑会把有副作用的工具再执行一次。
+_HANDLE_ONLY_FALLBACK = "抱歉,我这一轮的回复没能正常生成。请再说一次,或者把刚才的问题重发一遍。"
+
 
 class ResolveCore(Protocol):
     """把一次飞书会话解析成对应 Session 的 ``ChannelCore``。
@@ -597,6 +607,9 @@ async def _stream_reply(
         tools = ToolStatusTracker()
         body = ""
         status_shown = False
+        # 被 marker filter 剥空的**原始**文本。区分「模型以为自己说了话」与「真
+        # NO_REPLY」全靠它: 两者都表现为 ``body`` 为空, 语义完全相反。见收尾处。
+        withheld = ""
         # Per-reply filter: handles may be split across streamed chunks, so the
         # carry must live for the whole turn (see VisibleMarkerFilter).
         marker_filter = VisibleMarkerFilter()
@@ -742,10 +755,11 @@ async def _stream_reply(
             ``merge_streaming_text`` 的去重会吃掉正文开头的字 (判据 5 锁的正是这
             件事)。嗅探那半段逐字节未变 —— ``visible`` 拿到的文本一定已过嗅探。
             """
-            nonlocal body
+            nonlocal body, withheld
             if live:
                 visible = marker_filter.feed(text)
                 if not visible:
+                    withheld += text
                     logger.debug(f"outbound text withheld by marker filter ({len(text)} chars)")
                     return
                 body += visible
@@ -754,6 +768,7 @@ async def _stream_reply(
             await render_status(None)
             visible = marker_filter.feed(text)
             if not visible:
+                withheld += text
                 logger.debug(f"outbound text withheld by marker filter ({len(text)} chars)")
                 return
             body += visible
@@ -761,7 +776,7 @@ async def _stream_reply(
             logger.debug(f"stream.append ({len(visible)} chars)")
 
         async def flush_silent_candidate() -> None:
-            nonlocal silent_candidate
+            nonlocal silent_candidate, withheld
             if not silent_candidate:
                 return
             candidate = silent_candidate
@@ -770,6 +785,9 @@ async def _stream_reply(
             # elision handle must be suppressed, not sent as "content".
             normalized = strip_transfer_markers(candidate)
             if not normalized:
+                # 这条路绕过 ``append_body``, 所以「剥完为空」的记账要在这里也做一次
+                # —— 否则嗅探开着的回合 (生产就是) 走到这里就把证据丢了。
+                withheld += candidate
                 logger.debug("suppressed marker-only Feishu reply")
             elif normalized == _SILENT_REPLY_TOKEN:
                 logger.debug("suppressed standalone NO_REPLY from Feishu card action")
@@ -853,6 +871,28 @@ async def _stream_reply(
         if failure is not None:
             raise failure
         await flush_silent_candidate()
+        # ** 剥完为空必须兜底 ** —— 「模型这一轮只吐了内部占位符」≠「模型这一轮
+        # 无需回复」。两者都表现为 ``body`` 为空, 语义却相反: 后者的静默是对的,
+        # 前者模型**以为自己说了话** (生产实测那轮推理 1224 字符、原始正文 2251
+        # 字符), 用户在等, 静默是错的。
+        #
+        # 判据是 ``withheld and not body``: 剥离**前**非空、被剥成空。真 NO_REPLY
+        # 一个字都没进 ``withheld`` (它走 ``_SILENT_REPLY_TOKEN`` 那条分支), 所以
+        # 这个条件天然把两者分开, 不需要再猜内容。
+        #
+        # 三次复发 (9-10 立过提示词判据、9-12、9-18) 之后仍零日志: 这条 ERROR 是
+        # 下一次复发唯一的线索, 故与兜底同层、不可省。
+        if withheld and not body:
+            logger.error(
+                f"model replied with internal markers only — {len(withheld)} chars stripped to empty, "
+                f"sending fallback (chat={chat_id!r} sender={sender_open_id!r}): {withheld!r}"
+            )
+            body = _HANDLE_ONLY_FALLBACK
+            if live:
+                await _open_gate_now()
+            else:
+                await render_status(None)
+                await stream.append(body)
         if live:
             # 正文出完了, 过程脚手架撤掉; 没有正文 (静默回合) 就别动卡片 ——
             # final=True 会把内容写成空串, 而门若已开那就是把过程抹成空卡。

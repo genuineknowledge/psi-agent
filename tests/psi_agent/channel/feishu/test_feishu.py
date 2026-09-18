@@ -1681,7 +1681,13 @@ async def test_stream_reply_never_shows_internal_markers(live_off, monkeypatch, 
     await client._stream_reply(channel, core, "oc_1", [], reply_to=None, sender_open_id="ou_1")
     assert "".join(appended) == "结论。"
 
-    # 整条回复只有标记 → 当作空回复抑制, 不弹卡
+    # 整条回复只有标记 → **兜底话术**, 不是静默。
+    #
+    # 这条期望是 2026-09-18 翻过来的: 原本断言 ``appended == []``, 而生产实测那正是
+    # 缺陷本身 —— 模型以为自己说了话 (那轮推理 1224 字符、原始正文 2251 字符), 剥完
+    # 为空之后用户什么都收不到, 等了 5 分钟。剥离本身照旧 (上面两段没动), 变的只有
+    # 「剥空之后怎么办」。真 NO_REPLY 的静默不受影响, 判据见
+    # ``test_feishu_handle_only_reply``。
     appended.clear()
 
     async def _marker_only(chunks):
@@ -1689,7 +1695,8 @@ async def test_stream_reply_never_shows_internal_markers(live_off, monkeypatch, 
 
     core = cast(ChannelCore, SimpleNamespace(post=_marker_only))
     await client._stream_reply(channel, core, "oc_1", [], reply_to=None, sender_open_id="ou_1")
-    assert appended == []
+    assert "".join(appended) == client._HANDLE_ONLY_FALLBACK
+    assert "已省略" not in "".join(appended), "兜底话术里漏出了句柄"
 
 
 @pytest.mark.anyio
