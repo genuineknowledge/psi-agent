@@ -260,7 +260,9 @@ def _date_hint(raw: Any, today: date) -> tuple[str | None, int | None]:
         published = match.group(0)
     else:
         alt = re.match(r"([A-Za-z]{3})[A-Za-z]*\s+(\d{1,2}),?\s+(\d{4})", text)
-        month = _MONTHS.get(alt.group(1).lower()) if alt else None
+        if alt is None:
+            return None, None
+        month = _MONTHS.get(alt.group(1).lower())
         if not month:
             return None, None
         published = f"{alt.group(3)}-{month:02d}-{int(alt.group(2)):02d}"
@@ -421,7 +423,8 @@ async def voucher_clues(
     collected: list[dict[str, Any]] = []
 
     # 路 1: 实时检索 —— **主路径**。任何城市都能走, 不依赖城市代码表, 也不吃专题页风控。
-    search_cfg = sources.get("search") if isinstance(sources.get("search"), dict) else {}
+    search_raw = sources.get("search")
+    search_cfg: dict[str, Any] = search_raw if isinstance(search_raw, dict) else {}
     templates = [str(x) for x in (search_cfg.get("query_templates") or [])]
     if templates:
         search_clues, search_why = await _search_clues(city, keyword, templates)
