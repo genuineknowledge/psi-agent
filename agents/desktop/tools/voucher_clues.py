@@ -229,14 +229,41 @@ def _collect_links(node: Any, out: list[dict[str, Any]]) -> None:
             _collect_links(value, out)
 
 
+#: serper 的 ``date`` 是英文月份写法(实测 ``"Aug 27, 2026"``), 不是 ISO。
+_MONTHS = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
+
 def _date_hint(raw: Any, today: date) -> tuple[str | None, int | None]:
-    """搜索结果可能带 ``date``, 但格式不固定。能认出 ``YYYY-MM-DD`` 才用它 —— 认不出就留空。"""
+    """把搜索结果带的 ``date`` 归一成 ``YYYY-MM-DD``; 认不出就留空(**不猜**)。
+
+    两种格式都要认: ``YYYY-MM-DD`` 与 serper 实测的英文月份写法 ``"Aug 27, 2026"``。
+    只认前者的话, 通用搜索明明给了日期却会被整批丢掉 —— 时效分层就白做了(实测踩过)。
+    """
     if not isinstance(raw, str):
         return None, None
-    m = _DATE_RE.search(raw)
-    if not m:
-        return None, None
-    published = m.group(0)
+    text = raw.strip()
+    match = _DATE_RE.search(text)
+    if match:
+        published = match.group(0)
+    else:
+        alt = re.match(r"([A-Za-z]{3})[A-Za-z]*\s+(\d{1,2}),?\s+(\d{4})", text)
+        month = _MONTHS.get(alt.group(1).lower()) if alt else None
+        if not month:
+            return None, None
+        published = f"{alt.group(3)}-{month:02d}-{int(alt.group(2)):02d}"
     try:
         return published, (today - date.fromisoformat(published)).days
     except ValueError:

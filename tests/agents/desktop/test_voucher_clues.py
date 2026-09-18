@@ -1,3 +1,4 @@
+# ruff: noqa: RUF001  # 样本是**实测抓到的真实返回**, 里面的全角标点是数据, 不是标点错误。
 """`voucher_clues` 的回归判据 —— 地方消费券的线索层。
 
 三层判据, 按重要性排:
@@ -65,6 +66,13 @@ def page(monkeypatch: pytest.MonkeyPatch) -> Any:
             return html
 
         monkeypatch.setattr(_voucher_clues, "_fetch", _fake)
+
+        # 通用搜索也默认 stub 成"用不了": 否则本机配了 SERPER_API_KEY 时测试会真的联网,
+        # 结果随网络变 —— 测试必须与"有没有 key"无关。
+        async def _no_search(*, q: str, num: str = "10", **_kw: Any) -> str:
+            return "SERPER_API_KEY is empty!"
+
+        monkeypatch.setattr(_voucher_clues.web_search, "serper_google_search", _no_search)
 
     return _install
 
@@ -406,3 +414,115 @@ def test_both_source_tiers_are_declared_apart() -> None:
     data = _sources_data()
     tiers = {data["official"]["mofcom_promotion"]["tier"]} | {v["tier"] for v in data["aggregators"].values()}
     assert tiers == {"official", "aggregator"}
+
+
+# --------------------------------------------------------------------------- #
+# 7. 通用搜索这条路: 复用而不是自己抓 HTML; 解析按实测到的真实返回形状
+# --------------------------------------------------------------------------- #
+
+#: **实测抓到的真实 serper 返回**(西安 消费券, 去掉 snippet)。不是编的样本 ——
+#: 上次就是因为没跑过真返回, 才把 Serper 给的日期整批丢掉。
+_SERPER_SAMPLE = (
+    '{"searchParameters": {"q": "西安 消费券", "type": "search", "num": 5, "page": 1, "engine": "google"},'
+    ' "credits": 1,'
+    ' "organic": ['
+    '{"title": "西安发放餐饮住宿消费券", "link": "http://m.cnwest.com/sxxw/a/2026/08/27/23420792.html",'
+    ' "date": "Aug 27, 2026", "position": 1},'
+    '{"title": "2026年西安市西咸新区消费券领取指南（时间+入口+流程）",'
+    ' "link": "https://xa.bendibao.com/live/2026810/1.shtm", "date": "Aug 10, 2026", "position": 2}'
+    "]}"
+)
+
+
+@pytest.fixture
+def fake_search(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """把通用搜索工具换成喂固定返回 —— 测试不需要 SERPER_API_KEY, 也不联网。"""
+
+    def _install(result: str) -> None:
+        async def _fake(*, q: str, num: str = "10", **_kw: Any) -> str:
+            assert q.strip(), "查询词不该是空的"
+            return result
+
+        monkeypatch.setattr(_voucher_clues.web_search, "serper_google_search", _fake)
+
+    return _install
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("2026-08-27", "2026-08-27"),
+        ("Aug 27, 2026", "2026-08-27"),
+        ("Aug 5, 2026", "2026-08-05"),
+        ("September 30, 2026", "2026-09-30"),  # 全称也行(取前三字母定月份)
+        ("昨天", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_search_dates_are_normalized_or_left_empty(raw: Any, expected: str | None) -> None:
+    """serper 的 ``date`` 是 ``"Aug 27, 2026"`` 这种英文月份写法, **不是 ISO**。
+
+    只认 ISO 的后果实测过: 通用搜索明明每条都带日期, 却被整批丢成 ``undated``,
+    时效分层白做, 「能领」也就永远卡在 undated 上。
+    """
+    published, age = _voucher_clues._date_hint(raw, TODAY)
+    assert published == expected
+    assert (age is None) == (expected is None)
+
+
+def test_links_are_collected_without_hardcoding_a_key_name() -> None:
+    """按**形状**(带 link + title 的对象)收, 不写死 ``organic`` —— serper 有十几个纵向,
+    各自的包裹键不同, 写死一个就会在换纵向时静默返回空。"""
+    out: list[dict[str, Any]] = []
+    _voucher_clues._collect_links(json.loads(_SERPER_SAMPLE), out)
+    assert [r["url"] for r in out] == [
+        "http://m.cnwest.com/sxxw/a/2026/08/27/23420792.html",
+        "https://xa.bendibao.com/live/2026810/1.shtm",
+    ]
+
+
+def test_nested_shapes_are_also_collected() -> None:
+    """换个纵向(比如新闻)包裹键不同, 也要收得到。"""
+    payload = {"news": [{"items": [{"title": "某某市消费券发放", "link": "https://example.gov.cn/a"}]}]}
+    out: list[dict[str, Any]] = []
+    _voucher_clues._collect_links(payload, out)
+    assert [r["url"] for r in out] == ["https://example.gov.cn/a"]
+
+
+async def test_search_clues_are_built_from_the_real_payload(page: Any, fake_search: Any) -> None:
+    """整条检索路: 真实样本进, 线索出 —— 日期要能进时效分层, 不是一律 undated。"""
+    page(None)  # 聚合站与官方都取不到, 只剩检索这一路
+    fake_search(_SERPER_SAMPLE)
+
+    data = await _call(city="西安")
+    assert data["ok"] is True
+    assert data["paths"]["search"]["ok"] is True
+    assert data["totals"]["by_via"] == {"search": 2}
+    assert data["totals"]["by_clue_freshness"]["undated"] == 0, "真实样本里的日期应当被解析出来"
+    assert all(c["via"] == "search" for c in data["clues"])
+
+
+async def test_an_unavailable_generic_tool_never_falls_back_to_scraping(page: Any, fake_search: Any) -> None:
+    """通用搜索不可用时**如实报错** —— 不退化去抓搜索引擎 HTML 充数。
+
+    这正是通用搜索工具(search.py)模块说明里点名的那条退化路径:
+    "scraping search-engine HTML, which returns plausible-looking garbage rather than
+    an honest error"。
+    """
+    page(None)
+    fake_search("SERPER_API_KEY is empty!")
+
+    data = await _call(city="合肥")
+    assert data["paths"]["search"]["ok"] is False
+    assert "不可用" in data["paths"]["search"]["note"]
+    assert "clues" not in data  # 三路都空 -> 只报原因
+
+
+async def test_a_non_json_search_result_is_reported_not_guessed(page: Any, fake_search: Any) -> None:
+    page(None)
+    fake_search("<html>some search page</html>")
+
+    data = await _call(city="合肥")
+    assert data["paths"]["search"]["ok"] is False
+    assert "JSON" in data["paths"]["search"]["note"]
