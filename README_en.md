@@ -193,6 +193,22 @@ Protocol errors between components take two forms:
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 proxy |
 | `PSI_FEISHU_APP_ID` | Feishu app ID |
 | `PSI_FEISHU_APP_SECRET` | Feishu app secret |
+| `PSI_APPDATA` | AppData storage root directory path |
+| `PSI_AUTH_ENDPOINT` | Cloud authentication service endpoint (empty string explicitly disables auth) |
+| `PSI_AUTH_PREFIX` | Authentication API path prefix (defaults to `/auth`) |
+| `PSI_CONTENT_ROOTS` | Layered content roots specification (`name=path`, semicolon/colon-separated) |
+| `PSI_TOOL_EXPOSURE` | Tool exposure strategy tier (`layered` / `minimal` / `all`) |
+| `PSI_MAX_CONTEXT_TOKENS` | AI context token budget limit (-1 for auto resolution) |
+| `PSI_PRIVATE_OPEN_IDS` | Feishu private session user open_id whitelist (comma-separated) |
+| `PSI_FEISHU_EXTERNAL_SESSIONS` | External cross-process session endpoints for Feishu (`key=address`) |
+| `PSI_FEISHU_DEV_OPEN_ID` | Feishu dev bypass open_id for local development |
+| `PSI_FEISHU_COOKIE_SECURE` | Feishu auth cookie secure flag (`true`/`false`) |
+| `PSI_SEED_SCHEDULES_WORKSPACE` | Workspace directory for seed schedule tasks |
+| `PSI_MONTH_TZ_OFFSET_HOURS` | Timezone offset hours for monthly stats (defaults to UTC+8) |
+| `PSI_TOOL_GUARD_SESSION_PREFIXES` | Session ID prefixes subject to tool guard (comma-separated) |
+| `PSI_DEBUG_MODULES` | List of modules to enable detailed DEBUG logging (comma-separated) |
+| `PSI_DEBUG_LOG_PATH` | File path for debug log output |
+| `PSI_OAUTH_CALLBACK_BASE` | OAuth callback base URL |
 
 CLI args take precedence over environment variables. AI params (provider, model, api_key, base_url) and channel auth params are optional and fall back to env vars when omitted. Socket path params (--session-socket, --channel-socket, --ai-socket) are required.
 
@@ -320,20 +336,39 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/ais` | Create AI instance |
-| DELETE | `/ais/{ai_id}` | Delete AI |
+| DELETE | `/ais/{ai_id}` | Delete AI instance |
 | GET | `/ais` | List all AIs |
-| POST | `/sessions` | Create Session |
-| DELETE | `/sessions/{session_id}` | Delete Session |
-| GET | `/sessions` | List all Sessions |
+| POST | `/routers` | Create and start a router instance |
+| DELETE | `/routers/{router_id}` | Stop and delete a router instance |
+| GET | `/routers` | List all router instances |
+| POST | `/sessions` | Create Session (optional `agent` / `workspace`) |
+| DELETE | `/sessions/{session_id}` | Delete Session and history |
+| GET | `/sessions` | List all Sessions (including `agent` path) |
 | POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream) |
 | GET | `/sessions/{session_id}/history` | Get conversation history |
-| POST | `/feishu/route` | Idempotently route a Feishu chat to a Session: group chats by chat_id (whole chat shares one), DMs by open_id (one per user); spawn on first use |
+| GET | `/sessions/{session_id}/todos` | Get session todos list |
+| GET | `/sessions/{session_id}/todo-segments` | Get subtask segments list |
+| GET/POST | `/sessions/{session_id}/todo-segments/{segment_id}` | Get single segment todos / Update segment label |
+| POST | `/feishu/route` | Idempotently route a Feishu chat to a Session (DMs by open_id, group chats by chat_id) |
 | GET | `/feishu/routes` | List Feishu chat → Session routes |
+| POST | `/feishu/sessions/{session_id}/chat` | Authenticated chat stream for Feishu web app (SSE) |
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
-| GET | `/workspace/browse` | Browse directory (`?path=...`) |
+| GET | `/summaries` | Get all session task summaries |
+| POST | `/summaries` | Set session task summary |
+| POST | `/summaries/generate` | AI auto-generate task summary |
+| GET | `/defaults` | Get default `agent`, `workspace`, and `appdata` paths |
+| GET | `/workspace/browse` | Browse directory (`?path=...&kind=...`) |
 | GET | `/workspace/cwd` | Get working directory |
+| GET | `/workspace/places` | Get PathPicker shortcut places and drive letters |
+| GET | `/workspace/file` | Read file content as base64 |
+| POST | `/workspace/reveal` | Reveal file path in local file manager |
+| POST | `/ui/attention` | Trigger tray/webview attention notification |
+| GET/POST | `/ui/prefs/survey` | Query or update survey dialog dismissed status |
+| GET/POST/DELETE | `/auth/*` | Account login/auth status/verification code/unbind/device management endpoints |
+| GET | `/oauth/callback` | OAuth redirect callback landing endpoint |
+| GET | `/oauth/code` | Retrieve one-time OAuth code by state |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | Favicon (available only with `--icon`; returns 404 otherwise) |
 

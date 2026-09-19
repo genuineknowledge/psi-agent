@@ -84,7 +84,7 @@ class ChannelCore:
 
     async def __aenter__(self) -> ChannelCore:
         connector, self._endpoint = resolve_connector_and_endpoint(self.session_socket)
-        self._session = aiohttp.ClientSession(connector=connector, timeout=ClientTimeout(total=None))
+        self._session = aiohttp.ClientSession(connector=connector, timeout=ClientTimeout(total=None, connect=30.0))
         return self
 
     async def __aexit__(self, *args: object) -> None:
