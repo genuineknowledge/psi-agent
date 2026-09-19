@@ -787,8 +787,8 @@ async def chat_subagent(
                 aclosing(core.post([TextChunk(message)])) as stream,
             ):
                 async for chunk in stream:
-                        if isinstance(chunk, TextChunk):
-                            text_parts.append(chunk.text)
+                    if isinstance(chunk, TextChunk):
+                        text_parts.append(chunk.text)
     except TimeoutError:
         return {
             "ok": False,
