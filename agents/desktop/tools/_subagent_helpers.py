@@ -782,9 +782,11 @@ async def chat_subagent(
     errors: list[str] = []
     try:
         with anyio.fail_after(timeout_seconds):
-            async with ChannelCore(session_socket=channel_socket, interval=0.0) as core:
-                async with aclosing(core.post([TextChunk(message)])) as stream:
-                    async for chunk in stream:
+            async with (
+                ChannelCore(session_socket=channel_socket, interval=0.0) as core,
+                aclosing(core.post([TextChunk(message)])) as stream,
+            ):
+                async for chunk in stream:
                         if isinstance(chunk, TextChunk):
                             text_parts.append(chunk.text)
     except TimeoutError:
