@@ -223,6 +223,10 @@ def _real_sandboxed() -> Iterator[None]:
     meta_before = list(sys.meta_path)
     modules_before = dict(sys.modules)
     stash_before = dict(tool_registry._private_module_stash)
+    removed_preexisting = {}
+    for k in list(sys.modules):
+        if k.startswith(("_feishu", "psi_layer_")) or k == "_runtime_paths":
+            removed_preexisting[k] = sys.modules.pop(k)
     try:
         yield
     finally:
@@ -231,6 +235,7 @@ def _real_sandboxed() -> Iterator[None]:
         for name in set(sys.modules) - set(modules_before):
             del sys.modules[name]
         sys.modules.update(modules_before)
+        sys.modules.update(removed_preexisting)
         tool_registry._private_module_stash.clear()
         tool_registry._private_module_stash.update(stash_before)
 
