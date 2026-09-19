@@ -74,8 +74,9 @@ class AiClient:
         payload = json.dumps(request_body).encode()
         t0 = time.monotonic()
         ttft_logged = False
+        timeout = aiohttp.ClientTimeout(total=None, connect=30.0)
         async with (
-            aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=None)) as session,
+            aiohttp.ClientSession(connector=connector, timeout=timeout) as session,
             session.post(endpoint, data=payload, headers={"Content-Type": "application/json"}) as resp,
         ):
             # First hop only (this process → ``psi_agent.ai.server`` over the

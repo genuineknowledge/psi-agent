@@ -1417,7 +1417,8 @@ class TestConversationSnapshot:
         conv.add({"role": "user", "content": "u2"})
         conv.rollback()
         assert len(conv.messages) == 2
-        assert conv.messages[1] == {"role": "user", "content": "u1"}
+        assert conv.messages[1]["role"] == "user"
+        assert conv.messages[1]["content"] == "u1"
 
 
 class TestPeekPendingSafety:

@@ -193,6 +193,22 @@ AI 和 Session 组件无需关心通信介质——由 `_sockets.py` 统一处�
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 代理 |
 | `PSI_FEISHU_APP_ID` | 飞书 app ID |
 | `PSI_FEISHU_APP_SECRET` | 飞书 app secret |
+| `PSI_APPDATA` | AppData 存储根目录路径 |
+| `PSI_AUTH_ENDPOINT` | 云端账号认证服务地址（设为空串显式关闭认证） |
+| `PSI_AUTH_PREFIX` | 认证 API 路径前缀（默认 `/auth`） |
+| `PSI_CONTENT_ROOTS` | 分层内容根配置（`name=path`，分号/冒号分隔） |
+| `PSI_TOOL_EXPOSURE` | 工具暴露层级策略（`layered` / `minimal` / `all`） |
+| `PSI_MAX_CONTEXT_TOKENS` | AI 上下文 token 预算上限（-1 为自动解析） |
+| `PSI_PRIVATE_OPEN_IDS` | 飞书私密会话用户 open_id 白名单（逗号分隔） |
+| `PSI_FEISHU_EXTERNAL_SESSIONS` | 飞书跨进程外部 Session 路由点（`key=address`） |
+| `PSI_FEISHU_DEV_OPEN_ID` | 飞书开发免登旁路 open_id |
+| `PSI_FEISHU_COOKIE_SECURE` | 飞书登录 Cookie secure 标志（`true`/`false`） |
+| `PSI_SEED_SCHEDULES_WORKSPACE` | 公司级种子定时任务工作区落点 |
+| `PSI_MONTH_TZ_OFFSET_HOURS` | 月度统计切月时区偏移小时数（默认 UTC+8） |
+| `PSI_TOOL_GUARD_SESSION_PREFIXES` | 工具闸门生效的 Session ID 前缀（逗号分隔） |
+| `PSI_DEBUG_MODULES` | 开启详细 DEBUG 日志的模块列表（逗号分隔） |
+| `PSI_DEBUG_LOG_PATH` | 调试日志输出文件路径 |
+| `PSI_OAUTH_CALLBACK_BASE` | OAuth 授权回调基础 URL |
 
 CLI 参数优先于环境变量。AI 参数（provider、model、api_key、base_url）及 channel 认证参数均可选，未传时回退到环境变量。Socket 路径参数（--session-socket、--channel-socket、--ai-socket）为必填。
 
@@ -308,22 +324,41 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | Method | Endpoint | 说明 |
 |--------|----------|------|
 | POST | `/ais` | 创建 AI 实例 |
-| DELETE | `/ais/{ai_id}` | 删除 AI |
-| GET | `/ais` | 列出所有 AI |
-| POST | `/sessions` | 创建 Session |
-| DELETE | `/sessions/{session_id}` | 删除 Session |
-| GET | `/sessions` | 列出所有 Session |
+| DELETE | `/ais/{ai_id}` | 删除 AI 实例 |
+| GET | `/ais` | 列出所有 AI 实例 |
+| POST | `/routers` | 创建并启动语义路由实例 |
+| DELETE | `/routers/{router_id}` | 停止并删除语义路由 |
+| GET | `/routers` | 列出所有语义路由 |
+| POST | `/sessions` | 创建 Session（可选 `agent` / `workspace`） |
+| DELETE | `/sessions/{session_id}` | 删除 Session 及历史记录 |
+| GET | `/sessions` | 列出所有 Session（含 `agent` 路径） |
 | POST | `/sessions/{session_id}/chat` | Web UI 对话（SSE 流式） |
-| GET | `/sessions/{session_id}/history` | 获取会话历史 |
-| POST | `/feishu/route` | 幂等路由飞书会话到 Session：群聊按 chat_id（整群共用），私聊按 open_id（一人一个），首次按需 spawn |
-| GET | `/feishu/routes` | 列出飞书会话 → Session 路由 |
+| GET | `/sessions/{session_id}/history` | 获取会话历史记录 |
+| GET | `/sessions/{session_id}/todos` | 获取会话 todo 列表 |
+| GET | `/sessions/{session_id}/todo-segments` | 获取子任务分段列表 |
+| GET/POST | `/sessions/{session_id}/todo-segments/{segment_id}` | 获取单段 todo / 更新分段标题 |
+| POST | `/feishu/route` | 幂等路由飞书会话到 Session（私聊按 open_id，群聊按 chat_id） |
+| GET | `/feishu/routes` | 列出飞书会话 → Session 路由表 |
+| POST | `/feishu/sessions/{session_id}/chat` | 飞书网页应用带鉴权的对话流（SSE） |
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
-| POST | `/titles/generate` | AI 自动生成标题 |
-| GET | `/workspace/browse` | 浏览目录（`?path=...`） |
-| GET | `/workspace/cwd` | 获取工作目录 |
+| POST | `/titles/generate` | AI 自动生成会话标题 |
+| GET | `/summaries` | 获取所有会话任务摘要 |
+| POST | `/summaries` | 设置会话任务摘要 |
+| POST | `/summaries/generate` | AI 自动生成任务摘要 |
+| GET | `/defaults` | 获取默认 `agent`、`workspace` 和 `appdata` 路径 |
+| GET | `/workspace/browse` | 浏览目录（`?path=...&kind=...`） |
+| GET | `/workspace/cwd` | 获取 Gateway 当前工作目录 |
+| GET | `/workspace/places` | 获取 PathPicker 快捷位置与磁盘盘符 |
+| GET | `/workspace/file` | 读取指定文件内容（base64） |
+| POST | `/workspace/reveal` | 在本机文件管理器中定位显示路径 |
+| POST | `/ui/attention` | 触发托盘/webview 闪烁注意力提示 |
+| GET/POST | `/ui/prefs/survey` | 查询/更新问卷弹窗关闭状态 |
+| GET/POST/DELETE | `/auth/*` | 账号登录/认证状态/验证码/解绑/设备管理等端点 |
+| GET | `/oauth/callback` | OAuth 授权重定向落地点 |
+| GET | `/oauth/code` | 发起方按 state 一次性获取授权 code |
 | GET | `/openapi.json` | OpenAPI schema |
-| GET | `/favicon.ico` | favicon（仅当 `--icon` 设置时有效，否则返回 404） |
+| GET | `/favicon.ico` | Favicon 图标（仅当 `--icon` 设置时注册） |
 
 ### Web Console 聊天协议
 
