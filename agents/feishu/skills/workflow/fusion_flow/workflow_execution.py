@@ -55,6 +55,82 @@ class StepOutputError(ExecutionPlanError):
     """A dispatcher returned an invalid output mapping for one invocation."""
 
 
+class StepTimeoutError(Exception):
+    """A Step exceeded its declared ``step_timeout``.
+
+    The message names the coordinates a run record needs -- workflow, Step, limit and
+    invocation -- because the anyio task group would otherwise collapse the timeout into
+    ``unhandled errors in a TaskGroup (1 sub-exception)``.  Deliberately **not** an
+    ``ExecutionPlanError``: ``_is_ordinary_step_error`` must keep classifying a timeout
+    exactly as it classified the bare ``TimeoutError`` anyio raised before, so retry and
+    attempt semantics are unchanged.
+    """
+
+    def __init__(
+        self,
+        *,
+        workflow_id: str,
+        step_id: str,
+        timeout_seconds: int,
+        attempt: int | None = None,
+        iteration_index: int | None = None,
+        loop_id: str | None = None,
+        epoch: int | None = None,
+    ) -> None:
+        details = [f"workflow={workflow_id!r}", f"step={step_id!r}", f"limit={timeout_seconds}s"]
+        if attempt is not None:
+            details.append(f"attempt={attempt}")
+        if iteration_index is not None:
+            details.append(f"iteration={iteration_index}")
+        if loop_id is not None:
+            details.append(f"loop={loop_id!r}")
+        if epoch is not None:
+            details.append(f"epoch={epoch}")
+        super().__init__("step timeout: " + ", ".join(details))
+
+
+class WorkflowTimeoutError(Exception):
+    """A workflow exceeded its declared ``workflow_timeout``.
+
+    Same rationale as :class:`StepTimeoutError`: the deadline has to say which workflow
+    expired, at what limit, and which Steps never finished.
+    """
+
+    def __init__(
+        self,
+        *,
+        workflow_id: str,
+        timeout_seconds: int,
+        completed_step_ids: Sequence[str] = (),
+        pending_step_ids: Sequence[str] = (),
+    ) -> None:
+        details = [f"workflow={workflow_id!r}", f"limit={timeout_seconds}s"]
+        total = len(completed_step_ids) + len(pending_step_ids)
+        if total:
+            details.append(f"completed={len(completed_step_ids)}/{total}")
+        if pending_step_ids:
+            details.append(f"unfinished steps: {_abbreviate_step_ids(pending_step_ids)}")
+        super().__init__("workflow timeout: " + ", ".join(details))
+
+
+def _abbreviate_step_ids(step_ids: Sequence[str], *, limit: int = 5) -> str:
+    """Render Step IDs for an error message without letting the list grow unbounded."""
+
+    shown = ", ".join(repr(step_id) for step_id in step_ids[:limit])
+    hidden = len(step_ids) - limit
+    return shown if hidden <= 0 else f"{shown}, +{hidden} more"
+
+
+def _step_completion_split(
+    completed_steps: Mapping[str, anyio.Event],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Split Step IDs into ``(finished, unfinished)`` when a deadline expired."""
+
+    finished = tuple(sorted(step_id for step_id, event in completed_steps.items() if event.is_set()))
+    unfinished = tuple(sorted(step_id for step_id, event in completed_steps.items() if not event.is_set()))
+    return finished, unfinished
+
+
 @dataclass(frozen=True, slots=True)
 class Await:
     """Wait until the named steps complete."""
@@ -1434,17 +1510,31 @@ async def execute_plan(
                 )
                 timing_start = _start_timing(enabled=attempt_timings is not None)
                 try:
-                    if step.timeout_seconds is None:
+                    step_timeout = step.timeout_seconds
+                    if step_timeout is None:
                         outputs = await call_dispatcher(
                             context,
                             attempt_inputs,
                         )
                     else:
-                        with anyio.fail_after(step.timeout_seconds):
-                            outputs = await call_dispatcher(
-                                context,
-                                attempt_inputs,
-                            )
+                        timeout_scope: anyio.CancelScope | None = None
+                        try:
+                            with anyio.fail_after(step_timeout) as timeout_scope:
+                                outputs = await call_dispatcher(
+                                    context,
+                                    attempt_inputs,
+                                )
+                        except TimeoutError as error:
+                            if timeout_scope is None or not timeout_scope.cancel_called:
+                                # An inner call raised its own TimeoutError; keep it as is.
+                                raise
+                            raise StepTimeoutError(
+                                workflow_id=graph.workflow_id,
+                                step_id=step.step_id,
+                                timeout_seconds=step_timeout,
+                                attempt=attempt,
+                                iteration_index=iteration_index,
+                            ) from error
                     validated = _validate_step_outputs(
                         step.step_id,
                         outputs,
@@ -1785,11 +1875,24 @@ async def execute_plan(
             for fiber in plan.fibers:
                 task_group.start_soon(run_fiber, fiber)
 
-    if graph.policy.timeout_seconds is None:
+    policy_timeout = graph.policy.timeout_seconds
+    if policy_timeout is None:
         await run_fibers()
     else:
-        with anyio.fail_after(graph.policy.timeout_seconds):
-            await run_fibers()
+        timeout_scope: anyio.CancelScope | None = None
+        try:
+            with anyio.fail_after(policy_timeout) as timeout_scope:
+                await run_fibers()
+        except TimeoutError as error:
+            if timeout_scope is None or not timeout_scope.cancel_called:
+                raise
+            finished_step_ids, unfinished_step_ids = _step_completion_split(completed_steps)
+            raise WorkflowTimeoutError(
+                workflow_id=graph.workflow_id,
+                timeout_seconds=policy_timeout,
+                completed_step_ids=finished_step_ids,
+                pending_step_ids=unfinished_step_ids,
+            ) from error
 
     return {artifact.artifact_id: values[artifact.artifact_id] for artifact in graph.artifacts if artifact.is_output}
 
@@ -2133,11 +2236,26 @@ async def _execute_plan_with_loops(
                 )
                 attempt_start = _start_timing(enabled=attempt_timings is not None)
                 try:
-                    if step.timeout_seconds is None:
+                    step_timeout = step.timeout_seconds
+                    if step_timeout is None:
                         outputs = await dispatch(step, attempt_inputs, context)
                     else:
-                        with anyio.fail_after(step.timeout_seconds):
-                            outputs = await dispatch(step, attempt_inputs, context)
+                        timeout_scope: anyio.CancelScope | None = None
+                        try:
+                            with anyio.fail_after(step_timeout) as timeout_scope:
+                                outputs = await dispatch(step, attempt_inputs, context)
+                        except TimeoutError as error:
+                            if timeout_scope is None or not timeout_scope.cancel_called:
+                                # An inner call raised its own TimeoutError; keep it as is.
+                                raise
+                            raise StepTimeoutError(
+                                workflow_id=graph.workflow_id,
+                                step_id=step.step_id,
+                                timeout_seconds=step_timeout,
+                                attempt=attempt,
+                                loop_id=loop_id,
+                                epoch=epoch,
+                            ) from error
                     validated = _validate_step_outputs(
                         step.step_id,
                         outputs,
@@ -2402,11 +2520,24 @@ async def _execute_plan_with_loops(
             for loop in plan.loops:
                 task_group.start_soon(run_loop, loop)
 
-    if graph.policy.timeout_seconds is None:
+    policy_timeout = graph.policy.timeout_seconds
+    if policy_timeout is None:
         await run_all()
     else:
-        with anyio.fail_after(graph.policy.timeout_seconds):
-            await run_all()
+        timeout_scope: anyio.CancelScope | None = None
+        try:
+            with anyio.fail_after(policy_timeout) as timeout_scope:
+                await run_all()
+        except TimeoutError as error:
+            if timeout_scope is None or not timeout_scope.cancel_called:
+                raise
+            finished_step_ids, unfinished_step_ids = _step_completion_split(completed_steps)
+            raise WorkflowTimeoutError(
+                workflow_id=graph.workflow_id,
+                timeout_seconds=policy_timeout,
+                completed_step_ids=finished_step_ids,
+                pending_step_ids=unfinished_step_ids,
+            ) from error
 
     outputs: dict[str, object] = {}
     for artifact in graph.artifacts:
